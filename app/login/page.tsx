@@ -1,0 +1,1 @@
+export default function LoginPage() { return <div className="page"><div className="eyebrow">Login</div><h1>Welcome back</h1><form className="form card"><input className="input" placeholder="Email" /><input className="input" placeholder="Password" type="password" /><button className="button primary" type="button">Stub login</button></form></div>; }

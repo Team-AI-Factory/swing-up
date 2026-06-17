@@ -1,0 +1,1 @@
+export default function SignupPage() { return <div className="page"><div className="eyebrow">Signup</div><h1>Create your account</h1><form className="form card"><input className="input" placeholder="Name" /><input className="input" placeholder="Email" /><button className="button primary" type="button">Stub signup</button></form></div>; }

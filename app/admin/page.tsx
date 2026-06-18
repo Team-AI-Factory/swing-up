@@ -23,6 +23,13 @@ const adminCards = [
     cta: "Open SEC EDGAR Ear",
   },
   {
+    title: "Frankfurter FX Ear",
+    description: "Run public latest FX-rate context checks from Frankfurter with no API key and no final alerts.",
+    stage: "Live",
+    href: "/admin/frankfurter",
+    cta: "Open Frankfurter FX Ear",
+  },
+  {
     title: "Source Health",
     description: "Check whether each signal source is connected, stubbed, missing keys, degraded, or returning errors.",
     stage: "Live",
@@ -91,6 +98,7 @@ const pipelineSteps = [
   "SEC EDGAR Ear",
   "CoinGecko Crypto Price Ear",
   "GDELT Market-Wide Firehose",
+  "Frankfurter FX Ear",
   "Source Health",
   "Raw Signal Store",
   "Signal Filter",
@@ -122,6 +130,7 @@ export default function AdminPage() {
           <div className="metric"><span>CoinGecko Crypto Price Ear</span><strong>Live</strong></div>
           <div className="metric"><span>SEC EDGAR Ear</span><strong>Live</strong></div>
           <div className="metric"><span>GDELT Market-Wide Firehose</span><strong>Live</strong></div>
+          <div className="metric"><span>Frankfurter FX</span><strong>Live</strong></div>
           <div className="metric"><span>Source Health</span><strong>Live</strong></div>
           <div className="metric"><span>Raw Signal Store</span><strong>Live</strong></div>
           <div className="metric"><span>Signal Filter</span><strong>Live</strong></div>

@@ -65,6 +65,13 @@ const adminCards = [
     cta: "Open Pattern Matches",
   },
   {
+    title: "Receipts Library",
+    description: "Inspect read-only source receipts attached to alerts, signals, snapshots, ledger records, and historical events.",
+    stage: "Live",
+    href: "/admin/receipts",
+    cta: "Open Receipts Library",
+  },
+  {
     title: "Public Ledger",
     description: "Preview the public accountability ledger that will track alert outcomes and supporting receipts.",
     stage: "Stubbed",
@@ -104,6 +111,7 @@ const pipelineSteps = [
   "Signal Filter",
   "Historical Event Library",
   "Historical Pattern Engine",
+  "Receipts Library",
   "Scoring Engine",
   "AI Committee",
   "Public Ledger",
@@ -136,6 +144,7 @@ export default function AdminPage() {
           <div className="metric"><span>Signal Filter</span><strong>Live</strong></div>
           <div className="metric"><span>Historical Events</span><strong>Live</strong></div>
           <div className="metric"><span>Pattern Match</span><strong>Live</strong></div>
+          <div className="metric"><span>Receipts Library</span><strong>Live</strong></div>
           <div className="metric"><span>Public Ledger</span><strong>Stubbed</strong></div>
         </div>
       </section>

@@ -10,31 +10,11 @@ const sourceCategories = [
 ];
 
 const reliabilityTiers = [
-  ["Strong evidence", "Primary, timely, and directly connected evidence that can stand on its own as a serious research input."],
-  ["Supporting evidence", "Credible confirmation that strengthens a setup when paired with stronger source material or market data."],
-  ["Context evidence", "Useful background that helps explain timing, sector conditions, macro pressure, or historical behavior."],
-  ["Weak/noisy evidence", "Thin, vague, duplicated, stale, or hype-driven material that needs careful discounting."],
-  ["Rejected evidence", "Material that is too unclear, irrelevant, stale, duplicated, or unsupported to help users evaluate an alert."],
-];
-
-const strongerEvidence = [
-  "official source",
-  "clear timestamp",
-  "direct company connection",
-  "source URL or receipt",
-  "market-moving event",
-  "cross-source confirmation",
-  "historical similarity",
-];
-
-const weakEvidence = [
-  "vague headline",
-  "no source URL",
-  "repeated article",
-  "old news",
-  "no clear company connection",
-  "hype without receipt",
-  "no measurable market relevance",
+  "Strong evidence",
+  "Supporting evidence",
+  "Context evidence",
+  "Weak/noisy evidence",
+  "Rejected evidence",
 ];
 
 const disclaimer =
@@ -52,24 +32,24 @@ export default function SourceReliabilityPage() {
           </p>
         </div>
         <article className="card risk-callout">
-          <span className="badge">Trust standard</span>
-          <h2>Evidence quality comes first.</h2>
+          <span className="badge">Public trust page</span>
+          <h2>Evidence quality without the private recipe</h2>
           <p>
-            Source reliability helps users understand why an alert deserves attention, where its evidence came from, and which inputs should be treated cautiously.
+            This page summarizes the broad kinds of information Swing Up considers when evaluating research evidence, without exposing exact source routing or internal review mechanics.
           </p>
         </article>
       </section>
 
       <section className="trust-section card">
         <span className="badge">Broad source categories</span>
-        <h2>What Swing Up reviews</h2>
+        <h2>Inputs Swing Up may consider</h2>
         <p>
-          Swing Up groups evidence into broad categories so users can understand the research approach without exposing private routing, vendor selection, or collection mechanics.
+          Swing Up organizes research evidence into broad categories so users can understand the quality standard without seeing exact vendors, endpoints, polling schedules, scoring weights, prompts, or watchlists.
         </p>
         <div className="grid two">
           {sourceCategories.map((category) => (
             <article className="metric" key={category}>
-              <span>{category}</span>
+              <strong>{category}</strong>
             </article>
           ))}
         </div>
@@ -77,11 +57,13 @@ export default function SourceReliabilityPage() {
 
       <section className="trust-section card">
         <span className="badge">Reliability tiers</span>
-        <h2>How evidence is grouped</h2>
+        <h2>How evidence is described</h2>
+        <p>
+          Evidence is grouped by reliability so users can separate stronger research support from context, noise, or material that should not support an alert.
+        </p>
         <div className="grid two">
-          {reliabilityTiers.map(([tier, body]) => (
+          {reliabilityTiers.map((tier) => (
             <article className="metric" key={tier}>
-              <span>{body}</span>
               <strong>{tier}</strong>
             </article>
           ))}
@@ -90,48 +72,24 @@ export default function SourceReliabilityPage() {
 
       <section className="grid two trust-section">
         <article className="card">
-          <span className="badge">Stronger evidence</span>
-          <h2>What increases confidence</h2>
-          <ul className="receipts">
-            {strongerEvidence.map((item) => (
-              <li key={item}>{item}</li>
-            ))}
-          </ul>
-        </article>
-        <article className="card">
-          <span className="badge">Weak evidence</span>
-          <h2>What reduces confidence</h2>
-          <ul className="receipts">
-            {weakEvidence.map((item) => (
-              <li key={item}>{item}</li>
-            ))}
-          </ul>
-        </article>
-      </section>
-
-      <section className="grid two trust-section">
-        <article className="card">
           <span className="badge">Receipts, not secrets</span>
           <h2>Receipts, not secrets</h2>
           <p>
-            Swing Up shows users the evidence behind each alert, but does not publish the full scoring recipe, vendor routing, polling schedule, or AI review process.
+            Swing Up shows evidence behind alerts, but does not publish the full scoring recipe, vendor routing, polling schedule, or AI review process.
           </p>
         </article>
         <article className="card">
-          <span className="badge">User protection</span>
-          <h2>Why this protects users</h2>
+          <span className="badge">Safety note</span>
+          <h2>Research quality is not certainty</h2>
           <p>
-            Keeping the exact recipe private helps protect alert quality, reduce copycat abuse, and prevent attempts to game the system with low-quality or manipulative inputs.
+            Source reliability improves research quality, but it does not guarantee a correct investment outcome.
           </p>
         </article>
       </section>
 
       <section className="trust-section card risk-callout">
-        <span className="badge">Important safety note</span>
-        <h2>Research quality is not certainty</h2>
-        <p>
-          Source reliability improves research quality, but it does not guarantee a correct investment outcome.
-        </p>
+        <span className="badge">Disclaimer</span>
+        <h2>Market research, not guaranteed results</h2>
         <p>{disclaimer}</p>
       </section>
     </div>

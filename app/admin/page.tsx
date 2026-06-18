@@ -65,6 +65,13 @@ const adminCards = [
     cta: "Open Pattern Matches",
   },
   {
+    title: "Historical Patterns",
+    description: "Inspect historical events, outcomes, receipts, tags, filters, and read-only match previews.",
+    stage: "Live",
+    href: "/admin/patterns",
+    cta: "Open Historical Patterns",
+  },
+  {
     title: "Public Ledger",
     description: "Preview the public accountability ledger that will track alert outcomes and supporting receipts.",
     stage: "Stubbed",
@@ -136,6 +143,7 @@ export default function AdminPage() {
           <div className="metric"><span>Signal Filter</span><strong>Live</strong></div>
           <div className="metric"><span>Historical Events</span><strong>Live</strong></div>
           <div className="metric"><span>Pattern Match</span><strong>Live</strong></div>
+          <div className="metric"><span>Historical Patterns</span><strong>Live</strong></div>
           <div className="metric"><span>Public Ledger</span><strong>Stubbed</strong></div>
         </div>
       </section>

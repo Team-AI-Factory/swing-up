@@ -110,3 +110,30 @@ p { color: var(--muted); line-height: 1.65; }
 .outcome-neutral { color: var(--gold); background: rgba(214, 180, 106, .1); }
 .outcome-mixed { color: var(--warning); background: rgba(251, 191, 36, .1); }
 .outcome-unknown { color: var(--muted); background: rgba(167, 179, 197, .08); }
+.admin-raw-page h1 { max-width: 760px; }
+.raw-signal-filter-card { margin: 18px 0; }
+.raw-signal-filters { display: grid; gap: 12px; grid-template-columns: 1fr; }
+.raw-signal-filters .button { text-align: center; }
+.raw-signal-empty { border: 1px dashed rgba(167, 179, 197, .32); border-radius: 24px; padding: 24px; background: rgba(7, 17, 31, .38); }
+.raw-signal-empty h3 { margin-top: 14px; font-size: 24px; letter-spacing: -.03em; }
+.raw-signal-review-list { display: grid; gap: 14px; }
+.raw-signal-review-item { border: 1px solid var(--line); border-radius: 24px; padding: 16px; background: rgba(7, 17, 31, .42); }
+.raw-signal-review-item h3 { font-size: 24px; letter-spacing: -.04em; margin: 14px 0 0; }
+.raw-signal-review-topline { display: flex; flex-wrap: wrap; gap: 8px; }
+.raw-signal-fields { display: grid; grid-template-columns: 1fr; gap: 10px; margin: 16px 0; }
+.raw-signal-fields div { border: 1px solid rgba(34, 50, 74, .78); border-radius: 18px; padding: 12px; background: rgba(16, 27, 45, .52); min-width: 0; }
+.raw-signal-fields span { display: block; color: var(--muted); font-size: 12px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 6px; }
+.raw-signal-fields strong { display: block; color: var(--text); overflow-wrap: anywhere; }
+.raw-signal-review-item details { color: var(--muted); }
+.raw-signal-review-item summary { cursor: pointer; color: var(--trust); font-weight: 800; }
+.status-not-available-yet { color: var(--muted); background: rgba(167, 179, 197, .08); }
+.status-duplicate { color: var(--gold); background: rgba(214, 180, 106, .1); }
+.status-candidate, .status-passed-rule-filter { color: var(--green); background: rgba(74, 222, 128, .1); }
+.status-needs-ai-scan { color: var(--warning); background: rgba(251, 191, 36, .1); }
+@media (min-width: 760px) {
+  .raw-signal-filters { grid-template-columns: repeat(4, minmax(0, 1fr)); align-items: center; }
+  .raw-signal-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (min-width: 1040px) {
+  .raw-signal-fields { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}

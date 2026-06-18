@@ -110,3 +110,13 @@ p { color: var(--muted); line-height: 1.65; }
 .outcome-neutral { color: var(--gold); background: rgba(214, 180, 106, .1); }
 .outcome-mixed { color: var(--warning); background: rgba(251, 191, 36, .1); }
 .outcome-unknown { color: var(--muted); background: rgba(167, 179, 197, .08); }
+.empty-ledger { margin-bottom: 16px; }
+.ledger-table { min-width: 1840px; }
+.ledger-table td { vertical-align: top; }
+.ledger-table span:not(.badge) { color: var(--muted); font-size: 12px; }
+.ledger-status-tracking { color: var(--trust); background: rgba(34, 199, 184, .08); }
+@media (max-width: 759px) {
+  .ledger-card { padding: 14px; border-radius: 22px; }
+  .ledger-header h2 { font-size: 28px; }
+  .table-wrap { margin: 0 -4px; }
+}

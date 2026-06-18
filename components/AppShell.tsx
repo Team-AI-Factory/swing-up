@@ -4,7 +4,7 @@ const links = [
   ["Dashboard", "/dashboard"],
   ["Alerts", "/alerts"],
   ["Methodology", "/methodology"],
-  ["Ledger", "/public-ledger"],
+  ["Ledger", "/ledger"],
   ["Health", "/source-health"],
   ["Pricing", "/pricing"],
   ["Admin", "/admin"],

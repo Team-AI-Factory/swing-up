@@ -1,0 +1,33 @@
+name: Build checks
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    name: Typecheck, lint, and build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run TypeScript check
+        run: npm run typecheck --if-present
+
+      - name: Run lint
+        run: npm run lint --if-present
+
+      - name: Build application
+        run: npm run build

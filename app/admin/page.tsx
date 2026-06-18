@@ -23,6 +23,13 @@ const adminCards = [
     cta: "Open Signal Filter",
   },
   {
+    title: "Historical Event Library",
+    description: "Inspect the database-backed memory bank of past market events and later price reactions.",
+    stage: "Live",
+    href: "/admin/historical-events",
+    cta: "Open Historical Events",
+  },
+  {
     title: "Public Ledger",
     description: "Preview the public accountability ledger that will track alert outcomes and supporting receipts.",
     stage: "Stubbed",
@@ -56,6 +63,7 @@ const pipelineSteps = [
   "Source Health",
   "Raw Signal Store",
   "Signal Filter",
+  "Historical Event Library",
   "Historical Pattern Engine",
   "Scoring Engine",
   "AI Committee",
@@ -83,6 +91,7 @@ export default function AdminPage() {
           <div className="metric"><span>Source Health</span><strong>Live</strong></div>
           <div className="metric"><span>Raw Signal Store</span><strong>Live</strong></div>
           <div className="metric"><span>Signal Filter</span><strong>Live</strong></div>
+          <div className="metric"><span>Historical Events</span><strong>Live</strong></div>
           <div className="metric"><span>Public Ledger</span><strong>Stubbed</strong></div>
         </div>
       </section>

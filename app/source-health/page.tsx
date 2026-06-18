@@ -1,5 +1,8 @@
 import { getSourceHealth } from "@/lib/source-health";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 const statusLabels: Record<string, string> = {
   connected: "Connected",
   not_configured: "Not configured",
@@ -32,7 +35,13 @@ export default async function SourceHealthPage() {
           <p>
             Source Health shows whether each data ear is working, missing keys, stubbed, rate-limited, or broken.
           </p>
-          {!sourceHealth.ok ? <p className="source-health-warning">{sourceHealth.message}</p> : <p>{sourceHealth.message}</p>}
+          {!sourceHealth.ok ? (
+            <p className="source-health-warning">
+              Source health is temporarily unavailable. {sourceHealth.message}
+            </p>
+          ) : (
+            <p>{sourceHealth.message}</p>
+          )}
         </div>
 
         <div className="card admin-placeholder">

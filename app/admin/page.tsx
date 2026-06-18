@@ -2,6 +2,13 @@ import Link from "next/link";
 
 const adminCards = [
   {
+    title: "CoinGecko Crypto Price Ear",
+    description: "Run public CoinGecko crypto price checks for risk-appetite context and raw crypto market receipts.",
+    stage: "Live",
+    href: "/admin/coingecko",
+    cta: "Open CoinGecko Ear",
+  },
+  {
     title: "GDELT Market-Wide Firehose",
     description: "Run the broad market-wide GDELT firehose, local watched-company detection, and source health checks.",
     stage: "Live",
@@ -82,6 +89,7 @@ const adminCards = [
 
 const pipelineSteps = [
   "SEC EDGAR Ear",
+  "CoinGecko Crypto Price Ear",
   "GDELT Market-Wide Firehose",
   "Source Health",
   "Raw Signal Store",
@@ -111,6 +119,7 @@ export default function AdminPage() {
           </p>
         </div>
         <div className="card">
+          <div className="metric"><span>CoinGecko Crypto Price Ear</span><strong>Live</strong></div>
           <div className="metric"><span>SEC EDGAR Ear</span><strong>Live</strong></div>
           <div className="metric"><span>GDELT Market-Wide Firehose</span><strong>Live</strong></div>
           <div className="metric"><span>Source Health</span><strong>Live</strong></div>

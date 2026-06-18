@@ -29,7 +29,7 @@ export default async function RawSignalsAdminPage() {
           <h1>Raw Signal Store</h1>
           <p>Review the latest market-data inbox entries before downstream filtering and scoring.</p>
         </div>
-        <Link className="button" href="/admin">Back to admin</Link>
+        <div className="button-row"><Link className="button primary" href="/api/raw-signals/filter">Run rule filter</Link><Link className="button" href="/admin/signal-filter">Filter details</Link><Link className="button" href="/admin">Back to admin</Link></div>
       </div>
 
       <section className="card">
@@ -38,6 +38,34 @@ export default async function RawSignalsAdminPage() {
           Raw Signal Store is the inbox for market data. Signals are stored first, then later filtered,
           scored, matched against history, and reviewed by AI.
         </p>
+      </section>
+
+
+      <section className="card">
+        <h2>Rule Filter</h2>
+        <p>
+          Signal Filter v1 is a simple rule-based review layer for raw signals. It marks records as new, queued,
+          filtered, promoted, rejected, or error without deleting raw data, creating final alerts, calling AI,
+          or using external APIs.
+        </p>
+        <div className="table-wrap">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Meaning</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><span className="badge status-new">new</span></td><td>stored, not reviewed yet</td></tr>
+              <tr><td><span className="badge status-queued">queued</span></td><td>waiting for deeper review</td></tr>
+              <tr><td><span className="badge status-filtered">filtered</span></td><td>weak/noisy/duplicate</td></tr>
+              <tr><td><span className="badge status-promoted">promoted</span></td><td>serious enough for scoring/pattern matching later</td></tr>
+              <tr><td><span className="badge status-rejected">rejected</span></td><td>unusable</td></tr>
+              <tr><td><span className="badge status-error">error</span></td><td>needs operator review</td></tr>
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <section className="card raw-signal-card">

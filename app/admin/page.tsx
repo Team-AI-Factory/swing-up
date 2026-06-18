@@ -9,7 +9,7 @@ export default function AdminPage() {
         <div className="card">
           <h2>Queues</h2>
           <p>Review raw signals, failed receipts, moderation, and cost logs.</p>
-          <Link className="button" href="/admin/raw-signals">Open Raw Signal Store</Link>
+          <div className="button-row"><Link className="button" href="/admin/raw-signals">Open Raw Signal Store</Link><Link className="button" href="/admin/signal-filter">Open Rule Filter</Link></div>
         </div>
         <div className="card">
           <h2>Controls</h2>

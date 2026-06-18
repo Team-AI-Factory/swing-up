@@ -2,6 +2,13 @@ import Link from "next/link";
 
 const adminCards = [
   {
+    title: "SEC EDGAR Ear",
+    description: "Run a safe dry-run check of the first real public ear and inspect its latest source health details.",
+    stage: "Live",
+    href: "/admin/sec-edgar",
+    cta: "Open SEC EDGAR Ear",
+  },
+  {
     title: "Source Health",
     description: "Check whether each signal source is connected, stubbed, missing keys, degraded, or returning errors.",
     stage: "Live",
@@ -67,6 +74,7 @@ const adminCards = [
 ];
 
 const pipelineSteps = [
+  "SEC EDGAR Ear",
   "Source Health",
   "Raw Signal Store",
   "Signal Filter",
@@ -95,6 +103,7 @@ export default function AdminPage() {
           </p>
         </div>
         <div className="card">
+          <div className="metric"><span>SEC EDGAR Ear</span><strong>Live</strong></div>
           <div className="metric"><span>Source Health</span><strong>Live</strong></div>
           <div className="metric"><span>Raw Signal Store</span><strong>Live</strong></div>
           <div className="metric"><span>Signal Filter</span><strong>Live</strong></div>

@@ -72,3 +72,19 @@ p { color: var(--muted); line-height: 1.65; }
 .status-stubbed { color: var(--gold); background: rgba(214, 180, 106, .1); }
 .status-degraded { color: var(--warning); background: rgba(251, 191, 36, .1); }
 .status-error { color: var(--red); background: rgba(248, 113, 113, .1); }
+.raw-signal-actions { margin: 22px 0 16px; }
+.explanation-box { border-color: var(--trust); box-shadow: inset 0 0 0 1px rgba(34, 199, 184, .12), 0 18px 80px rgba(0, 0, 0, .24); }
+.raw-signals-card { overflow-x: auto; }
+.raw-signals-table { min-width: 1420px; }
+.table td strong { color: var(--text); }
+.table td p { margin: 6px 0 0; }
+.text-link { color: var(--trust); font-weight: 800; }
+.payload-preview { max-width: 280px; max-height: 180px; overflow: auto; margin: 0; color: var(--muted); font-size: 12px; white-space: pre-wrap; }
+.raw-status-new, .raw-status-queued { color: var(--trust); background: rgba(34, 199, 184, .08); }
+.raw-status-filtered { color: var(--gold); background: rgba(214, 180, 106, .1); }
+.raw-status-promoted { color: var(--green); background: rgba(74, 222, 128, .1); }
+.raw-status-rejected, .raw-status-error { color: var(--red); background: rgba(248, 113, 113, .1); }
+.raw-importance-low { color: var(--muted); background: rgba(167, 179, 197, .1); }
+.raw-importance-medium { color: var(--trust); background: rgba(34, 199, 184, .08); }
+.raw-importance-high { color: var(--warning); background: rgba(251, 191, 36, .1); }
+.raw-importance-urgent { color: var(--red); background: rgba(248, 113, 113, .1); }

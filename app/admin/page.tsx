@@ -27,10 +27,10 @@ const adminCards: AdminCard[] = [
   },
   {
     title: "Signal Filter",
-    explanation: "Track the next build step that will classify, deduplicate, and prepare signals.",
-    stage: "Building",
-    href: "/admin/raw-signals",
-    linkLabel: "Review Input Queue",
+    explanation: "Review filtered signals after raw inbox entries are classified, deduplicated, and prepared.",
+    stage: "Live",
+    href: "/admin/signal-filter",
+    linkLabel: "Open Signal Filter",
   },
   {
     title: "Public Ledger",
@@ -93,12 +93,13 @@ export default function AdminPage() {
         <div className="card admin-status-card">
           <h2>System stage</h2>
           <p>
-            Source Health and Raw Signal Store are live. Signal Filter is the active build step;
-            downstream scoring, notifications, payments, and integrations remain intentionally gated.
+            Source Health, Raw Signal Store, and Signal Filter are live. Downstream scoring,
+            notifications, payments, and integrations remain intentionally gated.
           </p>
           <div className="button-row">
             <Link className="button primary" href="/source-health">Source Health</Link>
             <Link className="button" href="/admin/raw-signals">Raw Signal Store</Link>
+            <Link className="button" href="/admin/signal-filter">Signal Filter</Link>
           </div>
         </div>
       </section>

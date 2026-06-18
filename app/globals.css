@@ -72,3 +72,20 @@ p { color: var(--muted); line-height: 1.65; }
 .status-stubbed { color: var(--gold); background: rgba(214, 180, 106, .1); }
 .status-degraded { color: var(--warning); background: rgba(251, 191, 36, .1); }
 .status-error { color: var(--red); background: rgba(248, 113, 113, .1); }
+.trust-hero h1 { max-width: 860px; }
+.trust-section { margin-top: 16px; }
+.methodology-flow strong { text-align: right; }
+.risk-callout { border-color: rgba(214, 180, 106, .42); }
+.disclaimer-list .metric { align-items: flex-start; }
+.ledger-card { overflow: hidden; }
+.ledger-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 8px; }
+.ledger-header p { margin-top: 0; }
+.table-wrap { width: 100%; overflow-x: auto; }
+.ledger-table { min-width: 980px; }
+.ledger-table strong { color: var(--text); }
+.ledger-link { color: var(--trust); font-weight: 800; }
+.ledger-status { text-transform: capitalize; }
+.ledger-status-open { color: var(--trust); background: rgba(34, 199, 184, .08); }
+.ledger-status-win { color: var(--green); background: rgba(74, 222, 128, .1); }
+.ledger-status-loss { color: var(--red); background: rgba(248, 113, 113, .1); }
+.ledger-status-neutral { color: var(--gold); background: rgba(214, 180, 106, .1); }

@@ -103,3 +103,10 @@ p { color: var(--muted); line-height: 1.65; }
 .raw-signal-importance-high, .importance-high { color: var(--warning); background: rgba(251, 191, 36, .1); }
 .raw-signal-importance-critical, .importance-critical, .importance-urgent { color: var(--red); background: rgba(248, 113, 113, .1); }
 .payload-preview { max-width: 460px; margin: 0; padding: 12px; overflow-x: auto; border: 1px solid var(--line); border-radius: 16px; background: rgba(7, 17, 31, .7); color: var(--muted); font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; white-space: pre-wrap; word-break: break-word; }
+.historical-event-table { min-width: 1420px; }
+.historical-event-table strong { color: var(--text); }
+.outcome-positive { color: var(--green); background: rgba(74, 222, 128, .1); }
+.outcome-negative { color: var(--red); background: rgba(248, 113, 113, .1); }
+.outcome-neutral { color: var(--gold); background: rgba(214, 180, 106, .1); }
+.outcome-mixed { color: var(--warning); background: rgba(251, 191, 36, .1); }
+.outcome-unknown { color: var(--muted); background: rgba(167, 179, 197, .08); }

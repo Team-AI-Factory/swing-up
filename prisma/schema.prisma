@@ -166,11 +166,27 @@ model RawSignal {
 model HistoricalEvent {
   id             String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   ticker         String
+  companyName    String?        @map("company_name")
+  sector         String?
   eventType      String         @map("event_type")
   eventDate      DateTime       @map("event_date") @db.Date
+  title          String?
+  summary        String?
+  source         String?
+  sourceUrl      String?        @map("source_url")
+  priceBefore    Decimal?       @map("price_before") @db.Decimal(12, 2)
+  priceAfter1d   Decimal?       @map("price_after_1d") @db.Decimal(12, 2)
+  priceAfter7d   Decimal?       @map("price_after_7d") @db.Decimal(12, 2)
+  priceAfter30d  Decimal?       @map("price_after_30d") @db.Decimal(12, 2)
+  outcomeLabel   String         @default("unknown") @map("outcome_label")
+  notes          String?
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
   forwardReturns Json           @default("{}") @map("forward_returns")
   patternMatches PatternMatch[]
 
+  @@index([eventDate(sort: Desc)])
+  @@index([ticker, eventDate(sort: Desc)])
+  @@index([eventType, eventDate(sort: Desc)])
   @@map("historical_events")
 }
 

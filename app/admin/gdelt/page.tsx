@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
-const defaultTerms = "AAPL, NVDA, Federal Reserve, inflation, FDA approval";
+const defaultQuery = "";
 
 type GdeltHealth = {
   status?: string;
@@ -15,7 +15,10 @@ type GdeltHealth = {
 
 type GdeltRunResult = {
   ok: boolean;
-  termsChecked: number;
+  mode: "firehose" | "single_query";
+  articlesChecked: number;
+  companyMatches: number;
+  macroSignals: number;
   signalsCreated: number;
   duplicatesSkipped: number;
   errors: string[];
@@ -39,14 +42,14 @@ function formatDate(value?: string | null) {
 export default function GdeltAdminPage() {
   const [health, setHealth] = useState<GdeltHealth | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
-  const [terms, setTerms] = useState(defaultTerms);
-  const [limit, setLimit] = useState("3");
+  const [query, setQuery] = useState(defaultQuery);
+  const [limit, setLimit] = useState("25");
   const [dryRun, setDryRun] = useState(true);
   const [isRunning, setIsRunning] = useState(false);
   const [runResult, setRunResult] = useState<GdeltRunResult | null>(null);
 
   const dryRunTestHref = useMemo(
-    () => `/api/ears/gdelt/run?terms=${encodeURIComponent("AAPL,NVDA,Federal Reserve")}&limit=3&dryRun=true`,
+    () => "/api/ears/gdelt/run?limit=25&dryRun=true",
     [],
   );
 
@@ -82,7 +85,8 @@ export default function GdeltAdminPage() {
     setIsRunning(true);
     setRunResult(null);
 
-    const params = new URLSearchParams({ terms, limit, dryRun: String(dryRun) });
+    const params = new URLSearchParams({ limit, dryRun: String(dryRun) });
+    if (query.trim()) params.set("q", query.trim());
 
     try {
       const response = await fetch(`/api/ears/gdelt/run?${params.toString()}`, { method: "POST" });
@@ -91,7 +95,10 @@ export default function GdeltAdminPage() {
     } catch {
       setRunResult({
         ok: false,
-        termsChecked: 0,
+        mode: query.trim() ? "single_query" : "firehose",
+        articlesChecked: 0,
+        companyMatches: 0,
+        macroSignals: 0,
         signalsCreated: 0,
         duplicatesSkipped: 0,
         errors: ["Unable to run GDELT ear from the admin page."],
@@ -107,9 +114,9 @@ export default function GdeltAdminPage() {
       <div className="raw-signal-header">
         <div>
           <div className="eyebrow">Admin / GDELT</div>
-          <h1>GDELT News/Event Ear</h1>
+          <h1>GDELT Market-Wide Firehose</h1>
           <p>
-            GDELT is the second real public ear. It reads public news/event mentions and saves relevant items into Raw Signal Store.
+            GDELT now runs as a broad market-wide firehose. Swing Up makes one small public news request, scans results locally for watched companies, and saves matched items into Raw Signal Store.
           </p>
         </div>
         <div className="button-row">
@@ -136,17 +143,16 @@ export default function GdeltAdminPage() {
       <section className="card trust-section">
         <h2>Safe manual run panel</h2>
         <p>
-          Dry run checks GDELT and duplicate detection without creating raw signals. If no EAR_RUN_TOKEN is configured,
-          the API forces a small capped dry run for safety.
+          Dry run checks the broad firehose and duplicate detection without creating raw signals. If EAR_RUN_TOKEN is configured and a token is missing, the API allows only capped dry-run tests. GDELT updates around every 15 minutes, so this is near-real-time public news, not paid tick-by-tick news.
         </p>
         <form className="form" onSubmit={handleRun}>
           <label>
-            <span className="eyebrow">Watch terms</span>
-            <input className="input" value={terms} onChange={(event) => setTerms(event.target.value)} placeholder={defaultTerms} />
+            <span className="eyebrow">Optional single manual query</span>
+            <input className="input" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Leave blank for market-wide firehose" />
           </label>
           <label>
-            <span className="eyebrow">Limit per term</span>
-            <input className="input" value={limit} onChange={(event) => setLimit(event.target.value)} placeholder="3" inputMode="numeric" />
+            <span className="eyebrow">Max articles</span>
+            <input className="input" value={limit} onChange={(event) => setLimit(event.target.value)} placeholder="25" inputMode="numeric" />
           </label>
           <label className="metric">
             <span>Dry run mode</span>
@@ -155,8 +161,9 @@ export default function GdeltAdminPage() {
           <button className="button primary" type="submit" disabled={isRunning}>{isRunning ? "Running…" : "Run GDELT ear"}</button>
         </form>
         <div className="button-row">
-          <Link className="button" href={dryRunTestHref}>Open dry-run test link</Link>
-          <Link className="button" href="/api/ears/gdelt/run?q=Nvidia&limit=3&dryRun=true">Test Nvidia query</Link>
+          <Link className="button" href={dryRunTestHref}>Firehose dry-run test</Link>
+          <Link className="button" href="/api/ears/gdelt/run?limit=25">Firehose run link</Link>
+          <Link className="button" href="/api/ears/gdelt/run?q=Nvidia&limit=25&dryRun=true">Single-query manual test</Link>
         </div>
         {runResult ? (
           <div className="card trust-section">
@@ -164,7 +171,10 @@ export default function GdeltAdminPage() {
             {runResult.error ? <p className="source-health-warning">{runResult.error}</p> : null}
             {runResult.capped ? <p className="muted">Unauthenticated runs are capped and forced to dry run for safety.</p> : null}
             <div className="grid two">
-              <div className="metric"><span>Terms checked</span><strong>{runResult.termsChecked}</strong></div>
+              <div className="metric"><span>Mode</span><strong>{runResult.mode}</strong></div>
+              <div className="metric"><span>Articles checked</span><strong>{runResult.articlesChecked}</strong></div>
+              <div className="metric"><span>Company matches</span><strong>{runResult.companyMatches}</strong></div>
+              <div className="metric"><span>Macro signals</span><strong>{runResult.macroSignals}</strong></div>
               <div className="metric"><span>Signals created</span><strong>{runResult.signalsCreated}</strong></div>
               <div className="metric"><span>Duplicates skipped</span><strong>{runResult.duplicatesSkipped}</strong></div>
               <div className="metric"><span>Errors</span><strong>{runResult.errors?.length ?? 0}</strong></div>
@@ -177,7 +187,9 @@ export default function GdeltAdminPage() {
       <section className="card trust-section">
         <h2>What happens after ingestion</h2>
         <ol className="receipts">
-          <li>GDELT news becomes raw signals.</li>
+          <li>One broad GDELT request returns recent market-moving public news.</li>
+          <li>Swing Up scans titles, snippets, sources, and URLs locally for watched tickers and company names.</li>
+          <li>Matched company or clearly market-wide news becomes raw signals.</li>
           <li>Signal Filter reviews them.</li>
           <li>Pattern Match checks similar past events.</li>
           <li>Scoring and AI review come later.</li>
@@ -188,7 +200,7 @@ export default function GdeltAdminPage() {
       <section className="card trust-section risk-callout">
         <h2>Safety note</h2>
         <p>
-          This ear uses public GDELT endpoints without API keys. It does not score signals, call AI, or create final alerts.
+          This ear uses public GDELT endpoints without API keys. It avoids querying one stock at a time, does not score signals, does not call AI, and does not create final alerts.
         </p>
       </section>
     </div>

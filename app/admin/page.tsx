@@ -30,6 +30,13 @@ const adminCards = [
     cta: "Open Historical Events",
   },
   {
+    title: "Historical Pattern Match",
+    description: "Compare promoted or queued raw signals with past events using simple rule-based research clues.",
+    stage: "Live",
+    href: "/admin/pattern-matches",
+    cta: "Open Pattern Matches",
+  },
+  {
     title: "Public Ledger",
     description: "Preview the public accountability ledger that will track alert outcomes and supporting receipts.",
     stage: "Stubbed",
@@ -92,6 +99,7 @@ export default function AdminPage() {
           <div className="metric"><span>Raw Signal Store</span><strong>Live</strong></div>
           <div className="metric"><span>Signal Filter</span><strong>Live</strong></div>
           <div className="metric"><span>Historical Events</span><strong>Live</strong></div>
+          <div className="metric"><span>Pattern Match</span><strong>Live</strong></div>
           <div className="metric"><span>Public Ledger</span><strong>Stubbed</strong></div>
         </div>
       </section>

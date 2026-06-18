@@ -157,6 +157,7 @@ model RawSignal {
   importanceHint  String   @default("medium") @map("importance_hint")
   sourceUrl       String?  @map("source_url")
   createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  patternMatches  PatternMatch[]
 
   @@index([receivedAt(sort: Desc)])
   @@index([source, receivedAt(sort: Desc)])
@@ -193,12 +194,23 @@ model HistoricalEvent {
 model PatternMatch {
   id                String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   alertId           String?          @map("alert_id") @db.Uuid
+  rawSignalId       String?          @map("raw_signal_id") @db.Uuid
   historicalEventId String?          @map("historical_event_id") @db.Uuid
+  ticker            String?
   similarity        Decimal          @db.Decimal(5, 2)
+  matchScore        Decimal?         @map("match_score") @db.Decimal(5, 2)
+  matchReason       String?          @map("match_reason")
+  matchedFeatures   Json             @default("[]") @map("matched_features")
+  confidenceLabel   String           @default("none") @map("confidence_label")
   notes             String?
+  createdAt         DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
   alert             Alert?           @relation(fields: [alertId], references: [id])
+  rawSignal         RawSignal?       @relation(fields: [rawSignalId], references: [id])
   historicalEvent   HistoricalEvent? @relation(fields: [historicalEventId], references: [id])
 
+  @@index([createdAt(sort: Desc)])
+  @@index([rawSignalId])
+  @@index([historicalEventId])
   @@map("pattern_matches")
 }
 

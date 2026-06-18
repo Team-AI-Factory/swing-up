@@ -39,7 +39,7 @@ const defaultSourceHealthRows = [
     notes: "SEC EDGAR integration is stubbed until filing ingestion is added.",
   },
   { source: "FMP", status: "not_configured", usage: "Paid market API placeholder", notes: "API key not configured yet." },
-  { source: "GDELT", status: "stubbed", usage: "Public events/news placeholder", notes: "GDELT ingestion is stubbed until background jobs are added." },
+  { source: "GDELT", status: "stubbed", usage: "Public GDELT news/event ingestion", notes: "GDELT ingestion is available for manual runs and becomes connected after a successful check." },
   { source: "FRED", status: "not_configured", usage: "Macro data key placeholder", notes: "API key not configured yet." },
   { source: "openFDA", status: "stubbed", usage: "Public health API placeholder", notes: "openFDA integration is stubbed for future regulatory and medical event signals." },
   { source: "ClinicalTrials.gov", status: "stubbed", usage: "Public trials API placeholder", notes: "ClinicalTrials.gov integration is stubbed for future trial status changes." },

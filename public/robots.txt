@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://swing-up-production.up.railway.app/sitemap.xml

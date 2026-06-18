@@ -65,6 +65,13 @@ const adminCards = [
     cta: "Open Pattern Matches",
   },
   {
+    title: "Candidate Alerts Review",
+    description: "Review candidate alert records in a read-only queue before any approve, reject, or publish workflow exists.",
+    stage: "Live",
+    href: "/admin/candidate-alerts",
+    cta: "Open Candidate Alerts",
+  },
+  {
     title: "Public Ledger",
     description: "Preview the public accountability ledger that will track alert outcomes and supporting receipts.",
     stage: "Stubbed",
@@ -105,6 +112,7 @@ const pipelineSteps = [
   "Historical Event Library",
   "Historical Pattern Engine",
   "Scoring Engine",
+  "Candidate Alerts Review",
   "AI Committee",
   "Public Ledger",
   "Notifications",
@@ -136,6 +144,7 @@ export default function AdminPage() {
           <div className="metric"><span>Signal Filter</span><strong>Live</strong></div>
           <div className="metric"><span>Historical Events</span><strong>Live</strong></div>
           <div className="metric"><span>Pattern Match</span><strong>Live</strong></div>
+          <div className="metric"><span>Candidate Alerts Review</span><strong>Live</strong></div>
           <div className="metric"><span>Public Ledger</span><strong>Stubbed</strong></div>
         </div>
       </section>

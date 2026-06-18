@@ -145,12 +145,21 @@ model PriceSnapshot {
 }
 
 model RawSignal {
-  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  source     String
-  ticker     String?
-  payload    Json
-  receivedAt DateTime @default(now()) @map("received_at") @db.Timestamptz(6)
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  source          String
+  ticker          String?
+  signalType      String   @default("general") @map("signal_type")
+  title           String   @default("Untitled raw signal")
+  summary         String   @default("")
+  payload         Json     @default("{}")
+  receivedAt      DateTime @default(now()) @map("received_at") @db.Timestamptz(6)
+  processedStatus String   @default("new") @map("processed_status")
+  importanceHint  String   @default("medium") @map("importance_hint")
+  sourceUrl       String?  @map("source_url")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
+  @@index([receivedAt(sort: Desc)])
+  @@index([source, receivedAt(sort: Desc)])
   @@map("raw_signals")
 }
 

@@ -1,11 +1,22 @@
 export type AlertAction = "BUY" | "WATCH" | "AVOID";
 
+export type MarketSentimentImpact = {
+  overallMarketMood: string;
+  macroRiskLevel: string;
+  sentimentSupportScore: number;
+  macroSupportScore: number;
+  profitPotentialAdjustment: number;
+  confidenceAdjustment: number;
+  explanation: string;
+};
+
 export type Alert = {
   id: string;
   action: AlertAction;
   ticker: string;
   company: string;
   event: string;
+  eventDate?: string;
   currentPrice: string;
   targetRange: string;
   potentialMove: string;
@@ -19,6 +30,7 @@ export type Alert = {
   risks: string[];
   receipts: string[];
   publicTrackingResult: string;
+  marketSentimentImpact?: Partial<MarketSentimentImpact>;
 };
 
 export const mockAlerts: Alert[] = [
@@ -28,6 +40,7 @@ export const mockAlerts: Alert[] = [
     ticker: "NVDA",
     company: "NVIDIA Corporation",
     event: "Supplier channel checks point to accelerated rack shipments.",
+    eventDate: "June 12, 2026",
     currentPrice: "$124.80",
     targetRange: "$138–$146",
     potentialMove: "+10.6% to +17.0%",
@@ -40,7 +53,16 @@ export const mockAlerts: Alert[] = [
     rippleEffect: "Verified ripple: power systems, cooling vendors, and high-bandwidth memory suppliers show correlated volume spikes.",
     risks: ["Crowded positioning", "Export control headlines", "Supplier lead-time noise"],
     receipts: ["Mock import-volume receipt", "Mock supplier job-posting delta", "Mock options-flow anomaly"],
-    publicTrackingResult: "Open: tracking from $124.80 with 30-day review window."
+    publicTrackingResult: "Open: tracking from $124.80 with 30-day review window.",
+    marketSentimentImpact: {
+      overallMarketMood: "Neutral",
+      macroRiskLevel: "Medium",
+      sentimentSupportScore: 58,
+      macroSupportScore: 54,
+      profitPotentialAdjustment: 0,
+      confidenceAdjustment: 2,
+      explanation: "Market sentiment is neutral. It slightly improves confidence but does not remove the risk."
+    }
   },
   {
     id: "shop-margin-reset",
@@ -48,6 +70,7 @@ export const mockAlerts: Alert[] = [
     ticker: "SHOP",
     company: "Shopify Inc.",
     event: "Merchant take-rate mix and fulfillment cost data imply margin reset.",
+    eventDate: "June 10, 2026",
     currentPrice: "$68.25",
     targetRange: "$76–$81",
     potentialMove: "+11.4% to +18.7%",
@@ -60,7 +83,16 @@ export const mockAlerts: Alert[] = [
     rippleEffect: "Verified ripple: payment attach rate, app marketplace revenue, and fulfillment utilization all moved together.",
     risks: ["Consumer spending slowdown", "FX pressure", "Multiple compression"],
     receipts: ["Mock merchant survey", "Mock app-store ranking receipt", "Mock fulfillment utilization index"],
-    publicTrackingResult: "Hit checkpoint 1: +4.1% since publication."
+    publicTrackingResult: "Hit checkpoint 1: +4.1% since publication.",
+    marketSentimentImpact: {
+      overallMarketMood: "Constructive",
+      macroRiskLevel: "Medium",
+      sentimentSupportScore: 64,
+      macroSupportScore: 57,
+      profitPotentialAdjustment: 1,
+      confidenceAdjustment: 3,
+      explanation: "Market sentiment is constructive. It supports the setup modestly, while execution and valuation risks still matter."
+    }
   },
   {
     id: "ford-ev-inventory",
@@ -68,6 +100,7 @@ export const mockAlerts: Alert[] = [
     ticker: "F",
     company: "Ford Motor Company",
     event: "EV inventory days and incentive intensity deteriorate versus peers.",
+    eventDate: "June 7, 2026",
     currentPrice: "$11.10",
     targetRange: "$9.40–$10.20",
     potentialMove: "-8.1% to -15.3%",

@@ -625,6 +625,21 @@ export async function runGdeltIngestion(
 }
 
 export async function getGdeltSourceHealth() {
+  if (!process.env.DATABASE_URL) {
+    return {
+      source: GDELT_SOURCE,
+      status: "not_configured",
+      lastChecked: null,
+      lastSuccess: null,
+      responseTimeMs: null,
+      lastError: null,
+      usage: "Public GDELT market-wide news firehose",
+      notes: "DATABASE_URL is not configured, so GDELT source health cannot be persisted in this environment.",
+      cooldownActive: false,
+      cooldownUntil: null,
+      currentTarget: DEFAULT_GDELT_MAXRECORDS,
+    };
+  }
   const row = await prisma.sourceHealth.findUnique({
     where: { source: GDELT_SOURCE },
   });

@@ -229,6 +229,28 @@ model SourceHealth {
   @@map("source_health")
 }
 
+model MacroSentimentSnapshot {
+  id                          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  snapshotType                String   @map("snapshot_type")
+  status                      String   @default("partial")
+  overallMarketMood           String?  @map("overall_market_mood")
+  macroRiskLevel              String?  @map("macro_risk_level")
+  macroSupportScore           Int?     @map("macro_support_score")
+  sentimentSupportScore       Int?     @map("sentiment_support_score")
+  riskOffPenalty              Int?     @map("risk_off_penalty")
+  confidenceAdjustment        Int?     @map("confidence_adjustment")
+  profitPotentialAdjustment   Int?     @map("profit_potential_adjustment")
+  summary                     String   @default("")
+  dataFreshness               Json     @default("{}") @map("data_freshness")
+  sourceReceipts              Json     @default("[]") @map("source_receipts")
+  payload                     Json     @default("{}")
+  createdAt                   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([createdAt(sort: Desc)])
+  @@index([snapshotType, createdAt(sort: Desc)])
+  @@map("macro_sentiment_snapshots")
+}
+
 model NotificationChannel {
   id          String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   userId      String? @map("user_id") @db.Uuid

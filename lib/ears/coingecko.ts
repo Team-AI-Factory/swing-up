@@ -187,6 +187,7 @@ export async function runCoinGeckoIngestion(options: CoinGeckoRunOptions = {}): 
 }
 
 export async function getCoinGeckoSourceHealth() {
+  if (!process.env.DATABASE_URL) return { source: COINGECKO_SOURCE, status: "not_configured", lastChecked: null, lastSuccess: null, responseTimeMs: null, lastError: null, usage: "Public CoinGecko crypto market ear", notes: "DATABASE_URL is not configured, so CoinGecko source health cannot be persisted in this environment.", mode: getApiKey() ? "api_key" : "demo_public" };
   const row = await prisma.sourceHealth.findUnique({ where: { source: COINGECKO_SOURCE } });
   return row ? { source: row.source, status: row.status, lastChecked: row.checkedAt.toISOString(), lastSuccess: row.lastSuccessAt?.toISOString() ?? null, responseTimeMs: row.responseTimeMs, lastError: row.errorMessage ? row.errorMessage.slice(0, 240) : null, usage: row.usage, notes: row.notes, mode: getApiKey() ? "api_key" : "demo_public" } : { source: COINGECKO_SOURCE, status: "stubbed", lastChecked: null, lastSuccess: null, responseTimeMs: null, lastError: null, usage: "Public CoinGecko crypto market ear", notes: "CoinGecko has not been checked yet. It will use the simple price endpoint in public/demo mode unless COINGECKO_API_KEY is configured.", mode: getApiKey() ? "api_key" : "demo_public" };
 }

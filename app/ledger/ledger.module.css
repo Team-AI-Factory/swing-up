@@ -1,0 +1,79 @@
+.heroCard {
+  display: grid;
+  gap: 12px;
+}
+
+.tableCard {
+  overflow: hidden;
+}
+
+.ledgerHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.ledgerHeader p {
+  margin-top: 0;
+}
+
+.tableWrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.ledgerTable {
+  min-width: 980px;
+}
+
+.ledgerTable strong {
+  color: var(--text);
+}
+
+.ledgerLink {
+  color: var(--trust);
+  font-weight: 800;
+}
+
+.status {
+  text-transform: capitalize;
+}
+
+.statusOpen {
+  color: var(--trust);
+  background: rgba(34, 199, 184, .08);
+}
+
+.statusWin {
+  color: var(--green);
+  background: rgba(74, 222, 128, .1);
+}
+
+.statusLoss {
+  color: var(--red);
+  background: rgba(248, 113, 113, .1);
+}
+
+.statusNeutral {
+  color: var(--gold);
+  background: rgba(214, 180, 106, .1);
+}
+
+.disclaimer {
+  border-color: rgba(214, 180, 106, .42);
+}
+
+.emptyState {
+  border: 1px dashed rgba(167, 179, 197, .32);
+  border-radius: 24px;
+  padding: 24px;
+  background: rgba(7, 17, 31, .38);
+}
+
+.detailGrid {
+  display: grid;
+  gap: 18px;
+}

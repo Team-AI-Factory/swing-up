@@ -84,6 +84,7 @@ p { color: var(--muted); line-height: 1.65; }
 .ledger-table { min-width: 980px; }
 .ledger-table strong { color: var(--text); }
 .ledger-link { color: var(--trust); font-weight: 800; }
+.public-ledger-detail { display: grid; gap: 18px; }
 .ledger-status { text-transform: capitalize; }
 .ledger-status-open { color: var(--trust); background: rgba(34, 199, 184, .08); }
 .ledger-status-win { color: var(--green); background: rgba(74, 222, 128, .1); }

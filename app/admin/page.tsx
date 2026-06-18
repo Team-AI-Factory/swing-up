@@ -2,8 +2,8 @@ import Link from "next/link";
 
 const adminCards = [
   {
-    title: "GDELT News Ear",
-    description: "Run a safe public news/event ingestion check and inspect the latest GDELT source health details.",
+    title: "GDELT Market-Wide Firehose",
+    description: "Run the broad market-wide GDELT firehose, local watched-company detection, and source health checks.",
     stage: "Live",
     href: "/admin/gdelt",
     cta: "Open GDELT Ear",
@@ -82,7 +82,7 @@ const adminCards = [
 
 const pipelineSteps = [
   "SEC EDGAR Ear",
-  "GDELT News Ear",
+  "GDELT Market-Wide Firehose",
   "Source Health",
   "Raw Signal Store",
   "Signal Filter",
@@ -112,7 +112,7 @@ export default function AdminPage() {
         </div>
         <div className="card">
           <div className="metric"><span>SEC EDGAR Ear</span><strong>Live</strong></div>
-          <div className="metric"><span>GDELT News Ear</span><strong>Live</strong></div>
+          <div className="metric"><span>GDELT Market-Wide Firehose</span><strong>Live</strong></div>
           <div className="metric"><span>Source Health</span><strong>Live</strong></div>
           <div className="metric"><span>Raw Signal Store</span><strong>Live</strong></div>
           <div className="metric"><span>Signal Filter</span><strong>Live</strong></div>

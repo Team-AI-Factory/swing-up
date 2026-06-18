@@ -178,11 +178,16 @@ model PatternMatch {
 }
 
 model SourceHealth {
-  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  source    String
-  status    String
-  uptime    Decimal? @db.Decimal(6, 3)
-  checkedAt DateTime @default(now()) @map("checked_at") @db.Timestamptz(6)
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  source         String
+  status         String
+  uptime         Decimal?  @db.Decimal(6, 3)
+  checkedAt      DateTime  @default(now()) @map("checked_at") @db.Timestamptz(6)
+  lastSuccessAt  DateTime? @map("last_success_at") @db.Timestamptz(6)
+  responseTimeMs Int?      @map("response_time_ms")
+  errorMessage   String?   @map("error_message")
+  usage          String?
+  notes          String?
 
   @@map("source_health")
 }

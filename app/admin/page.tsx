@@ -65,6 +65,13 @@ const adminCards = [
     cta: "Open Candidate Alerts",
   },
   {
+    title: "Receipts Library",
+    description: "Review source receipts attached to alert records in a read-only library without changing backend data.",
+    stage: "Read-only",
+    href: "/admin/receipts",
+    cta: "Open Receipts Library",
+  },
+  {
     title: "Historical Pattern Match",
     description: "Compare promoted or queued raw signals with past events using simple rule-based research clues.",
     stage: "Live",
@@ -120,6 +127,7 @@ const pipelineSteps = [
   "Historical Pattern Engine",
   "Scoring Engine",
   "Candidate Alerts Review",
+  "Receipts Library",
   "AI Committee",
   "Public Ledger",
   "Notifications",
@@ -152,6 +160,7 @@ export default function AdminPage() {
           <div className="metric"><span>Historical Events</span><strong>Live</strong></div>
           <div className="metric"><span>Pattern Match</span><strong>Live</strong></div>
           <div className="metric"><span>Candidate Alerts</span><strong>Read-only</strong></div>
+          <div className="metric"><span>Receipts Library</span><strong>Read-only</strong></div>
           <div className="metric"><span>Historical Patterns</span><strong>Live</strong></div>
           <div className="metric"><span>Public Ledger</span><strong>Stubbed</strong></div>
         </div>

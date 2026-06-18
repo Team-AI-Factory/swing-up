@@ -1,0 +1,73 @@
+.libraryHeader {
+  align-items: start;
+}
+
+.summaryGrid {
+  margin-top: 24px;
+}
+
+.receiptList {
+  display: grid;
+  gap: 18px;
+}
+
+.receiptCard {
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 18px;
+  padding: 18px;
+  background: rgba(15, 23, 42, 0.28);
+}
+
+.receiptTopline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.receiptMeta {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  margin: 16px 0;
+}
+
+.receiptMeta div {
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 14px;
+  padding: 12px;
+}
+
+.receiptMeta span,
+.previewLabel {
+  color: var(--muted);
+  display: block;
+  font-size: 0.85rem;
+  margin-bottom: 4px;
+}
+
+.receiptMeta strong {
+  display: block;
+}
+
+.receiptUrl {
+  overflow-wrap: anywhere;
+}
+
+.previewBox {
+  border-radius: 14px;
+  background: rgba(2, 6, 23, 0.36);
+  color: var(--muted);
+  margin: 10px 0 0;
+  padding: 12px;
+  white-space: pre-wrap;
+}
+
+.emptyState {
+  border: 1px dashed rgba(148, 163, 184, 0.4);
+  border-radius: 18px;
+  padding: 24px;
+  text-align: left;
+}

@@ -5,6 +5,11 @@ const REQUEST_TIMEOUT_MS = 10_000;
 
 const routes = [
   "/api/health",
+  "/install-app",
+  "/support",
+  "/status",
+  "/alert-access",
+  "/security",
   "/alerts",
   "/ledger",
   "/methodology",

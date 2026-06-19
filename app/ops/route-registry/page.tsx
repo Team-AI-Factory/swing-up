@@ -104,6 +104,11 @@ const routeGroups: RouteGroup[] = [
       { route: "/trust-center", purpose: "Trust and safety hub", status: "live", expectedOutput: "Trust-centered public copy.", notes: "Public page.", healthcheck: "/trust-center" },
       { route: "/risk-disclaimer", purpose: "Risk disclaimer", build: 23, status: "live", expectedOutput: "Expanded risk disclaimer renders.", notes: "Public risk language.", healthcheck: "/risk-disclaimer" },
       { route: "/pricing", purpose: "Pricing page", status: "live", expectedOutput: "Pricing information renders.", notes: "Public page.", healthcheck: "/pricing" },
+      { route: "/install-app", purpose: "Mobile app install page", build: 96, status: "live", expectedOutput: "PWA install guidance renders for mobile users.", notes: "Public education page; no app-store claim.", healthcheck: "/install-app" },
+      { route: "/support", purpose: "Support center", build: 97, status: "live", expectedOutput: "Support topics and escalation boundaries render.", notes: "Prepared before paid users are introduced.", healthcheck: "/support" },
+      { route: "/status", purpose: "Public system status", build: 98, status: "live", expectedOutput: "Plain-language system status explainer renders.", notes: "Static status page; not a live monitor.", healthcheck: "/status" },
+      { route: "/alert-access", purpose: "Alert access and delay explainer", build: 99, status: "live", expectedOutput: "Free, paid, delayed, and admin-review access modes render.", notes: "Explains access boundaries without urgency claims.", healthcheck: "/alert-access" },
+      { route: "/security", purpose: "Account security page", build: 100, status: "live", expectedOutput: "Account and watchlist security expectations render.", notes: "Trust page for account-readiness review.", healthcheck: "/security" },
     ],
   },
   {

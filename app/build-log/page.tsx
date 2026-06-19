@@ -95,6 +95,36 @@ const milestones = [
     explanation: "A public GDELT ear is planned to explain broad news and event monitoring before it becomes a real signal input.",
     matters: "Global news data can be noisy, so its public explanation should come with clear limitations before deeper integration.",
   },
+  {
+    title: "Mobile App Install Page",
+    status: "Live",
+    explanation: "A public /install-app page explains how users can add Swing Up to a phone as a PWA-style shortcut.",
+    matters: "Mobile install guidance helps users return to Swing Up without implying app-store distribution or notification readiness.",
+  },
+  {
+    title: "Support Center Page",
+    status: "Live",
+    explanation: "A public /support page organizes account, alert, billing-readiness, and data availability support topics.",
+    matters: "Support structure should exist before paid users so expectations are clear when access and billing grow.",
+  },
+  {
+    title: "Public System Status Page",
+    status: "Live",
+    explanation: "A public /status page summarizes web app, source health, alert pipeline, and payment availability states.",
+    matters: "Users need a simple place to understand whether the app or its data sources are healthy before relying on alerts.",
+  },
+  {
+    title: "Alert Access + Delay Explainer",
+    status: "Live",
+    explanation: "A public /alert-access page explains free previews, future paid access, delayed public views, and admin review.",
+    matters: "Clear access rules reduce confusion when alerts are delayed for receipts, source checks, or safety review.",
+  },
+  {
+    title: "Account Security Page",
+    status: "Live",
+    explanation: "A public /security page describes account access, watchlist sensitivity, session expectations, and escalation boundaries.",
+    matters: "Security expectations should be visible before real accounts and watchlists become more important to users.",
+  },
 ];
 
 const statusClassNames: Record<string, string> = {

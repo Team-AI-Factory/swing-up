@@ -20,8 +20,41 @@ jobs:
         with:
           node-version: 20
 
+      - name: Cache npm package data
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-${{ hashFiles('package-lock.json', 'package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-npm-
+
       - name: Install dependencies
-        run: npm install
+        shell: bash
+        run: |
+          npm config set fetch-retries 5
+          npm config set fetch-retry-factor 2
+          npm config set fetch-retry-mintimeout 20000
+          npm config set fetch-retry-maxtimeout 120000
+
+          if [[ -f package-lock.json ]]; then
+            install_command="npm ci"
+          else
+            install_command="npm install"
+          fi
+
+          for attempt in 1 2 3; do
+            echo "Dependency install attempt ${attempt}/3: ${install_command}"
+            if ${install_command} --prefer-offline --no-audit --fund=false; then
+              exit 0
+            fi
+
+            if [[ "${attempt}" == "3" ]]; then
+              echo "Dependency install failed after ${attempt} attempts" >&2
+              exit 1
+            fi
+
+            sleep $((attempt * 15))
+          done
 
       - name: Run TypeScript check
         run: npm run typecheck --if-present

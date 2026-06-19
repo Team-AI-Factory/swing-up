@@ -413,6 +413,7 @@ async function createRawSignal(
 }
 
 async function getExistingGdeltHealth() {
+  if (!process.env.DATABASE_URL) return null;
   return prisma.sourceHealth.findUnique({
     where: { source: GDELT_SOURCE },
     select: { notes: true, errorMessage: true },
@@ -425,6 +426,7 @@ async function updateGdeltSourceHealth(
   errorMessage: string | null,
   notes: string,
 ) {
+  if (!process.env.DATABASE_URL) return;
   const now = new Date();
   await prisma.sourceHealth.upsert({
     where: { source: GDELT_SOURCE },

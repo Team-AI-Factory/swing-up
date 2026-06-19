@@ -1,3 +1,5 @@
+import { Prisma } from "@prisma/client";
+import { prisma } from "@/lib/db/client";
 import { runCoinGeckoIngestion } from "@/lib/ears/coingecko";
 import { runFrankfurterIngestion } from "@/lib/ears/frankfurter";
 import { runFredIngestion } from "@/lib/ears/fred";
@@ -30,9 +32,14 @@ type SourceRunOptions = {
 export type SourceRunSummaryRow = {
   sourceName: RunnableSourceName;
   status: "ok" | "degraded" | "error" | "skipped";
+  startedAt: string;
+  finishedAt: string;
   recordsChecked: number;
   signalsCreated: number;
+  duplicatesSkipped: number;
+  errors: string[];
   error: string | null;
+  sourceHealthStatus: string | null;
   sourceHealthUpdated: boolean;
   dryRun: boolean;
 };
@@ -66,39 +73,73 @@ function sourceHealthCanPersist() {
   return Boolean(process.env.DATABASE_URL);
 }
 
-function baseRow(sourceName: RunnableSourceName, dryRun: boolean): SourceRunSummaryRow {
-  return { sourceName, status: "error", recordsChecked: 0, signalsCreated: 0, error: null, sourceHealthUpdated: false, dryRun };
+function baseRow(sourceName: RunnableSourceName, dryRun: boolean, startedAt = new Date()): SourceRunSummaryRow {
+  const timestamp = startedAt.toISOString();
+  return { sourceName, status: "error", startedAt: timestamp, finishedAt: timestamp, recordsChecked: 0, signalsCreated: 0, duplicatesSkipped: 0, errors: [], error: null, sourceHealthStatus: null, sourceHealthUpdated: false, dryRun };
+}
+
+function finishRow(row: SourceRunSummaryRow, patch: Partial<SourceRunSummaryRow>): SourceRunSummaryRow {
+  const errors = patch.errors ?? (patch.error ? [patch.error] : row.errors);
+  const error = patch.error ?? errors[0] ?? null;
+  return { ...row, ...patch, errors, error, finishedAt: new Date().toISOString() };
+}
+
+async function sourceHealthStatus(sourceName: RunnableSourceName) {
+  if (!process.env.DATABASE_URL) return null;
+  const row = await prisma.sourceHealth.findUnique({ where: { source: sourceName }, select: { status: true } });
+  return row?.status ?? null;
+}
+
+async function recordSourceRun(row: SourceRunSummaryRow) {
+  if (!process.env.DATABASE_URL) return;
+  try {
+    await prisma.sourceRun.create({
+      data: {
+        source: row.sourceName,
+        startedAt: new Date(row.startedAt),
+        finishedAt: new Date(row.finishedAt),
+        status: row.status,
+        dryRun: row.dryRun,
+        recordsChecked: row.recordsChecked,
+        signalsCreated: row.signalsCreated,
+        duplicatesSkipped: row.duplicatesSkipped,
+        errors: row.errors as Prisma.InputJsonValue,
+        sourceHealthStatus: row.sourceHealthStatus,
+      },
+    });
+  } catch {
+    // Source run history is audit-only and should never make ingestion fail.
+  }
 }
 
 async function runOne(sourceName: RunnableSourceName, options: Required<Pick<SourceRunOptions, "dryRun">> & SourceRunOptions): Promise<SourceRunSummaryRow> {
   const row = baseRow(sourceName, options.dryRun);
+  let finished = row;
 
   try {
     if (sourceName === "GDELT") {
       const result = await runGdeltIngestion({ dryRun: options.dryRun, limit: options.limit ?? 50 });
-      return { ...row, status: result.skipped ? "skipped" : result.ok && !result.rateLimited && !result.fallbackUsed ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.articlesChecked, signalsCreated: result.signalsCreated, error: result.errors[0] ?? result.skipReason ?? null, sourceHealthUpdated: sourceHealthCanPersist() };
-    }
-
-    if (sourceName === "CoinGecko") {
+      finished = finishRow(row, { status: result.skipped ? "skipped" : result.ok && !result.rateLimited && !result.fallbackUsed ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.articlesChecked, signalsCreated: result.signalsCreated, duplicatesSkipped: 0, errors: [...result.errors, ...(result.skipReason ? [result.skipReason] : [])], sourceHealthUpdated: sourceHealthCanPersist() });
+    } else if (sourceName === "CoinGecko") {
       const result = await runCoinGeckoIngestion({ dryRun: options.dryRun, limit: options.limit });
-      return { ...row, status: result.ok && !result.rateLimited ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.assetsChecked, signalsCreated: result.signalsCreated, error: result.errors[0] ?? null, sourceHealthUpdated: sourceHealthCanPersist() };
-    }
-
-    if (sourceName === "Frankfurter FX") {
+      finished = finishRow(row, { status: result.ok && !result.rateLimited ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.assetsChecked, signalsCreated: result.signalsCreated, duplicatesSkipped: result.duplicatesSkipped, errors: result.errors, sourceHealthUpdated: sourceHealthCanPersist() });
+    } else if (sourceName === "Frankfurter FX") {
       const result = await runFrankfurterIngestion({ dryRun: options.dryRun, force: options.force });
-      return { ...row, status: result.skipped ? "skipped" : result.ok && !result.rateLimited ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.pairsChecked, signalsCreated: result.signalsCreated, error: result.errors[0] ?? result.skipReason ?? null, sourceHealthUpdated: sourceHealthCanPersist() && !result.skipped };
-    }
-
-    if (sourceName === "FRED Macro") {
+      finished = finishRow(row, { status: result.skipped ? "skipped" : result.ok && !result.rateLimited ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.pairsChecked, signalsCreated: result.signalsCreated, duplicatesSkipped: 0, errors: [...result.errors, ...(result.skipReason ? [result.skipReason] : [])], sourceHealthUpdated: sourceHealthCanPersist() && !result.skipped });
+    } else if (sourceName === "FRED Macro") {
       const result = await runFredIngestion({ dryRun: options.dryRun });
-      return { ...row, status: result.ok && result.status === "complete" ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.observations.length, signalsCreated: result.persisted ? 1 : 0, error: result.warnings[0] ?? null, sourceHealthUpdated: sourceHealthCanPersist() };
+      finished = finishRow(row, { status: result.ok && result.status === "complete" ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.observations.length, signalsCreated: result.persisted ? 1 : 0, duplicatesSkipped: 0, errors: result.warnings, sourceHealthUpdated: sourceHealthCanPersist() });
+    } else {
+      const result = await runSecEdgarIngestion({ dryRun: options.dryRun, tickers: (options.tickers?.length ? options.tickers : DEFAULT_SEC_TICKERS).slice(0, 2), limit: Math.min(options.limit ?? 3, 3) });
+      finished = finishRow(row, { status: result.ok && !result.errors.length ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.tickersChecked, signalsCreated: result.signalsCreated, duplicatesSkipped: result.duplicatesSkipped, errors: result.errors, sourceHealthUpdated: sourceHealthCanPersist() });
     }
-
-    const result = await runSecEdgarIngestion({ dryRun: options.dryRun, tickers: (options.tickers?.length ? options.tickers : DEFAULT_SEC_TICKERS).slice(0, 2), limit: Math.min(options.limit ?? 3, 3) });
-    return { ...row, status: result.ok && !result.errors.length ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.tickersChecked, signalsCreated: result.signalsCreated, error: result.errors[0] ?? null, sourceHealthUpdated: sourceHealthCanPersist() };
   } catch (error) {
-    return { ...row, status: "error", error: safeError(error), sourceHealthUpdated: false };
+    finished = finishRow(row, { status: "error", errors: [safeError(error)], sourceHealthUpdated: false });
   }
+
+  finished.sourceHealthStatus = await sourceHealthStatus(sourceName).catch(() => null);
+  await recordSourceRun(finished);
+  return finished;
 }
 
 export async function runSources(options: SourceRunOptions = {}): Promise<SourceRunSummary> {

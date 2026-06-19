@@ -256,6 +256,26 @@ model SourceHealth {
   @@map("source_health")
 }
 
+
+model SourceRun {
+  id                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  source             String
+  startedAt          DateTime @map("started_at") @db.Timestamptz(6)
+  finishedAt         DateTime @map("finished_at") @db.Timestamptz(6)
+  status             String
+  dryRun             Boolean  @default(true) @map("dry_run")
+  recordsChecked     Int      @default(0) @map("records_checked")
+  signalsCreated     Int      @default(0) @map("signals_created")
+  duplicatesSkipped  Int      @default(0) @map("duplicates_skipped")
+  errors             Json     @default("[]")
+  sourceHealthStatus String?  @map("source_health_status")
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([startedAt(sort: Desc)])
+  @@index([source, startedAt(sort: Desc)])
+  @@map("source_runs")
+}
+
 model MacroSentimentSnapshot {
   id                          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   snapshotType                String   @map("snapshot_type")

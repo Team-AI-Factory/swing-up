@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
+import { writeRawSignal } from "@/lib/raw-signal-writer";
 
 export const FRANKFURTER_SOURCE = "Frankfurter FX";
 
@@ -204,29 +205,28 @@ async function createFxSignal(snapshots: FxPairSnapshot[], date: string, dryRun:
     ? `Frankfurter latest rates show ${strongMoves.length} tracked FX pair move above ${(STRONG_MOVE_THRESHOLD * 100).toFixed(2)}%. This is market context, not a direct stock alert.`
     : "Frankfurter latest rates captured as low-importance FX market context, not a direct stock alert.";
 
-  if (dryRun || !hasDatabaseUrl()) return false;
-
-  await prisma.rawSignal.create({
-    data: {
-      source: FRANKFURTER_SOURCE,
-      ticker: strongMoves[0]?.pair ?? "EURUSD",
-      signalType: "fx_context",
-      title,
-      summary,
-      sourceUrl: `${FRANKFURTER_LATEST_URL}?from=${BASE_CURRENCY}&to=${QUOTE_CURRENCIES.join(",")}`,
-      processedStatus: "new",
-      importanceHint,
-      payload: {
-        base: BASE_CURRENCY,
-        date,
-        trackedCurrencies: TRACKED_CURRENCIES,
-        threshold: STRONG_MOVE_THRESHOLD,
-        rates: snapshots,
-        note: "FX is market context only. This ear does not create final alerts.",
-      } satisfies Prisma.InputJsonValue,
+  const result = await writeRawSignal({
+    sourceName: FRANKFURTER_SOURCE,
+    sourceType: "fx",
+    ticker: strongMoves[0]?.pair ?? "EURUSD",
+    eventType: "fx_context",
+    title,
+    summary,
+    url: `${FRANKFURTER_LATEST_URL}?from=${BASE_CURRENCY}&to=${QUOTE_CURRENCIES.join(",")}`,
+    detectedAt: new Date(`${date}T00:00:00Z`),
+    duplicateKey: `${FRANKFURTER_SOURCE}|fx_context|${date}|${strongMoves.length ? "strong" : "reference"}`,
+    qualityHints: { importanceHint, sourceQuality: "medium", useful: true, reasons: [strongMoves.length ? "tracked FX strong move" : "daily FX reference context"] },
+    rawPayload: {
+      base: BASE_CURRENCY,
+      date,
+      trackedCurrencies: TRACKED_CURRENCIES,
+      threshold: STRONG_MOVE_THRESHOLD,
+      rates: snapshots,
+      note: "FX is market context only. This ear does not create final alerts.",
     },
+    dryRun,
   });
-  return true;
+  return result.status === "saved";
 }
 
 export async function runFrankfurterIngestion(options: FrankfurterRunOptions = {}): Promise<FrankfurterRunResult> {

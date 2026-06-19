@@ -1,5 +1,5 @@
-import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
+import { writeRawSignal } from "@/lib/raw-signal-writer";
 
 export const SEC_EDGAR_SOURCE = "SEC EDGAR";
 
@@ -189,50 +189,34 @@ function recentFilingCandidates(ticker: string, submission: SecSubmissions, limi
   return candidates;
 }
 
-async function rawSignalExists(candidate: FilingCandidate) {
-  const existing = await prisma.rawSignal.findFirst({
-    where: {
-      source: SEC_EDGAR_SOURCE,
-      ticker: candidate.ticker,
-      signalType: "sec_filing",
-      OR: [{ sourceUrl: candidate.filingUrl }, { title: `${candidate.ticker} ${candidate.formType} filed ${candidate.filingDate}` }],
-    },
-    select: { id: true },
-  });
-
-  return Boolean(existing);
-}
-
 async function createRawSignal(candidate: FilingCandidate, dryRun: boolean) {
-  if (await rawSignalExists(candidate)) return "duplicate" as const;
-  if (dryRun) return "dry_run" as const;
-
-  await prisma.rawSignal.create({
-    data: {
-      source: SEC_EDGAR_SOURCE,
-      ticker: candidate.ticker,
-      signalType: "sec_filing",
-      title: `${candidate.ticker} ${candidate.formType} filed ${candidate.filingDate}`,
-      summary: `${candidate.ticker} filed ${candidate.formType} with the SEC. ${describeForm(candidate.formType)}`,
-      sourceUrl: candidate.filingUrl,
-      receivedAt: parseSecAcceptanceDate(candidate.acceptanceDateTime) ?? new Date(`${candidate.filingDate}T00:00:00Z`),
-      processedStatus: "new",
-      importanceHint: HIGH_IMPORTANCE_FORMS.has(candidate.formType) ? "high" : "medium",
-      payload: {
-        accessionNumber: candidate.accessionNumber,
-        formType: candidate.formType,
-        filingDate: candidate.filingDate,
-        reportDate: candidate.reportDate ?? null,
-        secUrls: {
-          filing: candidate.filingUrl,
-          companySubmissions: candidate.secCompanyUrl,
-        },
-        rawMetadata: candidate,
-      } satisfies Prisma.InputJsonValue,
+  const result = await writeRawSignal({
+    sourceName: SEC_EDGAR_SOURCE,
+    sourceType: "filing",
+    ticker: candidate.ticker,
+    eventType: "sec_filing",
+    title: `${candidate.ticker} ${candidate.formType} filed ${candidate.filingDate}`,
+    summary: `${candidate.ticker} filed ${candidate.formType} with the SEC. ${describeForm(candidate.formType)}`,
+    url: candidate.filingUrl,
+    detectedAt: parseSecAcceptanceDate(candidate.acceptanceDateTime) ?? new Date(`${candidate.filingDate}T00:00:00Z`),
+    duplicateKey: `${SEC_EDGAR_SOURCE}|sec_filing|${candidate.ticker}|${candidate.accessionNumber}`,
+    qualityHints: { importanceHint: HIGH_IMPORTANCE_FORMS.has(candidate.formType) ? "high" : "medium", sourceQuality: "high", useful: true, reasons: ["official SEC filing"] },
+    rawPayload: {
+      accessionNumber: candidate.accessionNumber,
+      formType: candidate.formType,
+      filingDate: candidate.filingDate,
+      reportDate: candidate.reportDate ?? null,
+      secUrls: {
+        filing: candidate.filingUrl,
+        companySubmissions: candidate.secCompanyUrl,
+      },
+      rawMetadata: candidate,
     },
+    dryRun,
   });
-
-  return "created" as const;
+  if (result.status === "saved") return "created" as const;
+  if (result.status === "skipped" && result.reason === "duplicate") return "duplicate" as const;
+  return "dry_run" as const;
 }
 
 async function updateSecSourceHealth(status: "connected" | "degraded" | "error", startedAt: number, errorMessage: string | null) {

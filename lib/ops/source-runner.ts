@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
 import { runCoinGeckoIngestion } from "@/lib/ears/coingecko";
 import { runFrankfurterIngestion } from "@/lib/ears/frankfurter";
+import { runFmpIngestion } from "@/lib/ears/fmp";
 import { runFredIngestion } from "@/lib/ears/fred";
 import { runGdeltIngestion } from "@/lib/ears/gdelt";
 import { runOpenFdaIngestion } from "@/lib/ears/openfda";
@@ -12,6 +13,7 @@ const SOURCE_ALIASES = {
   coingecko: "CoinGecko",
   frankfurter: "Frankfurter FX",
   "frankfurter-fx": "Frankfurter FX",
+  fmp: "FMP",
   fred: "FRED Macro",
   "fred-macro": "FRED Macro",
   openfda: "openFDA",
@@ -22,7 +24,7 @@ const SOURCE_ALIASES = {
   edgar: "SEC EDGAR",
 } as const;
 
-export const DEFAULT_SOURCE_RUN_ORDER = ["GDELT", "CoinGecko", "Frankfurter FX", "FRED Macro", "openFDA", "SEC EDGAR"] as const;
+export const DEFAULT_SOURCE_RUN_ORDER = ["GDELT", "CoinGecko", "Frankfurter FX", "FMP", "FRED Macro", "openFDA", "SEC EDGAR"] as const;
 export type RunnableSourceName = (typeof DEFAULT_SOURCE_RUN_ORDER)[number];
 
 type SourceRunOptions = {
@@ -130,6 +132,9 @@ async function runOne(sourceName: RunnableSourceName, options: Required<Pick<Sou
     } else if (sourceName === "Frankfurter FX") {
       const result = await runFrankfurterIngestion({ dryRun: options.dryRun, force: options.force });
       finished = finishRow(row, { status: result.skipped ? "skipped" : result.ok && !result.rateLimited ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.pairsChecked, signalsCreated: result.signalsCreated, duplicatesSkipped: 0, errors: [...result.errors, ...(result.skipReason ? [result.skipReason] : [])], sourceHealthUpdated: sourceHealthCanPersist() && !result.skipped });
+    } else if (sourceName === "FMP") {
+      const result = await runFmpIngestion({ dryRun: options.dryRun, limit: options.limit, tickers: options.tickers });
+      finished = finishRow(row, { status: result.status === "missing_key" ? "skipped" : result.ok && !result.errors.length ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.recordsChecked, signalsCreated: result.rawSignalsCreated, duplicatesSkipped: result.duplicatesSkipped, errors: result.status === "missing_key" ? ["missing_key"] : result.errors, sourceHealthUpdated: sourceHealthCanPersist() });
     } else if (sourceName === "FRED Macro") {
       const result = await runFredIngestion({ dryRun: options.dryRun });
       finished = finishRow(row, { status: result.ok && result.status === "complete" ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.observations.length, signalsCreated: result.persisted ? 1 : 0, duplicatesSkipped: 0, errors: result.warnings, sourceHealthUpdated: sourceHealthCanPersist() });

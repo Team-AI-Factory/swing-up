@@ -39,6 +39,7 @@ const defaultSourceHealthRows = [
     notes: "SEC EDGAR integration is stubbed until filing ingestion is added.",
   },
   { source: "FMP", status: "not_configured", usage: "Paid market API placeholder", notes: "API key not configured yet." },
+  { source: "Polygon", status: "not_configured", usage: "Optional paid market data ear", notes: "POLYGON_API_KEY is not configured yet; route fails safely with missing_key." },
   { source: "GDELT", status: "stubbed", usage: "Public events/news placeholder", notes: "GDELT ingestion is stubbed until background jobs are added." },
   { source: "FRED", status: "not_configured", usage: "Macro data key placeholder", notes: "API key not configured yet." },
   { source: "openFDA", status: "stubbed", usage: "Public openFDA Drugs@FDA regulatory ear", notes: "openFDA ingestion can capture recent Drugs@FDA application changes into raw_signals; run source ingestion to update live health." },

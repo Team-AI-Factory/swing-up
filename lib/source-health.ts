@@ -41,7 +41,7 @@ const defaultSourceHealthRows = [
   { source: "FMP", status: "not_configured", usage: "Paid market API placeholder", notes: "API key not configured yet." },
   { source: "GDELT", status: "stubbed", usage: "Public events/news placeholder", notes: "GDELT ingestion is stubbed until background jobs are added." },
   { source: "FRED", status: "not_configured", usage: "Macro data key placeholder", notes: "API key not configured yet." },
-  { source: "openFDA", status: "stubbed", usage: "Public health API placeholder", notes: "openFDA integration is stubbed for future regulatory and medical event signals." },
+  { source: "openFDA", status: "stubbed", usage: "Public openFDA Drugs@FDA regulatory ear", notes: "openFDA ingestion can capture recent Drugs@FDA application changes into raw_signals; run source ingestion to update live health." },
   { source: "ClinicalTrials.gov", status: "stubbed", usage: "Public trials API placeholder", notes: "ClinicalTrials.gov integration is stubbed for future trial status changes." },
   { source: "Google News RSS", status: "stubbed", usage: "RSS polling placeholder", notes: "Google News RSS polling is stubbed until ingestion jobs are added." },
   { source: "CoinGecko", status: "stubbed", usage: "Public crypto API placeholder", notes: "CoinGecko integration is stubbed for crypto market context." },

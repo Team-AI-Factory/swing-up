@@ -4,6 +4,7 @@ import { runCoinGeckoIngestion } from "@/lib/ears/coingecko";
 import { runFrankfurterIngestion } from "@/lib/ears/frankfurter";
 import { runFredIngestion } from "@/lib/ears/fred";
 import { runGdeltIngestion } from "@/lib/ears/gdelt";
+import { runOpenFdaIngestion } from "@/lib/ears/openfda";
 import { DEFAULT_SEC_TICKERS, runSecEdgarIngestion } from "@/lib/ears/sec-edgar";
 
 const SOURCE_ALIASES = {
@@ -13,12 +14,15 @@ const SOURCE_ALIASES = {
   "frankfurter-fx": "Frankfurter FX",
   fred: "FRED Macro",
   "fred-macro": "FRED Macro",
+  openfda: "openFDA",
+  "open-fda": "openFDA",
+  fda: "openFDA",
   sec: "SEC EDGAR",
   "sec-edgar": "SEC EDGAR",
   edgar: "SEC EDGAR",
 } as const;
 
-export const DEFAULT_SOURCE_RUN_ORDER = ["GDELT", "CoinGecko", "Frankfurter FX", "FRED Macro", "SEC EDGAR"] as const;
+export const DEFAULT_SOURCE_RUN_ORDER = ["GDELT", "CoinGecko", "Frankfurter FX", "FRED Macro", "openFDA", "SEC EDGAR"] as const;
 export type RunnableSourceName = (typeof DEFAULT_SOURCE_RUN_ORDER)[number];
 
 type SourceRunOptions = {
@@ -129,6 +133,9 @@ async function runOne(sourceName: RunnableSourceName, options: Required<Pick<Sou
     } else if (sourceName === "FRED Macro") {
       const result = await runFredIngestion({ dryRun: options.dryRun });
       finished = finishRow(row, { status: result.ok && result.status === "complete" ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.observations.length, signalsCreated: result.persisted ? 1 : 0, duplicatesSkipped: 0, errors: result.warnings, sourceHealthUpdated: sourceHealthCanPersist() });
+    } else if (sourceName === "openFDA") {
+      const result = await runOpenFdaIngestion({ dryRun: options.dryRun, limit: options.limit });
+      finished = finishRow(row, { status: result.ok ? "ok" : "error", recordsChecked: result.applicationsChecked, signalsCreated: result.signalsCreated, duplicatesSkipped: result.duplicatesSkipped, errors: result.errors, sourceHealthUpdated: sourceHealthCanPersist() });
     } else {
       const result = await runSecEdgarIngestion({ dryRun: options.dryRun, tickers: (options.tickers?.length ? options.tickers : DEFAULT_SEC_TICKERS).slice(0, 2), limit: Math.min(options.limit ?? 3, 3) });
       finished = finishRow(row, { status: result.ok && !result.errors.length ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.tickersChecked, signalsCreated: result.signalsCreated, duplicatesSkipped: result.duplicatesSkipped, errors: result.errors, sourceHealthUpdated: sourceHealthCanPersist() });

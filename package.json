@@ -8,6 +8,7 @@
     "pretypecheck": "prisma generate",
     "start": "next start",
     "lint": "eslint . --max-warnings=0",
+    "audit:mock-labels": "node scripts/mock-live-label-audit.mjs",
     "typecheck": "tsc --noEmit",
     "postinstall": "prisma generate",
     "db:generate": "prisma generate",

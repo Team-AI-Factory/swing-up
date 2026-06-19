@@ -57,7 +57,7 @@ function MarketSentimentSection({ sentiment }: { sentiment?: Partial<MarketSenti
 export function AlertCard({ alert, compact = false }: { alert: Alert; compact?: boolean }) {
   return (
     <article className="card alert-card">
-      <div className={`alert-action alert-action-${alert.action.toLowerCase()}`}>ACTION: {alert.action}</div>
+      <div className={`alert-action alert-action-${alert.action.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")}`}>ACTION: {alert.action}</div>
       <div className="alert-card-header">
         <div>
           <h2>{alert.ticker}</h2>

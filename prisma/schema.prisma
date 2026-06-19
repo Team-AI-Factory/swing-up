@@ -48,11 +48,18 @@ model Subscription {
 }
 
 model Watchlist {
-  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  userId    String?  @map("user_id") @db.Uuid
-  ticker    String
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  user      User?    @relation(fields: [userId], references: [id])
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId          String?  @map("user_id") @db.Uuid
+  previewOwnerId  String?  @map("preview_owner_id") @db.Uuid
+  ticker          String
+  company         String?
+  assetType       String   @default("equity") @map("asset_type")
+  sectorTheme     String?  @map("sector_theme")
+  riskPreference  String   @default("balanced") @map("risk_preference")
+  alertPreference String   @default("preview_only") @map("alert_preference")
+  status          String   @default("active")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  user            User?    @relation(fields: [userId], references: [id])
 
   @@map("watchlists")
 }

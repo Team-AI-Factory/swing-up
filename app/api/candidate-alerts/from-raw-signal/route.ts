@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { Prisma, type RawSignal } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
 import { previewMiniAiScan, type MiniAiSourceReceipt } from "@/lib/mini-ai-scan";
+import { evaluateRawSignalQualityGate } from "@/lib/raw-signal-quality-gate";
 import { evaluateRuleFilter, type RuleFilterInput } from "@/lib/rule-filter";
 import { buildMarketSentimentImpact, loadLatestMarketSentimentSnapshot, scoreSwingUpAlert, type HistoricalPatternMatch, type ScorePreviewInput } from "@/lib/scoring-engine";
 
@@ -141,7 +142,24 @@ export async function POST(request: NextRequest) {
 
     const receipts = sourceReceiptsFromSignal(rawSignal);
     const ruleInput = ruleInputFromSignal(rawSignal, receipts);
+    const qualityGateResult = await evaluateRawSignalQualityGate(ruleInput, rawSignal.id);
     const ruleFilterResult = evaluateRuleFilter(ruleInput);
+
+    if (!qualityGateResult.eligibleForCandidateAlert) {
+      const processedStatus = qualityGateResult.needsMoreData && !qualityGateResult.duplicate ? "queued" : "rejected";
+      await prisma.rawSignal.update({ where: { id: rawSignal.id }, data: { processedStatus } });
+      return NextResponse.json({
+        ok: true,
+        created: false,
+        updated: false,
+        duplicateAvoided: qualityGateResult.duplicate,
+        rawSignalId,
+        candidateAlert: null,
+        qualityGateResult,
+        ruleFilterResult: qualityGateResult.ruleFilterResult,
+        compatibility: { callsPaidAiModel: false, publishesRealAlert: false, createsPublicLedgerRecord: false },
+      });
+    }
     const miniAiScanResult = previewMiniAiScan({
       rawSignalId,
       ticker: ruleFilterResult.detectedTicker ?? rawSignal.ticker,
@@ -217,6 +235,7 @@ export async function POST(request: NextRequest) {
       duplicateAvoided: Boolean(existing),
       rawSignalId,
       candidateAlert: { id: result.id, ticker, company, eventSummary, action, status, profitPotentialScore: score.profitPotentialScore, evidenceConfidenceScore: score.evidenceConfidenceScore, riskLevel: score.riskLevel, marketSentimentImpact: score.marketSentimentImpact, receiptsCount, rejectionReasons, simpleExplanation },
+      qualityGateResult,
       ruleFilterResult,
       miniAiScanResult,
       compatibility: { callsPaidAiModel: false, publishesRealAlert: false, createsPublicLedgerRecord: false },

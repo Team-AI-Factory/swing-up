@@ -1,6 +1,8 @@
 import Link from "next/link";
-import { getPublicLedgerEntries } from "@/lib/public-ledger";
+import { getLedgerData } from "./public-ledger-data";
 import styles from "./ledger.module.css";
+
+export const dynamic = "force-dynamic";
 
 function statusClass(status: string) {
   if (status === "win") return styles.statusWin;
@@ -9,8 +11,10 @@ function statusClass(status: string) {
   return styles.statusOpen;
 }
 
-export default function LedgerPage() {
-  const ledgerRows = getPublicLedgerEntries();
+export default async function LedgerPage() {
+  const ledgerData = await getLedgerData();
+  const ledgerRows = ledgerData.rows;
+  const isLive = ledgerData.sourceMode === "live";
 
   return (
     <div className="page">
@@ -19,7 +23,7 @@ export default function LedgerPage() {
           <div className="eyebrow">Public ledger</div>
           <h1>Accountability for Swing Up research alerts.</h1>
           <p>
-            A public preview of alert tracking, outcome checkpoints, and source context. Current rows use existing preview alert data and are clearly labelled until live ledger records are connected.
+            A public record of alert tracking, outcome checkpoints, and source context. Live ledger records are shown when available; mock preview rows are clearly labelled only when no live records exist.
           </p>
           <div className="button-row">
             <Link className="button primary" href="/methodology">How scoring works</Link>
@@ -27,8 +31,8 @@ export default function LedgerPage() {
           </div>
         </div>
         <div className={`card ${styles.heroCard}`}>
-          <div className="badge">Mock preview data</div>
-          <div className="metric"><span>Ledger source</span><strong>Existing preview alerts</strong></div>
+          <div className="badge">{isLive ? "Live ledger data" : "Mock preview fallback"}</div>
+          <div className="metric"><span>Ledger source</span><strong>{ledgerData.sourceLabel}</strong></div>
           <div className="metric"><span>Purpose</span><strong>Public accountability</strong></div>
           <div className="metric"><span>Advice status</span><strong>Not financial advice</strong></div>
         </div>
@@ -45,9 +49,9 @@ export default function LedgerPage() {
         <div className={styles.ledgerHeader}>
           <div>
             <h2>Tracked alerts</h2>
-            <p>Preview rows are marked as mock data until production ledger entries are available.</p>
+            <p>{ledgerData.summary}</p>
           </div>
-          <span className="badge">Mock preview</span>
+          <span className="badge">{isLive ? "Live outcomes" : "Mock preview fallback"}</span>
         </div>
 
         {ledgerRows.length === 0 ? (
@@ -58,8 +62,8 @@ export default function LedgerPage() {
         ) : (
           <div className={styles.tableWrap}>
             <table className={`table ${styles.ledgerTable}`}>
-              <thead><tr><th>Alert date</th><th>Action</th><th>Ticker</th><th>Company</th><th>Price at alert</th><th>Current tracked result</th><th>1D</th><th>7D</th><th>30D</th><th>Status</th><th>Detail</th></tr></thead>
-              <tbody>{ledgerRows.map((row) => <tr key={row.id}><td>{row.date}</td><td>{row.action}</td><td><strong>{row.ticker}</strong></td><td>{row.company}</td><td>{row.alertPrice}</td><td>{row.result}</td><td>{row.oneDay}</td><td>{row.sevenDay}</td><td>{row.thirtyDay}</td><td><span className={`badge ${styles.status} ${statusClass(row.status)}`}>{row.status}</span></td><td><Link className={styles.ledgerLink} href={`/ledger/${row.id}`}>View</Link></td></tr>)}</tbody>
+              <thead><tr><th>Alert date</th><th>Action</th><th>Ticker</th><th>Company</th><th>Price at alert</th><th>Latest price</th><th>Profit Potential Score</th><th>Evidence Confidence Score</th><th>Risk Level</th><th>Historical Pattern Match</th><th>1D</th><th>3D</th><th>7D</th><th>30D</th><th>90D</th><th>Max gain</th><th>Max drawdown</th><th>Outcome</th><th>Receipts</th><th>Source</th><th>Detail</th></tr></thead>
+              <tbody>{ledgerRows.map((row) => <tr key={row.id}><td>{row.alertDate}</td><td>{row.action}</td><td><strong>{row.ticker}</strong></td><td>{row.company}</td><td>{row.priceAtAlert}</td><td>{row.latestPrice}</td><td>{row.profitPotentialScore}</td><td>{row.evidenceConfidenceScore}</td><td>{row.riskLevel}</td><td>{row.historicalPatternMatch}</td><td>{row.oneDayResult}</td><td>{row.threeDayResult}</td><td>{row.sevenDayResult}</td><td>{row.thirtyDayResult}</td><td>{row.ninetyDayResult}</td><td>{row.maxGain}</td><td>{row.maxDrawdown}</td><td><span className={`badge ${styles.status} ${statusClass(row.outcome)}`}>{row.outcome}</span></td><td>{row.receiptsCount}</td><td>{row.sourceMode === "live" ? "Live" : "Mock fallback"}</td><td><Link className={styles.ledgerLink} href={`/ledger/${row.id}`}>View</Link></td></tr>)}</tbody>
             </table>
           </div>
         )}

@@ -15,7 +15,8 @@
     "db:migrate": "prisma migrate deploy",
     "db:studio": "prisma studio",
     "db:seed": "node prisma/seed.mjs",
-    "smoke:routes": "node scripts/smoke-routes.mjs"
+    "smoke:routes": "node scripts/smoke-routes.mjs",
+    "smoke:production": "node scripts/production-smoke.mjs"
   },
   "dependencies": {
     "next": "^15.1.3",

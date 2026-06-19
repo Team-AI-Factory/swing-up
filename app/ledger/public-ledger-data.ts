@@ -2,7 +2,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
 import { mockAlerts, type Alert } from "@/lib/mock-alerts";
 
-export type LedgerOutcome = "tracking" | "win" | "neutral" | "loss";
+export type LedgerOutcome = "tracking" | "win" | "neutral" | "loss" | "needs_more_data";
 export type LedgerSourceMode = "live" | "empty" | "mock_fallback";
 
 export type LedgerRow = {
@@ -84,7 +84,8 @@ function dateText(value: unknown, fallback = "Not available yet") {
 
 function outcome(value: unknown): LedgerOutcome {
   const normalized = typeof value === "string" ? value.toLowerCase() : "";
-  if (["win", "neutral", "loss", "tracking"].includes(normalized)) return normalized as LedgerOutcome;
+  if (["win", "neutral", "loss", "tracking", "needs_more_data"].includes(normalized)) return normalized as LedgerOutcome;
+  if (normalized === "missing_data") return "needs_more_data";
   if (normalized === "open") return "tracking";
   return "tracking";
 }

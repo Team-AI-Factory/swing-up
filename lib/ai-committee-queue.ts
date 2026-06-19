@@ -59,8 +59,11 @@ export type AiCommitteeQueueItem = {
   };
 };
 
+export type AiCommitteeQueueSourceMode = "live" | "empty" | "mock_fallback";
+
 export type AiCommitteeQueueResponse = {
   ok: true;
+  sourceMode: AiCommitteeQueueSourceMode;
   queueItems: AiCommitteeQueueItem[];
   reviewStages: AiCommitteeReviewStage[];
   safeActionLabels: SuggestedAction[];
@@ -164,11 +167,16 @@ export function buildCommitteeQueueItem(input: AiCommitteeCandidateInput, sentim
   };
 }
 
-export function buildCommitteeQueue(inputs: AiCommitteeCandidateInput[], limit = 20): AiCommitteeQueueResponse {
+export function buildCommitteeQueue(
+  inputs: AiCommitteeCandidateInput[],
+  limit = 20,
+  options: { sourceMode?: AiCommitteeQueueSourceMode; sentiment?: MarketSentimentImpact } = {},
+): AiCommitteeQueueResponse {
   const safeLimit = Math.max(0, Math.min(100, Number.isFinite(limit) ? Math.floor(limit) : 20));
   return {
     ok: true,
-    queueItems: inputs.slice(0, safeLimit).map((input) => buildCommitteeQueueItem(input)),
+    sourceMode: options.sourceMode ?? "mock_fallback",
+    queueItems: inputs.slice(0, safeLimit).map((input) => buildCommitteeQueueItem(input, options.sentiment)),
     reviewStages: AI_COMMITTEE_REVIEW_STAGES,
     safeActionLabels: SAFE_ACTION_LABELS,
     warnings: ["Queue preview only. Publishing remains disabled until a future final-review build."],

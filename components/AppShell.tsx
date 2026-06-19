@@ -7,6 +7,8 @@ const links = [
   ["Ledger", "/ledger"],
   ["Health", "/source-health"],
   ["Pricing", "/pricing"],
+  ["Support", "/support"],
+  ["Status", "/status"],
   ["Admin", "/admin"],
 ];
 

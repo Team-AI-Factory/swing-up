@@ -13,7 +13,8 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy",
     "db:studio": "prisma studio",
-    "db:seed": "node prisma/seed.mjs"
+    "db:seed": "node prisma/seed.mjs",
+    "smoke:routes": "node scripts/smoke-routes.mjs"
   },
   "dependencies": {
     "next": "^15.1.3",

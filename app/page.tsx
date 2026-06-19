@@ -19,15 +19,26 @@ const freshnessCards = [
   },
 ];
 
-const watchCards = [
-  ["Filings", "Finds 8-Ks, 10-Qs, 10-Ks, Form 4 insider activity."],
-  ["News", "Filters real catalysts from headline noise."],
-  ["Insider moves", "Spots notable buying and selling behavior."],
-  ["Whale activity", "Tracks unusual large-position movement."],
-  ["Price + volume", "Flags moves that confirm or reject the story."],
-  ["Valuation", "Checks whether the opportunity is already priced in."],
-  ["Macro + sector risk", "Rates, inflation, FX, crypto, and sector pressure."],
-  ["Ripple effects", "Finds suppliers, customers, competitors, and knock-on winners."],
+const sourceCards = [
+  { title: "Filings", body: "8-Ks, 10-Qs, 10-Ks, Form 4 insider activity, and 13F institutional filings." },
+  { title: "News catalysts", body: "Global headlines, company news, sector moves, and market-moving events." },
+  { title: "Insider moves", body: "Notable buying, selling, ownership changes, and disclosed insider activity." },
+  { title: "Price + volume", body: "Price moves, volume spikes, short pressure, and market reaction checks." },
+  { title: "Fundamentals", body: "Revenue, margins, earnings, guidance, analyst targets, and transcripts." },
+  { title: "Valuation", body: "Checks whether the opportunity is already priced in." },
+  { title: "Macro + rates", body: "Rates, inflation, GDP, liquidity, and market pressure." },
+  { title: "FX + currency", body: "Currency shifts and cross-market pressure." },
+  { title: "Crypto", body: "Crypto moves, risk appetite, and market spillovers." },
+  { title: "FDA + regulatory", body: "Biotech, approvals, recalls, safety alerts, and regulatory catalysts." },
+  { title: "Source health", body: "Fresh, delayed, stale, rate-limited, broken, or missing-key status." },
+  { title: "Ripple effects", body: "Suppliers, customers, competitors, ecosystem links, and knock-on winners." },
+];
+
+const coverageRows = [
+  { label: "Currently connected", value: "SEC EDGAR • GDELT • FRED • openFDA • CoinGecko • Frankfurter" },
+  { label: "Next source upgrades", value: "FMP free mode • Google News RSS • Marketaux free mode • Polygon" },
+  { label: "Later free/public upgrades", value: "FINRA short-sale files • SEC 13F expansion • Wikidata ripple mapping • Alpha Vantage backup" },
+  { label: "Premium sources excluded for now", value: "Benzinga • Nansen • Arkham • Whale Alert • X/Twitter • Quiver Quant • OpenCorporates • paid social feeds" },
 ];
 
 const reviewSteps = [
@@ -101,20 +112,37 @@ export default function LandingPage() {
         </div>
       </section>
 
-      <section className={styles.section}>
+      <section className={`${styles.section} ${styles.radarSection}`}>
         <div className={styles.sectionHeader}>
           <div className={styles.eyebrow}>What Swing Up watches</div>
           <h2 className={styles.sectionTitle}>It watches the stuff most people skip.</h2>
+          <p>Swing Up connects filings, news, prices, fundamentals, macro shifts, regulatory events, crypto, FX, source health, and ripple effects into one proof-backed alert view.</p>
         </div>
-        <div className={styles.gridFour}>
-          {watchCards.map(([title, body], index) => (
-            <div className={styles.featureCard} key={title}>
-              <div className={index % 3 === 1 ? `${styles.iconDot} ${styles.greenDot}` : index % 3 === 2 ? `${styles.iconDot} ${styles.goldDot}` : styles.iconDot} />
-              <h3>{title}</h3>
-              <p>{body}</p>
+
+        <div className={styles.sourceRadar} aria-label="Swing Up source radar">
+          <div className={styles.radarCore}>
+            <span>Fresh source checks</span>
+            <strong>Swing Up</strong>
+            <small>As fast as reliable sources surface them</small>
+          </div>
+          {sourceCards.map((card, index) => (
+            <article className={`${styles.sourceCard} ${styles[`source${index + 1}`]}`} key={card.title}>
+              <span className={styles.sourceNumber}>{String(index + 1).padStart(2, "0")}</span>
+              <h3>{card.title}</h3>
+              <p>{card.body}</p>
+            </article>
+          ))}
+        </div>
+
+        <div className={styles.coverageStrip}>
+          {coverageRows.map((row) => (
+            <div className={styles.coverageRow} key={row.label}>
+              <span>{row.label}:</span>
+              <strong>{row.value}</strong>
             </div>
           ))}
         </div>
+        <p className={styles.coverageNote}>Fresh data helps speed up research, but every signal still needs proof, risk checks, and public tracking.</p>
       </section>
 
       <section className={styles.section}>

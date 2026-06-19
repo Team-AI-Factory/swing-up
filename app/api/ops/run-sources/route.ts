@@ -38,8 +38,7 @@ async function readBody(request: NextRequest): Promise<RunSourcesBody> {
   }
 }
 
-export async function POST(request: NextRequest) {
-  const body = await readBody(request);
+async function runFromRequest(request: NextRequest, body: RunSourcesBody = {}) {
   const query = request.nextUrl.searchParams;
   const result = await runSources({
     dryRun: parseBoolean(body.dryRun ?? query.get("dryRun"), true),
@@ -50,4 +49,12 @@ export async function POST(request: NextRequest) {
   });
 
   return NextResponse.json(result, { status: result.ok ? 200 : 207 });
+}
+
+export async function GET(request: NextRequest) {
+  return runFromRequest(request);
+}
+
+export async function POST(request: NextRequest) {
+  return runFromRequest(request, await readBody(request));
 }

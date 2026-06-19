@@ -5,6 +5,12 @@ import { prisma } from "@/lib/db/client";
 const reviewActions = ["approve", "reject", "needs_more_data", "publish"] as const;
 const safeActionLabels = ["Buy Candidate", "Speculative Buy Candidate", "Watch", "Sell Review", "Avoid", "No Action"] as const;
 const publishReadyStatuses = new Set(["approved"]);
+const actionAllowedFromStatus: Record<ReviewAction, Set<string>> = {
+  approve: new Set(["candidate"]),
+  reject: new Set(["candidate"]),
+  needs_more_data: new Set(["candidate"]),
+  publish: new Set(["approved"]),
+};
 const bannedWording = [/buy\s+now/i, /guaranteed/i, /risk[-\s]?free/i, /strong\s+buy/i, /ai\s+knows\s+the\s+next\s+move/i];
 
 type ReviewAction = (typeof reviewActions)[number];
@@ -95,6 +101,12 @@ export async function POST(request: NextRequest) {
   });
   if (!alert) return NextResponse.json({ ok: false, result: "needs_more_data", error: "Candidate alert was not found." }, { status: 404 });
 
+  const currentStatus = alert.status.toLowerCase();
+  if (!actionAllowedFromStatus[action].has(currentStatus)) {
+    await logAdminAction({ action, alertId, reviewerNote, finalSafeActionLabel, result: "blocked_unsafe_transition" });
+    return NextResponse.json({ ok: false, error: `Unsafe transition blocked from ${alert.status} with action ${action}.` }, { status: 409 });
+  }
+
   if (unsafeWordingFound(alert.action, alert.event, reviewerNote, finalSafeActionLabel)) {
     await logAdminAction({ action, alertId, reviewerNote, finalSafeActionLabel, result: "blocked_unsafe_wording" });
     return needsMoreData("Unsafe or hype wording was found. Candidate requires more data and safer wording.", ["safe_wording"]);
@@ -112,12 +124,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: true, result: "needs_more_data", alertId: updated.id, status: updated.status });
   }
 
-  if (action === "approve") {
-    const updated = await prisma.alert.update({ where: { id: alertId }, data: { status: "approved", action: finalSafeActionLabel } });
-    await logAdminAction({ action, alertId, reviewerNote, finalSafeActionLabel, result: "approved" });
-    return NextResponse.json({ ok: true, result: "approved", alertId: updated.id, status: updated.status, finalSafeActionLabel });
-  }
-
   const score = alert.scores[0];
   const missingFields: string[] = [];
   if (alert.sources.length === 0) missingFields.push("receipts");
@@ -126,6 +132,18 @@ export async function POST(request: NextRequest) {
   if (typeof score?.evidenceConfidence !== "number") missingFields.push("evidence_confidence_score");
   if (!finalSafeActionLabel) missingFields.push("safe_action_label");
   if (!hasDisclaimerSafeWording(alert.event, reviewerNote)) missingFields.push("disclaimer_safe_wording");
+
+  if (action === "approve") {
+    if (missingFields.length > 0) {
+      await logAdminAction({ action, alertId, reviewerNote, finalSafeActionLabel, result: "blocked_missing_review_checks", missingFields });
+      return needsMoreData("Candidate cannot be approved until all final review checks pass.", missingFields);
+    }
+
+    const updated = await prisma.alert.update({ where: { id: alertId }, data: { status: "approved", action: finalSafeActionLabel } });
+    await logAdminAction({ action, alertId, reviewerNote, finalSafeActionLabel, result: "approved" });
+    return NextResponse.json({ ok: true, result: "approved", alertId: updated.id, status: updated.status, finalSafeActionLabel });
+  }
+
   if (!publishReadyStatuses.has(alert.status.toLowerCase())) missingFields.push("approved_status");
 
   if (missingFields.length > 0) {

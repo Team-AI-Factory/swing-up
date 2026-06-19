@@ -5,7 +5,7 @@ import styles from "./candidate-alerts.module.css";
 export const dynamic = "force-dynamic";
 
 const NOT_AVAILABLE = "Not available yet";
-const candidateStatuses = ["candidate", "draft", "queued", "review", "ready_for_review"];
+const candidateStatuses = ["candidate", "needs_more_data", "rejected", "approved", "published", "draft", "queued", "review", "ready_for_review"];
 
 type CandidateAlert = {
   id: string;
@@ -85,10 +85,10 @@ export default async function CandidateAlertsAdminPage() {
           <div className="eyebrow">Admin / Candidate Alerts</div>
           <h1>Candidate Alerts Review</h1>
           <p>
-            Read-only operator review for alert candidates before approval, publishing, notifications, or public ledger tracking.
+            Operator review for alert candidates as they move from candidate to needs more data, rejected, approved, or published states.
           </p>
           <p className="muted">
-            This page intentionally does not approve, reject, publish, call AI, send notifications, or change database records.
+            State changes are handled only by the safe state-transition API route; this page does not call AI, send notifications, delete rejected alerts, or create ledger records.
           </p>
           <div className="button-row">
             <Link className="button" href="/admin">Back to admin</Link>
@@ -98,7 +98,7 @@ export default async function CandidateAlertsAdminPage() {
         <div className="card">
           <div className="metric"><span>Mode</span><strong>Read-only</strong></div>
           <div className="metric"><span>Candidate rows</span><strong>{alerts.length}</strong></div>
-          <div className="metric"><span>Actions</span><strong>Disabled placeholders</strong></div>
+          <div className="metric"><span>States</span><strong>Candidate → Published</strong></div>
         </div>
       </section>
 
@@ -109,7 +109,7 @@ export default async function CandidateAlertsAdminPage() {
             <h2>Existing candidate alerts</h2>
             <p>{alerts.length ? `${alerts.length} candidate alert${alerts.length === 1 ? "" : "s"} found.` : "No candidate alerts are available yet."}</p>
           </div>
-          <span className="badge">Read-only</span>
+          <span className="badge">State machine ready</span>
         </div>
 
         {alerts.length === 0 ? (

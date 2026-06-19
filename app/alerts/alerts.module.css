@@ -1,0 +1,90 @@
+.statusGrid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  margin: 22px 0;
+}
+
+.stateCard,
+.emptyState,
+.lockedState,
+.previewNotice,
+.cardFrame {
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 18px;
+}
+
+.stateCard {
+  background: rgba(255, 255, 255, 0.72);
+  display: grid;
+  gap: 8px;
+  padding: 16px;
+}
+
+.stateCard strong,
+.lockedState strong,
+.previewNotice strong,
+.cardLabel strong {
+  color: var(--foreground);
+}
+
+.stateCard p,
+.emptyState p,
+.lockedState p,
+.previewNotice p,
+.cardLabel p {
+  margin: 0;
+}
+
+.activeState {
+  border-color: rgba(22, 163, 74, 0.36);
+  box-shadow: 0 10px 30px rgba(22, 163, 74, 0.08);
+}
+
+
+.emptyState,
+.lockedState,
+.previewNotice {
+  display: grid;
+  gap: 10px;
+  margin: 18px 0;
+  padding: 18px;
+}
+
+.emptyState {
+  background: rgba(15, 23, 42, 0.04);
+  border-style: dashed;
+}
+
+.lockedState {
+  background: rgba(124, 58, 237, 0.08);
+}
+
+.previewNotice {
+  background: rgba(37, 99, 235, 0.08);
+}
+
+.cardFrame {
+  background: rgba(255, 255, 255, 0.58);
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+}
+
+.cardLabel {
+  display: grid;
+  gap: 4px;
+}
+
+.cardLabelRow {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+@media (max-width: 720px) {
+  .statusGrid {
+    grid-template-columns: 1fr;
+  }
+}

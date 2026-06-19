@@ -1,0 +1,29 @@
+name: Production smoke verification
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Production base URL to verify
+        required: false
+        default: https://swing-up-production.up.railway.app
+        type: string
+
+jobs:
+  production-smoke:
+    name: Safe GET production smoke checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run production smoke checks
+        env:
+          PRODUCTION_SMOKE_BASE_URL: ${{ inputs.base_url }}
+        run: npm run smoke:production

@@ -3,12 +3,13 @@ import { buildCommitteeQueue, mockCommitteeCandidate, type AiCommitteeCandidateI
 import { prisma } from "@/lib/db/client";
 import { buildMarketSentimentImpact, loadLatestMarketSentimentSnapshot, type HistoricalPatternMatch } from "@/lib/scoring-engine";
 
-const candidateStatuses = ["candidate", "draft", "queued", "review", "ready_for_review"];
+const candidateStatuses = ["candidate", "needs_more_data", "draft", "queued", "review", "ready_for_review"];
 
 function stageFromStatus(status: string | null | undefined): AiCommitteeReviewStage {
   const normalized = (status ?? "").toLowerCase();
   if (normalized === "ready_for_review") return "committee_ready";
   if (normalized === "review") return "committee_reviewing";
+  if (normalized === "needs_more_data") return "raw_signal_received";
   if (normalized === "queued" || normalized === "candidate") return "rule_filter_passed";
   return "raw_signal_received";
 }

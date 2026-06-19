@@ -200,7 +200,7 @@ export async function getLedgerData(): Promise<LedgerData> {
     return { rows: mockAlerts.map(mockRow), sourceMode: "mock_fallback", sourceLabel: "Mock fallback data", summary: "Live ledger records could not be loaded in this environment, so this page is showing clearly labelled mock preview rows." };
   }
 
-  return { rows: mockAlerts.map(mockRow), sourceMode: "mock_fallback", sourceLabel: "Mock fallback data", summary: "No live public ledger records are available yet, so this page is showing clearly labelled mock preview rows." };
+  return { rows: [], sourceMode: "empty", sourceLabel: "No tracked alerts yet", summary: "No live public ledger records are available yet. Preview examples are not shown when the live ledger is simply empty." };
 }
 
 export async function getLedgerEntry(id: string) {

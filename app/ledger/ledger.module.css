@@ -77,3 +77,37 @@
   display: grid;
   gap: 18px;
 }
+
+.explainer {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(240px, .8fr);
+  gap: 18px;
+  align-items: center;
+}
+
+.explainer h2 {
+  margin-top: 0;
+}
+
+.lossNote,
+.previewNotice {
+  border: 1px solid rgba(214, 180, 106, .32);
+  border-radius: 18px;
+  padding: 16px;
+  background: rgba(214, 180, 106, .08);
+}
+
+.lossNote {
+  display: grid;
+  gap: 6px;
+}
+
+.previewNotice {
+  margin: 12px 0 16px;
+}
+
+@media (max-width: 760px) {
+  .explainer {
+    grid-template-columns: 1fr;
+  }
+}

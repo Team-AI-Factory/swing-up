@@ -14,8 +14,10 @@
   --blue: #22C7B8;
 }
 * { box-sizing: border-box; }
+html { overflow-x: clip; }
 body {
   margin: 0;
+  overflow-x: clip;
   background: radial-gradient(circle at top left, rgba(34, 199, 184, .08), transparent 32%),
     radial-gradient(circle at 85% 18%, rgba(214, 180, 106, .06), transparent 30%), var(--bg);
   color: var(--text);

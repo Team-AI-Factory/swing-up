@@ -140,7 +140,7 @@ async function runOne(sourceName: RunnableSourceName, options: Required<Pick<Sou
       finished = finishRow(row, { status: result.ok && result.status === "complete" ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.observations.length, signalsCreated: result.persisted ? 1 : 0, duplicatesSkipped: 0, errors: result.warnings, sourceHealthUpdated: sourceHealthCanPersist() });
     } else if (sourceName === "openFDA") {
       const result = await runOpenFdaIngestion({ dryRun: options.dryRun, limit: options.limit });
-      finished = finishRow(row, { status: result.ok ? "ok" : "error", recordsChecked: result.applicationsChecked, signalsCreated: result.signalsCreated, duplicatesSkipped: result.duplicatesSkipped, errors: result.errors, sourceHealthUpdated: sourceHealthCanPersist() });
+      finished = finishRow(row, { status: result.ok ? "ok" : "error", recordsChecked: result.recordsChecked, signalsCreated: result.rawSignalsCreated, duplicatesSkipped: result.duplicatesSkipped, errors: result.errors, sourceHealthUpdated: sourceHealthCanPersist() });
     } else {
       const result = await runSecEdgarIngestion({ dryRun: options.dryRun, tickers: (options.tickers?.length ? options.tickers : DEFAULT_SEC_TICKERS).slice(0, 2), limit: Math.min(options.limit ?? 3, 3) });
       finished = finishRow(row, { status: result.ok && !result.errors.length ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.tickersChecked, signalsCreated: result.signalsCreated, duplicatesSkipped: result.duplicatesSkipped, errors: result.errors, sourceHealthUpdated: sourceHealthCanPersist() });

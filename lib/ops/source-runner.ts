@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
+import { runAlphaVantageIngestion } from "@/lib/ears/alpha-vantage";
 import { runCoinGeckoIngestion } from "@/lib/ears/coingecko";
 import { runFrankfurterIngestion } from "@/lib/ears/frankfurter";
 import { runFmpIngestion } from "@/lib/ears/fmp";
@@ -11,6 +12,9 @@ import { runPolygonIngestion } from "@/lib/ears/polygon";
 import { DEFAULT_SEC_TICKERS, runSecEdgarIngestion } from "@/lib/ears/sec-edgar";
 
 const SOURCE_ALIASES = {
+  "alpha-vantage": "Alpha Vantage",
+  alphavantage: "Alpha Vantage",
+  alpha: "Alpha Vantage",
   gdelt: "GDELT",
   coingecko: "CoinGecko",
   frankfurter: "Frankfurter FX",
@@ -28,7 +32,7 @@ const SOURCE_ALIASES = {
   edgar: "SEC EDGAR",
 } as const;
 
-export const DEFAULT_SOURCE_RUN_ORDER = ["GDELT", "CoinGecko", "Frankfurter FX", "FMP", "FRED Macro", "Marketaux", "Polygon", "openFDA", "SEC EDGAR"] as const;
+export const DEFAULT_SOURCE_RUN_ORDER = ["Alpha Vantage", "GDELT", "CoinGecko", "Frankfurter FX", "FMP", "FRED Macro", "Marketaux", "Polygon", "openFDA", "SEC EDGAR"] as const;
 export type RunnableSourceName = (typeof DEFAULT_SOURCE_RUN_ORDER)[number];
 
 type SourceRunOptions = {
@@ -127,7 +131,10 @@ async function runOne(sourceName: RunnableSourceName, options: Required<Pick<Sou
   let finished = row;
 
   try {
-    if (sourceName === "GDELT") {
+    if (sourceName === "Alpha Vantage") {
+      const result = await runAlphaVantageIngestion({ dryRun: options.dryRun, limit: options.limit, tickers: options.tickers });
+      finished = finishRow(row, { status: result.status === "missing_key" ? "skipped" : result.ok && !result.errors.length ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.recordsChecked, signalsCreated: result.rawSignalsCreated, duplicatesSkipped: result.duplicatesSkipped, errors: result.status === "missing_key" ? ["missing_key"] : result.errors, sourceHealthUpdated: sourceHealthCanPersist() });
+    } else if (sourceName === "GDELT") {
       const result = await runGdeltIngestion({ dryRun: options.dryRun, limit: options.limit ?? 50 });
       finished = finishRow(row, { status: result.skipped ? "skipped" : result.ok && !result.rateLimited && !result.fallbackUsed ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.articlesChecked, signalsCreated: result.signalsCreated, duplicatesSkipped: 0, errors: [...result.errors, ...(result.skipReason ? [result.skipReason] : [])], sourceHealthUpdated: sourceHealthCanPersist() });
     } else if (sourceName === "CoinGecko") {

@@ -1,5 +1,5 @@
-import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
+import { writeRawSignal } from "@/lib/raw-signal-writer";
 
 export const GDELT_SOURCE = "GDELT";
 
@@ -369,20 +369,6 @@ function scoreArticles(articles: GdeltArticle[]) {
   return scored;
 }
 
-async function rawSignalExists(item: ScoredArticle) {
-  const existing = await prisma.rawSignal.findFirst({
-    where: {
-      source: GDELT_SOURCE,
-      OR: [
-        ...(item.sourceUrl ? [{ sourceUrl: item.sourceUrl }] : []),
-        { title: item.title, receivedAt: item.receivedAt },
-        { title: item.title },
-      ],
-    },
-    select: { id: true },
-  });
-  return Boolean(existing);
-}
 async function createRawSignal(
   item: ScoredArticle,
   query: string,
@@ -391,39 +377,39 @@ async function createRawSignal(
   mode: GdeltRunMode,
   dryRun: boolean,
 ) {
-  if (await rawSignalExists(item)) return "duplicate" as const;
-  if (dryRun) return "dry_run" as const;
-  await prisma.rawSignal.create({
-    data: {
-      source: GDELT_SOURCE,
-      ticker: item.detectedTickers[0] ?? null,
-      signalType: "news_event",
-      title: item.title,
-      summary:
-        item.includeReason ?? "GDELT article matched local firehose rules.",
-      sourceUrl: item.sourceUrl,
-      receivedAt: item.receivedAt,
-      processedStatus: "new",
-      importanceHint: importance(item.score),
-      payload: {
-        gdelt: item.article,
-        detectedTickers: item.detectedTickers,
-        detectedCompanyNames: item.detectedCompanyNames,
-        detectedThemes: item.detectedThemes,
-        rule_score: item.score,
-        future_ai_candidate: item.futureAiCandidate,
-        include_reason: item.includeReason,
-        reject_reason: item.rejectReason,
-        broad_query_used: mode === "firehose" ? query : null,
-        manual_query_used: mode === "single_query" ? query : null,
-        maxrecords_requested: maxrecordsRequested,
-        maxrecords_used: maxrecordsUsed,
-        timespan_used: DEFAULT_GDELT_TIMESPAN,
-        mode: "firehose",
-      } satisfies Prisma.InputJsonValue,
+  const result = await writeRawSignal({
+    sourceName: GDELT_SOURCE,
+    sourceType: "news",
+    ticker: item.detectedTickers[0] ?? null,
+    company: item.detectedCompanyNames[0] ?? null,
+    eventType: "news_event",
+    title: item.title,
+    summary: item.includeReason ?? "GDELT article matched local firehose rules.",
+    url: item.sourceUrl,
+    detectedAt: item.receivedAt,
+    duplicateKey: item.sourceUrl ? `${GDELT_SOURCE}|news_event|${item.sourceUrl}` : `${GDELT_SOURCE}|news_event|${item.title}|${item.receivedAt.toISOString()}`,
+    qualityHints: { importanceHint: importance(item.score), confidence: item.score / 100, sourceQuality: "medium", useful: true, reasons: [item.includeReason ?? "local GDELT rule match"] },
+    rawPayload: {
+      gdelt: item.article,
+      detectedTickers: item.detectedTickers,
+      detectedCompanyNames: item.detectedCompanyNames,
+      detectedThemes: item.detectedThemes,
+      rule_score: item.score,
+      future_ai_candidate: item.futureAiCandidate,
+      include_reason: item.includeReason,
+      reject_reason: item.rejectReason,
+      broad_query_used: mode === "firehose" ? query : null,
+      manual_query_used: mode === "single_query" ? query : null,
+      maxrecords_requested: maxrecordsRequested,
+      maxrecords_used: maxrecordsUsed,
+      timespan_used: DEFAULT_GDELT_TIMESPAN,
+      mode,
     },
+    dryRun,
   });
-  return "created" as const;
+  if (result.status === "saved") return "created" as const;
+  if (result.status === "skipped" && result.reason === "duplicate") return "duplicate" as const;
+  return "dry_run" as const;
 }
 
 async function getExistingGdeltHealth() {

@@ -1,5 +1,5 @@
-import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
+import { writeRawSignal } from "@/lib/raw-signal-writer";
 
 export const COINGECKO_SOURCE = "CoinGecko";
 
@@ -115,34 +115,25 @@ function toQuote(asset: CoinGeckoAsset, row?: CoinGeckoSimplePriceRow): CoinGeck
   };
 }
 
-async function rawSignalExists(quote: CoinGeckoQuote) {
-  const since = new Date(Date.now() - 6 * 60 * 60 * 1000);
-  const existing = await prisma.rawSignal.findFirst({
-    where: { source: COINGECKO_SOURCE, ticker: quote.ticker, signalType: "crypto_market", receivedAt: { gte: since } },
-    select: { id: true },
-  });
-  return Boolean(existing);
-}
-
 async function createRawSignal(quote: CoinGeckoQuote, dryRun: boolean) {
-  if (await rawSignalExists(quote)) return "duplicate" as const;
-  if (dryRun) return "dry_run" as const;
-
-  await prisma.rawSignal.create({
-    data: {
-      source: COINGECKO_SOURCE,
-      ticker: quote.ticker,
-      signalType: "crypto_market",
-      title: `${quote.ticker} 24h crypto market move`,
-      summary: `${quote.name} moved ${quote.change24h?.toFixed(2) ?? "unknown"}% over 24h. CoinGecko data helps measure crypto risk appetite; no final alert was created.`,
-      processedStatus: "new",
-      importanceHint: quote.importanceHint,
-      receivedAt: quote.lastUpdatedAt ? new Date(quote.lastUpdatedAt) : new Date(),
-      sourceUrl: `https://www.coingecko.com/en/coins/${quote.id}`,
-      payload: { coingeckoId: quote.id, ticker: quote.ticker, name: quote.name, usdPrice: quote.usdPrice, change24h: quote.change24h, volume24h: quote.volume24h, marketCap: quote.marketCap, lastUpdatedAt: quote.lastUpdatedAt, noFinalAlerts: true } satisfies Prisma.InputJsonValue,
-    },
+  const result = await writeRawSignal({
+    sourceName: COINGECKO_SOURCE,
+    sourceType: "crypto",
+    ticker: quote.ticker,
+    company: quote.name,
+    eventType: "crypto_market",
+    title: `${quote.ticker} 24h crypto market move`,
+    summary: `${quote.name} moved ${quote.change24h?.toFixed(2) ?? "unknown"}% over 24h. CoinGecko data helps measure crypto risk appetite; no final alert was created.`,
+    url: `https://www.coingecko.com/en/coins/${quote.id}`,
+    detectedAt: quote.lastUpdatedAt,
+    duplicateKey: `${COINGECKO_SOURCE}|crypto_market|${quote.ticker}|${quote.lastUpdatedAt?.slice(0, 13) ?? "latest"}`,
+    qualityHints: { importanceHint: quote.importanceHint, sourceQuality: "medium", useful: true, reasons: ["public crypto market context"] },
+    rawPayload: { coingeckoId: quote.id, ticker: quote.ticker, name: quote.name, usdPrice: quote.usdPrice, change24h: quote.change24h, volume24h: quote.volume24h, marketCap: quote.marketCap, lastUpdatedAt: quote.lastUpdatedAt, noFinalAlerts: true },
+    dryRun,
   });
-  return "created" as const;
+  if (result.status === "saved") return "created" as const;
+  if (result.status === "skipped" && result.reason === "duplicate") return "duplicate" as const;
+  return "dry_run" as const;
 }
 
 async function updateCoinGeckoSourceHealth(status: "connected" | "degraded" | "error", startedAt: number, errorMessage: string | null) {

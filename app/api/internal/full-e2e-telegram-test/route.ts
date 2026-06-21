@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
 import { runSources } from "@/lib/ops/source-runner";
+import { buildAiCommitteeEvidencePack } from "@/lib/ai-committee/evidence-pack";
+import { runAiCommittee } from "@/lib/ai-committee/orchestrator";
+import { runFinalJudge } from "@/lib/ai-committee/final-judge";
+import { runApprovalGate } from "@/lib/approval-gate/approval-gate";
+import { GET as pipelineReadinessGET } from "@/app/api/internal/pipeline-readiness/route";
 import {
   buildProofBundleForRawSignal,
   type ProofBundle,
@@ -166,6 +171,8 @@ function formatTelegramMessage(input: {
   score: ReturnType<typeof summarizeScore>;
   wouldPromote: boolean;
   publicTrackingLink?: string | null;
+  historicalPattern?: string | null;
+  rippleEffect?: string | null;
 }) {
   const scoreLine = input.score
     ? `Profit Potential: ${input.score.profitPotentialScore}/100\nEvidence Confidence: ${input.score.evidenceConfidenceScore}/100\nRisk Level: ${input.score.riskLevel}`
@@ -184,11 +191,11 @@ function formatTelegramMessage(input: {
     "How we checked it:",
     `${input.proofCount} receipt(s) reviewed: ${input.proofTypes.join(", ") || "none"}${input.proofSource ? `; strongest source: ${input.proofSource}` : ""}. Missing proof lowers confidence.`,
     "",
-    "Pattern/history:",
-    "No strong historical pattern match found yet.",
+    "Historical pattern:",
+    input.historicalPattern || "No strong historical pattern match found yet.",
     "",
-    "Ripple effect:",
-    "No proven related-company ripple is attached to this Telegram test preview; treat any weak link as watchlist only.",
+    "Ripple effect if proven:",
+    input.rippleEffect || "No proven related-company ripple is attached to this Telegram test preview; treat any weak link as watchlist only.",
     "",
     "Risk:",
     `${input.score?.riskLevel ?? "unknown"}; the signal can be stale, already priced in, contradicted by later evidence, or hurt by broader market pressure.`,
@@ -196,7 +203,7 @@ function formatTelegramMessage(input: {
     "Swing Up view:",
     `This is a ${input.action} because the evidence is ${input.wouldPromote ? "strong enough for internal promotion review" : "not strong enough for promotion yet"}, but final review still depends on proof quality, price action, risk, and tracking readiness.`,
     "",
-    "Scores:",
+    "Profit potential score / evidence confidence score:",
     scoreLine,
     "",
     "Tracking:",
@@ -265,11 +272,14 @@ export async function POST(request: NextRequest) {
     const dryRun = dryRunValue(body.dryRun ?? body.dry_run);
     const confirmRun = booleanValue(body.confirmRun ?? body.confirm_run);
     const confirmSend = booleanValue(body.confirmSend ?? body.confirm_send);
+    const confirmPublish = booleanValue(body.confirmPublish ?? body.confirm_publish);
+    const requestedCommitteeRunId = text(body.committeeRunId ?? body.committee_run_id);
     const requestedRawSignalId = text(body.rawSignalId ?? body.raw_signal_id);
     const requestedCandidateAlertId = text(
       body.candidateAlertId ?? body.candidate_alert_id,
     );
     const requestedSource = text(body.source);
+    const readiness = await pipelineReadinessGET().then((response) => response.json()).catch((error: unknown) => ({ ok: false, warnings: [error instanceof Error ? error.message : "pipeline_readiness_unavailable"] }));
     const warnings: string[] = [
       "Internal full E2E test runner only; no paid AI calls, payment logic, or real user broadcast.",
     ];
@@ -282,11 +292,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         ok: true,
         dryRun,
+        readiness,
+        selectedSource: requestedSource || null,
         selectedRawSignalId: requestedRawSignalId || null,
         ticker: null,
         company: null,
         proofSummary: null,
         scoreSummary: null,
+        explanationSummary: null,
+        aiCommitteeSummary: null,
+        finalJudgeSummary: null,
+        approvalGateSummary: null,
+        publishLedgerSummary: null,
         promotionSummary: {
           wouldPromote: false,
           wouldPersistCandidateAlert: false,
@@ -335,11 +352,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         ok: false,
         dryRun,
+        readiness,
+        selectedSource: requestedSource || null,
         selectedRawSignalId: requestedRawSignalId || null,
         ticker: null,
         company: null,
         proofSummary: null,
         scoreSummary: null,
+        explanationSummary: null,
+        aiCommitteeSummary: null,
+        finalJudgeSummary: null,
+        approvalGateSummary: null,
+        publishLedgerSummary: null,
         promotionSummary: null,
         telegramMessagePreview: null,
         sentToTelegram: false,
@@ -445,7 +469,7 @@ export async function POST(request: NextRequest) {
     let publicLedgerSlug: string | null = null;
     let publicAlertUrl: string | null = null;
     let publicLedgerUrl: string | null = null;
-    const willCreate = !dryRun && confirmRun && wouldPromote;
+    const willCreate = !dryRun && confirmRun && confirmPublish && wouldPromote;
     const promotionSummary = {
       wouldPromote,
       wouldPersistCandidateAlert: willCreate && !candidateAlertId,
@@ -453,7 +477,7 @@ export async function POST(request: NextRequest) {
       status: wouldPromote ? "candidate" : "blocked",
       suggestedAction: action,
       nextRecommendedAction: wouldPromote
-        ? "Candidate alert can be saved for internal review; dry-run does not write."
+        ? dryRun ? "Candidate alert can be saved for internal review; dry-run does not write." : confirmPublish ? "Candidate alert and ledger can be created for the Telegram test." : "confirmPublish is required before creating publish/ledger test records."
         : qualityGate.ruleFilterResult.nextRecommendedStage,
     };
     const publishLedgerSummary: Record<string, unknown> = {
@@ -463,6 +487,8 @@ export async function POST(request: NextRequest) {
       createdLedger: false,
       publicSlug: null,
       status: willCreate ? "ready_to_create" : "preview_only",
+      confirmPublishRequired: !dryRun,
+      confirmPublish,
     };
 
     if (willCreate) {
@@ -552,6 +578,41 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    const explanationSummary = {
+      actionLabel: action,
+      ticker,
+      company,
+      whatHappened: text(rawSignal.summary, rawSignal.title),
+      whyItMatters: `This signal may matter if it changes demand, margins, valuation, sentiment, regulation, or timing.`,
+      howSwingUpCheckedIt: `${proofBundle?.proofCount ?? 0} receipt(s) reviewed across ${(proofBundle?.proofTypes ?? []).join(", ") || "no proof types"}.`,
+      proofSource: proofBundle?.strongestProof?.url ?? proofBundle?.strongestProof?.source ?? null,
+      historicalPattern: patternScore === null ? "Historical pattern match not available." : `${patternMatchLabel(patternScore)} match from stored pattern score ${patternScore}.`,
+      rippleEffectIfProven: "No proven ripple effect is attached; any related-company impact remains watchlist only until independently proven.",
+      risk: scoreSummary?.riskLevel ?? "unknown",
+      swingUpView: wouldPromote ? "Evidence is strong enough for internal promotion review, pending approval gates." : "Evidence is not strong enough for promotion yet.",
+    };
+    let aiCommitteeSummary: Record<string, unknown> | null = null;
+    let finalJudgeSummary: Record<string, unknown> | null = null;
+    let approvalGateSummary: Record<string, unknown> | null = null;
+
+    if (candidateAlertId) {
+      const evidenceResult = await buildAiCommitteeEvidencePack(candidateAlertId).catch((error: unknown) => ({ ok: false, error: error instanceof Error ? error.message : "evidence_pack_unavailable" }));
+      const shouldRunCommittee = confirmRun || dryRun;
+      const committeeResult = shouldRunCommittee
+        ? await runAiCommittee({ candidateAlertId, dryRun: dryRun || !confirmRun, confirmRun, mode: "preview" }).catch((error: unknown) => ({ ok: false, status: error instanceof Error ? error.message : "ai_committee_unavailable" }))
+        : { ok: false, status: "confirmRun_required" };
+      const committeeRunId = requestedCommitteeRunId || (committeeResult && typeof committeeResult === "object" && "persistedRunId" in committeeResult ? String(committeeResult.persistedRunId ?? "") : "");
+      const judgeResult = await runFinalJudge({ candidateAlertId, committeeRunId, dryRun: true }).catch((error: unknown) => ({ ok: false, finalDecision: "needs_more_data", error: error instanceof Error ? error.message : "final_judge_unavailable" }));
+      const gateResult = await runApprovalGate({ candidateAlertId, committeeRunId, dryRun: true }).catch((error: unknown) => ({ ok: false, approvalRecommendation: "needs_more_data", error: error instanceof Error ? error.message : "approval_gate_unavailable" }));
+      aiCommitteeSummary = { evidenceReady: "readyForCommittee" in evidenceResult ? evidenceResult.readyForCommittee : false, status: "status" in committeeResult ? committeeResult.status : null, ok: "ok" in committeeResult ? committeeResult.ok : false, committeeRunId: committeeRunId || null, providerStatus: "providerStatus" in committeeResult ? committeeResult.providerStatus : null };
+      finalJudgeSummary = { ok: "ok" in judgeResult ? judgeResult.ok : false, finalDecision: "finalDecision" in judgeResult ? judgeResult.finalDecision : null, publishAllowed: "publishAllowed" in judgeResult ? judgeResult.publishAllowed : false };
+      approvalGateSummary = { ok: "ok" in gateResult ? gateResult.ok : false, approvalRecommendation: "approvalRecommendation" in gateResult ? gateResult.approvalRecommendation : null, failedChecks: "failedChecks" in gateResult ? gateResult.failedChecks : [] };
+    } else {
+      aiCommitteeSummary = { ok: false, status: "skipped", reason: "candidateAlertId is required to run or preview the AI Committee without creating records." };
+      finalJudgeSummary = { ok: false, finalDecision: "needs_more_data", reason: "candidateAlertId is required." };
+      approvalGateSummary = { ok: false, approvalRecommendation: "needs_more_data", reason: "candidateAlertId is required." };
+    }
+
     const strongest = proofBundle?.strongestProof;
     const telegramMessagePreview = formatTelegramMessage({
       action,
@@ -564,6 +625,8 @@ export async function POST(request: NextRequest) {
       score: scoreSummary,
       wouldPromote,
       publicTrackingLink: publicLedgerUrl,
+      historicalPattern: patternScore === null ? "Historical pattern match not available." : `${patternMatchLabel(patternScore)} match from stored pattern score ${patternScore}.`,
+      rippleEffect: "No proven related-company ripple is attached; any ripple should remain watchlist only until separately proven.",
     });
     const telegramConfig = telegramTestConfigStatus();
     if (!telegramConfig.botTokenConfigured || !telegramConfig.chatIdConfigured)
@@ -586,6 +649,10 @@ export async function POST(request: NextRequest) {
       selectedRawSignalId: rawSignal.id,
       proofSummary: summarizeProof(proofBundle),
       scoreSummary,
+      explanationSummary,
+      aiCommitteeSummary,
+      finalJudgeSummary,
+      approvalGateSummary,
       promotionSummary,
       publishLedgerSummary,
       telegramMessagePreview,
@@ -627,6 +694,11 @@ export async function POST(request: NextRequest) {
         company: null,
         proofSummary: null,
         scoreSummary: null,
+        explanationSummary: null,
+        aiCommitteeSummary: null,
+        finalJudgeSummary: null,
+        approvalGateSummary: null,
+        publishLedgerSummary: null,
         promotionSummary: null,
         telegramMessagePreview: null,
         sentToTelegram: false,

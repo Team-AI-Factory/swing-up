@@ -65,13 +65,13 @@ model Watchlist {
 }
 
 model Alert {
-  id               String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  id               String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   ticker           String
   company          String
   action           String
   event            String
-  status           String          @default("draft")
-  publishedAt      DateTime?       @map("published_at") @db.Timestamptz(6)
+  status           String            @default("draft")
+  publishedAt      DateTime?         @map("published_at") @db.Timestamptz(6)
   sources          AlertSource[]
   scores           AlertScore[]
   dcfModels        DcfModel[]
@@ -80,6 +80,7 @@ model Alert {
   patternMatches   PatternMatch[]
   notificationLogs NotificationLog[]
   aiRuns           AiRun[]
+  aiCommitteeRuns  AiCommitteeRun[]
 
   @@map("alerts")
 }
@@ -152,18 +153,18 @@ model PriceSnapshot {
 }
 
 model RawSignal {
-  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  id              String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   source          String
   ticker          String?
-  signalType      String   @default("general") @map("signal_type")
-  title           String   @default("Untitled raw signal")
-  summary         String   @default("")
-  payload         Json     @default("{}")
-  receivedAt      DateTime @default(now()) @map("received_at") @db.Timestamptz(6)
-  processedStatus String   @default("new") @map("processed_status")
-  importanceHint  String   @default("medium") @map("importance_hint")
-  sourceUrl       String?  @map("source_url")
-  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  signalType      String         @default("general") @map("signal_type")
+  title           String         @default("Untitled raw signal")
+  summary         String         @default("")
+  payload         Json           @default("{}")
+  receivedAt      DateTime       @default(now()) @map("received_at") @db.Timestamptz(6)
+  processedStatus String         @default("new") @map("processed_status")
+  importanceHint  String         @default("medium") @map("importance_hint")
+  sourceUrl       String?        @map("source_url")
+  createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
   patternMatches  PatternMatch[]
 
   @@index([receivedAt(sort: Desc)])
@@ -172,43 +173,43 @@ model RawSignal {
 }
 
 model HistoricalEvent {
-  id             String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  ticker         String
-  companyName    String?        @map("company_name")
-  sector         String?
-  industry       String?
-  eventType      String         @map("event_type")
-  eventDate      DateTime       @map("event_date") @db.Date
-  title          String?
-  summary        String?
-  source         String?
-  sourceUrl      String?        @map("source_url")
-  sourceReceipts Json           @default("[]") @map("source_receipts")
-  priceBefore    Decimal?       @map("price_before") @db.Decimal(12, 2)
-  priceAfter1d   Decimal?       @map("price_after_1d") @db.Decimal(12, 2)
-  priceAfter3d   Decimal?       @map("price_after_3d") @db.Decimal(12, 2)
-  priceAfter7d   Decimal?       @map("price_after_7d") @db.Decimal(12, 2)
-  priceAfter30d  Decimal?       @map("price_after_30d") @db.Decimal(12, 2)
-  priceAfter90d  Decimal?       @map("price_after_90d") @db.Decimal(12, 2)
-  maxGain        Decimal?       @map("max_gain") @db.Decimal(8, 4)
-  maxDrawdown    Decimal?       @map("max_drawdown") @db.Decimal(8, 4)
-  volumeBeforeEvent Decimal?    @map("volume_before_event") @db.Decimal(20, 2)
-  volumeAfterEvent  Decimal?    @map("volume_after_event") @db.Decimal(20, 2)
-  revenueGrowthAtTime Decimal?  @map("revenue_growth_at_time") @db.Decimal(8, 4)
-  marginTrend    String?        @map("margin_trend")
-  cashFlowTrend  String?        @map("cash_flow_trend")
-  debtLevel      String?        @map("debt_level")
-  valuationAtTime String?       @map("valuation_at_time")
-  analystChanges Json           @default("[]") @map("analyst_changes")
-  insiderActivity String?       @map("insider_activity")
-  macroSnapshot  Json           @default("{}") @map("macro_snapshot")
-  sectorTrend    String?        @map("sector_trend")
-  outcomeLabel   String         @default("unknown") @map("outcome_label")
-  notes          String?
-  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
-  forwardReturns Json           @default("{}") @map("forward_returns")
-  patternTags    Json           @default("[]") @map("pattern_tags")
-  patternMatches PatternMatch[]
+  id                  String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ticker              String
+  companyName         String?        @map("company_name")
+  sector              String?
+  industry            String?
+  eventType           String         @map("event_type")
+  eventDate           DateTime       @map("event_date") @db.Date
+  title               String?
+  summary             String?
+  source              String?
+  sourceUrl           String?        @map("source_url")
+  sourceReceipts      Json           @default("[]") @map("source_receipts")
+  priceBefore         Decimal?       @map("price_before") @db.Decimal(12, 2)
+  priceAfter1d        Decimal?       @map("price_after_1d") @db.Decimal(12, 2)
+  priceAfter3d        Decimal?       @map("price_after_3d") @db.Decimal(12, 2)
+  priceAfter7d        Decimal?       @map("price_after_7d") @db.Decimal(12, 2)
+  priceAfter30d       Decimal?       @map("price_after_30d") @db.Decimal(12, 2)
+  priceAfter90d       Decimal?       @map("price_after_90d") @db.Decimal(12, 2)
+  maxGain             Decimal?       @map("max_gain") @db.Decimal(8, 4)
+  maxDrawdown         Decimal?       @map("max_drawdown") @db.Decimal(8, 4)
+  volumeBeforeEvent   Decimal?       @map("volume_before_event") @db.Decimal(20, 2)
+  volumeAfterEvent    Decimal?       @map("volume_after_event") @db.Decimal(20, 2)
+  revenueGrowthAtTime Decimal?       @map("revenue_growth_at_time") @db.Decimal(8, 4)
+  marginTrend         String?        @map("margin_trend")
+  cashFlowTrend       String?        @map("cash_flow_trend")
+  debtLevel           String?        @map("debt_level")
+  valuationAtTime     String?        @map("valuation_at_time")
+  analystChanges      Json           @default("[]") @map("analyst_changes")
+  insiderActivity     String?        @map("insider_activity")
+  macroSnapshot       Json           @default("{}") @map("macro_snapshot")
+  sectorTrend         String?        @map("sector_trend")
+  outcomeLabel        String         @default("unknown") @map("outcome_label")
+  notes               String?
+  createdAt           DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  forwardReturns      Json           @default("{}") @map("forward_returns")
+  patternTags         Json           @default("[]") @map("pattern_tags")
+  patternMatches      PatternMatch[]
 
   @@index([eventDate(sort: Desc)])
   @@index([ticker, eventDate(sort: Desc)])
@@ -256,7 +257,6 @@ model SourceHealth {
   @@map("source_health")
 }
 
-
 model SourceRun {
   id                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   source             String
@@ -277,21 +277,21 @@ model SourceRun {
 }
 
 model MacroSentimentSnapshot {
-  id                          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  snapshotType                String   @map("snapshot_type")
-  status                      String   @default("partial")
-  overallMarketMood           String?  @map("overall_market_mood")
-  macroRiskLevel              String?  @map("macro_risk_level")
-  macroSupportScore           Int?     @map("macro_support_score")
-  sentimentSupportScore       Int?     @map("sentiment_support_score")
-  riskOffPenalty              Int?     @map("risk_off_penalty")
-  confidenceAdjustment        Int?     @map("confidence_adjustment")
-  profitPotentialAdjustment   Int?     @map("profit_potential_adjustment")
-  summary                     String   @default("")
-  dataFreshness               Json     @default("{}") @map("data_freshness")
-  sourceReceipts              Json     @default("[]") @map("source_receipts")
-  payload                     Json     @default("{}")
-  createdAt                   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  id                        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  snapshotType              String   @map("snapshot_type")
+  status                    String   @default("partial")
+  overallMarketMood         String?  @map("overall_market_mood")
+  macroRiskLevel            String?  @map("macro_risk_level")
+  macroSupportScore         Int?     @map("macro_support_score")
+  sentimentSupportScore     Int?     @map("sentiment_support_score")
+  riskOffPenalty            Int?     @map("risk_off_penalty")
+  confidenceAdjustment      Int?     @map("confidence_adjustment")
+  profitPotentialAdjustment Int?     @map("profit_potential_adjustment")
+  summary                   String   @default("")
+  dataFreshness             Json     @default("{}") @map("data_freshness")
+  sourceReceipts            Json     @default("[]") @map("source_receipts")
+  payload                   Json     @default("{}")
+  createdAt                 DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@index([createdAt(sort: Desc)])
   @@index([snapshotType, createdAt(sort: Desc)])
@@ -359,15 +359,15 @@ model AdminAction {
 }
 
 model AiRun {
-  id          String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  alertId     String?     @map("alert_id") @db.Uuid
-  runType     String      @map("run_type")
-  provider    String      @default("stub")
-  status      String
-  output      Json        @default("{}")
-  createdAt   DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
-  alert       Alert?      @relation(fields: [alertId], references: [id])
-  aiCostLogs  AiCostLog[]
+  id         String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  alertId    String?     @map("alert_id") @db.Uuid
+  runType    String      @map("run_type")
+  provider   String      @default("stub")
+  status     String
+  output     Json        @default("{}")
+  createdAt  DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  alert      Alert?      @relation(fields: [alertId], references: [id])
+  aiCostLogs AiCostLog[]
 
   @@map("ai_runs")
 }
@@ -383,4 +383,62 @@ model AiCostLog {
   aiRun              AiRun?   @relation(fields: [aiRunId], references: [id])
 
   @@map("ai_cost_logs")
+}
+
+model AiCommitteeRun {
+  id                  String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  candidateAlertId    String?                  @map("candidate_alert_id") @db.Uuid
+  alertId             String?                  @map("alert_id") @db.Uuid
+  status              String
+  runMode             String                   @map("run_mode")
+  dryRun              Boolean                  @default(true) @map("dry_run")
+  agentIds            Json                     @default("[]") @map("agent_ids")
+  finalRecommendation String?                  @map("final_recommendation")
+  selectedActionLabel String?                  @map("selected_action_label")
+  scoreOutputs        Json                     @default("{}") @map("score_outputs")
+  riskLevel           String?                  @map("risk_level")
+  complianceWarnings  Json                     @default("[]") @map("compliance_warnings")
+  missingData         Json                     @default("[]") @map("missing_data")
+  modelProvider       String                   @default("unknown") @map("model_provider")
+  modelNames          Json                     @default("[]") @map("model_names")
+  tokenEstimate       Int?                     @map("token_estimate")
+  estimatedCostCents  Int                      @default(0) @map("estimated_cost_cents")
+  output              Json                     @default("{}")
+  request             Json                     @default("{}")
+  startedAt           DateTime                 @default(now()) @map("started_at") @db.Timestamptz(6)
+  finishedAt          DateTime?                @map("finished_at") @db.Timestamptz(6)
+  error               String?
+  createdAt           DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+  alert               Alert?                   @relation(fields: [alertId], references: [id])
+  agentResults        AiCommitteeAgentResult[]
+
+  @@index([createdAt(sort: Desc)])
+  @@index([candidateAlertId, createdAt(sort: Desc)])
+  @@index([alertId, createdAt(sort: Desc)])
+  @@map("ai_committee_runs")
+}
+
+model AiCommitteeAgentResult {
+  id                   String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  runId                String         @map("run_id") @db.Uuid
+  agentId              String         @map("agent_id")
+  status               String
+  verdict              String?
+  confidence           Int?
+  missingData          Json           @default("[]") @map("missing_data")
+  keyFindings          Json           @default("[]") @map("key_findings")
+  concerns             Json           @default("[]")
+  suggestedActionLabel String?        @map("suggested_action_label")
+  modelProvider        String         @default("unknown") @map("model_provider")
+  modelName            String?        @map("model_name")
+  tokenEstimate        Int?           @map("token_estimate")
+  estimatedCostCents   Int            @default(0) @map("estimated_cost_cents")
+  output               Json           @default("{}")
+  error                String?
+  createdAt            DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  run                  AiCommitteeRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId])
+  @@index([agentId])
+  @@map("ai_committee_agent_results")
 }

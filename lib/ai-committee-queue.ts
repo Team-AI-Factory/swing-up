@@ -1,3 +1,4 @@
+import { AI_COMMITTEE_AGENTS as AI_COMMITTEE_AGENT_REGISTRY } from "@/lib/ai-committee/agents";
 import { buildMarketSentimentImpact, mockScoreInput, scoreSwingUpAlert, type MarketSentimentImpact, type RiskLevel, type ScorePreviewInput, type SuggestedAction } from "@/lib/scoring-engine";
 
 export type AiCommitteeReviewStage =
@@ -11,20 +12,7 @@ export type AiCommitteeReviewStage =
   | "rejected"
   | "blocked";
 
-export type AiCommitteeAgentName =
-  | "Filing Agent"
-  | "Accountant Agent"
-  | "DCF Agent"
-  | "Market Agent"
-  | "News Agent"
-  | "Macro Agent"
-  | "Industry Agent"
-  | "Knock-On Agent"
-  | "Risk Agent"
-  | "Skeptic Agent"
-  | "Compliance Agent"
-  | "Explainer Agent"
-  | "Final Judge";
+export type AiCommitteeAgentName = (typeof AI_COMMITTEE_AGENTS)[number];
 
 export type AiCommitteeCandidateInput = ScorePreviewInput & {
   candidateId?: string;
@@ -82,21 +70,7 @@ export const AI_COMMITTEE_REVIEW_STAGES: AiCommitteeReviewStage[] = [
   "blocked",
 ];
 
-export const AI_COMMITTEE_AGENTS: AiCommitteeAgentName[] = [
-  "Filing Agent",
-  "Accountant Agent",
-  "DCF Agent",
-  "Market Agent",
-  "News Agent",
-  "Macro Agent",
-  "Industry Agent",
-  "Knock-On Agent",
-  "Risk Agent",
-  "Skeptic Agent",
-  "Compliance Agent",
-  "Explainer Agent",
-  "Final Judge",
-];
+export const AI_COMMITTEE_AGENTS = AI_COMMITTEE_AGENT_REGISTRY.map((agent) => agent.displayName);
 
 export const SAFE_ACTION_LABELS: SuggestedAction[] = ["Buy Candidate", "Speculative Buy Candidate", "Watch", "Sell Review", "Avoid", "No Action"];
 

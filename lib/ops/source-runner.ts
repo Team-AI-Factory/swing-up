@@ -6,6 +6,7 @@ import { runFrankfurterIngestion } from "@/lib/ears/frankfurter";
 import { runFmpIngestion } from "@/lib/ears/fmp";
 import { runFredIngestion } from "@/lib/ears/fred";
 import { runGdeltIngestion } from "@/lib/ears/gdelt";
+import { runGoogleNewsRssIngestion } from "@/lib/ears/google-news";
 import { runMarketauxIngestion } from "@/lib/ears/marketaux";
 import { runFinraShortSaleIngestion } from "@/lib/ears/finra-short-sale";
 import { runOpenFdaIngestion } from "@/lib/ears/openfda";
@@ -18,6 +19,10 @@ const SOURCE_ALIASES = {
   alphavantage: "Alpha Vantage",
   alpha: "Alpha Vantage",
   gdelt: "GDELT",
+  google: "Google News RSS",
+  googlenews: "Google News RSS",
+  "google-news": "Google News RSS",
+  "google-news-rss": "Google News RSS",
   coingecko: "CoinGecko",
   frankfurter: "Frankfurter FX",
   "frankfurter-fx": "Frankfurter FX",
@@ -39,7 +44,7 @@ const SOURCE_ALIASES = {
   "wikidata-ripple": "Wikidata",
 } as const;
 
-export const DEFAULT_SOURCE_RUN_ORDER = ["GDELT", "CoinGecko", "Frankfurter FX", "FMP", "Alpha Vantage", "FRED Macro", "Marketaux", "FINRA Short Sale", "Polygon", "openFDA", "SEC EDGAR", "Wikidata"] as const;
+export const DEFAULT_SOURCE_RUN_ORDER = ["GDELT", "Google News RSS", "CoinGecko", "Frankfurter FX", "FMP", "Alpha Vantage", "FRED Macro", "Marketaux", "FINRA Short Sale", "Polygon", "openFDA", "SEC EDGAR", "Wikidata"] as const;
 export type RunnableSourceName = (typeof DEFAULT_SOURCE_RUN_ORDER)[number];
 
 type SourceRunOptions = {
@@ -141,6 +146,9 @@ async function runOne(sourceName: RunnableSourceName, options: Required<Pick<Sou
     if (sourceName === "GDELT") {
       const result = await runGdeltIngestion({ dryRun: options.dryRun, limit: options.limit ?? 50 });
       finished = finishRow(row, { status: result.skipped ? "skipped" : result.ok && !result.rateLimited && !result.fallbackUsed ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.articlesChecked, signalsCreated: result.signalsCreated, duplicatesSkipped: 0, errors: [...result.errors, ...(result.skipReason ? [result.skipReason] : [])], sourceHealthUpdated: sourceHealthCanPersist() });
+    } else if (sourceName === "Google News RSS") {
+      const result = await runGoogleNewsRssIngestion({ dryRun: options.dryRun });
+      finished = finishRow(row, { status: result.ok && result.sourceHealthStatus === "connected" ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.articlesChecked, signalsCreated: result.rawSignalsCreated, duplicatesSkipped: result.duplicatesSkipped, errors: result.errors, sourceHealthUpdated: sourceHealthCanPersist() });
     } else if (sourceName === "CoinGecko") {
       const result = await runCoinGeckoIngestion({ dryRun: options.dryRun, limit: options.limit });
       finished = finishRow(row, { status: result.ok && !result.rateLimited ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.assetsChecked, signalsCreated: result.signalsCreated, duplicatesSkipped: result.duplicatesSkipped, errors: result.errors, sourceHealthUpdated: sourceHealthCanPersist() });

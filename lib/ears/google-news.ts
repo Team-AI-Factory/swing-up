@@ -60,6 +60,8 @@ type ClassifiedArticle = {
   rejectedReason: string | null;
 };
 
+type SourceHealthStatus = "connected" | "degraded" | "error";
+
 export type GoogleNewsRunResult = {
   ok: boolean;
   source: typeof GOOGLE_NEWS_RSS_SOURCE;
@@ -70,7 +72,7 @@ export type GoogleNewsRunResult = {
   duplicatesSkipped: number;
   rejected: number;
   errors: string[];
-  sourceHealthStatus: string;
+  sourceHealthStatus: SourceHealthStatus;
 };
 
 function decodeXml(value: string) {
@@ -151,8 +153,12 @@ async function fetchQuery(query: string) {
   }
 }
 
-async function updateSourceHealth(status: "connected" | "degraded" | "error", startedAt: number, errorMessage: string | null, notes: string) {
-  if (!process.env.DATABASE_URL) return "not_configured";
+function isRateLimitError(message: string) {
+  return /\b(429|rate limit|too many requests)\b/i.test(message);
+}
+
+async function updateSourceHealth(status: SourceHealthStatus, startedAt: number, errorMessage: string | null, notes: string): Promise<SourceHealthStatus> {
+  if (!process.env.DATABASE_URL) return status;
   const now = new Date();
   await prisma.sourceHealth.upsert({
     where: { source: GOOGLE_NEWS_RSS_SOURCE },
@@ -211,6 +217,9 @@ export async function runGoogleNewsRssIngestion(options: { dryRun?: boolean } = 
     }
   }
 
-  const status = await updateSourceHealth(errors.length === SAFE_QUERIES.length ? "error" : errors.length ? "degraded" : "connected", startedAt, errors[0] ?? null, `Checked ${SAFE_QUERIES.length} safe RSS queries; dryRun=${dryRun}.`);
-  return { ok: errors.length < SAFE_QUERIES.length, source: GOOGLE_NEWS_RSS_SOURCE, dryRun, queriesChecked: SAFE_QUERIES.length, articlesChecked, rawSignalsCreated, duplicatesSkipped, rejected, errors, sourceHealthStatus: status };
+  const allRequestsFailed = errors.length === SAFE_QUERIES.length;
+  const allFailuresWereRateLimits = allRequestsFailed && errors.every(isRateLimitError);
+  const sourceHealthStatus: SourceHealthStatus = allRequestsFailed && !allFailuresWereRateLimits ? "error" : errors.length || articlesChecked === 0 ? "degraded" : "connected";
+  const status = await updateSourceHealth(sourceHealthStatus, startedAt, errors[0] ?? null, `Checked ${SAFE_QUERIES.length} safe RSS queries; dryRun=${dryRun}.`);
+  return { ok: status !== "error", source: GOOGLE_NEWS_RSS_SOURCE, dryRun, queriesChecked: SAFE_QUERIES.length, articlesChecked, rawSignalsCreated, duplicatesSkipped, rejected, errors, sourceHealthStatus: status };
 }

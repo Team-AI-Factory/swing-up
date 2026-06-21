@@ -83,6 +83,10 @@ function firstString(...values: unknown[]) {
   return null;
 }
 
+function isRateLimitError(message: string) {
+  return /\b(429|rate limit|too many requests)\b/i.test(message);
+}
+
 function safeError(error: unknown) {
   return error instanceof Error ? error.message.split("\n")[0]?.slice(0, 180) || "openFDA request failed" : "openFDA request failed";
 }
@@ -239,7 +243,9 @@ export async function runOpenFdaIngestion(options: OpenFdaRunOptions = {}): Prom
     }
   }
 
-  const sourceHealthStatus: SourceHealthStatus = errors.length === ENDPOINTS.length ? "error" : errors.length || recordsChecked === 0 ? "degraded" : "connected";
+  const allRequestsFailed = errors.length === ENDPOINTS.length;
+  const allFailuresWereRateLimits = allRequestsFailed && errors.every(isRateLimitError);
+  const sourceHealthStatus: SourceHealthStatus = allRequestsFailed && !allFailuresWereRateLimits ? "error" : errors.length || recordsChecked === 0 ? "degraded" : "connected";
   await updateOpenFdaHealth(sourceHealthStatus, startedAt, errors[0] ?? null, `Checked ${recordsChecked} small-batch openFDA records across recalls, adverse events, and Drugs@FDA approvals/submissions; no alerts published.`);
 
   return { ok: sourceHealthStatus !== "error", source: OPENFDA_SOURCE, dryRun, apiKeyConfigured: Boolean(apiKey), recordsChecked, rawSignalsCreated, duplicatesSkipped, rejected, errors, sourceHealthStatus, responseTimeMs: Date.now() - startedAt, applicationsChecked: recordsChecked, signalsCreated: rawSignalsCreated };

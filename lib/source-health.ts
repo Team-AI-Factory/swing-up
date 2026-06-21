@@ -25,6 +25,33 @@ type SourceHealthRecord = {
 
 const safeStatuses = new Set(["connected", "not_configured", "stubbed", "degraded", "failed", "disabled", "broken_route", "not_wired"]);
 
+
+const liveRequiredEarRows = [
+  { source: "Google News RSS", status: "degraded", usage: "Required public Google News RSS ear", notes: "Real Google News RSS adapter is wired; live RSS checks update this row with connected/degraded/failed status. No API key required." },
+  { source: "openFDA", status: "degraded", usage: "Required public openFDA regulatory ear", notes: "Real openFDA adapter is wired; live API checks update this row with connected/degraded/failed status. OPENFDA_API_KEY is used when configured." },
+] satisfies Pick<DefaultSourceHealthRow, "source" | "status" | "usage" | "notes">[];
+
+function isStaleStubRow(row: Pick<SourceHealthRecord, "status" | "notes">) {
+  return row.status === "stubbed" || /stubbed|placeholder|future regulatory|until ingestion jobs/i.test(row.notes ?? "");
+}
+
+async function reconcileLiveRequiredEarRows(rows: SourceHealthRecord[]) {
+  const staleRows = liveRequiredEarRows.filter((liveRow) => {
+    const row = rows.find((candidate) => candidate.source === liveRow.source);
+    return !row || isStaleStubRow(row);
+  });
+
+  if (!staleRows.length) return false;
+
+  const now = new Date();
+  await prisma.$transaction(staleRows.map((row) => prisma.sourceHealth.upsert({
+    where: { source: row.source },
+    create: { ...row, checkedAt: now, lastSuccessAt: null, responseTimeMs: null, errorMessage: null },
+    update: { status: row.status, checkedAt: now, responseTimeMs: null, errorMessage: null, usage: row.usage, notes: row.notes },
+  })));
+  return true;
+}
+
 const defaultSourceHealthRows = [
   { source: "Database", status: "connected", lastSuccessAt: new Date(), responseTimeMs: null, usage: "Railway PostgreSQL connection check", notes: "Railway PostgreSQL connection is available." },
   { source: "SEC EDGAR", status: "degraded", usage: "Required public filings ear", notes: "Real SEC EDGAR adapter and run route are present; waiting for a successful live source run." },
@@ -168,11 +195,19 @@ export async function getSourceHealth(): Promise<SourceHealthPayload> {
 
   try {
     const seededDefaults = await ensureDefaultSourceHealthRows();
-    const rows = await prisma.sourceHealth.findMany({ orderBy: { source: "asc" } });
+    let rows = await prisma.sourceHealth.findMany({ orderBy: { source: "asc" } });
+    const reconciledLiveRows = await reconcileLiveRequiredEarRows(rows);
+    if (reconciledLiveRows) {
+      rows = await prisma.sourceHealth.findMany({ orderBy: { source: "asc" } });
+    }
 
     return {
       ok: true,
-      message: seededDefaults ? "Default source health rows created." : "Source health loaded from the database.",
+      message: seededDefaults
+        ? "Default source health rows created."
+        : reconciledLiveRows
+          ? "Source health loaded; stale required-ear stub rows were replaced with real adapter placeholders."
+          : "Source health loaded from the database.",
       sources: rows.map(serializeRow),
     };
   } catch (error) {

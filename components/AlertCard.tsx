@@ -1,100 +1,43 @@
 import Link from "next/link";
-import type { Alert, MarketSentimentImpact } from "@/lib/mock-alerts";
+import type { Alert, AlertCheckItem, AlertProofItem, AlertRippleItem, MarketSentimentImpact } from "@/lib/mock-alerts";
 import { ReceiptList } from "./ReceiptList";
 import { ScorePill } from "./ScorePill";
 
-function firstPatternValue(patternMatch: string) {
-  return patternMatch.split(" ")[0] || "Review";
-}
-
-function formatAdjustment(value: number) {
-  return value > 0 ? `+${value}` : `${value}`;
-}
+function firstPatternValue(patternMatch: string) { return patternMatch.split(" ")[0] || "Review"; }
+function formatAdjustment(value: number) { return value > 0 ? `+${value}` : `${value}`; }
+function actionLabel(alert: Alert) { return alert.actionLabel ?? (alert.action === "BUY" ? "Buy Candidate" : alert.action === "AVOID" ? "Avoid" : "Watch"); }
 
 function hasCompleteSentimentImpact(sentiment?: Partial<MarketSentimentImpact>): sentiment is MarketSentimentImpact {
-  return Boolean(
-    sentiment &&
-      sentiment.overallMarketMood &&
-      sentiment.macroRiskLevel &&
-      typeof sentiment.sentimentSupportScore === "number" &&
-      typeof sentiment.macroSupportScore === "number" &&
-      typeof sentiment.profitPotentialAdjustment === "number" &&
-      typeof sentiment.confidenceAdjustment === "number" &&
-      sentiment.explanation
-  );
+  return Boolean(sentiment && sentiment.overallMarketMood && sentiment.macroRiskLevel && typeof sentiment.sentimentSupportScore === "number" && typeof sentiment.macroSupportScore === "number" && typeof sentiment.profitPotentialAdjustment === "number" && typeof sentiment.confidenceAdjustment === "number" && sentiment.explanation);
 }
 
 function MarketSentimentSection({ sentiment }: { sentiment?: Partial<MarketSentimentImpact> }) {
-  if (!hasCompleteSentimentImpact(sentiment)) {
-    return (
-      <section className="alert-sentiment alert-sentiment-empty" aria-label="Market Sentiment Impact">
-        <div className="alert-section-header">
-          <span className="badge">Market Sentiment Impact</span>
-        </div>
-        <p>Sentiment data not available yet</p>
-      </section>
-    );
-  }
+  if (!hasCompleteSentimentImpact(sentiment)) return <section className="alert-sentiment alert-sentiment-empty" aria-label="Market Sentiment Impact"><div className="alert-section-header"><span className="badge">Market Sentiment Impact</span></div><p>Sentiment data not available yet</p></section>;
+  return <section className="alert-sentiment" aria-label="Market Sentiment Impact"><div className="alert-section-header"><span className="badge">Market Sentiment Impact</span></div><div className="grid two alert-sentiment-grid"><div className="metric"><span>Overall market mood</span><strong>{sentiment.overallMarketMood}</strong></div><div className="metric"><span>Macro risk level</span><strong>{sentiment.macroRiskLevel}</strong></div><div className="metric"><span>Sentiment support score</span><strong>{sentiment.sentimentSupportScore} / 100</strong></div><div className="metric"><span>Macro support score</span><strong>{sentiment.macroSupportScore} / 100</strong></div><div className="metric"><span>Profit potential adjustment</span><strong>{formatAdjustment(sentiment.profitPotentialAdjustment)}</strong></div><div className="metric"><span>Confidence adjustment</span><strong>{formatAdjustment(sentiment.confidenceAdjustment)}</strong></div></div><p>{sentiment.explanation}</p></section>;
+}
 
-  return (
-    <section className="alert-sentiment" aria-label="Market Sentiment Impact">
-      <div className="alert-section-header">
-        <span className="badge">Market Sentiment Impact</span>
-      </div>
-      <div className="grid two alert-sentiment-grid">
-        <div className="metric"><span>Overall market mood</span><strong>{sentiment.overallMarketMood}</strong></div>
-        <div className="metric"><span>Macro risk level</span><strong>{sentiment.macroRiskLevel}</strong></div>
-        <div className="metric"><span>Sentiment support score</span><strong>{sentiment.sentimentSupportScore} / 100</strong></div>
-        <div className="metric"><span>Macro support score</span><strong>{sentiment.macroSupportScore} / 100</strong></div>
-        <div className="metric"><span>Profit potential adjustment</span><strong>{formatAdjustment(sentiment.profitPotentialAdjustment)}</strong></div>
-        <div className="metric"><span>Confidence adjustment</span><strong>{formatAdjustment(sentiment.confidenceAdjustment)}</strong></div>
-      </div>
-      <p>{sentiment.explanation}</p>
-    </section>
-  );
+function CheckList({ checks }: { checks?: AlertCheckItem[] }) {
+  const safeChecks = checks?.length ? checks : [{ label: "Verification checks", status: "Detailed verification checklist is not available yet.", available: false }];
+  return <ul>{safeChecks.map((check) => <li key={check.label}><strong>{check.label}:</strong> {check.available ? check.status : `${check.status} Missing or not confirmed.`}</li>)}</ul>;
+}
+
+function ProofList({ proofs, receipts }: { proofs?: AlertProofItem[]; receipts: string[] }) {
+  if (proofs?.length) return <ul>{proofs.map((proof) => <li key={`${proof.sourceType}-${proof.explanation}`}><strong>{proof.sourceType}</strong>{proof.strength ? ` (${proof.strength})` : ""}: {proof.explanation}{proof.freshness ? ` Freshness: ${proof.freshness}.` : ""}{proof.link ? <> <a href={proof.link}>Source link</a></> : null}</li>)}</ul>;
+  if (receipts.length) return <ReceiptList receipts={receipts} />;
+  return <p>Proof not available yet. Missing proof should lower confidence until source receipts are attached.</p>;
+}
+
+function RippleList({ rippleEffects, fallback }: { rippleEffects?: AlertRippleItem[]; fallback: string }) {
+  if (rippleEffects?.length) return <ul>{rippleEffects.map((item) => <li key={`${item.group}-${item.explanation}`}><strong>{item.group}:</strong> {item.tickers?.length ? `${item.tickers.join(", ")} — ` : ""}{item.explanation}{item.proofStrength === "weak" ? " This is watchlist only until stronger proof appears." : ""}</li>)}</ul>;
+  return <p>{fallback || "No proven ripple effect available yet. Weak links should be treated as watchlist only."}</p>;
+}
+
+function CompactAlertCard({ alert }: { alert: Alert }) {
+  const proofChips = (alert.proofFound?.length ? alert.proofFound.map((proof) => proof.sourceType) : alert.receipts).slice(0, 4);
+  return <article className="card alert-card"><div className={`alert-action alert-action-${alert.action.toLowerCase()}`}>{actionLabel(alert)}</div><div className="alert-card-header"><div><h2>{alert.event}</h2><p>{alert.ticker} — {alert.company}</p></div><span className="badge">Risk: {alert.riskLevel}</span></div><p><strong>What happened:</strong> {alert.whatHappened ?? alert.explanation}</p><p><strong>Why it matters:</strong> {alert.whyItMatters ?? alert.explanation}</p><div className="button-row">{proofChips.length ? proofChips.map((chip) => <span className="badge" key={chip}>{chip}</span>) : <span className="badge">Proof pending</span>}</div><div className="button-row">{alert.risks.slice(0, 3).map((risk) => <span className="badge" key={risk}>{risk}</span>)}</div><div className="grid two alert-score-grid"><ScorePill label="Profit Potential Score" score={alert.profitScore} tone="green" /><ScorePill label="Evidence Confidence Score" score={alert.confidenceScore} tone="blue" /></div><p><strong>Public tracking:</strong> {alert.publicTrackingResult}</p><Link className="button primary" href={`/alerts/${alert.id}`}>Read full explanation</Link></article>;
 }
 
 export function AlertCard({ alert, compact = false }: { alert: Alert; compact?: boolean }) {
-  return (
-    <article className="card alert-card">
-      <div className={`alert-action alert-action-${alert.action.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")}`}>ACTION: {alert.action}</div>
-      <div className="alert-card-header">
-        <div>
-          <h2>{alert.ticker}</h2>
-          <p>{alert.company}</p>
-        </div>
-        <span className="badge">Risk: {alert.riskLevel}</span>
-      </div>
-      <p><strong>Event:</strong> {alert.event}</p>
-      <p><strong>Date:</strong> {alert.eventDate ?? "Date not available yet"}</p>
-      <div className="grid two alert-top-grid">
-        <div className="metric"><span>Current price</span><strong>{alert.currentPrice}</strong></div>
-        <div className="metric"><span>Target price range</span><strong>{alert.targetRange}</strong></div>
-        <div className="metric"><span>Potential upside/downside</span><strong>{alert.potentialMove}</strong></div>
-        <div className="metric"><span>Risk Level</span><strong>{alert.riskLevel}</strong></div>
-        <div className="metric"><span>Priced-In Check</span><strong>{alert.pricedInCheck}</strong></div>
-        <div className="metric"><span>Historical Pattern Match</span><strong>{firstPatternValue(alert.patternMatch)}</strong></div>
-      </div>
-      <div className="grid two alert-score-grid">
-        <ScorePill label="Profit Potential Score" score={alert.profitScore} tone="green" />
-        <ScorePill label="Evidence Confidence Score" score={alert.confidenceScore} tone="blue" />
-      </div>
-      <MarketSentimentSection sentiment={alert.marketSentimentImpact} />
-      <p><strong>Historical Pattern Match:</strong> {alert.patternMatch}</p>
-      <p>{alert.explanation}</p>
-      {!compact && (
-        <>
-          <h3>Verified Ripple Effect</h3>
-          <p>{alert.rippleEffect}</p>
-          <h3>Risks</h3>
-          <ReceiptList receipts={alert.risks} />
-          <h3>Receipts</h3>
-          <ReceiptList receipts={alert.receipts} />
-          <h3>Public Tracking Result</h3>
-          <p>{alert.publicTrackingResult}</p>
-        </>
-      )}
-      {compact && <Link className="button primary" href={`/alerts/${alert.id}`}>Open alert</Link>}
-    </article>
-  );
+  if (compact) return <CompactAlertCard alert={alert} />;
+  return <article className="card alert-card"><div className={`alert-action alert-action-${alert.action.toLowerCase()}`}>ACTION: {actionLabel(alert)}</div><div className="alert-card-header"><div><h2>{alert.ticker} — {alert.company}</h2><p>{alert.event}</p></div><span className="badge">Risk: {alert.riskLevel}</span></div><p><strong>Event headline:</strong> {alert.event}</p><p><strong>Date:</strong> {alert.eventDate ?? "Date not available yet"}</p><h3>What happened</h3><p>{alert.whatHappened ?? alert.explanation}</p><h3>Why it matters</h3><p>{alert.whyItMatters ?? alert.explanation}</p><h3>How Swing Up checked it</h3><CheckList checks={alert.howChecked} /><h3>Proof found</h3><ProofList proofs={alert.proofFound} receipts={alert.receipts} /><h3>Historical pattern match</h3><p>{alert.historicalPatternDetail ?? alert.patternMatch ?? "No strong historical pattern match found yet."}</p><h3>Priced-in check</h3><p>{alert.pricedInDetail ?? alert.pricedInCheck}</p><h3>Ripple effect</h3><RippleList rippleEffects={alert.rippleEffects} fallback={alert.rippleEffect} /><h3>Risk / what could go wrong</h3><ReceiptList receipts={alert.risks.length ? alert.risks : ["Risk review not available yet"]} /><h3>Swing Up view</h3><p>{alert.swingUpView ?? alert.explanation}</p><h3>What would change the view</h3><ReceiptList receipts={alert.whatWouldChangeView?.length ? alert.whatWouldChangeView : ["More complete source proof, price confirmation, and pattern evidence would change the view."]} /><div className="grid two alert-top-grid"><div className="metric"><span>Current price</span><strong>{alert.currentPrice}</strong></div><div className="metric"><span>Price at alert</span><strong>{alert.priceAtAlert ?? alert.currentPrice}</strong></div><div className="metric"><span>Target price range</span><strong>{alert.targetRange}</strong></div><div className="metric"><span>Potential upside/downside</span><strong>{alert.potentialMove}</strong></div><div className="metric"><span>Priced-In Check</span><strong>{alert.pricedInCheck}</strong></div><div className="metric"><span>Historical Pattern Match</span><strong>{firstPatternValue(alert.patternMatch)}</strong></div></div><h3>Scores</h3><div className="grid two alert-score-grid"><ScorePill label="Profit Potential Score" score={alert.profitScore} tone="green" /><ScorePill label="Evidence Confidence Score" score={alert.confidenceScore} tone="blue" /><div className="metric"><span>Risk Level</span><strong>{alert.riskLevel}</strong></div><div className="metric"><span>Source Health</span><strong>{alert.sourceHealth ?? "Not available yet"}</strong></div><div className="metric"><span>Pattern Match Strength</span><strong>{alert.patternMatchStrength ?? firstPatternValue(alert.patternMatch)}</strong></div></div><MarketSentimentSection sentiment={alert.marketSentimentImpact} /><h3>Public tracking</h3><div className="grid two"><div className="metric"><span>Public alert page link</span><strong>{alert.publicAlertUrl ?? `/alerts/${alert.id}`}</strong></div><div className="metric"><span>Ledger status</span><strong>{alert.ledgerStatus ?? alert.publicTrackingResult}</strong></div><div className="metric"><span>Status/result</span><strong>{alert.latestTrackedResult ?? alert.publicTrackingResult}</strong></div><div className="metric"><span>Price at alert</span><strong>{alert.priceAtAlert ?? alert.currentPrice}</strong></div></div></article>;
 }

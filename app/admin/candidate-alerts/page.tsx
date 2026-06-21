@@ -19,6 +19,13 @@ type CandidateAlert = {
   riskLevel: string;
   pricedInCheck: string;
   receipts: string[];
+  whatHappened: string;
+  whyItMatters: string;
+  howChecked: string[];
+  historicalPattern: string;
+  rippleEffect: string;
+  swingUpView: string;
+  whatWouldChange: string;
 };
 
 function formatDate(value: Date | string | null | undefined) {
@@ -68,6 +75,17 @@ async function getCandidateAlerts(): Promise<CandidateAlert[]> {
         riskLevel: latestScore?.riskLevel ?? NOT_AVAILABLE,
         pricedInCheck: latestScore?.pricedInCheck ?? NOT_AVAILABLE,
         receipts: alert.sources.map((source) => source.summary || source.receiptUrl || source.sourceType).filter(Boolean),
+        whatHappened: alert.event || NOT_AVAILABLE,
+        whyItMatters: latestScore?.pricedInCheck || "Revenue, margin, demand, valuation, sentiment, or timing logic needs reviewer confirmation before approval.",
+        howChecked: [
+          alert.sources.length ? `${alert.sources.length} source receipt(s) attached` : "Missing source receipts",
+          latestScore ? "Scores available" : "Scores missing",
+          latestScore?.pricedInCheck ? "Priced-in check available" : "Priced-in check missing",
+        ],
+        historicalPattern: "No strong historical pattern match found yet.",
+        rippleEffect: "No proven ripple effect attached yet; any related names should be watchlist only until proof is added.",
+        swingUpView: latestScore ? `Reviewer should weigh ${latestScore.profitPotential}/100 profit potential against ${latestScore.evidenceConfidence}/100 evidence confidence and ${latestScore.riskLevel} risk.` : "Reviewer should wait for scoring and source proof before approval.",
+        whatWouldChange: "Stronger source proof, price/volume confirmation, healthier source freshness, better valuation context, or a verified historical pattern would change the review view.",
       };
     });
   } catch {
@@ -143,6 +161,13 @@ export default async function CandidateAlertsAdminPage() {
                   <div><span>Priced-in check</span><strong>{alert.pricedInCheck}</strong></div>
                 </div>
                 <div className={styles.receipts}>
+                  <span>What happened</span><p>{alert.whatHappened}</p>
+                  <span>Why it matters</span><p>{alert.whyItMatters}</p>
+                  <span>How Swing Up checked it</span><ul>{alert.howChecked.map((item) => <li key={item}>{item}</li>)}</ul>
+                  <span>Pattern/history</span><p>{alert.historicalPattern}</p>
+                  <span>Ripple effect</span><p>{alert.rippleEffect}</p>
+                  <span>Swing Up view</span><p>{alert.swingUpView}</p>
+                  <span>What would change the view</span><p>{alert.whatWouldChange}</p>
                   <span>Receipts</span>
                   {alert.receipts.length ? (
                     <ul>{alert.receipts.map((receipt) => <li key={receipt}>{receipt}</li>)}</ul>

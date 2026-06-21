@@ -55,7 +55,7 @@ async function tableAvailable(name: string) {
 function mapStoredStatus(status?: string | null): SourceTruthStatus | null {
   if (!status) return null;
   if (status === "error") return "failed";
-  if (["connected", "degraded", "not_configured", "stubbed", "disabled", "failed"].includes(status)) return status as SourceTruthStatus;
+  if (["connected", "degraded", "not_configured", "stubbed", "disabled", "failed", "broken_route", "not_wired"].includes(status)) return status as SourceTruthStatus;
   return "failed";
 }
 
@@ -75,7 +75,7 @@ export async function getSourceCoverage() {
     else if (source.apiKey && !env(source.apiKey)) status = "not_configured";
     else if (source.route && !routePresent) status = "broken_route";
     else if (source.adapter && !adapterPresent) status = "not_wired";
-    else status = mapStoredStatus(stored?.status) ?? "connected";
+    else status = mapStoredStatus(stored?.status) ?? "degraded";
     const real = adapterPresent && routePresent && status !== "stubbed" && status !== "broken_route" && status !== "not_wired";
     const blocker = source.required && !["connected", "degraded"].includes(status);
     const notes = source.name === "AI Committee" && status === "connected"

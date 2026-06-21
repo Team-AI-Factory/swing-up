@@ -11,6 +11,7 @@ import { runFinraShortSaleIngestion } from "@/lib/ears/finra-short-sale";
 import { runOpenFdaIngestion } from "@/lib/ears/openfda";
 import { runPolygonIngestion } from "@/lib/ears/polygon";
 import { DEFAULT_SEC_TICKERS, runSecEdgarIngestion } from "@/lib/ears/sec-edgar";
+import { runWikidataRippleIngestion } from "@/lib/ears/wikidata-ripple";
 
 const SOURCE_ALIASES = {
   "alpha-vantage": "Alpha Vantage",
@@ -34,9 +35,11 @@ const SOURCE_ALIASES = {
   sec: "SEC EDGAR",
   "sec-edgar": "SEC EDGAR",
   edgar: "SEC EDGAR",
+  wikidata: "Wikidata",
+  "wikidata-ripple": "Wikidata",
 } as const;
 
-export const DEFAULT_SOURCE_RUN_ORDER = ["GDELT", "CoinGecko", "Frankfurter FX", "FMP", "Alpha Vantage", "FRED Macro", "Marketaux", "FINRA Short Sale", "Polygon", "openFDA", "SEC EDGAR"] as const;
+export const DEFAULT_SOURCE_RUN_ORDER = ["GDELT", "CoinGecko", "Frankfurter FX", "FMP", "Alpha Vantage", "FRED Macro", "Marketaux", "FINRA Short Sale", "Polygon", "openFDA", "SEC EDGAR", "Wikidata"] as const;
 export type RunnableSourceName = (typeof DEFAULT_SOURCE_RUN_ORDER)[number];
 
 type SourceRunOptions = {
@@ -165,9 +168,12 @@ async function runOne(sourceName: RunnableSourceName, options: Required<Pick<Sou
     } else if (sourceName === "openFDA") {
       const result = await runOpenFdaIngestion({ dryRun: options.dryRun, limit: options.limit });
       finished = finishRow(row, { status: result.ok ? "ok" : "error", recordsChecked: result.recordsChecked, signalsCreated: result.rawSignalsCreated, duplicatesSkipped: result.duplicatesSkipped, errors: result.errors, sourceHealthUpdated: sourceHealthCanPersist() });
-    } else {
+    } else if (sourceName === "SEC EDGAR") {
       const result = await runSecEdgarIngestion({ dryRun: options.dryRun, tickers: (options.tickers?.length ? options.tickers : DEFAULT_SEC_TICKERS).slice(0, 2), limit: Math.min(options.limit ?? 3, 3) });
       finished = finishRow(row, { status: result.ok && !result.errors.length ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.tickersChecked, signalsCreated: result.signalsCreated, duplicatesSkipped: result.duplicatesSkipped, errors: result.errors, sourceHealthUpdated: sourceHealthCanPersist() });
+    } else {
+      const result = await runWikidataRippleIngestion({ dryRun: options.dryRun });
+      finished = finishRow(row, { status: result.ok && result.sourceHealthStatus === "connected" ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.entitiesChecked, signalsCreated: result.rawSignalsCreated, duplicatesSkipped: result.duplicatesSkipped, errors: result.warnings, sourceHealthUpdated: sourceHealthCanPersist() });
     }
   } catch (error) {
     finished = finishRow(row, { status: "error", errors: [safeError(error)], sourceHealthUpdated: false });

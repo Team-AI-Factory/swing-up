@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/client";
 import { absoluteUrl, alertSeoSlug, canonicalAlertPath, jsonRecord } from "@/lib/seo-alerts";
+import { runApprovalGate } from "@/lib/approval-gate/approval-gate";
 
 const PUBLISHABLE_STATUSES = new Set(["approved", "published"]);
 const BLOCKED_DRAFT_STATUSES = new Set(["candidate", "draft", "queued", "review", "ready_for_review", "needs_more_data", "rejected", "blocked"]);
@@ -82,7 +83,7 @@ function review(alert: AlertRecord) {
     blockedReasons.push("Public tracking is disabled by environment configuration.");
   }
 
-  if (alert.publicLedger.length > 0) warnings.push("Existing public ledger row is already connected; publish will reuse it.");
+  if (alert.publicLedger.length > 0) warnings.push("Existing public ledger row is already connected; publish will reuse it and upgrade its public SEO slug if needed.");
   return { blockedReasons, blockCodes: Array.from(new Set(blockCodes)), warnings, score };
 }
 
@@ -114,6 +115,10 @@ function ledgerEntry(alert: AlertRecord, priceAtAlert: string | null, now: Date)
   };
 }
 
+function isSeoSlug(slug: string | null | undefined) {
+  return Boolean(slug?.trim() && slug.trim().split("-").length >= 4);
+}
+
 function response(params: { dryRun: boolean; published: boolean; alert: AlertRecord | null; ledgerSlug?: string | null; priceAtAlert?: string | null; blockedReasons: string[]; warnings: string[]; nextRecommendedAction: string }) {
   const seoSlug = params.alert ? (params.ledgerSlug?.trim() || alertSeoSlug({ ...params.alert, publishedAt: params.alert.publishedAt ?? new Date() })) : null;
   const publicAlertPath = params.alert && seoSlug ? canonicalAlertPath({ ...params.alert, publishedAt: params.alert.publishedAt ?? new Date() }, seoSlug) : null;
@@ -129,6 +134,17 @@ function response(params: { dryRun: boolean; published: boolean; alert: AlertRec
     warnings: params.warnings,
     nextRecommendedAction: params.nextRecommendedAction,
   };
+}
+
+async function latestApprovalGateStatus(alertId: string) {
+  const action = await prisma.adminAction.findFirst({
+    where: { action: "candidate_alert_approval_gate", subjectType: "alert", subjectId: alertId },
+    orderBy: { createdAt: "desc" },
+  });
+  const metadata = jsonRecord(action?.metadata);
+  const recommendation = typeof metadata.recommendation === "string" ? metadata.recommendation : null;
+  const failedChecks = Array.isArray(metadata.failedChecks) ? metadata.failedChecks.map(String) : [];
+  return action ? { found: true, recommendation, failedChecks, createdAt: action.createdAt.toISOString() } : { found: false, recommendation: null, failedChecks: [], createdAt: null };
 }
 
 export async function POST(request: NextRequest) {
@@ -158,6 +174,19 @@ export async function POST(request: NextRequest) {
   const priceAtAlert = decimalText(latestSnapshot?.price);
   const checked = review(alert);
   const warnings = [...checked.warnings];
+  const gateStatus = await latestApprovalGateStatus(alert.id);
+  if (gateStatus.found) {
+    if (gateStatus.recommendation !== "approve" || gateStatus.failedChecks.length > 0) {
+      checked.blockedReasons.push(`Latest approval gate did not pass cleanly (recommendation: ${gateStatus.recommendation ?? "unknown"}).`);
+    } else {
+      warnings.push(`Reused approval gate approval from ${gateStatus.createdAt}.`);
+    }
+  } else if (alert.status.toLowerCase() === "approved") {
+    warnings.push("No prior approval gate log was found; using approved status plus deterministic publish checks.");
+  } else {
+    const gate = await runApprovalGate({ candidateAlertId: alert.id, dryRun: true }).catch(() => null);
+    if (gate?.approvalRecommendation === "approve" && gate.failedChecks.length === 0) warnings.push("Approval gate dry-run passed; alert still must be approved before publishing.");
+  }
   if (!priceAtAlert) warnings.push("No price snapshot was available; priceAtAlert will remain null rather than using a fake price.");
   if (!dryRun && !confirmPublish) checked.blockedReasons.push("confirmPublish=true is required when dryRun=false.");
 
@@ -167,13 +196,14 @@ export async function POST(request: NextRequest) {
   }
 
   const now = new Date();
-  const seoSlug = alert.publicLedger[0]?.publicSlug ?? alertSeoSlug({ ...alert, publishedAt: alert.publishedAt ?? now });
+  const generatedSeoSlug = alertSeoSlug({ ...alert, publishedAt: alert.publishedAt ?? now });
+  const seoSlug = isSeoSlug(alert.publicLedger[0]?.publicSlug) ? alert.publicLedger[0]?.publicSlug ?? generatedSeoSlug : generatedSeoSlug;
   const entry = ledgerEntry(alert, priceAtAlert, now);
 
   const result = await prisma.$transaction(async (tx) => {
     const publishedAlert = await tx.alert.update({ where: { id: alert.id }, data: { status: "published", publishedAt: alert.publishedAt ?? now }, include: { scores: { orderBy: { createdAt: "desc" }, take: 1 }, sources: true, patternMatches: { orderBy: { createdAt: "desc" }, take: 1 }, publicLedger: { orderBy: { createdAt: "desc" }, take: 1 } } });
     const ledger = alert.publicLedger[0]
-      ? await tx.publicLedger.update({ where: { id: alert.publicLedger[0].id }, data: { alertId: alert.id, entry } })
+      ? await tx.publicLedger.update({ where: { id: alert.publicLedger[0].id }, data: { alertId: alert.id, publicSlug: seoSlug, entry } })
       : await tx.publicLedger.create({ data: { alertId: alert.id, publicSlug: seoSlug, entry } });
     return { alert: publishedAlert, ledger };
   });

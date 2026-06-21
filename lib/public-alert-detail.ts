@@ -194,7 +194,7 @@ export async function getPublicAlertDetail(id: string): Promise<PublicAlertDetai
     if (live) {
       const alert = liveAlertToCard(live);
       const path = canonicalAlertPath(live, live.publicLedger[0]?.publicSlug);
-      const shareText = `Swing Up research alert: ${live.ticker}/${live.company} — ${live.event}. Includes proof, risk checks, scores, and public tracking. Research support only, not financial advice.`;
+      const shareText = `Swing Up research alert: ${live.ticker}/${live.company} — ${live.event}. Includes proof, risk checks, scores, and public tracking.`;
       return {
         alert,
         sourceMode: "live",

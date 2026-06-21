@@ -75,7 +75,7 @@ export default function OnboardingPreviewPage() {
         </div>
         <div className="card risk-callout">
           <span className="badge">Start here</span>
-          <h2>Research support only</h2>
+          <h2>Proof, risk, and public tracking included.</h2>
           <p>
             Swing Up is market research and decision-support, not financial advice. Scores are
             not guarantees, and users are responsible for their own decisions.

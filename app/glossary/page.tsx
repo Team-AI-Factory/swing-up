@@ -25,7 +25,7 @@ const disclaimer = "Swing Up provides market research and decision-support infor
 
 export default function GlossaryPage() {
   return <div className="page">
-    <section className="hero trust-hero"><div><div className="eyebrow">Glossary</div><h1>Plain-language Swing Up terms.</h1><p>These definitions explain common Swing Up labels in calm, simple language. They are meant to help users understand research pages, not to tell anyone what to buy or sell.</p></div><div className="card risk-callout"><span className="badge">Important</span><h2>Research support only</h2><p>{disclaimer}</p></div></section>
+    <section className="hero trust-hero"><div><div className="eyebrow">Glossary</div><h1>Plain-language Swing Up terms.</h1><p>These definitions explain common Swing Up labels in calm, simple language. They are meant to help users understand research pages, not to tell anyone what to buy or sell.</p></div><div className="card risk-callout"><span className="badge">Important</span><h2>Proof, risk, and public tracking included.</h2><p>{disclaimer}</p></div></section>
     <section className="grid two trust-section">{glossaryTerms.map(([term, definition]) => <article className="card" key={term}><span className="badge">Term</span><h3>{term}</h3><p>{definition}</p></article>)}</section>
   </div>;
 }

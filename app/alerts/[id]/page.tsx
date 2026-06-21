@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 
 function metadataDescription(detail: Awaited<ReturnType<typeof getPublicAlertDetail>>) {
   if (!detail.alert) return "No published public alert matches this slug. Unpublished candidate alerts are not exposed publicly.";
-  return `Swing Up research alert for ${detail.alert.company}/${detail.alert.ticker}: ${detail.alert.event}. Includes proof, risk checks, scores, and public tracking. Research support only, not financial advice.`;
+  return `Swing Up research alert for ${detail.alert.company}/${detail.alert.ticker}: ${detail.alert.event}. Includes proof, risk checks, scores, and public tracking.`;
 }
 
 export async function generateMetadata({ params }: { params: Promise<{ id: string }> }): Promise<Metadata> {
@@ -65,7 +65,7 @@ export default async function AlertDetailPage({ params }: { params: Promise<{ id
 
   const isLive = detail.sourceMode === "live";
   const url = detail.canonicalUrl ?? absoluteUrl(`/alerts/${id}`);
-  const shareText = detail.shareText ?? `Swing Up research alert: ${detail.alert.ticker}/${detail.alert.company} — ${detail.alert.event}. Includes proof, risk checks, scores, and public tracking. Research support only, not financial advice.`;
+  const shareText = detail.shareText ?? `Swing Up research alert: ${detail.alert.ticker}/${detail.alert.company} — ${detail.alert.event}. Includes proof, risk checks, scores, and public tracking.`;
   const jsonLd = {
     "@context": "https://schema.org",
     "@graph": [
@@ -96,7 +96,6 @@ export default async function AlertDetailPage({ params }: { params: Promise<{ id
         <div className="button-row"><Link className="button" href="/ledger">View full Public Ledger</Link><Link className="button" href="/methodology">View methodology</Link><Link className="button" href="/alerts">View more alerts</Link></div>
       </section>
       <ShareTools url={url} text={shareText} />
-      <section className="card"><h2>Research-only disclaimer</h2><p>Swing Up provides market research and decision-support information. It does not guarantee returns. Investing involves risk, including possible loss of capital. Users are responsible for their own decisions.</p></section>
       <section className="card"><h2>Want fresh alert cards before the public page updates?</h2><p>Join Swing Up to follow market alerts, watchlists, proof checks, risk scores, and public tracking.</p><div className="button-row"><Link className="button primary" href="/signup">Join Swing Up</Link><Link className="button" href="/public-ledger">View Public Ledger</Link><Link className="button" href="/dashboard">Open your dashboard</Link></div></section>
     </div>
   );

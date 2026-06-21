@@ -85,7 +85,7 @@ export default function FAQPage() {
         </div>
         <aside className="card risk-callout" aria-label="Important Swing Up disclosure">
           <span className="badge">Important</span>
-          <h2>Research support only</h2>
+          <h2>Proof, risk, and public tracking included.</h2>
           <p>{requiredDisclosure}</p>
         </aside>
       </section>

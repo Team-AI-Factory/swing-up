@@ -24,8 +24,8 @@ export const SOURCE_DEFINITIONS: SourceDefinition[] = [
   { name: "Google News RSS", required: true, route: "app/api/ears/google-news/run/route.ts", adapter: "lib/ears/google-news.ts", notes: "Required public RSS ear." },
   { name: "openFDA", required: true, route: "app/api/ears/openfda/run/route.ts", adapter: "lib/ears/openfda.ts", notes: "Required public FDA/regulatory ear." },
   { name: "ClinicalTrials.gov", required: false, disabledReason: "No production adapter is wired yet; optional for first alert.", notes: "Optional clinical-trials source intentionally excluded from first-alert gate until implemented." },
-  { name: "FRED", required: true, route: "app/api/ears/fred/run/route.ts", adapter: "lib/ears/fred.ts", apiKey: "FRED_API_KEY", notes: "Required macro ear. Public fallback can degrade, but FRED_API_KEY is the production Railway variable." },
-  { name: "FRED Macro", required: true, route: "app/api/ears/fred/run/route.ts", adapter: "lib/ears/fred.ts", apiKey: "FRED_API_KEY", notes: "Canonical macro source runner name for FRED." },
+  { name: "FRED", required: false, route: "app/api/ears/fred/run/route.ts", adapter: "lib/ears/fred.ts", disabledReason: "Alias for FRED Macro; non-blocking to avoid duplicate blockers for the same macro dependency.", notes: "Alias for canonical FRED Macro source." },
+  { name: "FRED Macro", required: true, route: "app/api/ears/fred/run/route.ts", adapter: "lib/ears/fred.ts", notes: "Required canonical macro ear; uses public FRED fredgraph CSV mode without an API key. FRED_API_KEY may be configured for future API mode but is not required by this adapter." },
   { name: "FMP", required: false, route: "app/api/ears/fmp/run/route.ts", adapter: "lib/ears/fmp.ts", apiKey: "FMP_API_KEY", notes: "Optional paid market ear; missing key should not block first alert." },
   { name: "Marketaux", required: false, route: "app/api/ears/marketaux/run/route.ts", adapter: "lib/ears/marketaux.ts", apiKey: "MARKETAUX_API_KEY", notes: "Optional paid news ear." },
   { name: "Polygon", required: false, route: "app/api/ears/polygon/run/route.ts", adapter: "lib/ears/polygon.ts", apiKey: "POLYGON_API_KEY", notes: "Optional paid market data ear." },
@@ -78,7 +78,10 @@ export async function getSourceCoverage() {
     else status = mapStoredStatus(stored?.status) ?? "connected";
     const real = adapterPresent && routePresent && status !== "stubbed" && status !== "broken_route" && status !== "not_wired";
     const blocker = source.required && !["connected", "degraded"].includes(status);
-    return { source: source.name, required: source.required, optional: !source.required, status, realOrStubbed: real ? "real" : "stubbed", apiKeyNeeded: source.apiKey ?? null, railwayVariableNeeded: source.apiKey && !env(source.apiKey) ? source.apiKey : null, lastChecked: stored?.lastChecked ?? null, lastSuccess: stored?.lastSuccess ?? null, blocker, notes: source.disabledReason ?? stored?.notes ?? source.notes };
+    const notes = source.name === "AI Committee" && status === "connected"
+      ? "OpenAI provider configured and AI_COMMITTEE_ENABLED=true; dry-run ready. Real AI Committee run still requires confirmRun=true and does not expose secrets."
+      : source.disabledReason ?? stored?.notes ?? source.notes;
+    return { source: source.name, required: source.required, optional: !source.required, status, realOrStubbed: real ? "real" : "stubbed", apiKeyNeeded: source.apiKey ?? null, railwayVariableNeeded: source.apiKey && !env(source.apiKey) ? source.apiKey : null, lastChecked: stored?.lastChecked ?? null, lastSuccess: stored?.lastSuccess ?? null, blocker, notes };
   });
 }
 

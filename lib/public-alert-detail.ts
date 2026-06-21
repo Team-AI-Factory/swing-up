@@ -53,6 +53,10 @@ function formatDate(value: Date | null | undefined, withTime = false) {
   return new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: withTime ? "short" : undefined, timeZone: "UTC" }).format(value);
 }
 
+function allowedActionLabel(action: string) {
+  return displayAction(action);
+}
+
 function normalizeAction(action: string): AlertAction {
   if (/avoid/i.test(action)) return "AVOID";
   if (/watch|no action|sell review|speculative/i.test(action)) return "WATCH";
@@ -149,10 +153,30 @@ function liveAlertToCard(record: LiveAlertRecord): Alert {
   return {
     id: alertSeoSlug(record),
     action: normalizeAction(record.action),
+    actionLabel: allowedActionLabel(record.action),
     ticker: record.ticker,
     company: record.company,
     event: record.event,
     eventDate: formatDate(record.publishedAt),
+    whatHappened: safeText(entry.whatHappened ?? entry.whatChanged ?? entry.summary, record.event),
+    whyItMatters: safeText(entry.whyItMatters ?? entry.explanation, "This event may affect revenue, margins, demand, valuation, sentiment, regulation, or market timing; detailed logic was not stored yet."),
+    howChecked: [
+      { label: "Filing checked", status: safeText(entry.filingChecked, "No filing check stored for this alert."), available: Boolean(entry.filingChecked) },
+      { label: "News checked", status: record.sources.length ? "Stored source receipts were reviewed." : "No news receipt stored yet.", available: record.sources.length > 0 },
+      { label: "Price/volume checked", status: safeText(entry.priceVolumeChecked ?? entry.priceVolume, "No price/volume detail stored yet."), available: Boolean(entry.priceVolumeChecked ?? entry.priceVolume) },
+      { label: "Fundamentals checked", status: safeText(entry.fundamentalsChecked, "No fundamentals detail stored yet."), available: Boolean(entry.fundamentalsChecked) },
+      { label: "Valuation checked", status: score?.pricedInCheck ?? safeText(entry.valuationChecked ?? entry.pricedInCheck, "No valuation detail stored yet."), available: Boolean(score?.pricedInCheck ?? entry.valuationChecked ?? entry.pricedInCheck) },
+      { label: "Historical pattern checked", status: patternText, available: Boolean(match || entry.historicalPatternMatch || entry.patternMatch) },
+      { label: "Source health checked", status: record.sources.length ? "Source proof available; review receipt dates." : "Source proof pending or unavailable.", available: record.sources.length > 0 },
+    ],
+    proofFound: record.sources.map((source) => ({ sourceType: source.sourceType, explanation: source.summary || "Source receipt attached.", freshness: formatDate(source.collectedAt, true), link: source.receiptUrl ?? undefined })),
+    historicalPatternDetail: patternText || "No strong historical pattern match found yet.",
+    pricedInDetail: score?.pricedInCheck ?? safeText(entry.pricedInCheck, "Priced-in check not available yet"),
+    rippleEffects: [{ group: "Watchlist only", explanation: safeText(entry.rippleEffect ?? entry.whatChanged, "No proven ripple effect available yet."), proofStrength: "weak" }],
+    swingUpView: safeText(entry.swingUpView ?? entry.finalView ?? entry.explanation, "Balanced view pending; review proof, pricing, and risks."),
+    whatWouldChangeView: [safeText(entry.whatWouldChangeView, "Stronger proof, cleaner price confirmation, improved source health, or a stronger historical pattern would change the view.")],
+    sourceHealth: record.sources.length ? "Source proof available; review collection dates on receipts." : "Source proof pending or unavailable.",
+    patternMatchStrength: match?.confidenceLabel ?? safeText(entry.patternMatchStrength, "Not available yet"),
     currentPrice: safeText(entry.currentPrice ?? entry.latestPrice, "Price not available yet"),
     targetRange: target?.lowPrice && target.highPrice ? `$${target.lowPrice.toString()}–$${target.highPrice.toString()}` : safeText(entry.targetRange, "Target not available yet"),
     potentialMove: safeText(entry.potentialMove, "Tracked after publication; market outcomes remain uncertain."),
@@ -166,6 +190,10 @@ function liveAlertToCard(record: LiveAlertRecord): Alert {
     risks: [safeText(entry.risk ?? entry.risks ?? score?.riskLevel, "Risk review not available yet")],
     receipts: record.sources.map(sourceLabel).filter(Boolean),
     publicTrackingResult: trackingStatus,
+    publicAlertUrl: `/alerts/${alertSeoSlug(record)}`,
+    ledgerStatus: trackingStatus,
+    latestTrackedResult: safeText(entry.latestTrackedResult ?? entry.currentTrackedResult ?? entry.result, trackingStatus),
+    priceAtAlert: safeText(entry.priceAtAlert ?? entry.alertPrice, safeText(entry.currentPrice ?? entry.latestPrice, "Not available yet")),
     marketSentimentImpact: marketSentimentFromLedger(entry),
   };
 }

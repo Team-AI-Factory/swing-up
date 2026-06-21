@@ -168,19 +168,40 @@ function formatTelegramMessage(input: {
   publicTrackingLink?: string | null;
 }) {
   const scoreLine = input.score
-    ? `Profit potential score: ${input.score.profitPotentialScore}/100.\nEvidence confidence score: ${input.score.evidenceConfidenceScore}/100.`
-    : "Profit potential score: unavailable.\nEvidence confidence score: unavailable.";
+    ? `Profit Potential: ${input.score.profitPotentialScore}/100\nEvidence Confidence: ${input.score.evidenceConfidenceScore}/100\nRisk Level: ${input.score.riskLevel}`
+    : "Profit Potential: unavailable\nEvidence Confidence: unavailable\nRisk Level: unavailable";
   return [
-    "Swing Up test alert",
-    `Action: ${input.action}`,
-    `Ticker/company: ${input.ticker || "UNKNOWN"} — ${input.company || "Unknown company"}`,
-    `What changed: ${input.event || "No concise event summary available."}`,
-    `Why it matters: Internal gates are checking whether this sourced signal can become a tracked research candidate; promotion preview is ${input.wouldPromote ? "eligible" : "blocked"}.`,
-    `Proof/source: ${input.proofCount} receipt(s) (${input.proofTypes.join(", ") || "none"})${input.proofSource ? `; strongest source: ${input.proofSource}` : ""}.`,
-    `Risk: ${input.score?.riskLevel ?? "unknown"}; this can be wrong, stale, already priced in, or contradicted by later evidence.`,
+    "Swing Up Test Alert",
+    "",
+    `${input.action} — ${input.ticker || "UNKNOWN"} / ${input.company || "Unknown company"}`,
+    "",
+    "What happened:",
+    input.event || "No plain-English event summary is available yet.",
+    "",
+    "Why it matters:",
+    `This signal is being checked because it may affect demand, margins, valuation, sentiment, or timing. Promotion preview is ${input.wouldPromote ? "eligible" : "blocked"}.`,
+    "",
+    "How we checked it:",
+    `${input.proofCount} receipt(s) reviewed: ${input.proofTypes.join(", ") || "none"}${input.proofSource ? `; strongest source: ${input.proofSource}` : ""}. Missing proof lowers confidence.`,
+    "",
+    "Pattern/history:",
+    "No strong historical pattern match found yet.",
+    "",
+    "Ripple effect:",
+    "No proven related-company ripple is attached to this Telegram test preview; treat any weak link as watchlist only.",
+    "",
+    "Risk:",
+    `${input.score?.riskLevel ?? "unknown"}; the signal can be stale, already priced in, contradicted by later evidence, or hurt by broader market pressure.`,
+    "",
+    "Swing Up view:",
+    `This is a ${input.action} because the evidence is ${input.wouldPromote ? "strong enough for internal promotion review" : "not strong enough for promotion yet"}, but final review still depends on proof quality, price action, risk, and tracking readiness.`,
+    "",
+    "Scores:",
     scoreLine,
-    `Public tracking link: ${input.publicTrackingLink || "not created in this run"}`,
-    "Disclaimer: research support only, no guaranteed returns.",
+    "",
+    "Tracking:",
+    input.publicTrackingLink || "pending",
+    "",
     "Internal test only. No user broadcast.",
   ].join("\n");
 }
@@ -275,7 +296,7 @@ export async function POST(request: NextRequest) {
             "Configure DATABASE_URL and provide at least one real raw signal before running the full internal pipeline test.",
         },
         telegramMessagePreview:
-          "Swing Up test alert\nNo raw signal selected because DATABASE_URL is not configured.\nDisclaimer: research support only, no guaranteed returns.\nInternal test only. No user broadcast.",
+          "Swing Up Test Alert\n\nNo raw signal selected because DATABASE_URL is not configured.\n\nTracking:\npending\n\nInternal test only. No user broadcast.",
         sentToTelegram: false,
         telegramStatus:
           telegramConfig.botTokenConfigured && telegramConfig.chatIdConfigured

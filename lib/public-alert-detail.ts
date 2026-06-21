@@ -1,8 +1,26 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
 import { getAlert, type Alert, type AlertAction, type MarketSentimentImpact } from "@/lib/mock-alerts";
+import { absoluteUrl, alertSeoSlug, canonicalAlertPath, jsonRecord, safeText } from "@/lib/seo-alerts";
 
 export type PublicAlertSourceMode = "live" | "mock_fallback" | "missing";
+
+export type PublicTracking = {
+  exists: boolean;
+  alertDate: string;
+  action: string;
+  priceAtAlert: string;
+  latestTrackedPrice: string;
+  oneDay: string;
+  threeDay: string;
+  sevenDay: string;
+  thirtyDay: string;
+  ninetyDay: string;
+  maxGain: string;
+  maxDrawdown: string;
+  finalOutcome: string;
+  status: string;
+};
 
 export type PublicAlertDetail = {
   alert: Alert | null;
@@ -10,6 +28,14 @@ export type PublicAlertDetail = {
   label: string;
   summary: string;
   trackingStatus?: string;
+  canonicalPath?: string;
+  canonicalUrl?: string;
+  publishedAt?: Date | null;
+  updatedAt?: Date | null;
+  tracking?: PublicTracking;
+  sourceHealthLabel?: string;
+  shareText?: string;
+  noindex: boolean;
 };
 
 type LiveAlertRecord = Prisma.AlertGetPayload<{
@@ -22,26 +48,24 @@ type LiveAlertRecord = Prisma.AlertGetPayload<{
   };
 }>;
 
-function text(value: unknown, fallback = "Not available yet") {
-  if (typeof value === "string" && value.trim()) return value.trim();
-  if (typeof value === "number" && Number.isFinite(value)) return String(value);
-  if (value instanceof Prisma.Decimal) return value.toString();
-  return fallback;
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-}
-
-function formatDate(value: Date | null | undefined) {
-  if (!value) return undefined;
-  return new Intl.DateTimeFormat("en", { dateStyle: "medium", timeZone: "UTC" }).format(value);
+function formatDate(value: Date | null | undefined, withTime = false) {
+  if (!value) return "Not available yet";
+  return new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: withTime ? "short" : undefined, timeZone: "UTC" }).format(value);
 }
 
 function normalizeAction(action: string): AlertAction {
   if (/avoid/i.test(action)) return "AVOID";
   if (/watch|no action|sell review|speculative/i.test(action)) return "WATCH";
   return "BUY";
+}
+
+export function displayAction(action: string) {
+  if (/speculative/i.test(action)) return "Speculative Buy Candidate";
+  if (/avoid/i.test(action)) return "Avoid";
+  if (/sell review/i.test(action)) return "Sell Review";
+  if (/no action/i.test(action)) return "No Action";
+  if (/watch/i.test(action)) return "Watch";
+  return "Buy Candidate";
 }
 
 function normalizeRisk(risk: string | undefined): Alert["riskLevel"] {
@@ -51,16 +75,16 @@ function normalizeRisk(risk: string | undefined): Alert["riskLevel"] {
 }
 
 function marketSentimentFromLedger(entry: Record<string, unknown>): Partial<MarketSentimentImpact> | undefined {
-  const sentiment = asRecord(entry.marketSentimentImpact ?? entry.marketSentiment);
+  const sentiment = jsonRecord(entry.marketSentimentImpact ?? entry.marketSentiment);
   if (!Object.keys(sentiment).length) return undefined;
   return {
-    overallMarketMood: text(sentiment.overallMarketMood ?? sentiment.mood, ""),
-    macroRiskLevel: text(sentiment.macroRiskLevel ?? sentiment.riskLevel, ""),
+    overallMarketMood: safeText(sentiment.overallMarketMood ?? sentiment.mood, ""),
+    macroRiskLevel: safeText(sentiment.macroRiskLevel ?? sentiment.riskLevel, ""),
     sentimentSupportScore: Number(sentiment.sentimentSupportScore),
     macroSupportScore: Number(sentiment.macroSupportScore),
     profitPotentialAdjustment: Number(sentiment.profitPotentialAdjustment),
     confidenceAdjustment: Number(sentiment.confidenceAdjustment),
-    explanation: text(sentiment.explanation, ""),
+    explanation: safeText(sentiment.explanation, ""),
   };
 }
 
@@ -71,36 +95,75 @@ function sourceLabel(source: LiveAlertRecord["sources"][number]) {
   return summary || url || source.sourceType;
 }
 
+function trackingFromRecord(record: LiveAlertRecord): PublicTracking {
+  const ledger = record.publicLedger[0];
+  const entry = jsonRecord(ledger?.entry);
+  if (!ledger) {
+    return {
+      exists: false,
+      alertDate: formatDate(record.publishedAt, true),
+      action: displayAction(record.action),
+      priceAtAlert: "Not available yet",
+      latestTrackedPrice: "Not available yet",
+      oneDay: "Pending",
+      threeDay: "Pending",
+      sevenDay: "Pending",
+      thirtyDay: "Pending",
+      ninetyDay: "Pending",
+      maxGain: "Pending",
+      maxDrawdown: "Pending",
+      finalOutcome: "Pending",
+      status: "Still tracking",
+    };
+  }
+  return {
+    exists: true,
+    alertDate: safeText(entry.alertDate, formatDate(record.publishedAt, true)),
+    action: displayAction(safeText(entry.action, record.action)),
+    priceAtAlert: safeText(entry.priceAtAlert ?? entry.alertPrice, "Not available yet"),
+    latestTrackedPrice: safeText(entry.latestPrice ?? entry.currentPrice, "Not available yet"),
+    oneDay: safeText(entry.oneDay ?? entry.oneDayResult ?? entry["1D"], "Pending"),
+    threeDay: safeText(entry.threeDay ?? entry.threeDayResult ?? entry["3D"], "Pending"),
+    sevenDay: safeText(entry.sevenDay ?? entry.sevenDayResult ?? entry["7D"], "Pending"),
+    thirtyDay: safeText(entry.thirtyDay ?? entry.thirtyDayResult ?? entry["30D"], "Pending"),
+    ninetyDay: safeText(entry.ninetyDay ?? entry.ninetyDayResult ?? entry["90D"], "Pending"),
+    maxGain: safeText(entry.maxGain, "Pending"),
+    maxDrawdown: safeText(entry.maxDrawdown, "Pending"),
+    finalOutcome: safeText(entry.finalOutcome ?? entry.outcome, "Pending"),
+    status: safeText(entry.status ?? entry.outcome, "Open"),
+  };
+}
+
 function liveAlertToCard(record: LiveAlertRecord): Alert {
   const score = record.scores[0];
   const target = record.targetPrices[0];
   const match = record.patternMatches[0];
   const ledger = record.publicLedger[0];
-  const entry = asRecord(ledger?.entry);
+  const entry = jsonRecord(ledger?.entry);
   const matchEvent = match?.historicalEvent;
   const patternText = match
-    ? `${text(match.confidenceLabel, "Pattern match")} similarity ${text(match.matchScore ?? match.similarity)}${matchEvent?.title ? ` — ${matchEvent.title}` : ""}${match.matchReason ? `: ${match.matchReason}` : ""}`
-    : text(entry.historicalPatternMatch ?? entry.patternMatch, "Historical pattern match not available yet");
-  const trackingStatus = text(entry.status ?? entry.outcome ?? entry.currentTrackedResult ?? entry.result, ledger ? "Public tracking record is available; checkpoints may still be pending." : "Public tracking is not available yet.");
+    ? `${safeText(match.confidenceLabel, "Pattern match")} similarity ${safeText(match.matchScore ?? match.similarity)}${matchEvent?.title ? ` — ${matchEvent.title}` : ""}${match.matchReason ? `: ${match.matchReason}` : ""}`
+    : safeText(entry.historicalPatternMatch ?? entry.patternMatch, "Historical pattern match not available yet");
+  const trackingStatus = safeText(entry.status ?? entry.outcome ?? entry.currentTrackedResult ?? entry.result, ledger ? "Public tracking record is available; checkpoints may still be pending." : "Tracking pending. This alert will be updated publicly.");
 
   return {
-    id: record.id,
+    id: alertSeoSlug(record),
     action: normalizeAction(record.action),
     ticker: record.ticker,
     company: record.company,
     event: record.event,
     eventDate: formatDate(record.publishedAt),
-    currentPrice: text(entry.currentPrice ?? entry.latestPrice, "Price not available yet"),
-    targetRange: target?.lowPrice && target.highPrice ? `$${target.lowPrice.toString()}–$${target.highPrice.toString()}` : text(entry.targetRange, "Target not available yet"),
-    potentialMove: text(entry.potentialMove, "Tracked after publication; market outcomes remain uncertain."),
+    currentPrice: safeText(entry.currentPrice ?? entry.latestPrice, "Price not available yet"),
+    targetRange: target?.lowPrice && target.highPrice ? `$${target.lowPrice.toString()}–$${target.highPrice.toString()}` : safeText(entry.targetRange, "Target not available yet"),
+    potentialMove: safeText(entry.potentialMove, "Tracked after publication; market outcomes remain uncertain."),
     profitScore: score?.profitPotential ?? Number(entry.profitPotentialScore ?? 0),
     confidenceScore: score?.evidenceConfidence ?? Number(entry.evidenceConfidenceScore ?? 0),
-    riskLevel: normalizeRisk(score?.riskLevel ?? text(entry.riskLevel, "")),
-    pricedInCheck: score?.pricedInCheck ?? text(entry.pricedInCheck, "Priced-in check not available yet"),
+    riskLevel: normalizeRisk(score?.riskLevel ?? safeText(entry.riskLevel, "")),
+    pricedInCheck: score?.pricedInCheck ?? safeText(entry.pricedInCheck, "Priced-in check not available yet"),
     patternMatch: patternText,
-    explanation: text(entry.whyItMatters ?? entry.explanation, "Published after final review. Review the evidence, risks, and tracking status before making any independent decision."),
-    rippleEffect: text(entry.whatChanged ?? entry.rippleEffect, record.event),
-    risks: [text(entry.risk ?? entry.risks ?? score?.riskLevel, "Risk review not available yet")],
+    explanation: safeText(entry.whyItMatters ?? entry.explanation, "Published after final review. Review the evidence, risks, and tracking status before making any independent decision."),
+    rippleEffect: safeText(entry.whatChanged ?? entry.rippleEffect, record.event),
+    risks: [safeText(entry.risk ?? entry.risks ?? score?.riskLevel, "Risk review not available yet")],
     receipts: record.sources.map(sourceLabel).filter(Boolean),
     publicTrackingResult: trackingStatus,
     marketSentimentImpact: marketSentimentFromLedger(entry),
@@ -130,16 +193,32 @@ export async function getPublicAlertDetail(id: string): Promise<PublicAlertDetai
     const live = await getLivePublishedAlert(id);
     if (live) {
       const alert = liveAlertToCard(live);
-      return { alert, sourceMode: "live", label: "Live published alert", summary: "This page is loaded from a published alert record and related proof, score, pattern, and public tracking tables.", trackingStatus: alert.publicTrackingResult };
+      const path = canonicalAlertPath(live, live.publicLedger[0]?.publicSlug);
+      const shareText = `Swing Up research alert: ${live.ticker}/${live.company} — ${live.event}. Includes proof, risk checks, scores, and public tracking. Research support only, not financial advice.`;
+      return {
+        alert,
+        sourceMode: "live",
+        label: "Live published alert",
+        summary: "This published research page includes proof, risk checks, scores, and public tracking.",
+        trackingStatus: alert.publicTrackingResult,
+        canonicalPath: path,
+        canonicalUrl: absoluteUrl(path),
+        publishedAt: live.publishedAt,
+        updatedAt: live.publicLedger[0]?.createdAt ?? live.publishedAt,
+        tracking: trackingFromRecord(live),
+        sourceHealthLabel: live.sources.length ? "Source proof available; review collection dates on receipts." : "Source proof pending or unavailable.",
+        shareText,
+        noindex: false,
+      };
     }
   } catch {
-    // Fall through to labelled preview or missing state. Public pages must not crash on data outages.
+    // Public pages must not crash on data outages.
   }
 
   const preview = getAlert(id);
   if (preview?.id === id) {
-    return { alert: preview, sourceMode: "mock_fallback", label: "Preview example — mock data", summary: "No matching published alert was found. This clearly labelled mock example is shown only for product preview." };
+    return { alert: preview, sourceMode: "mock_fallback", label: "Preview example — mock data", summary: "No matching published alert was found. This clearly labelled mock example is not indexable.", noindex: true };
   }
 
-  return { alert: null, sourceMode: "missing", label: "Alert not found", summary: "No published public alert matches this id. Unpublished candidate alerts are not exposed publicly." };
+  return { alert: null, sourceMode: "missing", label: "Alert not found", summary: "No published public alert matches this slug. Unpublished candidate alerts are not exposed publicly.", noindex: true };
 }

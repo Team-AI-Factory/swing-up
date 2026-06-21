@@ -113,7 +113,7 @@ export default function MarketSentimentPage() {
       <section className="trust-section">
         <div className="card">
           <span className="badge">Disclaimer</span>
-          <h2>Research support only</h2>
+          <h2>Proof, risk, and public tracking included.</h2>
           <p>
             Swing Up provides market research and decision-support information. It does not guarantee returns. Investing involves risk, including possible loss of capital. Users are responsible for their own decisions.
           </p>

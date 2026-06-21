@@ -88,7 +88,7 @@ export default function TrustCenterPage() {
 
         <article className="card risk-callout">
           <span className="badge">Required disclosure</span>
-          <h2>Research support only</h2>
+          <h2>Proof, risk, and public tracking included.</h2>
           <p>{requiredDisclosure}</p>
         </article>
       </section>

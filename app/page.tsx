@@ -70,7 +70,6 @@ export default function LandingPage() {
             Swing Up checks filings, news, insider moves, price action, fundamentals, macro shifts, regulatory events, crypto, FX, source health, and ripple effects — then turns the strongest signals into simple alert cards with <span>proof-backed</span> risk, scores, and public tracking.
           </p>
           <CtaButtons />
-          <p className={styles.note}>Research support only. No guaranteed returns.</p>
         </div>
 
         <aside className={styles.alertCard} aria-label="Sample market alert card">

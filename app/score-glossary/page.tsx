@@ -126,7 +126,7 @@ export default function ScoreGlossaryPage() {
         </div>
         <div className="card risk-callout">
           <span className="badge">Important</span>
-          <h2>Research support only</h2>
+          <h2>Proof, risk, and public tracking included.</h2>
           <p>{disclaimer}</p>
         </div>
       </section>

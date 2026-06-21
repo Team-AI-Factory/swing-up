@@ -10,7 +10,7 @@ const termSections = [
   },
   {
     eyebrow: "Outcome limits",
-    title: "No guaranteed returns",
+    title: "Risk and responsibility",
     body:
       "Research signals, scores, alerts, examples, and educational content are informational only. They should not be interpreted as promises, predictions, or assurances about future performance.",
   },

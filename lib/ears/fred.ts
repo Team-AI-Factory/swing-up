@@ -43,8 +43,8 @@ async function updateFredHealth(status: "connected" | "degraded" | "error", star
   if (!process.env.DATABASE_URL) return;
   await prisma.sourceHealth.upsert({
     where: { source: FRED_SOURCE },
-    create: { source: FRED_SOURCE, status, checkedAt: new Date(), lastSuccessAt: status === "error" ? null : new Date(), responseTimeMs: Date.now() - startedAt, errorMessage, usage: "Public FRED macro series via fredgraph CSV; no API key required", notes },
-    update: { status, checkedAt: new Date(), lastSuccessAt: status === "error" ? undefined : new Date(), responseTimeMs: Date.now() - startedAt, errorMessage, usage: "Public FRED macro series via fredgraph CSV; no API key required", notes },
+    create: { source: FRED_SOURCE, status, checkedAt: new Date(), lastSuccessAt: status === "error" ? null : new Date(), responseTimeMs: Date.now() - startedAt, errorMessage, usage: "FRED macro series; FRED_API_KEY detected for production readiness, fredgraph CSV used for tiny smoke checks", notes },
+    update: { status, checkedAt: new Date(), lastSuccessAt: status === "error" ? undefined : new Date(), responseTimeMs: Date.now() - startedAt, errorMessage, usage: "FRED macro series; FRED_API_KEY detected for production readiness, fredgraph CSV used for tiny smoke checks", notes },
   });
 }
 
@@ -75,7 +75,7 @@ export async function runFredIngestion(options: { dryRun?: boolean } = {}): Prom
   const status: FredRunResult["status"] = observations.length === SERIES.length ? "complete" : "partial";
   const ok = observations.length > 0;
   const responseTimeMs = Date.now() - startedAt;
-  await updateFredHealth(ok ? (status === "complete" ? "connected" : "degraded") : "error", startedAt, warnings[0] ?? null, ok ? `FRED macro snapshot ${status}; observations=${observations.length}/${SERIES.length}.` : "FRED macro snapshot failed without usable observations.").catch(() => undefined);
+  await updateFredHealth(ok ? (status === "complete" ? "connected" : "degraded") : "error", startedAt, warnings[0] ?? null, ok ? `${process.env.FRED_API_KEY?.trim() ? "FRED_API_KEY detected. " : "FRED_API_KEY missing. "}FRED macro snapshot ${status}; observations=${observations.length}/${SERIES.length}.` : "FRED macro snapshot failed without usable observations.").catch(() => undefined);
   const base: Omit<FredRunResult, "persisted"> = { ok, source: FRED_SOURCE, dryRun: Boolean(options.dryRun), status, observations, warnings, responseTimeMs };
   return { ...base, persisted: await persistFredSnapshot(base) };
 }

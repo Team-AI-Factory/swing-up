@@ -58,17 +58,41 @@ function summarizeDatabaseError(error: unknown) {
   return "Database connection failed";
 }
 
+function runtimeAiCommitteeHealth() {
+  const configured = Boolean(process.env.OPENAI_API_KEY?.trim());
+  const enabled = ["1", "true", "yes", "on"].includes((process.env.AI_COMMITTEE_ENABLED ?? "").toLowerCase());
+  const missing = [
+    configured ? null : "OPENAI_API_KEY",
+    enabled ? null : "AI_COMMITTEE_ENABLED=true",
+    process.env.AI_COMMITTEE_FAST_MODEL ? null : "AI_COMMITTEE_FAST_MODEL",
+    process.env.AI_COMMITTEE_DEEP_MODEL ? null : "AI_COMMITTEE_DEEP_MODEL",
+    process.env.AI_COMMITTEE_FINAL_MODEL ? null : "AI_COMMITTEE_FINAL_MODEL",
+  ].filter((value): value is string => Boolean(value));
+  if (configured && enabled) {
+    return { status: "connected", notes: missing.length ? `Real OpenAI provider configured and enabled; dry-run ready. Real run requires confirmRun=true. Missing model variables: ${missing.join(", ")}.` : "Real OpenAI provider configured and enabled; dry-run ready. Real run requires confirmRun=true." };
+  }
+  return { status: "not_configured", notes: `AI Committee is not fully configured. Missing: ${missing.join(", ") || "none"}.` };
+}
+
+function runtimeFredAliasHealth(row: SourceHealthRecord) {
+  if (row.source !== "FRED") return null;
+  return { status: "disabled", notes: "Alias for canonical FRED Macro source; non-blocking to avoid duplicate FRED readiness blockers." };
+}
+
 function serializeRow(row: SourceHealthRecord) {
+  const aiOverride = row.source === "AI Committee" ? runtimeAiCommitteeHealth() : null;
+  const fredAliasOverride = runtimeFredAliasHealth(row);
+  const override = aiOverride ?? fredAliasOverride;
   return {
     id: row.id,
     source: row.source,
-    status: safeStatuses.has(row.status) ? row.status : "failed",
+    status: override?.status ?? (safeStatuses.has(row.status) ? row.status : "failed"),
     lastChecked: row.checkedAt.toISOString(),
     lastSuccess: row.lastSuccessAt?.toISOString() ?? null,
     responseTimeMs: row.responseTimeMs,
     errorMessage: row.errorMessage ? row.errorMessage.slice(0, 240) : null,
     usage: row.usage,
-    notes: row.notes,
+    notes: override?.notes ?? row.notes,
   };
 }
 

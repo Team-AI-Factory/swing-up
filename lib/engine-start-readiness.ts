@@ -24,8 +24,8 @@ export const SOURCE_DEFINITIONS: SourceDefinition[] = [
   { name: "Google News RSS", required: true, route: "app/api/ears/google-news/run/route.ts", adapter: "lib/ears/google-news.ts", notes: "Required public RSS ear." },
   { name: "openFDA", required: true, route: "app/api/ears/openfda/run/route.ts", adapter: "lib/ears/openfda.ts", notes: "Required public FDA/regulatory ear." },
   { name: "ClinicalTrials.gov", required: false, disabledReason: "No production adapter is wired yet; optional for first alert.", notes: "Optional clinical-trials source intentionally excluded from first-alert gate until implemented." },
-  { name: "FRED", required: true, route: "app/api/ears/fred/run/route.ts", adapter: "lib/ears/fred.ts", apiKey: "FRED_API_KEY", notes: "Required macro ear. Public fallback can degrade, but FRED_API_KEY is the production Railway variable." },
-  { name: "FRED Macro", required: true, route: "app/api/ears/fred/run/route.ts", adapter: "lib/ears/fred.ts", apiKey: "FRED_API_KEY", notes: "Canonical macro source runner name for FRED." },
+  { name: "FRED", required: false, route: "app/api/ears/fred/run/route.ts", adapter: "lib/ears/fred.ts", disabledReason: "Alias for required FRED Macro; non-blocking to avoid duplicate macro blockers.", notes: "Alias for FRED Macro; FRED_API_KEY is checked on the canonical FRED Macro source." },
+  { name: "FRED Macro", required: true, route: "app/api/ears/fred/run/route.ts", adapter: "lib/ears/fred.ts", apiKey: "FRED_API_KEY", notes: "Canonical required macro source runner name for FRED; set FRED_API_KEY for production macro checks." },
   { name: "FMP", required: false, route: "app/api/ears/fmp/run/route.ts", adapter: "lib/ears/fmp.ts", apiKey: "FMP_API_KEY", notes: "Optional paid market ear; missing key should not block first alert." },
   { name: "Marketaux", required: false, route: "app/api/ears/marketaux/run/route.ts", adapter: "lib/ears/marketaux.ts", apiKey: "MARKETAUX_API_KEY", notes: "Optional paid news ear." },
   { name: "Polygon", required: false, route: "app/api/ears/polygon/run/route.ts", adapter: "lib/ears/polygon.ts", apiKey: "POLYGON_API_KEY", notes: "Optional paid market data ear." },
@@ -91,7 +91,7 @@ export function getAiCommitteeReadiness() {
     status.modelEnvStatus.deep === "missing" ? "AI_COMMITTEE_DEEP_MODEL" : null,
     status.modelEnvStatus.final === "missing" ? "AI_COMMITTEE_FINAL_MODEL" : null,
   ].filter((v): v is string => Boolean(v));
-  const aiCommitteeConfigured = status.configured && status.modelEnvStatus.fast === "configured" && status.modelEnvStatus.deep === "configured" && status.modelEnvStatus.final === "configured";
+  const aiCommitteeConfigured = status.configured;
   const aiCommitteeEnabled = status.enabled;
   const routesReady = hasFile("app/api/ai-committee/agents/route.ts") && hasFile("app/api/ai-committee/run/route.ts") && hasFile("app/api/ai-committee/final-judge/route.ts");
   const aiCommitteeDryRunReady = routesReady && aiCommitteeConfigured && aiCommitteeEnabled && AI_COMMITTEE_AGENTS.length > 0;

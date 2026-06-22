@@ -141,7 +141,10 @@ export default function EngineControlPanel() {
   const [rows, setRows] = useState<StageResult[]>([]);
   const [message, setMessage] = useState("Load the startup status, then run stages in order. Nothing here sends Telegram.");
 
-  const stage2Approved = useMemo(() => rows.some((row) => row.stage === "Stage 2 real AI review, no publish" && row.approved === true && row.published !== true), [rows]);
+  const stage2Approved = useMemo(
+    () => rows.some((row) => row.stage === "Stage 2 real AI review, no publish" && row.approved === true && row.signalFound === true && row.published !== true),
+    [rows],
+  );
 
   function headers() {
     return secret.trim() ? { ...SAFE_HEADERS, "x-internal-api-secret": secret.trim() } : SAFE_HEADERS;
@@ -228,7 +231,7 @@ export default function EngineControlPanel() {
         <button style={styles.button} disabled={busy !== null} onClick={() => runStage("stage1")}>Stage 1 Dry Run</button>
         <button style={styles.button} disabled={busy !== null} onClick={() => runStage("stage2")}>Stage 2 Real AI Review, No Publish</button>
         <label style={styles.checkbox}><input type="checkbox" checked={confirmPublish} onChange={(event) => setConfirmPublish(event.target.checked)} /> I understand this will publish at most 1 approved alert to the public website.</label>
-        <button style={{ ...styles.button, ...styles.danger }} disabled={busy !== null || !stage2Approved || !confirmPublish} onClick={() => runStage("stage3")}>Stage 3 Publish One Approved Website Alert</button>
+        <button title={!stage2Approved ? "Stage 2 must approve one real publishable signal before Stage 3 is enabled." : !confirmPublish ? "Check the confirmation box to publish at most one approved website alert." : undefined} style={{ ...styles.button, ...styles.danger }} disabled={busy !== null || !stage2Approved || !confirmPublish} onClick={() => runStage("stage3")}>Stage 3 Publish One Approved Website Alert</button>
       </section>
 
       <section style={styles.card}>

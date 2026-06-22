@@ -15,9 +15,9 @@ import { DEFAULT_SEC_TICKERS, runSecEdgarIngestion } from "@/lib/ears/sec-edgar"
 import { runWikidataRippleIngestion } from "@/lib/ears/wikidata-ripple";
 
 const SOURCE_ALIASES = {
-  "alpha-vantage": "Alpha Vantage",
-  alphavantage: "Alpha Vantage",
-  alpha: "Alpha Vantage",
+  "alpha-vantage": "Alpha Vantage Catalyst",
+  alphavantage: "Alpha Vantage Catalyst",
+  alpha: "Alpha Vantage Catalyst",
   gdelt: "GDELT",
   google: "Google News RSS",
   googlenews: "Google News RSS",
@@ -26,10 +26,10 @@ const SOURCE_ALIASES = {
   coingecko: "CoinGecko",
   frankfurter: "Frankfurter FX",
   "frankfurter-fx": "Frankfurter FX",
-  fmp: "FMP",
+  fmp: "FMP Catalyst",
   fred: "FRED Macro",
   "fred-macro": "FRED Macro",
-  marketaux: "Marketaux",
+  marketaux: "Marketaux Catalyst",
   finra: "FINRA Short Sale",
   "finra-short-sale": "FINRA Short Sale",
   "finra-short": "FINRA Short Sale",
@@ -44,7 +44,7 @@ const SOURCE_ALIASES = {
   "wikidata-ripple": "Wikidata",
 } as const;
 
-export const DEFAULT_SOURCE_RUN_ORDER = ["GDELT", "Google News RSS", "CoinGecko", "Frankfurter FX", "FMP", "Alpha Vantage", "FRED Macro", "Marketaux", "FINRA Short Sale", "Polygon", "openFDA", "SEC EDGAR", "Wikidata"] as const;
+export const DEFAULT_SOURCE_RUN_ORDER = ["FMP Catalyst", "Marketaux Catalyst", "Alpha Vantage Catalyst", "SEC EDGAR", "GDELT", "Google News RSS", "openFDA", "CoinGecko", "FRED Macro", "Frankfurter FX", "FINRA Short Sale", "Polygon", "Wikidata"] as const;
 export type RunnableSourceName = (typeof DEFAULT_SOURCE_RUN_ORDER)[number];
 
 type SourceRunOptions = {
@@ -155,16 +155,16 @@ async function runOne(sourceName: RunnableSourceName, options: Required<Pick<Sou
     } else if (sourceName === "Frankfurter FX") {
       const result = await runFrankfurterIngestion({ dryRun: options.dryRun, force: options.force });
       finished = finishRow(row, { status: result.skipped ? "skipped" : result.ok && !result.rateLimited ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.pairsChecked, signalsCreated: result.signalsCreated, duplicatesSkipped: 0, errors: [...result.errors, ...(result.skipReason ? [result.skipReason] : [])], sourceHealthUpdated: sourceHealthCanPersist() && !result.skipped });
-    } else if (sourceName === "FMP") {
+    } else if (sourceName === "FMP Catalyst") {
       const result = await runFmpIngestion({ dryRun: options.dryRun, limit: options.limit, tickers: options.tickers });
       finished = finishRow(row, { status: result.status === "missing_key" ? "skipped" : result.ok && !result.errors.length ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.recordsChecked, signalsCreated: result.rawSignalsCreated, duplicatesSkipped: result.duplicatesSkipped, errors: result.status === "missing_key" ? ["missing_key"] : result.errors, sourceHealthUpdated: sourceHealthCanPersist() });
-    } else if (sourceName === "Alpha Vantage") {
+    } else if (sourceName === "Alpha Vantage Catalyst") {
       const result = await runAlphaVantageIngestion({ dryRun: options.dryRun, limit: options.limit, tickers: options.tickers });
       finished = finishRow(row, { status: result.status === "missing_key" ? "skipped" : result.ok && !result.errors.length ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.recordsChecked, signalsCreated: result.rawSignalsCreated, duplicatesSkipped: result.duplicatesSkipped, errors: result.status === "missing_key" ? ["missing_key"] : result.errors, sourceHealthUpdated: sourceHealthCanPersist() });
     } else if (sourceName === "FRED Macro") {
       const result = await runFredIngestion({ dryRun: options.dryRun });
       finished = finishRow(row, { status: result.ok && result.status === "complete" ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.observations.length, signalsCreated: result.persisted ? 1 : 0, duplicatesSkipped: 0, errors: result.warnings, sourceHealthUpdated: sourceHealthCanPersist() });
-    } else if (sourceName === "Marketaux") {
+    } else if (sourceName === "Marketaux Catalyst") {
       const result = await runMarketauxIngestion({ dryRun: options.dryRun });
       finished = finishRow(row, { status: result.status === "missing_key" ? "skipped" : result.ok && !result.errors.length ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.articlesChecked, signalsCreated: result.rawSignalsCreated, duplicatesSkipped: result.duplicatesSkipped, errors: result.status === "missing_key" ? ["missing_key"] : result.errors, sourceHealthUpdated: sourceHealthCanPersist() });
     } else if (sourceName === "FINRA Short Sale") {

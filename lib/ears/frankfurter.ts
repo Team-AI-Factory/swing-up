@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
+import { trySaveRawDataToR2 } from "@/lib/r2-warehouse";
 import { writeRawSignal } from "@/lib/raw-signal-writer";
 
 export const FRANKFURTER_SOURCE = "Frankfurter FX";
@@ -76,6 +77,7 @@ async function fetchLatestRates(signal: AbortSignal) {
   }
 
   const body = (await response.json()) as FrankfurterLatestResponse;
+  await trySaveRawDataToR2("frankfurter", "fx", BASE_CURRENCY, "latest", new Date().toISOString().slice(0,10), body, { recordCount: Object.keys(body.rates ?? {}).length });
   if (!body.rates || body.base !== BASE_CURRENCY) {
     throw new Error("Frankfurter FX returned an unexpected latest-rates payload");
   }

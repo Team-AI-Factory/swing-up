@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
+import { trySaveRawDataToR2 } from "@/lib/r2-warehouse";
 import { writeRawSignal, type WriteRawSignalResult } from "@/lib/raw-signal-writer";
 import { catalystImpactScores } from "@/lib/catalyst-impact-scoring";
 
@@ -93,6 +94,7 @@ async function fetchAlphaVantage(functionName: string, ticker: string, apiKey: s
   const note = typeof json.Note === "string" ? json.Note : typeof json.Information === "string" ? json.Information : null;
   if (note) throw new Error(`Alpha Vantage ${functionName} for ${ticker}: ${note.slice(0, 160)}`);
   if (typeof json["Error Message"] === "string") throw new Error(`Alpha Vantage ${functionName} for ${ticker}: ${json["Error Message"]}`);
+  await trySaveRawDataToR2("alpha-vantage", "stocks", ticker, functionName.toLowerCase(), new Date().toISOString().slice(0,10), json, { sourceUrl: url.toString().replace(apiKey, "[redacted]") });
   return json;
 }
 
@@ -108,6 +110,7 @@ async function fetchAlphaVantageNews(ticker: string, apiKey: string) {
   const note = typeof json.Note === "string" ? json.Note : typeof json.Information === "string" ? json.Information : null;
   if (note) throw new Error(`Alpha Vantage NEWS_SENTIMENT for ${ticker}: ${note.slice(0, 160)}`);
   if (typeof json["Error Message"] === "string") throw new Error(`Alpha Vantage NEWS_SENTIMENT for ${ticker}: ${json["Error Message"]}`);
+  await trySaveRawDataToR2("alpha-vantage", "stocks", ticker, "news-sentiment", new Date().toISOString().slice(0,10), json, { sourceUrl: url.toString().replace(apiKey, "[redacted]"), recordCount: Array.isArray(json.feed) ? json.feed.length : 0 });
   return json;
 }
 

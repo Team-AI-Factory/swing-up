@@ -1,0 +1,3 @@
+import { NextResponse } from "next/server";
+import { checkR2Health, getRawWarehouseStatus } from "@/lib/r2-warehouse";
+export async function GET(){ const date=new Date().toISOString().slice(0,10); const plans=[ ["fmp","stocks"], ["fmp","crypto"], ["sec","tickers"], ["coingecko","coins"], ["frankfurter","currencies"], ["fred","series-registry"], ["marketaux","entities"], ["alpha-vantage","stocks"] ].map(([source,assetType])=>`universe/${source}/${assetType}/${date}.json`); const [r2,w]=await Promise.all([checkR2Health(false), getRawWarehouseStatus()]); return NextResponse.json({ ok:true, rawWarehouseAvailable:r2.connected, assetUniverseSnapshotsSaved:w.snapshots, latestSavedRawObjectPath:w.latest?.r2Key ?? null, plannedSnapshotKeys:plans }); }

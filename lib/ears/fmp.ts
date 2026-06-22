@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
+import { trySaveRawDataToR2 } from "@/lib/r2-warehouse";
 import { writeRawSignal, type WriteRawSignalResult } from "@/lib/raw-signal-writer";
 import { catalystImpactScores } from "@/lib/catalyst-impact-scoring";
 
@@ -82,6 +83,7 @@ async function fetchFmp<T>(path: string, apiKey: string, params: Record<string, 
   const response = await fetch(url, { headers: { Accept: "application/json", apikey: apiKey }, cache: "no-store" });
   if (!response.ok) { const err = new Error(`FMP ${path} failed with status ${response.status}`) as Error & { status?: number; path?: string }; err.status = response.status; err.path = path; throw err; }
   const json = (await response.json()) as unknown;
+  await trySaveRawDataToR2("fmp", "stocks", params.symbol ?? null, path.replace(/^\//g, "").replace(/\//g, "-"), new Date().toISOString().slice(0,10), json, { sourceUrl: url.toString().replace(apiKey, "[redacted]"), recordCount: Array.isArray(json) ? json.length : 1 });
   if (json && typeof json === "object" && !Array.isArray(json) && typeof (json as Record<string, unknown>).Error === "string") throw new Error(`FMP ${path}: ${(json as Record<string, string>).Error.slice(0, 160)}`);
   return json as T;
 }

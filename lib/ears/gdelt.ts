@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db/client";
+import { trySaveRawDataToR2 } from "@/lib/r2-warehouse";
 import { writeRawSignal } from "@/lib/raw-signal-writer";
 
 export const GDELT_SOURCE = "GDELT";
@@ -286,6 +287,7 @@ async function fetchGdeltArticles(
   if (!response.ok)
     throw new Error(`GDELT request failed with status ${response.status}`);
   const data = (await response.json()) as GdeltDocResponse;
+  await trySaveRawDataToR2("gdelt", "events", null, "events", new Date().toISOString().slice(0,10), data, { sourceUrl: url.toString(), recordCount: data.articles?.length ?? 0 });
   return data.articles ?? [];
 }
 

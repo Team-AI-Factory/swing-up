@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
+import { trySaveRawDataToR2 } from "@/lib/r2-warehouse";
 import { writeRawSignal } from "@/lib/raw-signal-writer";
 
 export const SEC_EDGAR_SOURCE = "SEC EDGAR";
@@ -235,7 +236,9 @@ async function fetchJson<T>(url: string): Promise<T> {
     throw new Error(`SEC request failed with status ${response.status}`);
   }
 
-  return (await response.json()) as T;
+  const json = (await response.json()) as T;
+  await trySaveRawDataToR2("sec", "filings", null, "submissions", new Date().toISOString().slice(0,10), json, { sourceUrl: url, recordCount: Array.isArray(json) ? json.length : 1 });
+  return json;
 }
 
 async function fetchText(url: string): Promise<string> {
@@ -245,7 +248,9 @@ async function fetchText(url: string): Promise<string> {
     throw new Error(`SEC request failed with status ${response.status}`);
   }
 
-  return response.text();
+  const text = await response.text();
+  await trySaveRawDataToR2("sec", "filings", null, "filing-document", new Date().toISOString().slice(0,10), { text }, { sourceUrl: url, recordCount: 1 });
+  return text;
 }
 
 async function loadTickerMap() {

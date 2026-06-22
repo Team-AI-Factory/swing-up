@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db/client";
+import { trySaveRawDataToR2 } from "@/lib/r2-warehouse";
 import { writeRawSignal } from "@/lib/raw-signal-writer";
 
 export const GOOGLE_NEWS_RSS_SOURCE = "Google News RSS";
@@ -147,7 +148,9 @@ async function fetchQuery(query: string) {
   try {
     const response = await fetch(url, { cache: "no-store", headers: { Accept: "application/rss+xml, application/xml, text/xml" }, signal: controller.signal });
     if (!response.ok) throw new Error(`Google News RSS returned ${response.status}`);
-    return parseRss(await response.text(), query);
+    const text = await response.text();
+    await trySaveRawDataToR2("google-news-rss", "news", null, "rss", new Date().toISOString().slice(0,10), { xml: text }, { sourceUrl: url.toString(), recordCount: 1 });
+    return parseRss(text, query);
   } finally {
     clearTimeout(timeout);
   }

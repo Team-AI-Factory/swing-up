@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db/client";
+import { trySaveRawDataToR2 } from "@/lib/r2-warehouse";
 import { writeRawSignal } from "@/lib/raw-signal-writer";
 
 export const COINGECKO_SOURCE = "CoinGecko";
@@ -97,7 +98,9 @@ async function fetchCoinGeckoPrices(assets: readonly CoinGeckoAsset[]) {
   const response = await fetch(url, { headers: headers(), cache: "no-store" });
   if (response.status === 429) throw new Error(RATE_LIMIT_MESSAGE);
   if (!response.ok) throw new Error(`CoinGecko request failed with status ${response.status}`);
-  return (await response.json()) as CoinGeckoSimplePriceResponse;
+  const json = (await response.json()) as CoinGeckoSimplePriceResponse;
+  await trySaveRawDataToR2("coingecko", "crypto", null, "simple-price", new Date().toISOString().slice(0,10), json, { sourceUrl: url.toString(), recordCount: Object.keys(json).length });
+  return json;
 }
 
 function toQuote(asset: CoinGeckoAsset, row?: CoinGeckoSimplePriceRow): CoinGeckoQuote {

@@ -68,6 +68,7 @@ export type SourceRunSummaryRow = {
   sourceHealthStatus: string | null;
   sourceHealthUpdated: boolean;
   dryRun: boolean;
+  diagnosis?: string | null;
 };
 
 export type SourceRunSummary = {
@@ -102,6 +103,17 @@ function sourceHealthCanPersist() {
 function baseRow(sourceName: RunnableSourceName, dryRun: boolean, startedAt = new Date()): SourceRunSummaryRow {
   const timestamp = startedAt.toISOString();
   return { sourceName, status: "error", startedAt: timestamp, finishedAt: timestamp, recordsChecked: 0, signalsCreated: 0, duplicatesSkipped: 0, errors: [], error: null, sourceHealthStatus: null, sourceHealthUpdated: false, dryRun };
+}
+
+function fmpDiagnosis(errors: string[]) {
+  const joined = errors.join(" ").toLowerCase();
+  if (!joined) return null;
+  if (joined.includes("invalid_key") || joined.includes("invalid") || joined.includes("api key")) return "invalid key";
+  if (joined.includes("plan_blocked") || joined.includes("plan") || joined.includes("restricted")) return "plan restricted";
+  if (joined.includes("wrong_endpoint_path") || joined.includes("404")) return "wrong endpoint path";
+  if (joined.includes("provider_403") || joined.includes("403") || joined.includes("forbidden")) return "provider forbidden";
+  if (joined.includes("missing_key")) return "key unreadable";
+  return "provider_error";
 }
 
 function finishRow(row: SourceRunSummaryRow, patch: Partial<SourceRunSummaryRow>): SourceRunSummaryRow {
@@ -157,7 +169,8 @@ async function runOne(sourceName: RunnableSourceName, options: Required<Pick<Sou
       finished = finishRow(row, { status: result.skipped ? "skipped" : result.ok && !result.rateLimited ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.pairsChecked, signalsCreated: result.signalsCreated, duplicatesSkipped: 0, errors: [...result.errors, ...(result.skipReason ? [result.skipReason] : [])], sourceHealthUpdated: sourceHealthCanPersist() && !result.skipped });
     } else if (sourceName === "FMP Catalyst") {
       const result = await runFmpIngestion({ dryRun: options.dryRun, limit: options.limit, tickers: options.tickers });
-      finished = finishRow(row, { status: result.status === "missing_key" ? "skipped" : result.ok && !result.errors.length ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.recordsChecked, signalsCreated: result.rawSignalsCreated, duplicatesSkipped: result.duplicatesSkipped, errors: result.status === "missing_key" ? ["missing_key"] : result.errors, sourceHealthUpdated: sourceHealthCanPersist() });
+      const errors = result.status === "missing_key" ? ["missing_key"] : result.errors;
+      finished = finishRow(row, { status: result.status === "missing_key" ? "skipped" : result.ok && !result.errors.length ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.recordsChecked, signalsCreated: result.rawSignalsCreated, duplicatesSkipped: result.duplicatesSkipped, errors, diagnosis: fmpDiagnosis([...(result.providerIssue ? [result.providerIssue] : []), ...errors]), sourceHealthUpdated: sourceHealthCanPersist() });
     } else if (sourceName === "Alpha Vantage Catalyst") {
       const result = await runAlphaVantageIngestion({ dryRun: options.dryRun, limit: options.limit, tickers: options.tickers });
       finished = finishRow(row, { status: result.status === "missing_key" ? "skipped" : result.ok && !result.errors.length ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.recordsChecked, signalsCreated: result.rawSignalsCreated, duplicatesSkipped: result.duplicatesSkipped, errors: result.status === "missing_key" ? ["missing_key"] : result.errors, sourceHealthUpdated: sourceHealthCanPersist() });

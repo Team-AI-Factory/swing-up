@@ -24,6 +24,7 @@ type StageResult = {
   warnings: string[];
   nextAction: string;
   discovery: { inspected: number | null; selectedFailed: string; nextSource: string; stage2Allowed: boolean | null };
+  proofEnrichment: { attempted: boolean | null; added: number; receipts: string; urls: string; missing: string; best: string };
   json: JsonValue | null;
 };
 
@@ -94,6 +95,19 @@ function findString(value: JsonValue | null, names: string[]): string | null {
   return null;
 }
 
+function proofEnrichmentSummary(json: JsonValue | null) {
+  const summary = isRecord(json) && isRecord(json.proofEnrichmentSummary) ? json.proofEnrichmentSummary : null;
+  const best = summary && isRecord(summary.bestProofBundle) ? summary.bestProofBundle : null;
+  return {
+    attempted: summary && typeof summary.attempted === "boolean" ? summary.attempted : null,
+    added: summary && typeof summary.proofAddedCount === "number" ? summary.proofAddedCount : 0,
+    receipts: summary && Array.isArray(summary.receiptsAdded) ? summary.receiptsAdded.map(String).join(" | ") || "—" : "—",
+    urls: summary && Array.isArray(summary.urlsAdded) ? summary.urlsAdded.map(String).join(" | ") || "—" : "—",
+    missing: summary && Array.isArray(summary.stillMissingProof) ? summary.stillMissingProof.map(String).join(" | ") || "—" : "—",
+    best: best ? JSON.stringify({ rawSignalId: best.rawSignalId, safeToPromote: best.safeToPromote, proofAddedTypes: best.proofAddedTypes }) : "—",
+  };
+}
+
 function discoverySummary(json: JsonValue | null) {
   const summary = isRecord(json) && isRecord(json.candidateDiscoverySummary) ? json.candidateDiscoverySummary : null;
   const ranked = summary && Array.isArray(summary.rankedCandidates) ? summary.rankedCandidates : [];
@@ -132,6 +146,7 @@ function summarize(stage: string, route: string, method: "GET" | "POST", httpSta
     warnings,
     nextAction,
     discovery: discoverySummary(json),
+    proofEnrichment: proofEnrichmentSummary(json),
     json,
   };
 }
@@ -255,8 +270,8 @@ export default function EngineControlPanel() {
         <h2 style={styles.heading}>Run table</h2>
         <div style={styles.tableWrap}>
           <table style={styles.table}>
-            <thead><tr>{["stage", "route", "HTTP status", "result", "signal found", "signals inspected", "selected failure", "next source", "Stage 2 allowed", "AI Committee ran", "approved", "published", "public alert URL", "public ledger URL", "blockers", "warnings", "next action"].map((head) => <th key={head} style={styles.th}>{head}</th>)}</tr></thead>
-            <tbody>{rows.map((row) => <tr key={`${row.stage}-${row.route}`}><td style={styles.td}>{row.stage}</td><td style={styles.td}>{row.method} {row.route}</td><td style={styles.td}>{row.status}</td><td style={styles.td}>{row.result}</td><td style={styles.td}>{yesNo(row.signalFound)}</td><td style={styles.td}>{row.discovery.inspected ?? "—"}</td><td style={styles.td}>{row.discovery.selectedFailed}</td><td style={styles.td}>{row.discovery.nextSource}</td><td style={styles.td}>{yesNo(row.discovery.stage2Allowed)}</td><td style={styles.td}>{yesNo(row.aiCommitteeRan)}</td><td style={styles.td}>{yesNo(row.approved)}</td><td style={styles.td}>{yesNo(row.published)}</td><td style={styles.td}>{row.publicAlertUrl ? <a href={row.publicAlertUrl}>{row.publicAlertUrl}</a> : "—"}</td><td style={styles.td}>{row.publicLedgerUrl ? <a href={row.publicLedgerUrl}>{row.publicLedgerUrl}</a> : "—"}</td><td style={styles.td}>{row.blockers.join(" | ") || "—"}</td><td style={styles.td}>{row.warnings.join(" | ") || "—"}</td><td style={styles.td}>{row.nextAction}</td></tr>)}</tbody>
+            <thead><tr>{["stage", "route", "HTTP status", "result", "signal found", "signals inspected", "selected failure", "next source", "proof enrichment", "proof added", "proof URLs", "proof still missing", "Stage 2 allowed", "AI Committee ran", "approved", "published", "public alert URL", "public ledger URL", "blockers", "warnings", "next action"].map((head) => <th key={head} style={styles.th}>{head}</th>)}</tr></thead>
+            <tbody>{rows.map((row) => <tr key={`${row.stage}-${row.route}`}><td style={styles.td}>{row.stage}</td><td style={styles.td}>{row.method} {row.route}</td><td style={styles.td}>{row.status}</td><td style={styles.td}>{row.result}</td><td style={styles.td}>{yesNo(row.signalFound)}</td><td style={styles.td}>{row.discovery.inspected ?? "—"}</td><td style={styles.td}>{row.discovery.selectedFailed}</td><td style={styles.td}>{row.discovery.nextSource}</td><td style={styles.td}>{yesNo(row.proofEnrichment.attempted)}</td><td style={styles.td}>{row.proofEnrichment.added}</td><td style={styles.td}>{row.proofEnrichment.urls}</td><td style={styles.td}>{row.proofEnrichment.missing}</td><td style={styles.td}>{yesNo(row.discovery.stage2Allowed)}</td><td style={styles.td}>{yesNo(row.aiCommitteeRan)}</td><td style={styles.td}>{yesNo(row.approved)}</td><td style={styles.td}>{yesNo(row.published)}</td><td style={styles.td}>{row.publicAlertUrl ? <a href={row.publicAlertUrl}>{row.publicAlertUrl}</a> : "—"}</td><td style={styles.td}>{row.publicLedgerUrl ? <a href={row.publicLedgerUrl}>{row.publicLedgerUrl}</a> : "—"}</td><td style={styles.td}>{row.blockers.join(" | ") || "—"}</td><td style={styles.td}>{row.warnings.join(" | ") || "—"}</td><td style={styles.td}>{row.nextAction}</td></tr>)}</tbody>
           </table>
         </div>
       </section>

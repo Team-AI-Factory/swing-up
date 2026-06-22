@@ -10,11 +10,12 @@ import { runApprovalGate } from "@/lib/approval-gate/approval-gate";
 import { POST as candidateFactoryPOST } from "@/app/api/internal/candidate-factory-run/route";
 import { POST as publishApprovedAlertPOST } from "@/app/api/internal/publish-approved-alert/route";
 import { runSources } from "@/lib/ops/source-runner";
+import { enrichProofForRawSignal } from "@/lib/proof-enrichment";
 
 export const dynamic = "force-dynamic";
 
 type JsonRecord = Record<string, unknown>;
-type DiscoveryRow = { rawSignalId: string; source: string; title: string; receivedAt: string; passed: boolean; blockedReasons: string[]; qualityScore: number; evidenceConfidenceScore: number; suggestedAction: string | null };
+type DiscoveryRow = { rawSignalId: string; source: string; title: string; receivedAt: string; passed: boolean; blockedReasons: string[]; qualityScore: number; evidenceConfidenceScore: number; suggestedAction: string | null; beforeProofCount: number; afterProofCount: number; beforeConfidenceScore: number; afterConfidenceScore: number; passedAfterEnrichment: boolean; proofAddedTypes: string[]; stillMissingProof: string[] };
 
 const DEFAULT_PAYLOAD = {
   dryRun: true,
@@ -103,6 +104,7 @@ function baseResponse(input: { dryRun: boolean; readiness: unknown; warnings?: s
     selectedRawSignalId: null as string | null,
     rawSignalSummary: {},
     candidateDiscoverySummary: {},
+    proofEnrichmentSummary: {},
     candidateSummary: {},
     evidencePackSummary: {},
     aiCommitteeSummary: {},
@@ -177,19 +179,29 @@ export async function POST(request: NextRequest) {
     if (!candidateAlertId && rawSignals.length) {
       const discoveryRows: DiscoveryRow[] = [];
       const blockedReasonsBySignal: Record<string, string[]> = {};
+      const enrichedProofsBySignal: Record<string, unknown[]> = {};
+      const enrichmentSummaries = [] as JsonRecord[];
       for (const signal of rawSignals) {
-        const candidateResponse = await candidateFactoryPOST(new NextRequest("http://internal/api/internal/candidate-factory-run", { method: "POST", body: JSON.stringify({ dryRun: true, rawSignalId: signal.id, limit: 1, requireProof: true }) }));
+        const beforeResponse = await candidateFactoryPOST(new NextRequest("http://internal/api/internal/candidate-factory-run", { method: "POST", body: JSON.stringify({ dryRun: true, rawSignalId: signal.id, limit: 1, requireProof: true }) }));
+        const beforeJson = await jsonFromRoute(beforeResponse);
+        const beforeProof = obj((Array.isArray(beforeJson.proofSummary) ? beforeJson.proofSummary : [])[0]);
+        const enrichment = await enrichProofForRawSignal(signal);
+        enrichedProofsBySignal[signal.id] = enrichment.enrichmentProofs;
+        enrichmentSummaries.push({ rawSignalId: signal.id, proofAddedCount: enrichment.enrichmentProofs.length, proofAddedTypes: enrichment.enrichmentProofs.map((proof) => proof.type), receiptsAdded: enrichment.enrichmentProofs.map((proof) => proof.source), urlsAdded: enrichment.enrichmentProofs.map((proof) => proof.url).filter(Boolean), stillMissingProof: enrichment.missingProof, safeToPromote: enrichment.safeToPromote, strongestProof: enrichment.strongestProof, warnings: enrichment.enrichmentWarnings, errors: enrichment.enrichmentErrors, attempts: enrichment.enrichmentAttempts });
+        const candidateResponse = await candidateFactoryPOST(new NextRequest("http://internal/api/internal/candidate-factory-run", { method: "POST", body: JSON.stringify({ dryRun: true, rawSignalId: signal.id, limit: 1, requireProof: true, extraProofsBySignal: { [signal.id]: enrichment.enrichmentProofs } }) }));
         const candidateJson = await jsonFromRoute(candidateResponse);
         const blocked = obj(candidateJson.blockedReasons)[signal.id];
         const reasons = arrayText(blocked);
         if (reasons.length) blockedReasonsBySignal[signal.id] = reasons;
         const scores = Array.isArray(candidateJson.scoreSummary) ? candidateJson.scoreSummary : [];
         const score = obj(scores[0]);
-        discoveryRows.push({ rawSignalId: signal.id, source: signal.source, title: signal.title, receivedAt: signal.receivedAt.toISOString(), passed: reasons.length === 0, blockedReasons: reasons, qualityScore: typeof score.qualityScore === "number" ? score.qualityScore : 0, evidenceConfidenceScore: typeof score.evidenceConfidenceScore === "number" ? score.evidenceConfidenceScore : 0, suggestedAction: text(score.suggestedAction) || null });
+        discoveryRows.push({ rawSignalId: signal.id, source: signal.source, title: signal.title, receivedAt: signal.receivedAt.toISOString(), passed: reasons.length === 0, blockedReasons: reasons, qualityScore: typeof score.qualityScore === "number" ? score.qualityScore : 0, evidenceConfidenceScore: typeof score.evidenceConfidenceScore === "number" ? score.evidenceConfidenceScore : 0, suggestedAction: text(score.suggestedAction) || null, beforeProofCount: typeof beforeProof.proofCount === "number" ? beforeProof.proofCount : 0, afterProofCount: enrichment.proofCount, beforeConfidenceScore: typeof beforeProof.confidenceScore === "number" ? beforeProof.confidenceScore : 0, afterConfidenceScore: enrichment.confidenceScore, passedAfterEnrichment: reasons.length === 0, proofAddedTypes: enrichment.enrichmentProofs.map((proof) => proof.type), stillMissingProof: enrichment.missingProof });
       }
       const rankedCandidates = discoveryRows.sort((a, b) => (a.passed === b.passed ? 0 : a.passed ? -1 : 1) || Number(b.qualityScore ?? 0) - Number(a.qualityScore ?? 0) || sourceRank(String(a.source), preferredSources) - sourceRank(String(b.source), preferredSources));
       const best = rankedCandidates.find((row) => row.passed === true);
       const recommendedNextSource = String(rankedCandidates.find((row) => row.passed !== true)?.source ?? preferredSources[0] ?? "SEC EDGAR");
+      const proofEnrichmentSummary = { attempted: true, signalsEnriched: enrichmentSummaries.filter((item) => Number(item.proofAddedCount ?? 0) > 0).length, proofAddedCount: enrichmentSummaries.reduce((total, item) => total + Number(item.proofAddedCount ?? 0), 0), receiptsAdded: enrichmentSummaries.flatMap((item) => Array.isArray(item.receiptsAdded) ? item.receiptsAdded : []), urlsAdded: enrichmentSummaries.flatMap((item) => Array.isArray(item.urlsAdded) ? item.urlsAdded : []), stillMissingProof: Array.from(new Set(enrichmentSummaries.flatMap((item) => Array.isArray(item.stillMissingProof) ? item.stillMissingProof.map(String) : []))), bestProofBundle: enrichmentSummaries.find((item) => item.rawSignalId === best?.rawSignalId) ?? enrichmentSummaries[0] ?? null, enrichmentBlockedReasons: blockedReasonsBySignal };
+      output.proofEnrichmentSummary = proofEnrichmentSummary;
       const summary = { rawSignalsInspected: discoveryRows.length, sourcesInspected: Array.from(new Set(discoveryRows.map((row) => row.source))), passCount: rankedCandidates.filter((row) => row.passed).length, blockedCount: rankedCandidates.filter((row) => !row.passed).length, bestCandidateRawSignalId: best?.rawSignalId ?? null, rankedCandidates, blockedReasonsBySignal, recommendedNextSource, recommendedNextAction: best ? "Stage 1 found a candidate strong enough for Stage 2 AI review. Re-run with dryRun=false and confirmRun=true to create/review exactly one candidate." : `No inspected signal passed safety gates. Try ${recommendedNextSource} next and add independent proof before Stage 2.` };
       output.candidateDiscoverySummary = summary;
       const rawSignal = best ? rawSignals.find((signal) => signal.id === best.rawSignalId) ?? null : rawSignals[0] ?? null;
@@ -197,7 +209,7 @@ export async function POST(request: NextRequest) {
       output.rawSignalSummary = rawSignal ? { id: rawSignal.id, source: rawSignal.source, ticker: rawSignal.ticker, title: rawSignal.title, receivedAt: rawSignal.receivedAt } : {};
       if (!best) return NextResponse.json({ ...output, stage: "no_publish", approved: false, publishable: false, published: false, blockers: [], nextRecommendedAction: summary.recommendedNextAction });
       if (dryRun) return NextResponse.json({ ...output, stage: "dry_run_planned", approved: false, publishable: false, published: false, stage2Allowed: true, nextRecommendedAction: summary.recommendedNextAction });
-      const createResponse = await candidateFactoryPOST(new NextRequest("http://internal/api/internal/candidate-factory-run", { method: "POST", body: JSON.stringify({ dryRun: false, rawSignalId: String(best.rawSignalId), limit: 1, requireProof: true }) }));
+      const createResponse = await candidateFactoryPOST(new NextRequest("http://internal/api/internal/candidate-factory-run", { method: "POST", body: JSON.stringify({ dryRun: false, rawSignalId: String(best.rawSignalId), limit: 1, requireProof: true, extraProofsBySignal: { [String(best.rawSignalId)]: enrichedProofsBySignal[String(best.rawSignalId)] ?? [] } }) }));
       const candidateJson = await jsonFromRoute(createResponse);
       const created = Array.isArray(candidateJson.createdCandidateIds) ? candidateJson.createdCandidateIds.map(String) : [];
       candidateAlertId = created[0] ?? "";

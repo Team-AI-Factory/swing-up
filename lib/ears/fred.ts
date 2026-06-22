@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
+import { trySaveRawDataToR2 } from "@/lib/r2-warehouse";
 
 export const FRED_SOURCE = "FRED Macro";
 
@@ -35,7 +36,9 @@ async function fetchSeries(series: (typeof SERIES)[number], signal: AbortSignal)
   const url = `${FRED_GRAPH_CSV_URL}?id=${encodeURIComponent(series.id)}`;
   const response = await fetch(url, { cache: "no-store", signal, headers: { Accept: "text/csv" } });
   if (!response.ok) throw new Error(`FRED ${series.id} request failed with status ${response.status}`);
-  const latest = parseLatest(await response.text(), series.id);
+  const text = await response.text();
+  await trySaveRawDataToR2("fred", "series", series.id, "observations", new Date().toISOString().slice(0,10), { csv: text }, { sourceUrl: url.toString(), recordCount: text.split("\n").length });
+  const latest = parseLatest(text, series.id);
   return { seriesId: series.id, label: series.label, kind: series.kind, date: latest.date, value: latest.value, sourceUrl: url };
 }
 

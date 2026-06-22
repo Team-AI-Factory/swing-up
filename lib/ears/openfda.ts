@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
+import { trySaveRawDataToR2 } from "@/lib/r2-warehouse";
 import { writeRawSignal, type RawSignalImportanceHint } from "@/lib/raw-signal-writer";
 
 export const OPENFDA_SOURCE = "openFDA";
@@ -187,6 +188,7 @@ async function fetchEndpoint(endpoint: OpenFdaEndpoint, limit: number, apiKey: s
     const response = await fetch(url, { cache: "no-store", signal: controller.signal, headers: { Accept: "application/json" } });
     if (!response.ok) throw new Error(`${endpoint.key} failed with status ${response.status}`);
     const body = (await response.json()) as OpenFdaResponse;
+    await trySaveRawDataToR2("openfda", "drug", null, "adverse-events", new Date().toISOString().slice(0,10), body, { sourceUrl: url.toString(), recordCount: body.results?.length ?? 0 });
     return (body.results ?? []).map((record) => normalizeRecord(record, endpoint)).filter((event): event is NormalizedOpenFdaEvent => Boolean(event));
   } finally {
     clearTimeout(timeout);

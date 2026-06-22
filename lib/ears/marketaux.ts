@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
+import { trySaveRawDataToR2 } from "@/lib/r2-warehouse";
 import { writeRawSignal, type WriteRawSignalResult } from "@/lib/raw-signal-writer";
 import { catalystImpactScores } from "@/lib/catalyst-impact-scoring";
 
@@ -139,6 +140,7 @@ async function fetchMarketauxQuery(query: (typeof SAFE_QUERIES)[number], apiKey:
     const response = await fetch(url, { cache: "no-store", headers: { Accept: "application/json" }, signal: controller.signal });
     if (!response.ok) throw new Error(`Marketaux ${query.label} returned ${response.status}`);
     const payload = (await response.json()) as MarketauxResponse;
+    await trySaveRawDataToR2("marketaux", "news", query.symbols, "news", new Date().toISOString().slice(0,10), payload, { sourceUrl: url.toString().replace(apiKey, "[redacted]"), recordCount: payload.data?.length ?? 0 });
     return (payload.data ?? []).slice(0, MAX_ARTICLES_PER_QUERY);
   } finally {
     clearTimeout(timeout);

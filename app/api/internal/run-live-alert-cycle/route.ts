@@ -54,7 +54,7 @@ function isApproved(value: unknown) {
   return record.approvalRecommendation === "approve" && arrayText(record.failedChecks).length === 0;
 }
 
-const DISCOVERY_SOURCE_PRIORITY = ["SEC EDGAR", "GDELT", "Google News RSS", "openFDA", "CoinGecko", "FRED Macro", "Frankfurter FX"] as const;
+const DISCOVERY_SOURCE_PRIORITY = ["FMP Catalyst", "Marketaux Catalyst", "Alpha Vantage Catalyst", "SEC EDGAR", "GDELT", "Google News RSS", "openFDA", "CoinGecko", "FRED Macro", "Frankfurter FX"] as const;
 type DiscoverySource = (typeof DISCOVERY_SOURCE_PRIORITY)[number];
 
 function discoverySources(preferredSources: string[]) {
@@ -104,6 +104,7 @@ function baseResponse(input: { dryRun: boolean; readiness: unknown; warnings?: s
     selectedRawSignalId: null as string | null,
     rawSignalSummary: {},
     candidateDiscoverySummary: {},
+    catalystSummary: {},
     proofEnrichmentSummary: {},
     candidateSummary: {},
     evidencePackSummary: {},
@@ -137,7 +138,8 @@ export async function POST(request: NextRequest) {
   let candidateAlertId = text(body.candidateAlertId);
   const source = text(body.source);
   const preferredSources = discoverySources(arrayText(body.preferredSources).length ? arrayText(body.preferredSources) : source ? [source] : []);
-  const maxRawSignalsToInspect = Math.min(Math.max(int(body.maxRawSignalsToInspect, 10), 1), 25);
+  const maxRawSignalsToInspect = Math.min(Math.max(int(body.maxRawSignalsToInspect, 10), 1), 50);
+  const maxFreshPullPerSource = Math.min(Math.max(int(body.maxFreshPullPerSource, 1), 1), 3);
   const excludeLowImpactReferenceUpdates = bool(body.excludeLowImpactReferenceUpdates, true);
   const warnings = ["Telegram is disabled for this founder website test; this route never sends Telegram.", ...(confirmSend || allowTelegram ? ["confirmSend/allowTelegram were ignored by this route."] : [])];
 
@@ -154,9 +156,13 @@ export async function POST(request: NextRequest) {
     let rawSignals: RawSignal[] = rawSignalId ? await prisma.rawSignal.findMany({ where: { id: rawSignalId }, take: 1 }) : await latestUsefulRawSignals(maxRawSignalsToInspect, preferredSources, excludeLowImpactReferenceUpdates);
     let sourceSummary: unknown = null;
     if (rawSignals.length < Math.min(3, maxRawSignalsToInspect) && !rawSignalId) {
-      sourceSummary = await runSources({ dryRun, sources: preferredSources, limit: 1, force: false }).catch((error: unknown) => ({ ok: false, error: error instanceof Error ? error.message : "source_run_unavailable" }));
+      sourceSummary = await runSources({ dryRun, sources: preferredSources.slice(0, 4), limit: maxFreshPullPerSource, force: false }).catch((error: unknown) => ({ ok: false, error: error instanceof Error ? error.message : "source_run_unavailable" }));
       rawSignals = await latestUsefulRawSignals(maxRawSignalsToInspect, preferredSources, excludeLowImpactReferenceUpdates);
     }
+    const catalystSources = ["FMP Catalyst", "Marketaux Catalyst", "Alpha Vantage Catalyst"];
+    const catalystRawSignals = rawSignals.filter((signal) => catalystSources.includes(signal.source));
+    const catalystSummaryBase = { configuredProviders: catalystSources.filter((provider) => provider === "FMP Catalyst" ? Boolean(process.env.FMP_API_KEY) : provider === "Marketaux Catalyst" ? Boolean(process.env.MARKETAUX_API_KEY) : Boolean(process.env.ALPHA_VANTAGE_API_KEY)), attemptedProviders: Array.isArray(obj(sourceSummary).table) ? (obj(sourceSummary).table as unknown[]).map((row) => text(obj(row).sourceName)).filter((name) => catalystSources.includes(name)) : [], catalystSignalsFound: catalystRawSignals.length, catalystSignalsSaved: typeof obj(sourceSummary).table === "object" && Array.isArray(obj(sourceSummary).table) ? (obj(sourceSummary).table as unknown[]).filter((row) => catalystSources.includes(text(obj(row).sourceName))).reduce((sum: number, row) => sum + (typeof obj(row).signalsCreated === "number" ? obj(row).signalsCreated as number : 0), 0) : 0, catalystSignalsInspected: 0, topCatalystCandidates: catalystRawSignals.slice(0, 5).map((signal) => ({ id: signal.id, source: signal.source, ticker: signal.ticker, title: signal.title, receivedAt: signal.receivedAt.toISOString() })), missingCatalystKeys: [["FMP_API_KEY", process.env.FMP_API_KEY], ["MARKETAUX_API_KEY", process.env.MARKETAUX_API_KEY], ["ALPHA_VANTAGE_API_KEY", process.env.ALPHA_VANTAGE_API_KEY]].filter(([, value]) => !value).map(([key]) => key), degradedCatalystProviders: Array.isArray(obj(sourceSummary).table) ? (obj(sourceSummary).table as unknown[]).filter((row) => catalystSources.includes(text(obj(row).sourceName)) && text(obj(row).status) === "degraded").map((row) => text(obj(row).sourceName)) : [], failedCatalystProviders: Array.isArray(obj(sourceSummary).table) ? (obj(sourceSummary).table as unknown[]).filter((row) => catalystSources.includes(text(obj(row).sourceName)) && text(obj(row).status) === "error").map((row) => text(obj(row).sourceName)) : [] };
+    output.catalystSummary = catalystSummaryBase;
     if (!rawSignals.length && !candidateAlertId) {
       const summary = {
         rawSignalsInspected: 0,
@@ -203,6 +209,7 @@ export async function POST(request: NextRequest) {
       const proofEnrichmentSummary = { attempted: true, signalsEnriched: enrichmentSummaries.filter((item) => Number(item.proofAddedCount ?? 0) > 0).length, proofAddedCount: enrichmentSummaries.reduce((total, item) => total + Number(item.proofAddedCount ?? 0), 0), receiptsAdded: enrichmentSummaries.flatMap((item) => Array.isArray(item.receiptsAdded) ? item.receiptsAdded : []), urlsAdded: enrichmentSummaries.flatMap((item) => Array.isArray(item.urlsAdded) ? item.urlsAdded : []), stillMissingProof: Array.from(new Set(enrichmentSummaries.flatMap((item) => Array.isArray(item.stillMissingProof) ? item.stillMissingProof.map(String) : []))), bestProofBundle: enrichmentSummaries.find((item) => item.rawSignalId === best?.rawSignalId) ?? enrichmentSummaries[0] ?? null, enrichmentBlockedReasons: blockedReasonsBySignal };
       output.proofEnrichmentSummary = proofEnrichmentSummary;
       const summary = { rawSignalsInspected: discoveryRows.length, sourcesInspected: Array.from(new Set(discoveryRows.map((row) => row.source))), passCount: rankedCandidates.filter((row) => row.passed).length, blockedCount: rankedCandidates.filter((row) => !row.passed).length, bestCandidateRawSignalId: best?.rawSignalId ?? null, rankedCandidates, blockedReasonsBySignal, recommendedNextSource, recommendedNextAction: best ? "Stage 1 found a candidate strong enough for Stage 2 AI review. Re-run with dryRun=false and confirmRun=true to create/review exactly one candidate." : `No inspected signal passed safety gates. Try ${recommendedNextSource} next and add independent proof before Stage 2.` };
+      output.catalystSummary = { ...catalystSummaryBase, catalystSignalsInspected: discoveryRows.filter((row) => catalystSources.includes(row.source)).length, topCatalystCandidates: discoveryRows.filter((row) => catalystSources.includes(row.source)).slice(0, 5) };
       output.candidateDiscoverySummary = summary;
       const rawSignal = best ? rawSignals.find((signal) => signal.id === best.rawSignalId) ?? null : rawSignals[0] ?? null;
       output.selectedRawSignalId = rawSignal?.id ?? null;

@@ -2,15 +2,15 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
 import { writeRawSignal, type WriteRawSignalResult } from "@/lib/raw-signal-writer";
 
-export const ALPHA_VANTAGE_SOURCE = "Alpha Vantage";
-export const DEFAULT_ALPHA_VANTAGE_TICKERS = ["AAPL", "MSFT"] as const;
+export const ALPHA_VANTAGE_SOURCE = "Alpha Vantage Catalyst";
+export const DEFAULT_ALPHA_VANTAGE_TICKERS = ["NVDA", "AAPL", "MSFT", "TSLA", "AMZN", "META", "GOOGL", "AMD", "SHOP", "PLTR"] as const;
 
 const ALPHA_VANTAGE_BASE_URL = "https://www.alphavantage.co/query";
-const DEFAULT_LIMIT = DEFAULT_ALPHA_VANTAGE_TICKERS.length;
-const MAX_LIMIT = DEFAULT_ALPHA_VANTAGE_TICKERS.length;
+const DEFAULT_LIMIT = 3;
+const MAX_LIMIT = 3;
 
 type AlphaVantageRunOptions = { dryRun?: boolean; limit?: number; tickers?: string[] };
-type AlphaVantageEventType = "quote_movement" | "price_volume_confirmation" | "company_overview_change" | "light_fundamentals";
+type AlphaVantageEventType = "stock_news" | "management_commentary" | "earnings_transcript" | "analyst_estimate" | "quote_movement" | "price_volume_confirmation" | "company_overview_change" | "light_fundamentals";
 type AlphaVantageJson = Record<string, unknown>;
 
 type AlphaVantageCandidate = {
@@ -67,8 +67,8 @@ async function updateAlphaVantageSourceHealth(status: "connected" | "not_configu
   const now = new Date();
   await prisma.sourceHealth.upsert({
     where: { source: ALPHA_VANTAGE_SOURCE },
-    create: { source: ALPHA_VANTAGE_SOURCE, status, checkedAt: now, lastSuccessAt: status === "connected" || status === "degraded" ? now : null, responseTimeMs: Date.now() - startedAt, errorMessage, usage: "Optional Alpha Vantage backup market/fundamental ear", notes: "Uses ALPHA_VANTAGE_API_KEY in free-mode for tiny samples of quote, overview, and lightweight fundamentals data. Creates raw signals only; never final alerts." },
-    update: { status, checkedAt: now, lastSuccessAt: status === "connected" || status === "degraded" ? now : undefined, responseTimeMs: Date.now() - startedAt, errorMessage, usage: "Optional Alpha Vantage backup market/fundamental ear", notes: "Uses ALPHA_VANTAGE_API_KEY in free-mode for tiny samples of quote, overview, and lightweight fundamentals data. Creates raw signals only; never final alerts." },
+    create: { source: ALPHA_VANTAGE_SOURCE, status, checkedAt: now, lastSuccessAt: status === "connected" || status === "degraded" ? now : null, responseTimeMs: Date.now() - startedAt, errorMessage, usage: "Alpha Vantage live catalyst ear", notes: "Uses ALPHA_VANTAGE_API_KEY for tiny news sentiment plus backup quote/fundamental catalyst samples. Creates raw live_catalyst raw signals only; never final alerts." },
+    update: { status, checkedAt: now, lastSuccessAt: status === "connected" || status === "degraded" ? now : undefined, responseTimeMs: Date.now() - startedAt, errorMessage, usage: "Alpha Vantage live catalyst ear", notes: "Uses ALPHA_VANTAGE_API_KEY for tiny news sentiment plus backup quote/fundamental catalyst samples. Creates raw live_catalyst raw signals only; never final alerts." },
   });
   return status;
 }
@@ -85,6 +85,33 @@ async function fetchAlphaVantage(functionName: string, ticker: string, apiKey: s
   if (note) throw new Error(`Alpha Vantage ${functionName} for ${ticker}: ${note.slice(0, 160)}`);
   if (typeof json["Error Message"] === "string") throw new Error(`Alpha Vantage ${functionName} for ${ticker}: ${json["Error Message"]}`);
   return json;
+}
+
+async function fetchAlphaVantageNews(ticker: string, apiKey: string) {
+  const url = new URL(ALPHA_VANTAGE_BASE_URL);
+  url.searchParams.set("function", "NEWS_SENTIMENT");
+  url.searchParams.set("tickers", ticker);
+  url.searchParams.set("limit", "1");
+  url.searchParams.set("apikey", apiKey);
+  const response = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store" });
+  if (!response.ok) throw new Error(`Alpha Vantage NEWS_SENTIMENT for ${ticker} failed with status ${response.status}`);
+  const json = (await response.json()) as AlphaVantageJson;
+  const note = typeof json.Note === "string" ? json.Note : typeof json.Information === "string" ? json.Information : null;
+  if (note) throw new Error(`Alpha Vantage NEWS_SENTIMENT for ${ticker}: ${note.slice(0, 160)}`);
+  if (typeof json["Error Message"] === "string") throw new Error(`Alpha Vantage NEWS_SENTIMENT for ${ticker}: ${json["Error Message"]}`);
+  return json;
+}
+
+function alphaNewsCandidates(ticker: string, response: AlphaVantageJson): AlphaVantageCandidate[] {
+  const feed = Array.isArray(response.feed) ? response.feed.slice(0, 1) as AlphaVantageJson[] : [];
+  return feed.flatMap((item) => {
+    const title = stringValue(item.title);
+    const url = stringValue(item.url);
+    if (!title || !url) return [];
+    const detected = dateValue(stringValue(item.time_published));
+    const sentiment = numberValue(item.overall_sentiment_score);
+    return [{ ticker, eventType: "stock_news" as const, title, summary: stringValue(item.summary) ?? `${ticker} Alpha Vantage stock-specific news sentiment catalyst.`, url, detectedAt: detected, duplicateKey: `${ALPHA_VANTAGE_SOURCE}|stock_news|${ticker}|${url}`, importanceHint: sentiment !== null && Math.abs(sentiment) >= 0.35 ? "high" as const : "medium" as const, payload: { sourceCategory: "live_catalyst", catalystType: "stock_news", provider: ALPHA_VANTAGE_SOURCE, ticker, headline: title, summary: stringValue(item.summary), publishedAt: detected, url, rawPayloadReference: "NEWS_SENTIMENT", urgency: "medium", likelyMarketImpact: sentiment !== null && Math.abs(sentiment) >= 0.35 ? "high" : "medium", sourceReliability: "medium", proofNeeds: ["company_or_second_news_receipt", "price_reaction_if_material"], sentimentScore: sentiment, relevanceScore: item.relevance_score ?? null, item: item as Prisma.InputJsonObject, noFinalAlerts: true } }];
+  });
 }
 
 function numberValue(value: unknown) {
@@ -151,7 +178,7 @@ function fundamentalsCandidate(ticker: string, income: AlphaVantageJson): AlphaV
 }
 
 async function writeCandidate(candidate: AlphaVantageCandidate, dryRun: boolean): Promise<WriteRawSignalResult> {
-  return writeRawSignal({ sourceName: ALPHA_VANTAGE_SOURCE, sourceType: "market", ticker: candidate.ticker, eventType: candidate.eventType, title: candidate.title, summary: candidate.summary, url: candidate.url, detectedAt: candidate.detectedAt, duplicateKey: candidate.duplicateKey, qualityHints: { importanceHint: candidate.importanceHint, sourceQuality: "medium", useful: true, reasons: ["Alpha Vantage backup market/fundamental data sample"] }, rawPayload: candidate.payload, dryRun });
+  return writeRawSignal({ sourceName: ALPHA_VANTAGE_SOURCE, sourceType: "news", ticker: candidate.ticker, eventType: candidate.eventType, title: candidate.title, summary: candidate.summary, url: candidate.url, detectedAt: candidate.detectedAt, duplicateKey: candidate.duplicateKey, qualityHints: { importanceHint: candidate.importanceHint, sourceQuality: "medium", useful: true, reasons: ["Alpha Vantage live_catalyst provider data sample"] }, rawPayload: candidate.payload, dryRun });
 }
 
 export async function runAlphaVantageIngestion(options: AlphaVantageRunOptions = {}): Promise<AlphaVantageRunResult> {
@@ -171,12 +198,14 @@ export async function runAlphaVantageIngestion(options: AlphaVantageRunOptions =
   }
 
   for (const ticker of tickers) {
-    const [quote, overview, income] = await Promise.allSettled([
-      fetchAlphaVantage("GLOBAL_QUOTE", ticker, apiKey),
+    const [news, quote, overview, income] = await Promise.allSettled([
+      fetchAlphaVantageNews(ticker, apiKey),
+        fetchAlphaVantage("GLOBAL_QUOTE", ticker, apiKey),
       fetchAlphaVantage("OVERVIEW", ticker, apiKey),
       fetchAlphaVantage("INCOME_STATEMENT", ticker, apiKey),
     ]);
     const candidates: Array<AlphaVantageCandidate | null> = [];
+    if (news.status === "fulfilled") { recordsChecked += Array.isArray(news.value.feed) ? news.value.feed.length : 0; candidates.push(...alphaNewsCandidates(ticker, news.value)); } else errors.push(safeError(news.reason));
     if (quote.status === "fulfilled") { recordsChecked += 1; candidates.push(...quoteCandidates(ticker, quote.value)); } else errors.push(safeError(quote.reason));
     if (overview.status === "fulfilled") { recordsChecked += 1; candidates.push(overviewCandidate(ticker, overview.value)); } else errors.push(safeError(overview.reason));
     if (income.status === "fulfilled") { recordsChecked += 1; candidates.push(fundamentalsCandidate(ticker, income.value)); } else errors.push(safeError(income.reason));

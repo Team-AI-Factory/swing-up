@@ -2,7 +2,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
 import { writeRawSignal, type WriteRawSignalResult } from "@/lib/raw-signal-writer";
 
-export const MARKETAUX_SOURCE = "Marketaux";
+export const MARKETAUX_SOURCE = "Marketaux Catalyst";
 
 const MARKETAUX_NEWS_URL = "https://api.marketaux.com/v1/news/all";
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -154,8 +154,8 @@ async function updateMarketauxSourceHealth(status: "connected" | "not_configured
   const now = new Date();
   await prisma.sourceHealth.upsert({
     where: { source: MARKETAUX_SOURCE },
-    create: { source: MARKETAUX_SOURCE, status, checkedAt: now, lastSuccessAt: status === "connected" || status === "degraded" ? now : null, responseTimeMs: Date.now() - startedAt, errorMessage, usage: "Marketaux free-mode structured financial news ear", notes: "Uses MARKETAUX_API_KEY for tiny symbol-query news samples with entities and sentiment. Creates raw signals only; never final alerts." },
-    update: { status, checkedAt: now, lastSuccessAt: status === "connected" || status === "degraded" ? now : undefined, responseTimeMs: Date.now() - startedAt, errorMessage, usage: "Marketaux free-mode structured financial news ear", notes: "Uses MARKETAUX_API_KEY for tiny symbol-query news samples with entities and sentiment. Creates raw signals only; never final alerts." },
+    create: { source: MARKETAUX_SOURCE, status, checkedAt: now, lastSuccessAt: status === "connected" || status === "degraded" ? now : null, responseTimeMs: Date.now() - startedAt, errorMessage, usage: "Marketaux live catalyst ear", notes: "Uses MARKETAUX_API_KEY for tiny company/stock-specific news batches with entity and sentiment metadata. Creates raw live_catalyst raw signals only; never final alerts." },
+    update: { status, checkedAt: now, lastSuccessAt: status === "connected" || status === "degraded" ? now : undefined, responseTimeMs: Date.now() - startedAt, errorMessage, usage: "Marketaux live catalyst ear", notes: "Uses MARKETAUX_API_KEY for tiny company/stock-specific news batches with entity and sentiment metadata. Creates raw live_catalyst raw signals only; never final alerts." },
   });
   return status;
 }
@@ -173,7 +173,7 @@ async function writeCandidate(candidate: MarketauxCandidate, dryRun: boolean): P
     detectedAt: detectedAt(candidate.article),
     duplicateKey: candidate.duplicateKey,
     qualityHints: { importanceHint: candidate.importanceHint, confidence: Math.min(Math.max(Math.abs(candidate.sentiment ?? 0.35), 0.25), 0.95), sourceQuality: "medium", useful: true, reasons: candidate.reasons },
-    rawPayload: { provider: MARKETAUX_SOURCE, article: candidate.article as Prisma.InputJsonObject, entity: candidate.entity as Prisma.InputJsonObject | null, sentimentScore: candidate.sentiment, noFinalAlerts: true },
+    rawPayload: { sourceCategory: "live_catalyst", catalystType: candidate.eventType === "marketaux_sentiment_news" ? "stock_news" : "sector_competitor_event", provider: MARKETAUX_SOURCE, ticker: candidate.ticker, companyName: candidate.company, headline: text(candidate.article.title), summary: text(candidate.article.description ?? candidate.article.snippet, 1000), publishedAt: detectedAt(candidate.article), url: candidate.article.url, rawPayloadReference: "news/all", urgency: candidate.importanceHint === "high" ? "high" : "medium", likelyMarketImpact: candidate.importanceHint === "high" ? "high" : "medium", sourceReliability: "medium", proofNeeds: ["company_or_second_news_receipt", "price_reaction_if_material"], article: candidate.article as Prisma.InputJsonObject, entity: candidate.entity as Prisma.InputJsonObject | null, sentimentScore: candidate.sentiment, noFinalAlerts: true },
     dryRun,
   });
 }

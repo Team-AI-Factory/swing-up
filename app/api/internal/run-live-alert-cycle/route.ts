@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Prisma } from "@prisma/client";
+import { Prisma, type RawSignal } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
 import { getEngineStartReadiness } from "@/lib/engine-start-readiness";
 import { buildAiCommitteeEvidencePack } from "@/lib/ai-committee/evidence-pack";
@@ -14,6 +14,7 @@ import { runSources } from "@/lib/ops/source-runner";
 export const dynamic = "force-dynamic";
 
 type JsonRecord = Record<string, unknown>;
+type DiscoveryRow = { rawSignalId: string; source: string; title: string; receivedAt: string; passed: boolean; blockedReasons: string[]; qualityScore: number; evidenceConfidenceScore: number; suggestedAction: string | null };
 
 const DEFAULT_PAYLOAD = {
   dryRun: true,
@@ -22,6 +23,8 @@ const DEFAULT_PAYLOAD = {
   confirmSend: false,
   maxAlertsToPublish: 1,
   allowTelegram: false,
+  maxRawSignalsToInspect: 10,
+  excludeLowImpactReferenceUpdates: true,
 };
 
 function bool(value: unknown, fallback: boolean) {
@@ -50,11 +53,40 @@ function isApproved(value: unknown) {
   return record.approvalRecommendation === "approve" && arrayText(record.failedChecks).length === 0;
 }
 
-async function latestUsefulRawSignal() {
-  return prisma.rawSignal.findFirst({
-    where: { OR: [{ ticker: { not: null } }, { sourceUrl: { not: null } }, { importanceHint: { in: ["high", "urgent"] } }, { processedStatus: { in: ["new", "queued", "promoted"] } }] },
+const DISCOVERY_SOURCE_PRIORITY = ["SEC EDGAR", "GDELT", "Google News RSS", "openFDA", "CoinGecko", "FRED Macro", "Frankfurter FX"] as const;
+type DiscoverySource = (typeof DISCOVERY_SOURCE_PRIORITY)[number];
+
+function discoverySources(preferredSources: string[]) {
+  const known = new Set<string>(DISCOVERY_SOURCE_PRIORITY);
+  const preferred = preferredSources.filter((source) => known.has(source));
+  return (preferred.length ? preferred : [...DISCOVERY_SOURCE_PRIORITY]) as DiscoverySource[];
+}
+
+function sourceRank(source: string, sources = DISCOVERY_SOURCE_PRIORITY as readonly string[]) {
+  const index = sources.indexOf(source);
+  return index === -1 ? sources.length + 1 : index;
+}
+
+function isLowImpactReferenceUpdate(signal: Pick<RawSignal, "source" | "importanceHint" | "title" | "summary" | "payload">) {
+  if (signal.source !== "Frankfurter FX") return false;
+  const textBlob = `${signal.title} ${signal.summary}`.toLowerCase();
+  const payload = obj(signal.payload);
+  return signal.importanceHint === "low" || textBlob.includes("reference update") || payload.usefulContext === "reference_update";
+}
+
+async function latestUsefulRawSignals(limit: number, sources: string[], excludeLowImpactReferenceUpdates: boolean) {
+  const candidates = await prisma.rawSignal.findMany({
+    where: {
+      source: { in: sources },
+      OR: [{ ticker: { not: null } }, { sourceUrl: { not: null } }, { importanceHint: { in: ["high", "urgent"] } }, { processedStatus: { in: ["new", "queued", "promoted"] } }],
+    },
     orderBy: [{ receivedAt: "desc" }, { createdAt: "desc" }],
+    take: Math.max(limit * 3, limit),
   });
+  return candidates
+    .filter((signal) => !excludeLowImpactReferenceUpdates || !isLowImpactReferenceUpdate(signal))
+    .sort((a, b) => sourceRank(a.source, sources) - sourceRank(b.source, sources) || b.receivedAt.getTime() - a.receivedAt.getTime() || b.createdAt.getTime() - a.createdAt.getTime())
+    .slice(0, limit);
 }
 
 async function jsonFromRoute(response: Response) {
@@ -70,6 +102,7 @@ function baseResponse(input: { dryRun: boolean; readiness: unknown; warnings?: s
     sourceSummary: {},
     selectedRawSignalId: null as string | null,
     rawSignalSummary: {},
+    candidateDiscoverySummary: {},
     candidateSummary: {},
     evidencePackSummary: {},
     aiCommitteeSummary: {},
@@ -101,6 +134,9 @@ export async function POST(request: NextRequest) {
   const rawSignalId = text(body.rawSignalId);
   let candidateAlertId = text(body.candidateAlertId);
   const source = text(body.source);
+  const preferredSources = discoverySources(arrayText(body.preferredSources).length ? arrayText(body.preferredSources) : source ? [source] : []);
+  const maxRawSignalsToInspect = Math.min(Math.max(int(body.maxRawSignalsToInspect, 10), 1), 25);
+  const excludeLowImpactReferenceUpdates = bool(body.excludeLowImpactReferenceUpdates, true);
   const warnings = ["Telegram is disabled for this founder website test; this route never sends Telegram.", ...(confirmSend || allowTelegram ? ["confirmSend/allowTelegram were ignored by this route."] : [])];
 
   try {
@@ -113,34 +149,60 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ...output, ok: false, stage: "database_blocked", blockers: ["database_not_configured"], nextRecommendedAction: "Configure DATABASE_URL before selecting a real raw signal." }, { status: 503 });
     }
 
-    let rawSignal = rawSignalId ? await prisma.rawSignal.findUnique({ where: { id: rawSignalId } }) : await latestUsefulRawSignal();
+    let rawSignals: RawSignal[] = rawSignalId ? await prisma.rawSignal.findMany({ where: { id: rawSignalId }, take: 1 }) : await latestUsefulRawSignals(maxRawSignalsToInspect, preferredSources, excludeLowImpactReferenceUpdates);
     let sourceSummary: unknown = null;
-    if (!rawSignal && !rawSignalId) {
-      sourceSummary = await runSources({ dryRun: true, sources: source ? [source] : ["GDELT"], limit: 1, force: false }).catch((error: unknown) => ({ ok: false, error: error instanceof Error ? error.message : "source_run_unavailable" }));
-      rawSignal = await latestUsefulRawSignal();
+    if (rawSignals.length < Math.min(3, maxRawSignalsToInspect) && !rawSignalId) {
+      sourceSummary = await runSources({ dryRun, sources: preferredSources, limit: 1, force: false }).catch((error: unknown) => ({ ok: false, error: error instanceof Error ? error.message : "source_run_unavailable" }));
+      rawSignals = await latestUsefulRawSignals(maxRawSignalsToInspect, preferredSources, excludeLowImpactReferenceUpdates);
     }
-    if (!rawSignal && !candidateAlertId) {
-      return NextResponse.json({ ...output, ok: true, stage: "no_signal", sourceSummary: sourceSummary ?? {}, signalFound: false, blockers: [], nextRecommendedAction: "No useful real raw signal was available. Run source ears until real source data appears; do not create a fake alert." });
+    if (!rawSignals.length && !candidateAlertId) {
+      const summary = {
+        rawSignalsInspected: 0,
+        sourcesInspected: preferredSources,
+        passCount: 0,
+        blockedCount: 0,
+        bestCandidateRawSignalId: null,
+        rankedCandidates: [],
+        blockedReasonsBySignal: {},
+        recommendedNextSource: preferredSources[0] ?? "SEC EDGAR",
+        recommendedNextAction: "No useful real raw signal was available. Run a tiny batch from SEC EDGAR, GDELT, or Google News RSS until real source data appears; do not create a fake alert.",
+      };
+      return NextResponse.json({ ...output, ok: true, stage: "no_signal", sourceSummary: sourceSummary ?? {}, candidateDiscoverySummary: summary, signalFound: false, approved: false, published: false, blockers: [], nextRecommendedAction: summary.recommendedNextAction });
     }
 
     output.stage = "source_selected";
-    output.sourceSummary = sourceSummary ? obj(sourceSummary) : { selectedSource: source || rawSignal?.source || null };
-    output.selectedRawSignalId = rawSignal?.id ?? null;
-    output.rawSignalSummary = rawSignal ? { id: rawSignal.id, source: rawSignal.source, ticker: rawSignal.ticker, title: rawSignal.title, receivedAt: rawSignal.receivedAt } : {};
-    output.signalFound = Boolean(rawSignal || candidateAlertId);
+    output.sourceSummary = sourceSummary ? obj(sourceSummary) : { selectedSources: preferredSources };
+    output.signalFound = Boolean(rawSignals.length || candidateAlertId);
 
-    if (!candidateAlertId && rawSignal) {
-      const candidateResponse = await candidateFactoryPOST(new NextRequest("http://internal/api/internal/candidate-factory-run", { method: "POST", body: JSON.stringify({ dryRun, rawSignalId: rawSignal.id, limit: 1, requireProof: true }) }));
-      const candidateJson = await jsonFromRoute(candidateResponse);
+    if (!candidateAlertId && rawSignals.length) {
+      const discoveryRows: DiscoveryRow[] = [];
+      const blockedReasonsBySignal: Record<string, string[]> = {};
+      for (const signal of rawSignals) {
+        const candidateResponse = await candidateFactoryPOST(new NextRequest("http://internal/api/internal/candidate-factory-run", { method: "POST", body: JSON.stringify({ dryRun: true, rawSignalId: signal.id, limit: 1, requireProof: true }) }));
+        const candidateJson = await jsonFromRoute(candidateResponse);
+        const blocked = obj(candidateJson.blockedReasons)[signal.id];
+        const reasons = arrayText(blocked);
+        if (reasons.length) blockedReasonsBySignal[signal.id] = reasons;
+        const scores = Array.isArray(candidateJson.scoreSummary) ? candidateJson.scoreSummary : [];
+        const score = obj(scores[0]);
+        discoveryRows.push({ rawSignalId: signal.id, source: signal.source, title: signal.title, receivedAt: signal.receivedAt.toISOString(), passed: reasons.length === 0, blockedReasons: reasons, qualityScore: typeof score.qualityScore === "number" ? score.qualityScore : 0, evidenceConfidenceScore: typeof score.evidenceConfidenceScore === "number" ? score.evidenceConfidenceScore : 0, suggestedAction: text(score.suggestedAction) || null });
+      }
+      const rankedCandidates = discoveryRows.sort((a, b) => (a.passed === b.passed ? 0 : a.passed ? -1 : 1) || Number(b.qualityScore ?? 0) - Number(a.qualityScore ?? 0) || sourceRank(String(a.source), preferredSources) - sourceRank(String(b.source), preferredSources));
+      const best = rankedCandidates.find((row) => row.passed === true);
+      const recommendedNextSource = String(rankedCandidates.find((row) => row.passed !== true)?.source ?? preferredSources[0] ?? "SEC EDGAR");
+      const summary = { rawSignalsInspected: discoveryRows.length, sourcesInspected: Array.from(new Set(discoveryRows.map((row) => row.source))), passCount: rankedCandidates.filter((row) => row.passed).length, blockedCount: rankedCandidates.filter((row) => !row.passed).length, bestCandidateRawSignalId: best?.rawSignalId ?? null, rankedCandidates, blockedReasonsBySignal, recommendedNextSource, recommendedNextAction: best ? "Stage 1 found a candidate strong enough for Stage 2 AI review. Re-run with dryRun=false and confirmRun=true to create/review exactly one candidate." : `No inspected signal passed safety gates. Try ${recommendedNextSource} next and add independent proof before Stage 2.` };
+      output.candidateDiscoverySummary = summary;
+      const rawSignal = best ? rawSignals.find((signal) => signal.id === best.rawSignalId) ?? null : rawSignals[0] ?? null;
+      output.selectedRawSignalId = rawSignal?.id ?? null;
+      output.rawSignalSummary = rawSignal ? { id: rawSignal.id, source: rawSignal.source, ticker: rawSignal.ticker, title: rawSignal.title, receivedAt: rawSignal.receivedAt } : {};
+      if (!best) return NextResponse.json({ ...output, stage: "no_publish", approved: false, publishable: false, published: false, blockers: [], nextRecommendedAction: summary.recommendedNextAction });
+      if (dryRun) return NextResponse.json({ ...output, stage: "dry_run_planned", approved: false, publishable: false, published: false, stage2Allowed: true, nextRecommendedAction: summary.recommendedNextAction });
+      const createResponse = await candidateFactoryPOST(new NextRequest("http://internal/api/internal/candidate-factory-run", { method: "POST", body: JSON.stringify({ dryRun: false, rawSignalId: String(best.rawSignalId), limit: 1, requireProof: true }) }));
+      const candidateJson = await jsonFromRoute(createResponse);
       const created = Array.isArray(candidateJson.createdCandidateIds) ? candidateJson.createdCandidateIds.map(String) : [];
       candidateAlertId = created[0] ?? "";
       output.candidateSummary = { ...candidateJson, createdCandidateIds: created.slice(0, 1) };
-      if (dryRun) {
-        return NextResponse.json({ ...output, stage: "dry_run_planned", candidateSummary: candidateJson, nextRecommendedAction: candidateJson.nextRecommendedAction ?? "Dry run complete. Re-run Stage 2 with confirmRun=true to create/review one real candidate if eligible." });
-      }
-      if (!candidateAlertId) {
-        return NextResponse.json({ ...output, stage: "candidate_blocked", approved: false, publishable: false, blockers: arrayText(candidateJson.blockedReasons), nextRecommendedAction: candidateJson.nextRecommendedAction ?? "Candidate factory did not create a candidate; inspect blocked reasons." });
-      }
+      if (!candidateAlertId) return NextResponse.json({ ...output, stage: "candidate_blocked", approved: false, publishable: false, blockers: [], nextRecommendedAction: candidateJson.nextRecommendedAction ?? "Candidate factory did not create a candidate; inspect blocked reasons." });
     }
 
     output.stage = "candidate_ready";

@@ -23,6 +23,7 @@ type StageResult = {
   blockers: string[];
   warnings: string[];
   nextAction: string;
+  discovery: { inspected: number | null; selectedFailed: string; nextSource: string; stage2Allowed: boolean | null };
   json: JsonValue | null;
 };
 
@@ -42,6 +43,8 @@ const startupChecks: Array<{ key: StageKey; label: string; route: string }> = [
 const runPayloads = {
   stage1: {
     dryRun: true,
+    maxRawSignalsToInspect: 10,
+    excludeLowImpactReferenceUpdates: true,
     confirmRun: false,
     confirmPublish: false,
     confirmSend: false,
@@ -91,6 +94,15 @@ function findString(value: JsonValue | null, names: string[]): string | null {
   return null;
 }
 
+function discoverySummary(json: JsonValue | null) {
+  const summary = isRecord(json) && isRecord(json.candidateDiscoverySummary) ? json.candidateDiscoverySummary : null;
+  const ranked = summary && Array.isArray(summary.rankedCandidates) ? summary.rankedCandidates : [];
+  const selected = ranked.find((item) => isRecord(item) && item.rawSignalId === (isRecord(json) ? json.selectedRawSignalId : null));
+  const selectedReasons = isRecord(selected) && Array.isArray(selected.blockedReasons) ? selected.blockedReasons.map(String).join(" | ") : "—";
+  const stage2Allowed = isRecord(json) && typeof json.stage2Allowed === "boolean" ? json.stage2Allowed : summary && typeof summary.bestCandidateRawSignalId === "string";
+  return { inspected: summary && typeof summary.rawSignalsInspected === "number" ? summary.rawSignalsInspected : null, selectedFailed: selectedReasons || "—", nextSource: summary && typeof summary.recommendedNextSource === "string" ? summary.recommendedNextSource : "—", stage2Allowed };
+}
+
 function summarize(stage: string, route: string, method: "GET" | "POST", httpStatus: number | "error", json: JsonValue | null): StageResult {
   const blockers = isRecord(json) ? [...textList(json.blockers), ...textList(json.blockedReasons), ...textList(json.missingRequiredItems)] : [];
   const warnings = isRecord(json) ? [...textList(json.warnings), ...textList(json.missingOptionalItems)] : [];
@@ -119,6 +131,7 @@ function summarize(stage: string, route: string, method: "GET" | "POST", httpSta
     blockers,
     warnings,
     nextAction,
+    discovery: discoverySummary(json),
     json,
   };
 }
@@ -141,6 +154,10 @@ export default function EngineControlPanel() {
   const [rows, setRows] = useState<StageResult[]>([]);
   const [message, setMessage] = useState("Load the startup status, then run stages in order. Nothing here sends Telegram.");
 
+  const stage1AllowsStage2 = useMemo(
+    () => rows.some((row) => row.stage === "Stage 1 dry run" && row.signalFound === true && row.discovery.stage2Allowed === true && row.published !== true),
+    [rows],
+  );
   const stage2Approved = useMemo(
     () => rows.some((row) => row.stage === "Stage 2 real AI review, no publish" && row.approved === true && row.signalFound === true && row.published !== true),
     [rows],
@@ -229,7 +246,7 @@ export default function EngineControlPanel() {
         <button style={styles.button} disabled={busy !== null} onClick={loadStartup}>Load current status</button>
         <button style={styles.button} disabled={busy !== null} onClick={refreshReadiness}>Refresh Engine Readiness</button>
         <button style={styles.button} disabled={busy !== null} onClick={() => runStage("stage1")}>Stage 1 Dry Run</button>
-        <button style={styles.button} disabled={busy !== null} onClick={() => runStage("stage2")}>Stage 2 Real AI Review, No Publish</button>
+        <button title={!stage1AllowsStage2 ? "Stage 1 must find one candidate strong enough for AI review before Stage 2 is enabled." : undefined} style={styles.button} disabled={busy !== null || !stage1AllowsStage2} onClick={() => runStage("stage2")}>Stage 2 Real AI Review, No Publish</button>
         <label style={styles.checkbox}><input type="checkbox" checked={confirmPublish} onChange={(event) => setConfirmPublish(event.target.checked)} /> I understand this will publish at most 1 approved alert to the public website.</label>
         <button title={!stage2Approved ? "Stage 2 must approve one real publishable signal before Stage 3 is enabled." : !confirmPublish ? "Check the confirmation box to publish at most one approved website alert." : undefined} style={{ ...styles.button, ...styles.danger }} disabled={busy !== null || !stage2Approved || !confirmPublish} onClick={() => runStage("stage3")}>Stage 3 Publish One Approved Website Alert</button>
       </section>
@@ -238,8 +255,8 @@ export default function EngineControlPanel() {
         <h2 style={styles.heading}>Run table</h2>
         <div style={styles.tableWrap}>
           <table style={styles.table}>
-            <thead><tr>{["stage", "route", "HTTP status", "result", "signal found", "AI Committee ran", "approved", "published", "public alert URL", "public ledger URL", "blockers", "warnings", "next action"].map((head) => <th key={head} style={styles.th}>{head}</th>)}</tr></thead>
-            <tbody>{rows.map((row) => <tr key={`${row.stage}-${row.route}`}><td style={styles.td}>{row.stage}</td><td style={styles.td}>{row.method} {row.route}</td><td style={styles.td}>{row.status}</td><td style={styles.td}>{row.result}</td><td style={styles.td}>{yesNo(row.signalFound)}</td><td style={styles.td}>{yesNo(row.aiCommitteeRan)}</td><td style={styles.td}>{yesNo(row.approved)}</td><td style={styles.td}>{yesNo(row.published)}</td><td style={styles.td}>{row.publicAlertUrl ? <a href={row.publicAlertUrl}>{row.publicAlertUrl}</a> : "—"}</td><td style={styles.td}>{row.publicLedgerUrl ? <a href={row.publicLedgerUrl}>{row.publicLedgerUrl}</a> : "—"}</td><td style={styles.td}>{row.blockers.join(" | ") || "—"}</td><td style={styles.td}>{row.warnings.join(" | ") || "—"}</td><td style={styles.td}>{row.nextAction}</td></tr>)}</tbody>
+            <thead><tr>{["stage", "route", "HTTP status", "result", "signal found", "signals inspected", "selected failure", "next source", "Stage 2 allowed", "AI Committee ran", "approved", "published", "public alert URL", "public ledger URL", "blockers", "warnings", "next action"].map((head) => <th key={head} style={styles.th}>{head}</th>)}</tr></thead>
+            <tbody>{rows.map((row) => <tr key={`${row.stage}-${row.route}`}><td style={styles.td}>{row.stage}</td><td style={styles.td}>{row.method} {row.route}</td><td style={styles.td}>{row.status}</td><td style={styles.td}>{row.result}</td><td style={styles.td}>{yesNo(row.signalFound)}</td><td style={styles.td}>{row.discovery.inspected ?? "—"}</td><td style={styles.td}>{row.discovery.selectedFailed}</td><td style={styles.td}>{row.discovery.nextSource}</td><td style={styles.td}>{yesNo(row.discovery.stage2Allowed)}</td><td style={styles.td}>{yesNo(row.aiCommitteeRan)}</td><td style={styles.td}>{yesNo(row.approved)}</td><td style={styles.td}>{yesNo(row.published)}</td><td style={styles.td}>{row.publicAlertUrl ? <a href={row.publicAlertUrl}>{row.publicAlertUrl}</a> : "—"}</td><td style={styles.td}>{row.publicLedgerUrl ? <a href={row.publicLedgerUrl}>{row.publicLedgerUrl}</a> : "—"}</td><td style={styles.td}>{row.blockers.join(" | ") || "—"}</td><td style={styles.td}>{row.warnings.join(" | ") || "—"}</td><td style={styles.td}>{row.nextAction}</td></tr>)}</tbody>
           </table>
         </div>
       </section>

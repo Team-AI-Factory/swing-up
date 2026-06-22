@@ -34,6 +34,13 @@ type DiscoveryRow = {
   stillMissingProof: string[];
   catalystImpactScore: number | null;
   stockSpecificityScore: number | null;
+  directTickerMatch: boolean | null;
+  directCompanyMatch: boolean | null;
+  hasReceiptUrl: boolean | null;
+  freshWithin72h: boolean | null;
+  promotionScore: number | null;
+  bestFailureReason: string | null;
+  unsafeProofMismatchWarning: boolean;
 };
 
 const DEFAULT_PAYLOAD = {
@@ -79,6 +86,11 @@ function payloadImpact(signal: Pick<RawSignal, "payload">) {
   return {
     catalystImpactScore: typeof impact.promotionScore === "number" ? impact.promotionScore : null,
     stockSpecificityScore: typeof impact.stockSpecificityScore === "number" ? impact.stockSpecificityScore : null,
+    directTickerMatch: typeof impact.directTickerMatch === "boolean" ? impact.directTickerMatch : null,
+    directCompanyMatch: typeof impact.directCompanyMatch === "boolean" ? impact.directCompanyMatch : null,
+    hasReceiptUrl: typeof impact.hasReceiptUrl === "boolean" ? impact.hasReceiptUrl : null,
+    freshWithin72h: typeof impact.freshWithin72h === "boolean" ? impact.freshWithin72h : null,
+    promotionScore: typeof impact.promotionScore === "number" ? impact.promotionScore : null,
     likelyMarketImpact: text(impact.likelyMarketImpact) || null,
     catalystType: text(impact.catalystType) || null,
   };
@@ -460,7 +472,7 @@ export async function POST(request: NextRequest) {
       providerDiagnostics: Array.isArray(obj(sourceSummary).table)
         ? (obj(sourceSummary).table as unknown[])
             .filter((row) => catalystSources.includes(text(obj(row).sourceName)))
-            .map((row) => ({ source: text(obj(row).sourceName), status: text(obj(row).status), sourceHealthStatus: text(obj(row).sourceHealthStatus), errors: Array.isArray(obj(row).errors) ? obj(row).errors : [] }))
+            .map((row) => ({ source: text(obj(row).sourceName), status: text(obj(row).status), sourceHealthStatus: text(obj(row).sourceHealthStatus), errors: Array.isArray(obj(row).errors) ? obj(row).errors : [], diagnosis: text(obj(row).diagnosis) || null }))
         : [],
     };
     output.catalystSummary = catalystSummaryBase;
@@ -540,6 +552,10 @@ export async function POST(request: NextRequest) {
             .filter(Boolean),
           stillMissingProof: enrichment.missingProof,
           safeToPromote: enrichment.safeToPromote,
+          acceptedProofItems: enrichment.acceptedProofItems,
+          rejectedProofItems: enrichment.rejectedProofItems,
+          rejectedProofReasons: enrichment.rejectedProofReasons,
+          proofMatchScore: enrichment.acceptedProofItems.length ? Math.max(...enrichment.acceptedProofItems.map((item) => item.proofMatchScore)) : 0,
           strongestProof: enrichment.strongestProof,
           warnings: enrichment.enrichmentWarnings,
           errors: enrichment.enrichmentErrors,
@@ -601,6 +617,13 @@ export async function POST(request: NextRequest) {
           stillMissingProof: enrichment.missingProof,
           catalystImpactScore: payloadImpact(signal).catalystImpactScore,
           stockSpecificityScore: payloadImpact(signal).stockSpecificityScore,
+          directTickerMatch: payloadImpact(signal).directTickerMatch,
+          directCompanyMatch: payloadImpact(signal).directCompanyMatch,
+          hasReceiptUrl: payloadImpact(signal).hasReceiptUrl,
+          freshWithin72h: payloadImpact(signal).freshWithin72h,
+          promotionScore: payloadImpact(signal).promotionScore,
+          bestFailureReason: reasons[0] ?? null,
+          unsafeProofMismatchWarning: enrichment.rejectedProofItems.length > 0 && enrichment.acceptedProofItems.length === 0,
         });
       }
       const rankedCandidates = discoveryRows.sort(
@@ -610,7 +633,8 @@ export async function POST(request: NextRequest) {
           sourceRank(String(a.source), preferredSources) -
             sourceRank(String(b.source), preferredSources),
       );
-      const best = rankedCandidates.find((row) => row.passed === true);
+      const best = rankedCandidates.find((row) => row.passed === true && row.unsafeProofMismatchWarning !== true);
+      const bestFailed = rankedCandidates.find((row) => row.passed !== true) ?? rankedCandidates[0] ?? null;
       const recommendedNextSource = String(
         rankedCandidates.find((row) => row.passed !== true)?.source ??
           preferredSources[0] ??
@@ -646,6 +670,11 @@ export async function POST(request: NextRequest) {
           ) ??
           enrichmentSummaries[0] ??
           null,
+        acceptedProofItems: enrichmentSummaries.flatMap((item) => Array.isArray(item.acceptedProofItems) ? item.acceptedProofItems : []),
+        rejectedProofItems: enrichmentSummaries.flatMap((item) => Array.isArray(item.rejectedProofItems) ? item.rejectedProofItems : []),
+        rejectedProofReasons: Array.from(new Set(enrichmentSummaries.flatMap((item) => Array.isArray(item.rejectedProofReasons) ? item.rejectedProofReasons.map(String) : []))),
+        proofMatchScore: enrichmentSummaries.reduce((max, item) => Math.max(max, typeof item.proofMatchScore === "number" ? item.proofMatchScore : 0), 0),
+        proofMatchingClean: !enrichmentSummaries.some((item) => Array.isArray(item.rejectedProofItems) && item.rejectedProofItems.length > 0 && (!Array.isArray(item.acceptedProofItems) || item.acceptedProofItems.length === 0)),
         enrichmentBlockedReasons: blockedReasonsBySignal,
       };
       output.proofEnrichmentSummary = proofEnrichmentSummary;
@@ -670,10 +699,11 @@ export async function POST(request: NextRequest) {
         rankedCandidates,
         blockedReasonsBySignal,
         recommendedNextSource,
+        bestCandidateFailureReason: bestFailed ? `${bestFailed.title}: ${(bestFailed.blockedReasons.length ? bestFailed.blockedReasons : [bestFailed.bestFailureReason ?? "missing_matching_independent_proof"]).join("; ")}` : null,
         recommendedNextAction: best
           ? "Stage 1 found a candidate strong enough for Stage 2 AI review. Re-run with dryRun=false and confirmRun=true to create/review exactly one candidate."
-          : catalystSummaryBase.attemptedProviders.length
-            ? `No inspected signal passed safety gates. Review catalyst provider output and add independent proof before Stage 2; next source: ${recommendedNextSource}.`
+          : bestFailed
+            ? `No inspected signal passed safety gates. Best candidate "${bestFailed.title}" failed because ${(bestFailed.blockedReasons.length ? bestFailed.blockedReasons : ["matching proof is still required"]).join("; ")}. Missing: ${(bestFailed.stillMissingProof.length ? bestFailed.stillMissingProof : ["at least 2 independent matching proof types, a specific receipt URL, price/volume or fundamentals/pattern confirmation"]).join(", ")}. Use ${recommendedNextSource} next; FMP provider_403 ${catalystSummaryBase.failedCatalystProviders.includes("FMP Catalyst") ? "may be blocking useful FMP proof but must not be retried in this run" : "is not the active blocker"}. Marketaux/Alpha data is useful only when ticker/company/topic-specific proof matches.`
             : `No inspected signal passed safety gates and catalyst providers were not attempted. Fix catalyst provider execution before trying ${recommendedNextSource}.`,
       };
       output.catalystSummary = {
@@ -716,8 +746,8 @@ export async function POST(request: NextRequest) {
           approved: false,
           publishable: false,
           published: false,
-          stage2Allowed: best.passed === true && best.afterProofCount > 0,
-          approvedForAiReview: best.passed === true && best.afterProofCount > 0,
+          stage2Allowed: best.passed === true && best.afterProofCount > 0 && proofEnrichmentSummary.proofMatchingClean === true && !best.unsafeProofMismatchWarning,
+          approvedForAiReview: best.passed === true && best.afterProofCount > 0 && proofEnrichmentSummary.proofMatchingClean === true && !best.unsafeProofMismatchWarning,
           nextRecommendedAction: summary.recommendedNextAction,
         });
       const createResponse = await candidateFactoryPOST(

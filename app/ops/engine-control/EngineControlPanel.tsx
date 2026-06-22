@@ -54,6 +54,10 @@ type StageResult = {
     urls: string;
     missing: string;
     best: string;
+    accepted: string;
+    rejected: string;
+    rejectedReasons: string;
+    matchScore: string;
   };
   json: JsonValue | null;
 };
@@ -252,6 +256,22 @@ function proofEnrichmentSummary(json: JsonValue | null) {
           proofAddedTypes: best.proofAddedTypes,
         })
       : "—",
+    accepted:
+      summary && Array.isArray(summary.acceptedProofItems)
+        ? summary.acceptedProofItems.map((item) => JSON.stringify(item)).join(" | ") || "—"
+        : "—",
+    rejected:
+      summary && Array.isArray(summary.rejectedProofItems)
+        ? summary.rejectedProofItems.map((item) => JSON.stringify(item)).join(" | ") || "—"
+        : "—",
+    rejectedReasons:
+      summary && Array.isArray(summary.rejectedProofReasons)
+        ? summary.rejectedProofReasons.map(String).join(" | ") || "—"
+        : "—",
+    matchScore:
+      summary && typeof summary.proofMatchScore === "number"
+        ? String(summary.proofMatchScore)
+        : "—",
   };
 }
 
@@ -277,11 +297,16 @@ function discoverySummary(json: JsonValue | null) {
     summary && typeof summary.passCount === "number" ? summary.passCount : 0;
   const publishable = isRecord(json) && json.publishable === true;
   const approvedForAiReview = isRecord(json) && json.stage2Allowed === true;
+  const proofSummary = isRecord(json) && isRecord(json.proofEnrichmentSummary) ? json.proofEnrichmentSummary : null;
+  const proofClean = proofSummary && typeof proofSummary.proofMatchingClean === "boolean" ? proofSummary.proofMatchingClean : false;
+  const hasUnsafeMismatch = ranked.some((item) => isRecord(item) && item.unsafeProofMismatchWarning === true);
   const stage2Allowed =
     isRecord(json) && typeof json.stage2Allowed === "boolean"
       ? json.stage2Allowed &&
         passCount >= 1 &&
         (publishable || approvedForAiReview) &&
+        proofClean &&
+        !hasUnsafeMismatch &&
         findBoolean(json, ["published"]) !== true
       : false;
   return {
@@ -670,9 +695,13 @@ export default function EngineControlPanel() {
                   "next source",
                   "proof enrichment",
                   "proof added",
+                  "accepted proof",
+                  "rejected proof",
+                  "rejected proof reasons",
+                  "proof match score",
                   "proof URLs",
                   "proof still missing",
-                  "Stage 2 allowed",
+                  "Stage 2 unlocked",
                   "AI Committee ran",
                   "approved",
                   "published",
@@ -714,6 +743,10 @@ export default function EngineControlPanel() {
                     {yesNo(row.proofEnrichment.attempted)}
                   </td>
                   <td style={styles.td}>{row.proofEnrichment.added}</td>
+                  <td style={styles.td}>{row.proofEnrichment.accepted}</td>
+                  <td style={styles.td}>{row.proofEnrichment.rejected}</td>
+                  <td style={styles.td}>{row.proofEnrichment.rejectedReasons}</td>
+                  <td style={styles.td}>{row.proofEnrichment.matchScore}</td>
                   <td style={styles.td}>{row.proofEnrichment.urls}</td>
                   <td style={styles.td}>{row.proofEnrichment.missing}</td>
                   <td style={styles.td}>

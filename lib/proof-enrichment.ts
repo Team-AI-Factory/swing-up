@@ -17,6 +17,20 @@ type EnrichmentAttempt = {
   proofType?: ProofType;
 };
 
+export type ProofMatchReport = {
+  proofType: ProofType | "unknown";
+  source: string;
+  title: string;
+  url: string | null;
+  proofMatchScore: number;
+  matchedTicker: boolean;
+  matchedCompany: boolean;
+  matchedTopic: boolean;
+  freshWithin72h: boolean;
+  urlIsSpecific: boolean;
+  reasons: string[];
+};
+
 export type ProofEnrichmentResult = {
   proofCount: number;
   proofTypes: ProofType[];
@@ -27,6 +41,9 @@ export type ProofEnrichmentResult = {
   confidenceScore: number;
   safeToPromote: boolean;
   enrichmentProofs: ProofItem[];
+  acceptedProofItems: ProofMatchReport[];
+  rejectedProofItems: ProofMatchReport[];
+  rejectedProofReasons: string[];
   enrichmentAttempts: EnrichmentAttempt[];
   enrichmentWarnings: string[];
   enrichmentErrors: string[];
@@ -94,8 +111,9 @@ function proofTypeFor(
 function proofStrengthFor(
   type: ProofType,
   source: string,
+  url: string,
 ): ProofItem["strength"] {
-  if (type === "filing") return "strong";
+  if (type === "filing") return isSpecificUrl(url) ? "strong" : "weak";
   if (
     /fmp catalyst|marketaux catalyst|alpha vantage catalyst|gdelt|google news|openfda|coingecko/i.test(
       source,
@@ -103,6 +121,70 @@ function proofStrengthFor(
   )
     return "medium";
   return "weak";
+}
+
+const GENERIC_URL_PATTERNS = [
+  /^https?:\/\/(www\.)?sec\.gov\/edgar\/?$/i,
+  /^https?:\/\/(www\.)?sec\.gov\/?$/i,
+  /^https?:\/\/(www\.)?marketaux\.com\/?$/i,
+  /^https?:\/\/(www\.)?alphavantage\.co\/?$/i,
+  /^https?:\/\/(www\.)?financialmodelingprep\.com\/?$/i,
+  /^https?:\/\/(www\.)?fmpcloud\.io\/?$/i,
+];
+
+function isSpecificUrl(url: string) {
+  if (!/^https?:\/\//i.test(url)) return false;
+  if (GENERIC_URL_PATTERNS.some((pattern) => pattern.test(url.trim()))) return false;
+  try {
+    const parsed = new URL(url);
+    if (parsed.pathname === "/" || parsed.pathname === "") return false;
+    if (/query|api|v3|v4/i.test(parsed.pathname) && parsed.search && !/article|filing|accession|document|news|press|ticker|symbol/i.test(parsed.pathname + parsed.search)) return false;
+    if (/sec\.gov$/i.test(parsed.hostname)) return /Archives\/edgar\/data|ixviewer\/doc\/action|getcompany|browse-edgar/i.test(parsed.pathname + parsed.search);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const TOPIC_KEYWORDS = ["earnings", "guidance", "filing", "8-k", "10-q", "10-k", "partnership", "customer", "contract", "approval", "recall", "demand", "margin", "price target", "estimate", "dividend", "buyback", "merger", "acquisition", "semiconductor", "ai", "gpu", "memory", "hbm", "revenue", "profit"];
+
+function companyTerms(rawSignal: RawSignal) {
+  const payload = objectValue(rawSignal.payload);
+  return unique([text(payload.company), text(payload.companyName), text(payload.entityName)]).filter((term) => term.length >= 3);
+}
+
+function topicTerms(...texts: string[]) {
+  const haystack = texts.join(" ").toLowerCase();
+  return TOPIC_KEYWORDS.filter((term) => haystack.includes(term));
+}
+
+function proofMatchReport(signal: RawSignal, proofSignal: RawSignal, type: ProofType | null, url: string): ProofMatchReport {
+  const targetTicker = text(signal.ticker).toUpperCase();
+  const proofTicker = text(proofSignal.ticker).toUpperCase();
+  const proofHaystack = `${proofSignal.title} ${proofSignal.summary} ${proofTicker}`.toLowerCase();
+  const signalHaystack = `${signal.title} ${signal.summary} ${targetTicker}`.toLowerCase();
+  const companies = companyTerms(signal);
+  const proofCompanies = companyTerms(proofSignal);
+  const matchedTicker = Boolean(targetTicker && (proofTicker === targetTicker || proofHaystack.includes(targetTicker.toLowerCase())));
+  const matchedCompany = companies.some((company) => proofHaystack.includes(company.toLowerCase())) || proofCompanies.some((company) => signalHaystack.includes(company.toLowerCase()));
+  const targetTopics = topicTerms(signal.title, signal.summary);
+  const proofTopics = topicTerms(proofSignal.title, proofSignal.summary);
+  const matchedTopic = targetTopics.some((topic) => proofTopics.includes(topic));
+  const freshWithin72h = Date.now() - proofSignal.receivedAt.getTime() <= 72 * 60 * 60 * 1000;
+  const urlIsSpecific = isSpecificUrl(url);
+  const differentEntity = Boolean((targetTicker && proofTicker && targetTicker !== proofTicker) || (companies.length && proofCompanies.length && !matchedCompany && !matchedTicker));
+  let proofMatchScore = 0;
+  const reasons: string[] = [];
+  if (matchedTicker) { proofMatchScore += 35; reasons.push("same_ticker"); }
+  if (matchedCompany) { proofMatchScore += 25; reasons.push("same_company"); }
+  if (matchedTopic) { proofMatchScore += 20; reasons.push("same_or_related_topic"); }
+  if (freshWithin72h) { proofMatchScore += 10; reasons.push("fresh_within_72h"); } else { proofMatchScore -= 20; reasons.push("stale_evidence"); }
+  if (urlIsSpecific) { proofMatchScore += 10; reasons.push("specific_receipt_url"); } else { proofMatchScore -= 30; reasons.push("generic_or_api_url"); }
+  if (differentEntity) { proofMatchScore -= 50; reasons.push("different_ticker_or_company"); }
+  if (!matchedTopic) { proofMatchScore -= 30; reasons.push("unrelated_topic"); }
+  if (type === "source_health") { proofMatchScore = Math.min(proofMatchScore, 0); reasons.push("source_health_only_not_proof"); }
+  proofMatchScore = Math.max(0, Math.min(100, proofMatchScore));
+  return { proofType: type ?? "unknown", source: proofSignal.source, title: proofSignal.title, url: url || null, proofMatchScore, matchedTicker, matchedCompany, matchedTopic, freshWithin72h, urlIsSpecific, reasons };
 }
 
 function proofFromRelatedSignal(
@@ -118,7 +200,7 @@ function proofFromRelatedSignal(
   if (!type) return null;
   return {
     type,
-    strength: proofStrengthFor(type, signal.source),
+    strength: proofStrengthFor(type, signal.source, url),
     label:
       SOURCE_TO_PROOF.find(
         (entry) =>
@@ -165,6 +247,8 @@ export async function enrichProofForRawSignal(
     rawSignal.title.split(/\s+/).slice(0, 4).join(" "),
   ]).filter((term) => term.length >= 2);
   const enrichmentProofs: ProofItem[] = [];
+  const acceptedProofItems: ProofMatchReport[] = [];
+  const rejectedProofItems: ProofMatchReport[] = [];
 
   if (shouldSkipReferenceUpdate(rawSignal)) {
     attempts.push({
@@ -216,18 +300,23 @@ export async function enrichProofForRawSignal(
         const proof = related
           ? proofFromRelatedSignal(related, rawSignal)
           : null;
+        const match = related && proof?.url ? proofMatchReport(rawSignal, related, proof.type, proof.url) : null;
+        if (match && match.proofMatchScore < 70) rejectedProofItems.push(match);
         if (
           proof &&
+          match &&
+          match.proofMatchScore >= 70 &&
           !base.proofTypes.includes(proof.type) &&
           !enrichmentProofs.some(
             (item) => item.type === proof.type && item.url === proof.url,
           )
         ) {
           enrichmentProofs.push(proof);
+          acceptedProofItems.push(match);
           attempts.push({
             source,
             status: "added",
-            detail: `Added ${proof.type} proof from related raw signal ${related?.id}.`,
+            detail: `Added ${proof.type} proof from related raw signal ${related?.id} with proofMatchScore ${match.proofMatchScore}.`,
             proofType: proof.type,
           });
         } else {
@@ -235,7 +324,9 @@ export async function enrichProofForRawSignal(
             source,
             status: "missing",
             detail: related
-              ? "Related signal did not provide a new real URL/proof type."
+              ? match
+                ? `Related signal rejected or duplicate; proofMatchScore ${match.proofMatchScore}; reasons: ${match.reasons.join(", ")}.`
+                : "Related signal did not provide a new real URL/proof type."
               : "No related stored raw signal with a real URL was available.",
           });
         }
@@ -274,6 +365,9 @@ export async function enrichProofForRawSignal(
     confidenceScore: enriched?.confidenceScore ?? base.confidenceScore,
     safeToPromote: enriched?.safeToPromote === "yes",
     enrichmentProofs,
+    acceptedProofItems,
+    rejectedProofItems,
+    rejectedProofReasons: unique(rejectedProofItems.flatMap((item) => item.reasons)),
     enrichmentAttempts: attempts,
     enrichmentWarnings: warnings,
     enrichmentErrors: errors,

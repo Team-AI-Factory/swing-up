@@ -28,6 +28,7 @@ export function catalystImpactScores(input: {
   const company = text(input.company).toLowerCase();
   const directTickerMatch = Boolean(ticker && (haystack.includes(ticker.toLowerCase()) || text(input.providerMetadata?.symbol).toUpperCase() === ticker));
   const companyMatch = Boolean(company && haystack.includes(company));
+  const directCompanyMatch = companyMatch;
   const hasReceiptUrl = Boolean(text(input.url));
   const published = input.publishedAt ? new Date(input.publishedAt) : new Date();
   const freshWithin72h = !Number.isNaN(published.getTime()) && Date.now() - published.getTime() <= 72 * 60 * 60 * 1000;
@@ -41,5 +42,5 @@ export function catalystImpactScores(input: {
   const likelyMarketImpact = highType && stockSpecificityScore >= 0.5 ? "high" : lowType || stockSpecificityScore < 0.35 ? "low" : "medium";
   const impactScore = likelyMarketImpact === "high" ? 0.9 : likelyMarketImpact === "medium" ? 0.6 : 0.25;
   const promotionScore = Math.round(100 * (impactScore * 0.35 + stockSpecificityScore * 0.35 + sourceReliabilityScore * 0.2 + proofDiversityScore * 0.1));
-  return { directTickerMatch, hasReceiptUrl, freshWithin72h, sourceReliabilityScore, catalystType: type, likelyMarketImpact, proofDiversityScore, stockSpecificityScore, promotionScore };
+  return { directTickerMatch, directCompanyMatch, hasReceiptUrl, freshWithin72h, sourceReliabilityScore, catalystType: type, likelyMarketImpact, proofDiversityScore, stockSpecificityScore, promotionScore };
 }

@@ -17,6 +17,7 @@ export const dynamic = "force-dynamic";
 type JsonRecord = Record<string, unknown>;
 type DiscoveryRow = {
   rawSignalId: string;
+  ticker: string | null;
   source: string;
   title: string;
   receivedAt: string;
@@ -41,7 +42,54 @@ type DiscoveryRow = {
   promotionScore: number | null;
   bestFailureReason: string | null;
   unsafeProofMismatchWarning: boolean;
+  proofMatchQuality: number;
+  proofDiversity: number;
+  eligibleForBest: boolean;
+  reasonNotPromoted: string | null;
 };
+
+const MIN_STOCK_SPECIFICITY_SCORE = 55;
+const MIN_CATALYST_IMPACT_SCORE = 55;
+const MIN_PROMOTION_SCORE = 55;
+const CORE_PROOF_TYPES = new Set(["price_volume", "fundamentals", "pattern_match"]);
+
+function truthyRank(value: boolean | null | undefined) { return value === true ? 1 : 0; }
+function numericRank(value: number | null | undefined) { return typeof value === "number" && Number.isFinite(value) ? value : -1; }
+function arrayIncludes(values: string[], item: string) { return values.includes(item); }
+
+function isBroadMarketNoise(row: Pick<DiscoveryRow, "directTickerMatch" | "directCompanyMatch" | "stockSpecificityScore" | "title">) {
+  const title = row.title.toLowerCase();
+  return row.directTickerMatch !== true && row.directCompanyMatch !== true && (row.stockSpecificityScore === null || row.stockSpecificityScore < MIN_STOCK_SPECIFICITY_SCORE || /market cap|markets?|index|sector|economy|stocks?\b|overtakes/i.test(title));
+}
+
+function bestEligibilityFailure(row: DiscoveryRow) {
+  const failures = [
+    ...(row.unsafeProofMismatchWarning ? ["unsafe_proof_mismatch_warning"] : []),
+    ...(row.directTickerMatch !== true ? ["direct_ticker_match_required"] : []),
+    ...(numericRank(row.stockSpecificityScore) < MIN_STOCK_SPECIFICITY_SCORE ? ["stock_specificity_below_threshold"] : []),
+    ...(numericRank(row.catalystImpactScore) < MIN_CATALYST_IMPACT_SCORE ? ["catalyst_impact_below_threshold"] : []),
+    ...(numericRank(row.promotionScore) < MIN_PROMOTION_SCORE ? ["promotion_score_below_threshold"] : []),
+    ...(row.hasReceiptUrl !== true ? ["specific_receipt_url_required"] : []),
+    ...(isBroadMarketNoise(row) ? ["broad_market_or_news_noise"] : []),
+    ...(row.blockedReasons.includes("low_impact") && !row.proofAddedTypes.some((type) => CORE_PROOF_TYPES.has(type)) ? ["low_impact_without_price_fundamental_or_pattern_support"] : []),
+    ...(row.passed !== true ? ["candidate_factory_gates_not_passed"] : []),
+  ];
+  return failures;
+}
+
+function sortDiscoveryRows(rows: DiscoveryRow[]) {
+  return rows.sort((a, b) =>
+    truthyRank(b.directTickerMatch) - truthyRank(a.directTickerMatch) ||
+    truthyRank(!b.unsafeProofMismatchWarning) - truthyRank(!a.unsafeProofMismatchWarning) ||
+    numericRank(b.promotionScore) - numericRank(a.promotionScore) ||
+    numericRank(b.catalystImpactScore) - numericRank(a.catalystImpactScore) ||
+    numericRank(b.stockSpecificityScore) - numericRank(a.stockSpecificityScore) ||
+    b.proofMatchQuality - a.proofMatchQuality ||
+    truthyRank(b.freshWithin72h) - truthyRank(a.freshWithin72h) ||
+    b.proofDiversity - a.proofDiversity ||
+    Number(b.qualityScore ?? 0) - Number(a.qualityScore ?? 0),
+  );
+}
 
 const DEFAULT_PAYLOAD = {
   dryRun: true,
@@ -475,7 +523,9 @@ export async function POST(request: NextRequest) {
             .map((row) => ({ source: text(obj(row).sourceName), status: text(obj(row).status), sourceHealthStatus: text(obj(row).sourceHealthStatus), errors: Array.isArray(obj(row).errors) ? obj(row).errors : [], diagnosis: text(obj(row).diagnosis) || null }))
         : [],
     };
-    output.catalystSummary = catalystSummaryBase;
+    const fmpProvider403 = catalystSummaryBase.providerDiagnostics.some((diagnostic) => diagnostic.source === "FMP Catalyst" && JSON.stringify(diagnostic).toLowerCase().includes("403"));
+    const providerSkippedReasons = fmpProvider403 ? { "FMP Catalyst": "provider_403; Check FMP plan/API key access or endpoint permission." } : {};
+    output.catalystSummary = { ...catalystSummaryBase, fmpProvider403, providerSkippedReasons, nextAction: fmpProvider403 ? "Check FMP plan/API key access or endpoint permission." : null };
     if (!rawSignals.length && !candidateAlertId) {
       const summary = {
         rawSignalsInspected: 0,
@@ -588,6 +638,7 @@ export async function POST(request: NextRequest) {
         const score = obj(scores[0]);
         discoveryRows.push({
           rawSignalId: signal.id,
+          ticker: signal.ticker,
           source: signal.source,
           title: signal.title,
           receivedAt: signal.receivedAt.toISOString(),
@@ -624,22 +675,36 @@ export async function POST(request: NextRequest) {
           promotionScore: payloadImpact(signal).promotionScore,
           bestFailureReason: reasons[0] ?? null,
           unsafeProofMismatchWarning: enrichment.rejectedProofItems.length > 0 && enrichment.acceptedProofItems.length === 0,
+          proofMatchQuality: enrichment.acceptedProofItems.length ? Math.max(...enrichment.acceptedProofItems.map((item) => item.proofMatchScore)) : 0,
+          proofDiversity: new Set(enrichment.proofTypes.filter((type) => type !== "raw_signal_source" && type !== "source_health")).size,
+          eligibleForBest: false,
+          reasonNotPromoted: null,
         });
       }
-      const rankedCandidates = discoveryRows.sort(
-        (a, b) =>
-          (a.passed === b.passed ? 0 : a.passed ? -1 : 1) ||
-          Number(b.qualityScore ?? 0) - Number(a.qualityScore ?? 0) ||
-          sourceRank(String(a.source), preferredSources) -
-            sourceRank(String(b.source), preferredSources),
-      );
-      const best = rankedCandidates.find((row) => row.passed === true && row.unsafeProofMismatchWarning !== true);
-      const bestFailed = rankedCandidates.find((row) => row.passed !== true) ?? rankedCandidates[0] ?? null;
+      for (const row of discoveryRows) {
+        const failures = bestEligibilityFailure(row);
+        row.eligibleForBest = failures.length === 0;
+        row.reasonNotPromoted = failures.length ? failures.join("; ") : null;
+      }
+      const rankedCandidates = sortDiscoveryRows(discoveryRows);
+      const topDirectCandidates = rankedCandidates.filter((row) => row.directTickerMatch === true).slice(0, 5);
+      const best = rankedCandidates.find((row) => row.eligibleForBest === true);
+      const bestDirectTickerCandidate = topDirectCandidates[0] ?? null;
+      const bestFailed = bestDirectTickerCandidate ?? rankedCandidates[0] ?? null;
       const recommendedNextSource = String(
         rankedCandidates.find((row) => row.passed !== true)?.source ??
           preferredSources[0] ??
           "SEC EDGAR",
       );
+      const proofCompletionSummary = {
+        attemptedCandidates: topDirectCandidates.map((row) => row.rawSignalId),
+        priceVolumeAttempted: topDirectCandidates.filter((row) => arrayIncludes(row.stillMissingProof, "price_volume")).map((row) => row.rawSignalId),
+        fundamentalsAttempted: topDirectCandidates.filter((row) => arrayIncludes(row.stillMissingProof, "fundamentals")).map((row) => row.rawSignalId),
+        patternMatchAttempted: topDirectCandidates.filter((row) => arrayIncludes(row.stillMissingProof, "pattern_match")).map((row) => row.rawSignalId),
+        proofAdded: topDirectCandidates.flatMap((row) => row.proofAddedTypes.map((type) => ({ rawSignalId: row.rawSignalId, type }))),
+        proofStillMissing: Object.fromEntries(topDirectCandidates.map((row) => [row.rawSignalId, row.stillMissingProof])),
+        providerSkippedReasons,
+      };
       const proofEnrichmentSummary = {
         attempted: true,
         signalsEnriched: enrichmentSummaries.filter(
@@ -676,6 +741,7 @@ export async function POST(request: NextRequest) {
         proofMatchScore: enrichmentSummaries.reduce((max, item) => Math.max(max, typeof item.proofMatchScore === "number" ? item.proofMatchScore : 0), 0),
         proofMatchingClean: !enrichmentSummaries.some((item) => Array.isArray(item.rejectedProofItems) && item.rejectedProofItems.length > 0 && (!Array.isArray(item.acceptedProofItems) || item.acceptedProofItems.length === 0)),
         enrichmentBlockedReasons: blockedReasonsBySignal,
+        proofCompletionSummary,
       };
       output.proofEnrichmentSummary = proofEnrichmentSummary;
       const summary = {
@@ -696,6 +762,19 @@ export async function POST(request: NextRequest) {
         passCount: rankedCandidates.filter((row) => row.passed).length,
         blockedCount: rankedCandidates.filter((row) => !row.passed).length,
         bestCandidateRawSignalId: best?.rawSignalId ?? null,
+        bestDirectTickerCandidate: bestDirectTickerCandidate ? {
+          rawSignalId: bestDirectTickerCandidate.rawSignalId,
+          ticker: bestDirectTickerCandidate.ticker,
+          title: bestDirectTickerCandidate.title,
+          source: bestDirectTickerCandidate.source,
+          promotionScore: bestDirectTickerCandidate.promotionScore,
+          catalystImpactScore: bestDirectTickerCandidate.catalystImpactScore,
+          stockSpecificityScore: bestDirectTickerCandidate.stockSpecificityScore,
+          proofTypesFound: bestDirectTickerCandidate.proofAddedTypes,
+          proofTypesMissing: bestDirectTickerCandidate.stillMissingProof,
+          reasonNotPromoted: bestDirectTickerCandidate.reasonNotPromoted,
+        } : null,
+        proofCompletionSummary,
         rankedCandidates,
         blockedReasonsBySignal,
         recommendedNextSource,
@@ -708,6 +787,9 @@ export async function POST(request: NextRequest) {
       };
       output.catalystSummary = {
         ...catalystSummaryBase,
+        fmpProvider403,
+        providerSkippedReasons,
+        nextAction: fmpProvider403 ? "Check FMP plan/API key access or endpoint permission." : null,
         catalystSignalsInspected: discoveryRows.filter((row) =>
           catalystSources.includes(row.source),
         ).length,
@@ -718,7 +800,7 @@ export async function POST(request: NextRequest) {
       output.candidateDiscoverySummary = summary;
       const rawSignal = best
         ? (rawSignals.find((signal) => signal.id === best.rawSignalId) ?? null)
-        : (rawSignals[0] ?? null);
+        : bestFailed ? (rawSignals.find((signal) => signal.id === bestFailed.rawSignalId) ?? null) : (rawSignals[0] ?? null);
       output.selectedRawSignalId = rawSignal?.id ?? null;
       output.rawSignalSummary = rawSignal
         ? {
@@ -746,8 +828,8 @@ export async function POST(request: NextRequest) {
           approved: false,
           publishable: false,
           published: false,
-          stage2Allowed: best.passed === true && best.afterProofCount > 0 && proofEnrichmentSummary.proofMatchingClean === true && !best.unsafeProofMismatchWarning,
-          approvedForAiReview: best.passed === true && best.afterProofCount > 0 && proofEnrichmentSummary.proofMatchingClean === true && !best.unsafeProofMismatchWarning,
+          stage2Allowed: best.eligibleForBest === true && best.afterProofCount > 0 && proofEnrichmentSummary.proofMatchingClean === true && !best.unsafeProofMismatchWarning,
+          approvedForAiReview: best.eligibleForBest === true && best.afterProofCount > 0 && proofEnrichmentSummary.proofMatchingClean === true && !best.unsafeProofMismatchWarning,
           nextRecommendedAction: summary.recommendedNextAction,
         });
       const createResponse = await candidateFactoryPOST(

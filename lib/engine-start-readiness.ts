@@ -5,6 +5,7 @@ import { prisma } from "@/lib/db/client";
 import { getAiCommitteeProviderStatus } from "@/lib/ai-committee/provider";
 import { AI_COMMITTEE_AGENTS } from "@/lib/ai-committee/agents";
 import { getSourceHealth } from "@/lib/source-health";
+import { aliasesForSource, normalizeSourceName } from "@/lib/source-aliases";
 
 export type SourceTruthStatus = "connected" | "degraded" | "not_configured" | "stubbed" | "failed" | "disabled" | "broken_route" | "not_wired";
 
@@ -24,7 +25,6 @@ export const SOURCE_DEFINITIONS: SourceDefinition[] = [
   { name: "Google News RSS", required: true, route: "app/api/ears/google-news/run/route.ts", adapter: "lib/ears/google-news.ts", notes: "Required public RSS ear." },
   { name: "openFDA", required: true, route: "app/api/ears/openfda/run/route.ts", adapter: "lib/ears/openfda.ts", notes: "Required public FDA/regulatory ear." },
   { name: "ClinicalTrials.gov", required: false, disabledReason: "No production adapter is wired yet; optional for first alert.", notes: "Optional clinical-trials source intentionally excluded from first-alert gate until implemented." },
-  { name: "FRED", required: false, route: "app/api/ears/fred/run/route.ts", adapter: "lib/ears/fred.ts", disabledReason: "Alias for FRED Macro; non-blocking to avoid duplicate blockers for the same macro dependency.", notes: "Alias for canonical FRED Macro source." },
   { name: "FRED Macro", required: true, route: "app/api/ears/fred/run/route.ts", adapter: "lib/ears/fred.ts", notes: "Required canonical macro ear; uses public FRED fredgraph CSV mode without an API key. FRED_API_KEY may be configured for future API mode but is not required by this adapter." },
   { name: "FMP Catalyst", required: false, route: "app/api/ears/fmp/run/route.ts", adapter: "lib/ears/fmp.ts", apiKey: "FMP_API_KEY", notes: "Optional paid live catalyst ear; missing key should not block first alert." },
   { name: "Marketaux Catalyst", required: false, route: "app/api/ears/marketaux/run/route.ts", adapter: "lib/ears/marketaux.ts", apiKey: "MARKETAUX_API_KEY", notes: "Optional paid live catalyst news ear." },
@@ -35,7 +35,6 @@ export const SOURCE_DEFINITIONS: SourceDefinition[] = [
   { name: "Frankfurter FX", required: true, route: "app/api/ears/frankfurter/run/route.ts", adapter: "lib/ears/frankfurter.ts", notes: "Required public FX/macro pressure ear." },
   { name: "FINRA Short Sale", required: false, route: "app/api/ears/finra-short-sale/run/route.ts", adapter: "lib/ears/finra-short-sale.ts", notes: "Optional public short-sale context ear." },
   { name: "Wikidata", required: false, route: "app/api/ears/wikidata-ripple/run/route.ts", adapter: "lib/ears/wikidata-ripple.ts", notes: "Optional public ripple-mapping ear." },
-  { name: "Wikidata ripple mapping", required: false, route: "app/api/ears/wikidata-ripple/run/route.ts", adapter: "lib/ears/wikidata-ripple.ts", notes: "Optional alias for Wikidata ripple mapping." },
   { name: "AI Committee", required: true, route: "app/api/ai-committee/run/route.ts", adapter: "lib/ai-committee/orchestrator.ts", apiKey: "OPENAI_API_KEY", notes: "Required real brain gate; dry-run must be ready and real run requires confirmRun=true." },
   { name: "Telegram", required: false, disabledReason: "Telegram notifications are optional and not required for first-alert readiness.", notes: "Optional notification path intentionally excluded from first alert." },
   { name: "Stripe Managed Payments", required: false, disabledReason: "Payments are not part of engine-start readiness.", notes: "Optional commercial integration, not a source ear." },
@@ -62,9 +61,10 @@ function mapStoredStatus(status?: string | null): SourceTruthStatus | null {
 
 export async function getSourceCoverage() {
   const health = await getSourceHealth();
-  const byName = new Map(health.sources.map((row) => [row.source, row]));
+  const byName = new Map(health.sources.map((row) => [normalizeSourceName(row.source), row]));
   return SOURCE_DEFINITIONS.map((source) => {
-    const stored = byName.get(source.name);
+    const canonicalName = normalizeSourceName(source.name);
+    const stored = byName.get(canonicalName);
     const routePresent = hasFile(source.route);
     const adapterPresent = hasFile(source.adapter);
     let status: SourceTruthStatus = "stubbed";
@@ -82,7 +82,7 @@ export async function getSourceCoverage() {
     const notes = source.name === "AI Committee" && status === "connected"
       ? "OpenAI provider configured and AI_COMMITTEE_ENABLED=true; dry-run ready. Real AI Committee run still requires confirmRun=true and does not expose secrets."
       : source.disabledReason ?? stored?.notes ?? source.notes;
-    return { source: source.name, required: source.required, optional: !source.required, status, realOrStubbed: real ? "real" : "stubbed", apiKeyNeeded: source.apiKey ?? null, railwayVariableNeeded: source.apiKey && !env(source.apiKey) ? source.apiKey : null, lastChecked: stored?.lastChecked ?? null, lastSuccess: stored?.lastSuccess ?? null, blocker, notes };
+    return { source: canonicalName, aliases: aliasesForSource(canonicalName), required: source.required, optional: !source.required, status, realOrStubbed: real ? "real" : "stubbed", apiKeyNeeded: source.apiKey ?? null, railwayVariableNeeded: source.apiKey && !env(source.apiKey) ? source.apiKey : null, lastChecked: stored?.lastChecked ?? null, lastSuccess: stored?.lastSuccess ?? null, blocker, notes };
   });
 }
 

@@ -442,3 +442,45 @@ model AiCommitteeAgentResult {
   @@index([agentId])
   @@map("ai_committee_agent_results")
 }
+
+model AssetUniverse {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  source           String
+  sourceSymbol     String   @map("source_symbol")
+  normalizedSymbol String   @map("normalized_symbol")
+  assetType        String   @map("asset_type")
+  companyName      String?  @map("company_name")
+  exchange         String?
+  country          String?
+  sector           String?
+  industry         String?
+  cik              String?
+  isin             String?
+  cusip            String?
+  active           Boolean  @default(true)
+  delisted         Boolean  @default(false)
+  firstSeenAt      DateTime @default(now()) @map("first_seen_at") @db.Timestamptz(6)
+  lastSeenAt       DateTime @default(now()) @map("last_seen_at") @db.Timestamptz(6)
+  sourceMetadata   Json     @default("{}") @map("source_metadata")
+
+  @@unique([source, sourceSymbol])
+  @@index([normalizedSymbol])
+  @@index([source, assetType])
+  @@map("asset_universe")
+}
+
+model AssetIdentityMap {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  normalizedSymbol String   @map("normalized_symbol")
+  source           String
+  sourceSymbol     String   @map("source_symbol")
+  aliases          Json     @default("[]")
+  companyNames     Json     @default("[]") @map("company_names")
+  cik              String?
+  assetType        String   @map("asset_type")
+  confidenceScore  Decimal  @default(0.5) @map("confidence_score") @db.Decimal(5, 4)
+
+  @@unique([normalizedSymbol, source, sourceSymbol])
+  @@index([normalizedSymbol])
+  @@map("asset_identity_map")
+}

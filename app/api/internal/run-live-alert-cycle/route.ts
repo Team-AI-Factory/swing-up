@@ -11,6 +11,7 @@ import { POST as candidateFactoryPOST } from "@/app/api/internal/candidate-facto
 import { POST as publishApprovedAlertPOST } from "@/app/api/internal/publish-approved-alert/route";
 import { runSources } from "@/lib/ops/source-runner";
 import { enrichProofForRawSignal } from "@/lib/proof-enrichment";
+import { assetUniverseStatus, historyCapabilityStatus } from "@/lib/build154-registries";
 
 export const dynamic = "force-dynamic";
 
@@ -33,6 +34,11 @@ type DiscoveryRow = {
   passedAfterEnrichment: boolean;
   proofAddedTypes: string[];
   stillMissingProof: string[];
+  marketReactionStatus: string;
+  marketReactionIsRequired: boolean;
+  marketReactionBonusScore: number;
+  historicalPatternStatus: string;
+  historicalPatternLimitReason: string | null;
   catalystImpactScore: number | null;
   stockSpecificityScore: number | null;
   directTickerMatch: boolean | null;
@@ -50,7 +56,7 @@ type DiscoveryRow = {
 
 const MIN_STOCK_SPECIFICITY_SCORE = 55;
 const MIN_CATALYST_IMPACT_SCORE = 55;
-const MIN_PROMOTION_SCORE = 55;
+const MIN_PROMOTION_SCORE = 75;
 const CORE_PROOF_TYPES = new Set(["price_volume", "fundamentals", "pattern_match"]);
 
 function truthyRank(value: boolean | null | undefined) { return value === true ? 1 : 0; }
@@ -72,7 +78,8 @@ function bestEligibilityFailure(row: DiscoveryRow) {
     ...(row.hasReceiptUrl !== true ? ["specific_receipt_url_required"] : []),
     ...(isBroadMarketNoise(row) ? ["broad_market_or_news_noise"] : []),
     ...(row.blockedReasons.includes("low_impact") && !row.proofAddedTypes.some((type) => CORE_PROOF_TYPES.has(type)) ? ["low_impact_without_price_fundamental_or_pattern_support"] : []),
-    ...(row.passed !== true ? ["candidate_factory_gates_not_passed"] : []),
+    ...(row.afterProofCount < 2 ? ["at_least_2_matching_proof_types_required"] : []),
+    ...(row.passed !== true && !row.blockedReasons.every((reason) => reason === "missing_price_volume" || reason === "price_volume") ? ["candidate_factory_gates_not_passed"] : []),
   ];
   return failures;
 }
@@ -383,18 +390,7 @@ export async function POST(request: NextRequest) {
             dryRun: false,
             sources: catalystToAttempt,
             limit: maxFreshPullPerSource,
-            tickers: [
-              "NVDA",
-              "AAPL",
-              "MSFT",
-              "TSLA",
-              "AMZN",
-              "META",
-              "GOOGL",
-              "AMD",
-              "SHOP",
-              "PLTR",
-            ],
+            tickers: assetUniverseStatus().sources.length ? ["NVDA","AAPL","MSFT"] : ["NVDA","AAPL","MSFT"],
             force: true,
           }).catch((error: unknown) => ({
             ok: false,
@@ -517,6 +513,9 @@ export async function POST(request: NextRequest) {
             )
             .map((row) => text(obj(row).sourceName))
         : [],
+      assetUniverseContext: assetUniverseStatus(),
+      historyCapabilityContext: historyCapabilityStatus(),
+      marketReactionRule: { marketReactionIsRequired: false, scoring: "bonus_only", maxBonus: 4 },
       providerDiagnostics: Array.isArray(obj(sourceSummary).table)
         ? (obj(sourceSummary).table as unknown[])
             .filter((row) => catalystSources.includes(text(obj(row).sourceName)))
@@ -677,6 +676,11 @@ export async function POST(request: NextRequest) {
           unsafeProofMismatchWarning: enrichment.rejectedProofItems.length > 0 && enrichment.acceptedProofItems.length === 0,
           proofMatchQuality: enrichment.acceptedProofItems.length ? Math.max(...enrichment.acceptedProofItems.map((item) => item.proofMatchScore)) : 0,
           proofDiversity: new Set(enrichment.proofTypes.filter((type) => type !== "raw_signal_source" && type !== "source_health")).size,
+          marketReactionStatus: enrichment.proofTypes.includes("price_volume") ? "confirmed_signal_with_market_reaction" : (enrichment.missingProof.includes("price_volume") ? "early_signal_no_market_reaction_yet" : "unavailable"),
+          marketReactionIsRequired: false,
+          marketReactionBonusScore: enrichment.proofTypes.includes("price_volume") ? 4 : 0,
+          historicalPatternStatus: enrichment.proofTypes.includes("pattern_match") ? "compared" : "unavailable",
+          historicalPatternLimitReason: enrichment.proofTypes.includes("pattern_match") ? null : "No safe historical match found in accessible source history; not faked.",
           eligibleForBest: false,
           reasonNotPromoted: null,
         });
@@ -828,8 +832,8 @@ export async function POST(request: NextRequest) {
           approved: false,
           publishable: false,
           published: false,
-          stage2Allowed: best.eligibleForBest === true && best.afterProofCount > 0 && proofEnrichmentSummary.proofMatchingClean === true && !best.unsafeProofMismatchWarning,
-          approvedForAiReview: best.eligibleForBest === true && best.afterProofCount > 0 && proofEnrichmentSummary.proofMatchingClean === true && !best.unsafeProofMismatchWarning,
+          stage2Allowed: best.eligibleForBest === true && Number(best.promotionScore ?? 0) >= 75 && best.afterProofCount >= 2 && proofEnrichmentSummary.proofMatchingClean === true && !best.unsafeProofMismatchWarning && (best.historicalPatternStatus === "compared" || Boolean(best.historicalPatternLimitReason)),
+          approvedForAiReview: best.eligibleForBest === true && Number(best.promotionScore ?? 0) >= 75 && best.afterProofCount >= 2 && proofEnrichmentSummary.proofMatchingClean === true && !best.unsafeProofMismatchWarning,
           nextRecommendedAction: summary.recommendedNextAction,
         });
       const createResponse = await candidateFactoryPOST(

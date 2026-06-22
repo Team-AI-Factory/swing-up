@@ -92,6 +92,11 @@ const startupChecks: Array<{ key: StageKey; label: string; route: string }> = [
   },
   { key: "initial", label: "Alerts page", route: "/alerts" },
   { key: "initial", label: "Ledger page", route: "/ledger" },
+  { key: "initial", label: "FMP data registry", route: "/api/internal/fmp-data-registry" },
+  { key: "initial", label: "Asset universe status", route: "/api/internal/asset-universe-status" },
+  { key: "initial", label: "History capability status", route: "/api/internal/history-capability-status" },
+  { key: "initial", label: "Catalyst opportunity registry", route: "/api/internal/catalyst-opportunity-registry" },
+  { key: "initial", label: "Coverage gap report", route: "/api/internal/data-coverage-gap-report" },
 ];
 
 const runPayloads = {
@@ -597,7 +602,7 @@ export default function EngineControlPanel() {
         <p style={styles.subtitle}>
           Browser-only controls for checking readiness and running one safe
           website alert cycle from the deployed app. This page is noindex,
-          unlinked, and never grants Telegram send permission.
+          unlinked, and never grants Telegram send permission. Build 154 shows FMP diagnostics, source-agnostic asset universe, history capability, catalyst-opportunity and coverage-gap registries; market reaction is bonus-only, never required for Stage 2.
         </p>
         <div style={styles.notice}>{message}</div>
       </section>

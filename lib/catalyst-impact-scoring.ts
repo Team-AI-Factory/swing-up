@@ -41,6 +41,20 @@ export function catalystImpactScores(input: {
   const stockSpecificityScore = Math.min((directTickerMatch ? 0.5 : 0) + (companyMatch ? 0.25 : 0) + (hasReceiptUrl ? 0.15 : 0) + (freshWithin72h ? 0.1 : 0), 1);
   const likelyMarketImpact = highType && stockSpecificityScore >= 0.5 ? "high" : lowType || stockSpecificityScore < 0.35 ? "low" : "medium";
   const impactScore = likelyMarketImpact === "high" ? 0.9 : likelyMarketImpact === "medium" ? 0.6 : 0.25;
-  const promotionScore = Math.round(100 * (impactScore * 0.35 + stockSpecificityScore * 0.35 + sourceReliabilityScore * 0.2 + proofDiversityScore * 0.1));
-  return { directTickerMatch, directCompanyMatch, hasReceiptUrl, freshWithin72h, sourceReliabilityScore, catalystType: type, likelyMarketImpact, proofDiversityScore, stockSpecificityScore, promotionScore };
+  const scoringBreakdown = {
+    directTickerCompanyMatch: directTickerMatch || directCompanyMatch ? 15 : 0,
+    catalystImportance: Math.round(impactScore * 18),
+    specificRealReceiptUrl: hasReceiptUrl ? 10 : 0,
+    freshness: freshWithin72h ? 8 : 0,
+    independentProofCount: Math.round(proofDiversityScore * 12),
+    proofMatchQuality: Math.round(stockSpecificityScore * 12),
+    historicalPatternMatch: (input.proofTypes ?? []).includes("pattern_match") ? 10 : 0,
+    fundamentalsSupport: (input.proofTypes ?? []).includes("fundamentals") ? 8 : 0,
+    marketReactionBonus: (input.proofTypes ?? []).includes("price_volume") ? 4 : 0,
+    sourceReliability: Math.round(sourceReliabilityScore * 2),
+    riskClarity: lowType ? 0 : 1,
+  };
+  const promotionScore = Math.min(100, Object.values(scoringBreakdown).reduce((sum, value) => sum + value, 0));
+  const promotionBand = promotionScore >= 85 ? "strong_candidate" : promotionScore >= 75 ? "eligible_for_ai_committee" : promotionScore >= 60 ? "watch_needs_proof" : "noise_weak";
+  return { directTickerMatch, directCompanyMatch, hasReceiptUrl, freshWithin72h, sourceReliabilityScore, catalystType: type, likelyMarketImpact, proofDiversityScore, stockSpecificityScore, promotionScore, promotionBand, marketReactionIsRequired: false, marketReactionBonusScore: scoringBreakdown.marketReactionBonus, scoringBreakdown };
 }

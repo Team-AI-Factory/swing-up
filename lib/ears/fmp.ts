@@ -6,7 +6,7 @@ import { catalystImpactScores } from "@/lib/catalyst-impact-scoring";
 export const FMP_SOURCE = "FMP Catalyst";
 export const DEFAULT_FMP_TICKERS = ["NVDA", "AAPL", "MSFT", "TSLA", "AMZN", "META", "GOOGL", "AMD", "SHOP", "PLTR"] as const;
 
-const FMP_BASE_URL = process.env.FMP_BASE_URL?.trim() || "https://financialmodelingprep.com/api/v3";
+const FMP_BASE_URL = process.env.FMP_BASE_URL?.trim() || "https://financialmodelingprep.com";
 const DEFAULT_LIMIT = 3;
 const MAX_LIMIT = 3;
 
@@ -30,6 +30,7 @@ export type FmpRunResult = {
   dryRun: boolean;
   apiKeyConfigured: boolean;
   status?: "missing_key" | "complete" | "error";
+  diagnostic?: FmpDiagnosticResult;
   providerIssue?: string | null;
   endpointHealth?: Record<string, string>;
   recordsChecked: number;
@@ -74,7 +75,8 @@ async function updateFmpSourceHealth(status: "connected" | "not_configured" | "d
 }
 
 async function fetchFmp<T>(path: string, apiKey: string, params: Record<string, string> = {}) {
-  const url = new URL(`${FMP_BASE_URL}${path}`);
+  const normalizedPath = path.startsWith("/stable/") || path.startsWith("/api/") ? path : `/api/v3${path}`;
+  const url = new URL(`${FMP_BASE_URL}${normalizedPath}`);
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
   url.searchParams.set("apikey", apiKey);
   const response = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store" });
@@ -176,26 +178,49 @@ async function writeCandidate(candidate: FmpCandidate, dryRun: boolean): Promise
   return writeRawSignal({ sourceName: FMP_SOURCE, sourceType: "news", ticker: candidate.ticker, eventType: candidate.eventType, title: candidate.title, summary: candidate.summary, url: candidate.url, detectedAt: candidate.detectedAt, duplicateKey: candidate.duplicateKey, qualityHints: { importanceHint: candidate.importanceHint, sourceQuality: "high", useful: true, reasons: ["FMP live_catalyst provider data sample", `impact:${scoring.likelyMarketImpact}`, `specificity:${scoring.stockSpecificityScore}`] }, rawPayload: { ...candidate.payload, catalystImpact: scoring }, dryRun });
 }
 
-function classifyFmpIssue(error: unknown) {
+export type FmpFailureReason = "missing_key" | "invalid_key" | "provider_403" | "plan_restricted" | "wrong_endpoint_path" | "auth_style_failed" | "rate_limited" | "network_failed" | "unknown_provider_error";
+export type FmpDiagnosticResult = { ok: boolean; status: FmpFailureReason | "connected"; endpointHealth: Record<string, string>; attempts: Array<{ endpoint: string; authStyle: "query_param" | "header"; status: string }>; lastFailureReason: FmpFailureReason | null; docsReference: string };
+
+function classifyFmpIssue(error: unknown): FmpFailureReason {
   const message = safeError(error).toLowerCase();
-  const path = (error as { path?: string } | null)?.path ?? "unknown_endpoint";
-  if (!message.includes("403")) return message.includes("not found") || message.includes("404") ? "wrong_endpoint_path" : "provider_error";
-  if (message.includes("invalid") || message.includes("api key")) return "invalid_key";
-  if (path.includes("press-releases") || path.includes("earning_call_transcript") || path.includes("price-target")) return "plan_blocked";
-  return "provider_403";
+  const status = (error as { status?: number } | null)?.status;
+  if (status === 401 || message.includes("invalid") || message.includes("api key")) return "invalid_key";
+  if (status === 403 || message.includes("forbidden") || message.includes("403")) return message.includes("limit") || message.includes("plan") ? "plan_restricted" : "provider_403";
+  if (status === 404 || message.includes("not found") || message.includes("404")) return "wrong_endpoint_path";
+  if (status === 429 || message.includes("rate limit")) return "rate_limited";
+  if (message.includes("fetch failed") || message.includes("network")) return "network_failed";
+  return "unknown_provider_error";
 }
 
-async function smokeTestFmp(apiKey: string) {
+async function diagnosticFetch(endpoint: string, apiKey: string, authStyle: "query_param" | "header") {
+  const url = new URL(`${FMP_BASE_URL}${endpoint}`);
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (authStyle === "query_param") url.searchParams.set("apikey", apiKey);
+  else headers.apikey = apiKey;
+  const response = await fetch(url, { headers, cache: "no-store" });
+  if (!response.ok) { const err = new Error(`FMP ${endpoint} failed with status ${response.status}`) as Error & { status?: number; path?: string }; err.status = response.status; err.path = endpoint; throw err; }
+  return response.json();
+}
+
+export async function diagnoseFmpAccess(): Promise<FmpDiagnosticResult> {
+  const apiKey = getApiKey();
   const endpointHealth: Record<string, string> = {};
-  try {
-    const quote = await fetchFmp<Record<string, unknown>[]>("/quote/NVDA", apiKey);
-    endpointHealth["/quote/{ticker}"] = "connected";
-    return { ok: true, issue: null as string | null, endpointHealth, quoteWorks: Array.isArray(quote) };
-  } catch (error) {
-    const issue = classifyFmpIssue(error);
-    endpointHealth["/quote/{ticker}"] = issue;
-    return { ok: false, issue, endpointHealth, quoteWorks: false };
+  const attempts: FmpDiagnosticResult["attempts"] = [];
+  if (!apiKey) return { ok: false, status: "missing_key", endpointHealth, attempts, lastFailureReason: "missing_key", docsReference: "FMP stable docs: /stable/profile, /stable/search-symbol, /stable/stock-list; auth via apikey query parameter or apikey header." };
+  const endpoints = ["/stable/profile?symbol=AAPL", "/stable/search-symbol?query=AAPL", "/stable/stock-list"];
+  let last: FmpFailureReason = "unknown_provider_error";
+  for (const endpoint of endpoints) {
+    for (const authStyle of ["query_param", "header"] as const) {
+      try { await diagnosticFetch(endpoint, apiKey, authStyle); endpointHealth[endpoint] = `connected:${authStyle}`; attempts.push({ endpoint, authStyle, status: "connected" }); return { ok: true, status: "connected", endpointHealth, attempts, lastFailureReason: null, docsReference: "Official FMP stable endpoints use /stable/profile?symbol=AAPL, /stable/search-symbol?query=AAPL, and /stable/stock-list with apikey query parameter or apikey header." }; }
+      catch (error) { last = classifyFmpIssue(error); endpointHealth[endpoint] = last; attempts.push({ endpoint, authStyle, status: last }); if (["provider_403","invalid_key","plan_restricted","rate_limited"].includes(last)) return { ok:false, status:last, endpointHealth, attempts, lastFailureReason:last, docsReference:"Stopped after diagnostic failure to avoid endpoint spam." }; }
+    }
   }
+  return { ok:false, status: last === "unknown_provider_error" ? "auth_style_failed" : last, endpointHealth, attempts, lastFailureReason:last, docsReference:"Both auth styles failed across stable diagnostic endpoints." };
+}
+
+async function smokeTestFmp() {
+  const diagnostic = await diagnoseFmpAccess();
+  return { ok: diagnostic.ok, issue: diagnostic.lastFailureReason, endpointHealth: diagnostic.endpointHealth, quoteWorks: diagnostic.ok, diagnostic };
 }
 
 export async function runFmpIngestion(options: FmpRunOptions = {}): Promise<FmpRunResult> {
@@ -216,13 +241,13 @@ export async function runFmpIngestion(options: FmpRunOptions = {}): Promise<FmpR
   const endpointHealth: Record<string, string> = {};
   let providerIssue: string | null = null;
   try {
-    const smoke = await smokeTestFmp(apiKey);
+    const smoke = await smokeTestFmp();
     Object.assign(endpointHealth, smoke.endpointHealth);
     if (!smoke.ok) {
       providerIssue = smoke.issue;
       errors.push(`FMP smoke test failed: ${smoke.issue}`);
       const sourceHealthStatus = await updateFmpSourceHealth("error", startedAt, errors[0] ?? null).catch(() => "error");
-      return { ok: false, source: FMP_SOURCE, dryRun, apiKeyConfigured: true, status: "error", providerIssue, endpointHealth, recordsChecked, rawSignalsCreated, duplicatesSkipped, rejected, errors, sourceHealthStatus };
+      return { ok: false, source: FMP_SOURCE, dryRun, apiKeyConfigured: true, status: "error", providerIssue, endpointHealth, diagnostic: smoke.diagnostic, recordsChecked, rawSignalsCreated, duplicatesSkipped, rejected, errors, sourceHealthStatus };
     }
     const tickers = requestedTickers(options.tickers, options.limit);
     let stopOptionalFmpEndpoints = false;

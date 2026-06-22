@@ -296,7 +296,7 @@ function discoverySummary(json: JsonValue | null) {
   const proofSummary = isRecord(json) && isRecord(json.proofEnrichmentSummary) ? json.proofEnrichmentSummary : null;
   const proofCompletion = summary && isRecord(summary.proofCompletionSummary) ? summary.proofCompletionSummary : proofSummary && isRecord(proofSummary.proofCompletionSummary) ? proofSummary.proofCompletionSummary : null;
   const catalyst = isRecord(json) && isRecord(json.catalystSummary) ? json.catalystSummary : null;
-  const fmpProvider403 = catalyst?.fmpProvider403 === true || JSON.stringify(catalyst ?? {}).toLowerCase().includes("provider_403");
+  const fmpProvider403 = catalyst?.fmpProvider403 === true || /provider_403|plan_key_blocked|check fmp key/i.test(JSON.stringify(catalyst ?? ""));
   const selectedReasons =
     isRecord(selected) && Array.isArray(selected.blockedReasons)
       ? selected.blockedReasons.map(String).join(" | ")
@@ -328,7 +328,7 @@ function discoverySummary(json: JsonValue | null) {
         : "—",
     bestDirectTickerCandidate: bestDirect ? JSON.stringify(bestDirect) : "—",
     proofCompletionSummary: proofCompletion ? JSON.stringify(proofCompletion) : "—",
-    fmpProvider403Note: fmpProvider403 ? "FMP provider_403 — Check FMP plan/API key access or endpoint permission." : "—",
+    fmpProvider403Note: fmpProvider403 ? "FMP plan/key blocked — Check FMP key, account activation, or plan access." : "—",
     stage2Allowed,
   };
 }

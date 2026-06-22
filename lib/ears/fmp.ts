@@ -6,7 +6,8 @@ import { catalystImpactScores } from "@/lib/catalyst-impact-scoring";
 export const FMP_SOURCE = "FMP Catalyst";
 export const DEFAULT_FMP_TICKERS = ["NVDA", "AAPL", "MSFT", "TSLA", "AMZN", "META", "GOOGL", "AMD", "SHOP", "PLTR"] as const;
 
-const FMP_BASE_URL = process.env.FMP_BASE_URL?.trim() || "https://financialmodelingprep.com/api/v3";
+const FMP_BASE_URL = (process.env.FMP_BASE_URL?.trim() || "https://financialmodelingprep.com").replace(/\/api\/v3\/?$/, "");
+const FMP_BLOCKED_NEXT_ACTION = "Check FMP key, account activation, or plan access.";
 const DEFAULT_LIMIT = 3;
 const MAX_LIMIT = 3;
 
@@ -31,6 +32,7 @@ export type FmpRunResult = {
   apiKeyConfigured: boolean;
   status?: "missing_key" | "complete" | "error";
   providerIssue?: string | null;
+  nextAction?: string | null;
   endpointHealth?: Record<string, string>;
   recordsChecked: number;
   rawSignalsCreated: number;
@@ -77,7 +79,7 @@ async function fetchFmp<T>(path: string, apiKey: string, params: Record<string, 
   const url = new URL(`${FMP_BASE_URL}${path}`);
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
   url.searchParams.set("apikey", apiKey);
-  const response = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store" });
+  const response = await fetch(url, { headers: { Accept: "application/json", apikey: apiKey }, cache: "no-store" });
   if (!response.ok) { const err = new Error(`FMP ${path} failed with status ${response.status}`) as Error & { status?: number; path?: string }; err.status = response.status; err.path = path; throw err; }
   const json = (await response.json()) as unknown;
   if (json && typeof json === "object" && !Array.isArray(json) && typeof (json as Record<string, unknown>).Error === "string") throw new Error(`FMP ${path}: ${(json as Record<string, string>).Error.slice(0, 160)}`);
@@ -111,35 +113,11 @@ function priceCandidate(ticker: string, row: Record<string, unknown>): FmpCandid
   };
 }
 
-function fundamentalsCandidate(ticker: string, rows: Record<string, unknown>[]): FmpCandidate | null {
-  const latest = rows[0];
-  if (!latest) return null;
-  const revenue = numberValue(latest.revenue);
-  const netIncome = numberValue(latest.netIncome);
-  const date = dateValue(latest.date);
-  if (revenue === null && netIncome === null) return null;
-  return { ticker, eventType: "guidance_update", title: `${ticker} latest FMP fundamentals snapshot`, summary: `${ticker} latest FMP income statement sample shows revenue ${revenue ?? "unknown"} and net income ${netIncome ?? "unknown"}. This captures fundamentals context only.`, url: `https://financialmodelingprep.com/financial-summary/${ticker}`, detectedAt: date, duplicateKey: `${FMP_SOURCE}|fundamentals_change|${ticker}|${date.slice(0, 10)}`, importanceHint: "medium", payload: { provider: FMP_SOURCE, endpoint: "income-statement", latest: latest as Prisma.InputJsonObject, noFinalAlerts: true } };
-}
-
 function earningsCandidate(ticker: string, rows: Record<string, unknown>[]): FmpCandidate | null {
   const row = rows.find((item) => item.symbol === ticker) ?? rows[0];
   if (!row) return null;
   const date = dateValue(row.date);
   return { ticker, eventType: "earnings_event", title: `${ticker} FMP earnings calendar signal`, summary: `${ticker} has an earnings calendar item in the FMP sample dated ${date.slice(0, 10)}. This is raw scheduling evidence only.`, url: `https://financialmodelingprep.com/financial-summary/${ticker}`, detectedAt: date, duplicateKey: `${FMP_SOURCE}|earnings_event|${ticker}|${date.slice(0, 10)}`, importanceHint: "medium", payload: { provider: FMP_SOURCE, endpoint: "earning_calendar", row: row as Prisma.InputJsonObject, noFinalAlerts: true } };
-}
-
-function analystCandidate(ticker: string, row: Record<string, unknown>): FmpCandidate | null {
-  const target = numberValue(row.targetConsensus ?? row.targetMean ?? row.priceTargetAverage);
-  if (target === null) return null;
-  const detectedAt = new Date().toISOString();
-  return { ticker, eventType: "price_target", title: `${ticker} FMP analyst target snapshot`, summary: `${ticker} FMP analyst target sample shows a consensus/average target near $${target}. This is raw analyst-target context only.`, url: `https://financialmodelingprep.com/financial-summary/${ticker}`, detectedAt, duplicateKey: `${FMP_SOURCE}|analyst_target_change|${ticker}|${detectedAt.slice(0, 10)}`, importanceHint: "low", payload: { provider: FMP_SOURCE, endpoint: "price-target-consensus", row: row as Prisma.InputJsonObject, noFinalAlerts: true } };
-}
-
-function transcriptCandidate(ticker: string, rows: Record<string, unknown>[]): FmpCandidate | null {
-  const row = rows[0];
-  if (!row) return null;
-  const date = dateValue(row.date);
-  return { ticker, eventType: "earnings_transcript", title: `${ticker} FMP transcript availability signal`, summary: `${ticker} has transcript-related data available in the FMP sample for ${date.slice(0, 10)}. This flags evidence availability only.`, url: `https://financialmodelingprep.com/financial-summary/${ticker}`, detectedAt: date, duplicateKey: `${FMP_SOURCE}|transcript_signal|${ticker}|${date.slice(0, 10)}`, importanceHint: "low", payload: { provider: FMP_SOURCE, endpoint: "earning_call_transcript", row: row as Prisma.InputJsonObject, noFinalAlerts: true } };
 }
 
 
@@ -181,21 +159,63 @@ function classifyFmpIssue(error: unknown) {
   const path = (error as { path?: string } | null)?.path ?? "unknown_endpoint";
   if (!message.includes("403")) return message.includes("not found") || message.includes("404") ? "wrong_endpoint_path" : "provider_error";
   if (message.includes("invalid") || message.includes("api key")) return "invalid_key";
-  if (path.includes("press-releases") || path.includes("earning_call_transcript") || path.includes("price-target")) return "plan_blocked";
+  if (path.includes("/stable/")) return "plan_key_blocked";
   return "provider_403";
 }
 
 async function smokeTestFmp(apiKey: string) {
   const endpointHealth: Record<string, string> = {};
-  try {
-    const quote = await fetchFmp<Record<string, unknown>[]>("/quote/NVDA", apiKey);
-    endpointHealth["/quote/{ticker}"] = "connected";
-    return { ok: true, issue: null as string | null, endpointHealth, quoteWorks: Array.isArray(quote) };
-  } catch (error) {
-    const issue = classifyFmpIssue(error);
-    endpointHealth["/quote/{ticker}"] = issue;
-    return { ok: false, issue, endpointHealth, quoteWorks: false };
+  const simpleEndpoints: Array<{ key: string; path: string; params: Record<string, string> }> = [
+    { key: "/stable/profile?symbol=AAPL", path: "/stable/profile", params: { symbol: "AAPL" } },
+    { key: "/stable/search-symbol?query=AAPL", path: "/stable/search-symbol", params: { query: "AAPL" } },
+  ];
+
+  for (const endpoint of simpleEndpoints) {
+    try {
+      const rows = await fetchFmp<unknown>(endpoint.path, apiKey, endpoint.params);
+      endpointHealth[endpoint.key] = "connected";
+      return { ok: true, issue: null as string | null, endpointHealth, simpleEndpoint: endpoint.key, simpleEndpointWorks: Array.isArray(rows) ? rows.length >= 0 : Boolean(rows) };
+    } catch (error) {
+      const issue = classifyFmpIssue(error);
+      endpointHealth[endpoint.key] = issue;
+      if (issue === "plan_key_blocked" || issue === "invalid_key" || issue === "provider_403") {
+        return { ok: false, issue: "plan_key_blocked", endpointHealth, simpleEndpoint: endpoint.key, simpleEndpointWorks: false };
+      }
+    }
   }
+
+  return { ok: false, issue: "provider_error", endpointHealth, simpleEndpoint: null as string | null, simpleEndpointWorks: false };
+}
+
+type WorkingFmpEndpoint = {
+  key: string;
+  run: (ticker: string) => Promise<Record<string, unknown>[]>;
+  candidate: (ticker: string, rows: Record<string, unknown>[]) => FmpCandidate | null;
+};
+
+async function enabledStableEndpoints(apiKey: string) {
+  const endpointHealth: Record<string, string> = {};
+  const endpoints: WorkingFmpEndpoint[] = [
+    { key: "/stable/news/stock?symbols=AAPL", run: (ticker) => fetchFmp<Record<string, unknown>[]>("/stable/news/stock", apiKey, { symbols: ticker, limit: "1" }), candidate: (ticker, rows) => stockNewsCandidate(ticker, rows) },
+    { key: "/stable/news/press-releases?symbols=AAPL", run: (ticker) => fetchFmp<Record<string, unknown>[]>("/stable/news/press-releases", apiKey, { symbols: ticker, limit: "1" }), candidate: (ticker, rows) => pressReleaseCandidate(ticker, rows) },
+    { key: "/stable/quote?symbol=AAPL", run: (ticker) => fetchFmp<Record<string, unknown>[]>("/stable/quote", apiKey, { symbol: ticker }), candidate: (ticker, rows) => priceCandidate(ticker, rows[0] ?? {}) },
+    { key: "/stable/earnings?symbol=AAPL", run: (ticker) => fetchFmp<Record<string, unknown>[]>("/stable/earnings", apiKey, { symbol: ticker, limit: "1" }), candidate: (ticker, rows) => earningsCandidate(ticker, rows) },
+  ];
+  const working: WorkingFmpEndpoint[] = [];
+
+  for (const endpoint of endpoints) {
+    try {
+      await endpoint.run("AAPL");
+      endpointHealth[endpoint.key] = "connected";
+      working.push(endpoint);
+    } catch (error) {
+      const issue = classifyFmpIssue(error);
+      endpointHealth[endpoint.key] = issue;
+      if (["plan_key_blocked", "provider_403", "invalid_key"].includes(issue)) break;
+    }
+  }
+
+  return { working, endpointHealth };
 }
 
 export async function runFmpIngestion(options: FmpRunOptions = {}): Promise<FmpRunResult> {
@@ -222,46 +242,30 @@ export async function runFmpIngestion(options: FmpRunOptions = {}): Promise<FmpR
       providerIssue = smoke.issue;
       errors.push(`FMP smoke test failed: ${smoke.issue}`);
       const sourceHealthStatus = await updateFmpSourceHealth("error", startedAt, errors[0] ?? null).catch(() => "error");
-      return { ok: false, source: FMP_SOURCE, dryRun, apiKeyConfigured: true, status: "error", providerIssue, endpointHealth, recordsChecked, rawSignalsCreated, duplicatesSkipped, rejected, errors, sourceHealthStatus };
+      return { ok: false, source: FMP_SOURCE, dryRun, apiKeyConfigured: true, status: "error", providerIssue, nextAction: providerIssue === "plan_key_blocked" ? FMP_BLOCKED_NEXT_ACTION : null, endpointHealth, recordsChecked, rawSignalsCreated, duplicatesSkipped, rejected, errors, sourceHealthStatus };
     }
+    const enabled = await enabledStableEndpoints(apiKey);
+    Object.assign(endpointHealth, enabled.endpointHealth);
+    if (!enabled.working.length) {
+      providerIssue = "plan_key_blocked";
+      errors.push("FMP stable endpoints blocked or unavailable after smoke test.");
+      const sourceHealthStatus = await updateFmpSourceHealth("error", startedAt, errors[0] ?? null).catch(() => "error");
+      return { ok: false, source: FMP_SOURCE, dryRun, apiKeyConfigured: true, status: "error", providerIssue, nextAction: FMP_BLOCKED_NEXT_ACTION, endpointHealth, recordsChecked, rawSignalsCreated, duplicatesSkipped, rejected, errors, sourceHealthStatus };
+    }
+
     const tickers = requestedTickers(options.tickers, options.limit);
-    let stopOptionalFmpEndpoints = false;
     for (const ticker of tickers) {
       const candidates: Array<FmpCandidate | null> = [];
-      try {
-        const quote = await fetchFmp<Record<string, unknown>[]>(`/quote/${ticker}`, apiKey);
-        endpointHealth["/quote/{ticker}"] = "connected";
-        recordsChecked += quote.length;
-        candidates.push(priceCandidate(ticker, quote[0] ?? {}));
-      } catch (error) {
-        endpointHealth["/quote/{ticker}"] = classifyFmpIssue(error);
-        errors.push(`${endpointHealth["/quote/{ticker}"]}: ${safeError(error)}`);
-        if (endpointHealth["/quote/{ticker}"].includes("403") || ["plan_blocked", "provider_403", "endpoint_forbidden"].includes(endpointHealth["/quote/{ticker}"])) stopOptionalFmpEndpoints = true;
-      }
-
-      const optionalCalls: Array<{ key: string; run: () => Promise<Record<string, unknown>[]>; candidate: (rows: Record<string, unknown>[]) => FmpCandidate | null }> = [
-        { key: "/press-releases/{ticker}", run: () => fetchFmp<Record<string, unknown>[]>(`/press-releases/${ticker}`, apiKey, { limit: "1" }), candidate: (rows) => pressReleaseCandidate(ticker, rows) },
-        { key: "/stock_news", run: () => fetchFmp<Record<string, unknown>[]>("/stock_news", apiKey, { tickers: ticker, limit: "1" }), candidate: (rows) => stockNewsCandidate(ticker, rows) },
-        { key: "/income-statement/{ticker}", run: () => fetchFmp<Record<string, unknown>[]>(`/income-statement/${ticker}`, apiKey, { limit: "1" }), candidate: (rows) => fundamentalsCandidate(ticker, rows) },
-        { key: "/earning_calendar", run: () => fetchFmp<Record<string, unknown>[]>("/earning_calendar", apiKey, { symbol: ticker, limit: "1" }), candidate: (rows) => earningsCandidate(ticker, rows) },
-        { key: "/price-target-consensus/{ticker}", run: () => fetchFmp<Record<string, unknown>[]>(`/price-target-consensus/${ticker}`, apiKey), candidate: (rows) => analystCandidate(ticker, rows[0] ?? {}) },
-        { key: "/earning_call_transcript/{ticker}", run: () => fetchFmp<Record<string, unknown>[]>(`/earning_call_transcript/${ticker}`, apiKey, { limit: "1" }), candidate: (rows) => transcriptCandidate(ticker, rows) },
-      ];
-      for (const endpoint of optionalCalls) {
-        if (stopOptionalFmpEndpoints) {
-          endpointHealth[endpoint.key] = endpointHealth[endpoint.key] ?? "unavailable_after_403";
-          continue;
-        }
+      for (const endpoint of enabled.working) {
         try {
-          const rows = await endpoint.run();
-          endpointHealth[endpoint.key] = "connected";
+          const rows = await endpoint.run(ticker);
           recordsChecked += rows.length;
-          candidates.push(endpoint.candidate(rows));
+          candidates.push(endpoint.candidate(ticker, rows));
         } catch (error) {
           const issue = classifyFmpIssue(error);
-          endpointHealth[endpoint.key] = issue;
+          endpointHealth[endpoint.key.replace("AAPL", ticker)] = issue;
           errors.push(`${issue}: ${safeError(error)}`);
-          if (["plan_blocked", "provider_403", "endpoint_forbidden"].includes(issue)) stopOptionalFmpEndpoints = true;
+          if (["plan_key_blocked", "provider_403", "invalid_key"].includes(issue)) break;
         }
       }
 
@@ -278,5 +282,5 @@ export async function runFmpIngestion(options: FmpRunOptions = {}): Promise<FmpR
   }
 
   const sourceHealthStatus = await updateFmpSourceHealth(errors.length ? (recordsChecked ? "degraded" : "error") : "connected", startedAt, errors[0] ?? null).catch(() => errors.length ? "error" : "connected");
-  return { ok: recordsChecked > 0 || errors.length === 0, source: FMP_SOURCE, dryRun, apiKeyConfigured: true, status: errors.length ? "error" : "complete", providerIssue, endpointHealth, recordsChecked, rawSignalsCreated, duplicatesSkipped, rejected, errors: [...new Set(errors)].slice(0, 10), sourceHealthStatus };
+  return { ok: recordsChecked > 0 || errors.length === 0, source: FMP_SOURCE, dryRun, apiKeyConfigured: true, status: errors.length ? "error" : "complete", providerIssue, nextAction: providerIssue === "plan_key_blocked" ? FMP_BLOCKED_NEXT_ACTION : null, endpointHealth, recordsChecked, rawSignalsCreated, duplicatesSkipped, rejected, errors: [...new Set(errors)].slice(0, 10), sourceHealthStatus };
 }

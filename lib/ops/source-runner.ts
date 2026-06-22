@@ -169,7 +169,7 @@ async function runOne(sourceName: RunnableSourceName, options: Required<Pick<Sou
       finished = finishRow(row, { status: result.skipped ? "skipped" : result.ok && !result.rateLimited ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.pairsChecked, signalsCreated: result.signalsCreated, duplicatesSkipped: 0, errors: [...result.errors, ...(result.skipReason ? [result.skipReason] : [])], sourceHealthUpdated: sourceHealthCanPersist() && !result.skipped });
     } else if (sourceName === "FMP Catalyst") {
       const result = await runFmpIngestion({ dryRun: options.dryRun, limit: options.limit, tickers: options.tickers });
-      const errors = result.status === "missing_key" ? ["missing_key"] : result.errors;
+      const errors = result.status === "missing_key" ? ["missing_key"] : [...result.errors, ...(result.nextAction ? [result.nextAction] : [])];
       finished = finishRow(row, { status: result.status === "missing_key" ? "skipped" : result.ok && !result.errors.length ? "ok" : result.ok ? "degraded" : "error", recordsChecked: result.recordsChecked, signalsCreated: result.rawSignalsCreated, duplicatesSkipped: result.duplicatesSkipped, errors, diagnosis: fmpDiagnosis([...(result.providerIssue ? [result.providerIssue] : []), ...errors]), sourceHealthUpdated: sourceHealthCanPersist() });
     } else if (sourceName === "Alpha Vantage Catalyst") {
       const result = await runAlphaVantageIngestion({ dryRun: options.dryRun, limit: options.limit, tickers: options.tickers });

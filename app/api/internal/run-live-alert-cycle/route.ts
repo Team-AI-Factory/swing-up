@@ -523,9 +523,9 @@ export async function POST(request: NextRequest) {
             .map((row) => ({ source: text(obj(row).sourceName), status: text(obj(row).status), sourceHealthStatus: text(obj(row).sourceHealthStatus), errors: Array.isArray(obj(row).errors) ? obj(row).errors : [], diagnosis: text(obj(row).diagnosis) || null }))
         : [],
     };
-    const fmpProvider403 = catalystSummaryBase.providerDiagnostics.some((diagnostic) => diagnostic.source === "FMP Catalyst" && JSON.stringify(diagnostic).toLowerCase().includes("403"));
-    const providerSkippedReasons = fmpProvider403 ? { "FMP Catalyst": "provider_403; Check FMP plan/API key access or endpoint permission." } : {};
-    output.catalystSummary = { ...catalystSummaryBase, fmpProvider403, providerSkippedReasons, nextAction: fmpProvider403 ? "Check FMP plan/API key access or endpoint permission." : null };
+    const fmpBlocked = catalystSummaryBase.providerDiagnostics.some((diagnostic) => diagnostic.source === "FMP Catalyst" && /403|plan_key_blocked|plan restricted|check fmp key/i.test(JSON.stringify(diagnostic)));
+    const providerSkippedReasons = fmpBlocked ? { "FMP Catalyst": "plan_key_blocked; Check FMP key, account activation, or plan access." } : {};
+    output.catalystSummary = { ...catalystSummaryBase, fmpProvider403: fmpBlocked, providerSkippedReasons, nextAction: fmpBlocked ? "Check FMP key, account activation, or plan access." : null };
     if (!rawSignals.length && !candidateAlertId) {
       const summary = {
         rawSignalsInspected: 0,
@@ -782,14 +782,14 @@ export async function POST(request: NextRequest) {
         recommendedNextAction: best
           ? "Stage 1 found a candidate strong enough for Stage 2 AI review. Re-run with dryRun=false and confirmRun=true to create/review exactly one candidate."
           : bestFailed
-            ? `No inspected signal passed safety gates. Best candidate "${bestFailed.title}" failed because ${(bestFailed.blockedReasons.length ? bestFailed.blockedReasons : ["matching proof is still required"]).join("; ")}. Missing: ${(bestFailed.stillMissingProof.length ? bestFailed.stillMissingProof : ["at least 2 independent matching proof types, a specific receipt URL, price/volume or fundamentals/pattern confirmation"]).join(", ")}. Use ${recommendedNextSource} next; FMP provider_403 ${catalystSummaryBase.failedCatalystProviders.includes("FMP Catalyst") ? "may be blocking useful FMP proof but must not be retried in this run" : "is not the active blocker"}. Marketaux/Alpha data is useful only when ticker/company/topic-specific proof matches.`
+            ? `No inspected signal passed safety gates. Best candidate "${bestFailed.title}" failed because ${(bestFailed.blockedReasons.length ? bestFailed.blockedReasons : ["matching proof is still required"]).join("; ")}. Missing: ${(bestFailed.stillMissingProof.length ? bestFailed.stillMissingProof : ["at least 2 independent matching proof types, a specific receipt URL, price/volume or fundamentals/pattern confirmation"]).join(", ")}. Use ${recommendedNextSource} next; FMP plan/key block ${catalystSummaryBase.failedCatalystProviders.includes("FMP Catalyst") ? "may be blocking useful FMP proof but must not be retried in this run" : "is not the active blocker"}. Marketaux/Alpha data is useful only when ticker/company/topic-specific proof matches.`
             : `No inspected signal passed safety gates and catalyst providers were not attempted. Fix catalyst provider execution before trying ${recommendedNextSource}.`,
       };
       output.catalystSummary = {
         ...catalystSummaryBase,
-        fmpProvider403,
+        fmpProvider403: fmpBlocked,
         providerSkippedReasons,
-        nextAction: fmpProvider403 ? "Check FMP plan/API key access or endpoint permission." : null,
+        nextAction: fmpBlocked ? "Check FMP key, account activation, or plan access." : null,
         catalystSignalsInspected: discoveryRows.filter((row) =>
           catalystSources.includes(row.source),
         ).length,

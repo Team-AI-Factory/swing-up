@@ -33,6 +33,9 @@ type StageResult = {
     inspected: number | null;
     selectedFailed: string;
     nextSource: string;
+    bestDirectTickerCandidate: string;
+    proofCompletionSummary: string;
+    fmpProvider403Note: string;
     stage2Allowed: boolean | null;
   };
   catalyst: {
@@ -289,6 +292,11 @@ function discoverySummary(json: JsonValue | null) {
       isRecord(item) &&
       item.rawSignalId === (isRecord(json) ? json.selectedRawSignalId : null),
   );
+  const bestDirect = summary && isRecord(summary.bestDirectTickerCandidate) ? summary.bestDirectTickerCandidate : null;
+  const proofSummary = isRecord(json) && isRecord(json.proofEnrichmentSummary) ? json.proofEnrichmentSummary : null;
+  const proofCompletion = summary && isRecord(summary.proofCompletionSummary) ? summary.proofCompletionSummary : proofSummary && isRecord(proofSummary.proofCompletionSummary) ? proofSummary.proofCompletionSummary : null;
+  const catalyst = isRecord(json) && isRecord(json.catalystSummary) ? json.catalystSummary : null;
+  const fmpProvider403 = catalyst?.fmpProvider403 === true || JSON.stringify(catalyst ?? {}).toLowerCase().includes("provider_403");
   const selectedReasons =
     isRecord(selected) && Array.isArray(selected.blockedReasons)
       ? selected.blockedReasons.map(String).join(" | ")
@@ -297,7 +305,6 @@ function discoverySummary(json: JsonValue | null) {
     summary && typeof summary.passCount === "number" ? summary.passCount : 0;
   const publishable = isRecord(json) && json.publishable === true;
   const approvedForAiReview = isRecord(json) && json.stage2Allowed === true;
-  const proofSummary = isRecord(json) && isRecord(json.proofEnrichmentSummary) ? json.proofEnrichmentSummary : null;
   const proofClean = proofSummary && typeof proofSummary.proofMatchingClean === "boolean" ? proofSummary.proofMatchingClean : false;
   const hasUnsafeMismatch = ranked.some((item) => isRecord(item) && item.unsafeProofMismatchWarning === true);
   const stage2Allowed =
@@ -319,6 +326,9 @@ function discoverySummary(json: JsonValue | null) {
       summary && typeof summary.recommendedNextSource === "string"
         ? summary.recommendedNextSource
         : "—",
+    bestDirectTickerCandidate: bestDirect ? JSON.stringify(bestDirect) : "—",
+    proofCompletionSummary: proofCompletion ? JSON.stringify(proofCompletion) : "—",
+    fmpProvider403Note: fmpProvider403 ? "FMP provider_403 — Check FMP plan/API key access or endpoint permission." : "—",
     stage2Allowed,
   };
 }
@@ -691,7 +701,10 @@ export default function EngineControlPanel() {
                   "provider diagnostics",
                   "impact score",
                   "stock specificity",
+                  "best direct ticker candidate",
                   "selected failure",
+                  "proof completion summary",
+                  "FMP provider_403 note",
                   "next source",
                   "proof enrichment",
                   "proof added",
@@ -737,7 +750,10 @@ export default function EngineControlPanel() {
                   <td style={styles.td}>{row.catalyst.diagnostics}</td>
                   <td style={styles.td}>{row.catalyst.impact}</td>
                   <td style={styles.td}>{row.catalyst.specificity}</td>
+                  <td style={styles.td}>{row.discovery.bestDirectTickerCandidate}</td>
                   <td style={styles.td}>{row.discovery.selectedFailed}</td>
+                  <td style={styles.td}>{row.discovery.proofCompletionSummary}</td>
+                  <td style={styles.td}>{row.discovery.fmpProvider403Note}</td>
                   <td style={styles.td}>{row.discovery.nextSource}</td>
                   <td style={styles.td}>
                     {yesNo(row.proofEnrichment.attempted)}

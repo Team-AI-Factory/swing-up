@@ -42,6 +42,9 @@ type StageResult = {
     inspected: number;
     top: string;
     notes: string;
+    diagnostics: string;
+    impact: string;
+    specificity: string;
     nextAction: string;
   };
   proofEnrichment: {
@@ -187,6 +190,9 @@ function catalystSummary(json: JsonValue | null) {
     summary && Array.isArray(summary.failedCatalystProviders)
       ? summary.failedCatalystProviders.map(String)
       : [];
+  const diagnostics = summary && Array.isArray(summary.providerDiagnostics) ? summary.providerDiagnostics.map((item) => isRecord(item) ? `${item.source}:${item.status}:${item.sourceHealthStatus}:${Array.isArray(item.errors) ? item.errors.slice(0, 2).join(",") : ""}` : String(item)).join(" | ") || "—" : "—";
+  const impacts = summary && Array.isArray(summary.topCatalystCandidates) ? summary.topCatalystCandidates.map((item) => isRecord(item) && isRecord(item.catalystImpact) ? String(item.catalystImpact.catalystImpactScore ?? item.catalystImpact.promotionScore ?? "—") : "—").join(" | ") : "—";
+  const specificity = summary && Array.isArray(summary.topCatalystCandidates) ? summary.topCatalystCandidates.map((item) => isRecord(item) && isRecord(item.catalystImpact) ? String(item.catalystImpact.stockSpecificityScore ?? "—") : "—").join(" | ") : "—";
   const nextAction =
     findString(json, ["nextRecommendedAction", "nextAction"]) ??
     "Run Stage 1 first.";
@@ -202,6 +208,9 @@ function catalystSummary(json: JsonValue | null) {
         ...degraded.map((item) => `degraded ${item}`),
         ...failed.map((item) => `failed ${item}`),
       ].join(" | ") || "—",
+    diagnostics,
+    impact: impacts,
+    specificity,
     nextAction,
   };
 }
@@ -654,6 +663,9 @@ export default function EngineControlPanel() {
                   "catalyst inspected",
                   "top catalyst candidates",
                   "catalyst notes",
+                  "provider diagnostics",
+                  "impact score",
+                  "stock specificity",
                   "selected failure",
                   "next source",
                   "proof enrichment",
@@ -693,6 +705,9 @@ export default function EngineControlPanel() {
                   <td style={styles.td}>{row.catalyst.inspected}</td>
                   <td style={styles.td}>{row.catalyst.top}</td>
                   <td style={styles.td}>{row.catalyst.notes}</td>
+                  <td style={styles.td}>{row.catalyst.diagnostics}</td>
+                  <td style={styles.td}>{row.catalyst.impact}</td>
+                  <td style={styles.td}>{row.catalyst.specificity}</td>
                   <td style={styles.td}>{row.discovery.selectedFailed}</td>
                   <td style={styles.td}>{row.discovery.nextSource}</td>
                   <td style={styles.td}>

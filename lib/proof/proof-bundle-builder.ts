@@ -76,7 +76,7 @@ function confidenceHint(score: number): ProofBundle["confidenceHint"] {
   return "low";
 }
 
-export async function buildProofBundleForRawSignal(rawSignalId: string): Promise<ProofBundle | null> {
+export async function buildProofBundleForRawSignal(rawSignalId: string, extraProofs: ProofItem[] = []): Promise<ProofBundle | null> {
   const rawSignal = await prisma.rawSignal.findUnique({
     where: { id: rawSignalId },
     include: { patternMatches: { orderBy: [{ matchScore: "desc" }, { similarity: "desc" }, { createdAt: "desc" }], take: 1 } },
@@ -118,6 +118,8 @@ export async function buildProofBundleForRawSignal(rawSignalId: string): Promise
 
   const health = await prisma.sourceHealth.findUnique({ where: { source: signal.source } }).catch(() => null);
   if (health) proofs.push({ type: "source_health", strength: sourceHealthStrength(health.status), label: `Source health: ${health.status}`, source: signal.source, summary: health.errorMessage || health.notes || `Latest source health status is ${health.status}.`, observedAt: health.checkedAt.toISOString(), metadata: { status: health.status, uptime: health.uptime?.toString() ?? null, responseTimeMs: health.responseTimeMs } });
+
+  proofs.push(...extraProofs);
 
   const proofTypes = Array.from(new Set(proofs.map((proof) => proof.type)));
   const missingProof = ALL_SUPPORTING_PROOF.filter((type) => !proofTypes.includes(type));

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { Prisma, type RawSignal } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
 import { resolveTickerEntity } from "@/lib/entities/ticker-resolver";
-import { buildProofBundleForRawSignal, type ProofBundle } from "@/lib/proof/proof-bundle-builder";
+import { buildProofBundleForRawSignal, type ProofBundle, type ProofItem } from "@/lib/proof/proof-bundle-builder";
 import { evaluateRawSignalQualityGate, receiptsFromRawSignal, ruleInputFromRawSignal } from "@/lib/raw-signal-quality-gate";
 import { buildMarketSentimentImpact, loadLatestMarketSentimentSnapshot, scoreSwingUpAlert, type HistoricalPatternMatch, type ScorePreviewInput, type SwingUpScore } from "@/lib/scoring-engine";
 
@@ -117,11 +117,11 @@ async function findDuplicateCandidate(ticker: string, event: string) {
   return prisma.alert.findFirst({ where: { ticker, event, OR: CANDIDATE_STATUSES.map((status) => ({ status: { equals: status, mode: "insensitive" as const } })) }, select: { id: true } });
 }
 
-async function evaluateSignal(rawSignal: RawSignal, minQualityScore: number, requireProof: boolean): Promise<CandidateEvaluation> {
+async function evaluateSignal(rawSignal: RawSignal, minQualityScore: number, requireProof: boolean, extraProofs: ProofItem[] = []): Promise<CandidateEvaluation> {
   const payload = objectValue(rawSignal.payload);
   const receipts = receiptsFromRawSignal(rawSignal);
   const qualityGate = await evaluateRawSignalQualityGate(ruleInputFromRawSignal(rawSignal), rawSignal.id);
-  const proofBundle = await buildProofBundleForRawSignal(rawSignal.id);
+  const proofBundle = await buildProofBundleForRawSignal(rawSignal.id, extraProofs);
   const pattern = await latestPatternScore(rawSignal.id);
   const sentiment = buildMarketSentimentImpact(await loadLatestMarketSentimentSnapshot());
   const resolver = resolveTickerEntity({ ticker: qualityGate.ruleFilterResult.detectedTicker ?? rawSignal.ticker, companyName: qualityGate.ruleFilterResult.detectedCompany ?? payload.company ?? payload.companyName, sourceTitle: rawSignal.title, sourceSummary: rawSignal.summary, sourceProvider: rawSignal.source, rawPayload: rawSignal.payload });
@@ -149,7 +149,7 @@ async function evaluateSignal(rawSignal: RawSignal, minQualityScore: number, req
   return { rawSignalId: rawSignal.id, ticker, company, eventSummary, action, blockedReasons, proofSummary: summarizeProof(proofBundle), scoreSummary: summarizeScore(score), qualityScore: qualityGate.qualityScore, duplicateCandidateId: duplicate?.id ?? null };
 }
 
-async function createCandidate(rawSignal: RawSignal, evaluation: CandidateEvaluation) {
+async function createCandidate(rawSignal: RawSignal, evaluation: CandidateEvaluation, extraProofs: ProofItem[] = []) {
   const score = evaluation.scoreSummary;
   if (!score) throw new Error("score_missing");
   return prisma.$transaction(async (tx) => {
@@ -157,6 +157,9 @@ async function createCandidate(rawSignal: RawSignal, evaluation: CandidateEvalua
     await tx.alertScore.create({ data: { alertId: alert.id, profitPotential: score.profitPotentialScore, evidenceConfidence: score.evidenceConfidenceScore, riskLevel: score.riskLevel, pricedInCheck: score.pricedInCheck } });
     for (const receipt of receiptsFromRawSignal(rawSignal)) {
       await tx.alertSource.create({ data: { alertId: alert.id, sourceType: text(receipt.source, rawSignal.source), receiptUrl: text(receipt.url) || null, summary: text(receipt.label, rawSignal.title) } });
+    }
+    for (const proof of extraProofs) {
+      await tx.alertSource.create({ data: { alertId: alert.id, sourceType: proof.source || proof.type, receiptUrl: text(proof.url) || null, summary: proof.summary } });
     }
     await tx.patternMatch.updateMany({ where: { rawSignalId: rawSignal.id, alertId: null }, data: { alertId: alert.id } });
     await tx.rawSignal.update({ where: { id: rawSignal.id }, data: { processedStatus: "promoted" } });
@@ -173,6 +176,7 @@ export async function POST(request: NextRequest) {
     const minQualityScore = positiveInt(body.minQualityScore ?? body.min_quality_score, DEFAULT_MIN_QUALITY_SCORE);
     const requireProof = booleanValue(body.requireProof ?? body.require_proof, true);
     const warnings = ["Research-only internal runner: no alert publishing, no notification sending, and no paid AI calls."];
+    const extraProofsBySignal = objectValue(body.extraProofsBySignal ?? body.enrichedProofsBySignal);
 
     if (!process.env.DATABASE_URL) return NextResponse.json({ ok: true, dryRun, rawSignalsChecked: 0, candidatesCreated: 0, blockedCount: 1, blockedReasons: { runner: ["database_not_configured"] }, proofSummary: [], scoreSummary: [], createdCandidateIds: [], warnings: unique([...warnings, "database_not_configured"]), nextRecommendedAction: "Configure DATABASE_URL before running the candidate factory." });
 
@@ -182,9 +186,10 @@ export async function POST(request: NextRequest) {
     const evaluations: CandidateEvaluation[] = [];
     const createdCandidateIds: string[] = [];
     for (const rawSignal of rawSignals) {
-      const evaluation = await evaluateSignal(rawSignal, minQualityScore, requireProof);
+      const rawExtraProofs = Array.isArray(extraProofsBySignal[rawSignal.id]) ? (extraProofsBySignal[rawSignal.id] as ProofItem[]) : [];
+      const evaluation = await evaluateSignal(rawSignal, minQualityScore, requireProof, rawExtraProofs);
       if (!dryRun && evaluation.blockedReasons.length === 0) {
-        evaluation.candidateAlertId = await createCandidate(rawSignal, evaluation);
+        evaluation.candidateAlertId = await createCandidate(rawSignal, evaluation, rawExtraProofs);
         createdCandidateIds.push(evaluation.candidateAlertId);
       }
       evaluations.push(evaluation);

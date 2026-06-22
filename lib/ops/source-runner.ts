@@ -13,36 +13,7 @@ import { runOpenFdaIngestion } from "@/lib/ears/openfda";
 import { runPolygonIngestion } from "@/lib/ears/polygon";
 import { DEFAULT_SEC_TICKERS, runSecEdgarIngestion } from "@/lib/ears/sec-edgar";
 import { runWikidataRippleIngestion } from "@/lib/ears/wikidata-ripple";
-
-const SOURCE_ALIASES = {
-  "alpha-vantage": "Alpha Vantage Catalyst",
-  alphavantage: "Alpha Vantage Catalyst",
-  alpha: "Alpha Vantage Catalyst",
-  gdelt: "GDELT",
-  google: "Google News RSS",
-  googlenews: "Google News RSS",
-  "google-news": "Google News RSS",
-  "google-news-rss": "Google News RSS",
-  coingecko: "CoinGecko",
-  frankfurter: "Frankfurter FX",
-  "frankfurter-fx": "Frankfurter FX",
-  fmp: "FMP Catalyst",
-  fred: "FRED Macro",
-  "fred-macro": "FRED Macro",
-  marketaux: "Marketaux Catalyst",
-  finra: "FINRA Short Sale",
-  "finra-short-sale": "FINRA Short Sale",
-  "finra-short": "FINRA Short Sale",
-  polygon: "Polygon",
-  openfda: "openFDA",
-  "open-fda": "openFDA",
-  fda: "openFDA",
-  sec: "SEC EDGAR",
-  "sec-edgar": "SEC EDGAR",
-  edgar: "SEC EDGAR",
-  wikidata: "Wikidata",
-  "wikidata-ripple": "Wikidata",
-} as const;
+import { normalizeSourceName as normalizeCanonicalSourceName } from "@/lib/source-aliases";
 
 export const DEFAULT_SOURCE_RUN_ORDER = ["FMP Catalyst", "Marketaux Catalyst", "Alpha Vantage Catalyst", "SEC EDGAR", "GDELT", "Google News RSS", "openFDA", "CoinGecko", "FRED Macro", "Frankfurter FX", "FINRA Short Sale", "Polygon", "Wikidata"] as const;
 export type RunnableSourceName = (typeof DEFAULT_SOURCE_RUN_ORDER)[number];
@@ -79,10 +50,8 @@ export type SourceRunSummary = {
 };
 
 function normalizeSourceName(source: string): RunnableSourceName | null {
-  const key = source.trim().toLowerCase();
-  const aliased = SOURCE_ALIASES[key as keyof typeof SOURCE_ALIASES];
-  if (aliased) return aliased;
-  return DEFAULT_SOURCE_RUN_ORDER.find((name) => name.toLowerCase() === key) ?? null;
+  const canonical = normalizeCanonicalSourceName(source);
+  return DEFAULT_SOURCE_RUN_ORDER.find((name) => name.toLowerCase() === canonical.toLowerCase()) ?? null;
 }
 
 function selectedSources(sources?: string[]) {

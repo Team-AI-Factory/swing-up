@@ -65,10 +65,12 @@ export default async function SourceHealthPage() {
             <tr>
               <th>Source</th>
               <th>Status</th>
+              <th>Aliases</th>
               <th>Last checked</th>
               <th>Last success</th>
               <th>Response</th>
               <th>Usage / limit</th>
+              <th>Diagnosis / next action</th>
               <th>Notes</th>
             </tr>
           </thead>
@@ -79,16 +81,18 @@ export default async function SourceHealthPage() {
                 <td>
                   <span className={`badge status-${source.status}`}>{statusLabels[source.status] ?? source.status}</span>
                 </td>
+                <td>{source.aliases?.length ? source.aliases.join(", ") : "—"}</td>
                 <td>{formatDate(source.lastChecked)}</td>
                 <td>{formatDate(source.lastSuccess)}</td>
                 <td>{source.responseTimeMs === null ? "—" : `${source.responseTimeMs} ms`}</td>
                 <td>{source.usage ?? "—"}</td>
-                <td>{source.notes ?? source.errorMessage ?? "—"}</td>
+                <td>{[source.diagnosis, source.nextAction].filter(Boolean).join(" — ") || "—"}</td>
+                <td>{source.notes ?? source.errorMessage ?? "—"}{source.hiddenLegacyRowsCount ? ` (${source.hiddenLegacyRowsCount} legacy row(s) hidden)` : ""}</td>
               </tr>
             ))}
             {!sourceHealth.sources.length ? (
               <tr>
-                <td colSpan={7}>No source health rows are available yet.</td>
+                <td colSpan={9}>No source health rows are available yet.</td>
               </tr>
             ) : null}
           </tbody>

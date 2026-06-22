@@ -32,6 +32,8 @@ type DiscoveryRow = {
   passedAfterEnrichment: boolean;
   proofAddedTypes: string[];
   stillMissingProof: string[];
+  catalystImpactScore: number | null;
+  stockSpecificityScore: number | null;
 };
 
 const DEFAULT_PAYLOAD = {
@@ -69,6 +71,17 @@ function arrayText(value: unknown): string[] {
   return Array.isArray(value)
     ? value.map((item) => String(item)).filter(Boolean)
     : [];
+}
+
+function payloadImpact(signal: Pick<RawSignal, "payload">) {
+  const payload = obj(signal.payload);
+  const impact = obj(payload.catalystImpact);
+  return {
+    catalystImpactScore: typeof impact.promotionScore === "number" ? impact.promotionScore : null,
+    stockSpecificityScore: typeof impact.stockSpecificityScore === "number" ? impact.stockSpecificityScore : null,
+    likelyMarketImpact: text(impact.likelyMarketImpact) || null,
+    catalystType: text(impact.catalystType) || null,
+  };
 }
 
 function obj(value: unknown): JsonRecord {
@@ -417,6 +430,7 @@ export async function POST(request: NextRequest) {
         ticker: signal.ticker,
         title: signal.title,
         receivedAt: signal.receivedAt.toISOString(),
+        catalystImpact: payloadImpact(signal),
       })),
       missingCatalystKeys: [
         ["FMP_API_KEY", process.env.FMP_API_KEY],
@@ -442,6 +456,11 @@ export async function POST(request: NextRequest) {
                 text(obj(row).status) === "error",
             )
             .map((row) => text(obj(row).sourceName))
+        : [],
+      providerDiagnostics: Array.isArray(obj(sourceSummary).table)
+        ? (obj(sourceSummary).table as unknown[])
+            .filter((row) => catalystSources.includes(text(obj(row).sourceName)))
+            .map((row) => ({ source: text(obj(row).sourceName), status: text(obj(row).status), sourceHealthStatus: text(obj(row).sourceHealthStatus), errors: Array.isArray(obj(row).errors) ? obj(row).errors : [] }))
         : [],
     };
     output.catalystSummary = catalystSummaryBase;
@@ -580,6 +599,8 @@ export async function POST(request: NextRequest) {
             (proof) => proof.type,
           ),
           stillMissingProof: enrichment.missingProof,
+          catalystImpactScore: payloadImpact(signal).catalystImpactScore,
+          stockSpecificityScore: payloadImpact(signal).stockSpecificityScore,
         });
       }
       const rankedCandidates = discoveryRows.sort(
@@ -695,7 +716,8 @@ export async function POST(request: NextRequest) {
           approved: false,
           publishable: false,
           published: false,
-          stage2Allowed: true,
+          stage2Allowed: best.passed === true && best.afterProofCount > 0,
+          approvedForAiReview: best.passed === true && best.afterProofCount > 0,
           nextRecommendedAction: summary.recommendedNextAction,
         });
       const createResponse = await candidateFactoryPOST(

@@ -19,6 +19,25 @@ export type R2Health = {
   deleteErrorMessageSafe: string | null;
   suspectedCause: string | null;
   nextAction: string | null;
+  writeAttempted: boolean;
+  readAfterWriteAttempted: boolean;
+  deleteAttempted: boolean;
+  testObjectKey: string | null;
+  writeAwsStatusCode: number | null;
+  writeAwsErrorName: string | null;
+  writeAwsErrorMessageSafe: string | null;
+  deleteAwsStatusCode: number | null;
+  deleteAwsErrorName: string | null;
+  deleteAwsErrorMessageSafe: string | null;
+  endpointUsedHost: string | null;
+  bucketUsed: string | null;
+  regionUsed: string | null;
+  forcePathStyleUsed: boolean;
+  accessKeyIdFingerprint: string | null;
+  envLoadedAtRuntime: boolean;
+  runtimeVariableSource: "Railway env";
+  regionFallbackAttempted: boolean;
+  regionFallbackUsed: string | null;
 };
 const REQUIRED = [
   "CLOUDFLARE_R2_ACCOUNT_ID",
@@ -26,22 +45,26 @@ const REQUIRED = [
   "CLOUDFLARE_R2_SECRET_ACCESS_KEY",
   "CLOUDFLARE_R2_BUCKET",
 ] as const;
-export function getR2Config() {
+export function getR2Config(regionOverride?: string) {
   const missingEnvVars = REQUIRED.filter((k) => !process.env[k]?.trim());
   const accountId = process.env.CLOUDFLARE_R2_ACCOUNT_ID?.trim() || "";
   const endpoint = (
     process.env.CLOUDFLARE_R2_ENDPOINT?.trim() ||
     (accountId ? `https://${accountId}.r2.cloudflarestorage.com` : "")
   ).replace(/\/$/, "");
-  const region = process.env.CLOUDFLARE_R2_REGION?.trim() || "auto";
+  const region =
+    regionOverride ?? process.env.CLOUDFLARE_R2_REGION?.trim() ?? "auto";
+  const accessKeyId = process.env.CLOUDFLARE_R2_ACCESS_KEY_ID?.trim() || "";
   return {
     accountId,
-    accessKeyId: process.env.CLOUDFLARE_R2_ACCESS_KEY_ID?.trim() || "",
+    accessKeyId,
+    accessKeyIdFingerprint: fingerprintAccessKeyId(accessKeyId),
     secretAccessKey: process.env.CLOUDFLARE_R2_SECRET_ACCESS_KEY?.trim() || "",
     bucket: process.env.CLOUDFLARE_R2_BUCKET?.trim() || "",
     publicBaseUrl: process.env.CLOUDFLARE_R2_PUBLIC_BASE_URL?.trim() || null,
     endpoint,
     region,
+    forcePathStyle: true,
     missingEnvVars,
     configured: missingEnvVars.length === 0,
   };
@@ -58,13 +81,21 @@ function amzDate(d = new Date()) {
 function encodePath(path: string) {
   return path.split("/").map(encodeURIComponent).join("/");
 }
+function fingerprintAccessKeyId(accessKeyId: string) {
+  if (!accessKeyId) return null;
+  if (accessKeyId.length <= 8)
+    return `${accessKeyId.slice(0, 1)}***${accessKeyId.slice(-1)}`;
+  return `${accessKeyId.slice(0, 4)}***${accessKeyId.slice(-4)}`;
+}
+
 async function signedFetch(
   method: string,
   key: string,
   body?: Buffer | string,
   contentType = "application/octet-stream",
+  regionOverride?: string,
 ) {
-  const c = getR2Config();
+  const c = getR2Config(regionOverride);
   if (!c.configured)
     throw new Error(
       `R2 not configured: missing ${c.missingEnvVars.join(", ")}`,
@@ -350,7 +381,7 @@ function responseCategory(prefix: string, res: Response | null) {
 async function safeResponseMessage(action: string, res: Response | null) {
   if (!res) return `${action} was not attempted.`;
   if (res.ok) return null;
-  const text = await res.text().catch(() => "");
+  const text = await res.clone().text().catch(() => "");
   const hint = text
     .replace(/<[^>]+>/g, " ")
     .replace(/\s+/g, " ")
@@ -360,6 +391,23 @@ async function safeResponseMessage(action: string, res: Response | null) {
     )
     .slice(0, 160);
   return `R2 ${action} failed with status ${res.status}${hint ? `: ${hint}` : ""}`;
+}
+async function awsErrorDetails(res: Response | null) {
+  if (!res) return { name: null, message: null };
+  if (res.ok) return { name: null, message: null };
+  const text = await res.clone().text().catch(() => "");
+  const readTag = (tag: string) =>
+    text
+      .match(new RegExp(`<${tag}>([^<]*)</${tag}>`, "i"))?.[1]
+      ?.replace(
+        /(AWSAccessKeyId|Signature|Credential|Authorization|AccessKey|Secret|Token)[^\s<]*/gi,
+        "$1=[redacted]",
+      )
+      .slice(0, 180) ?? null;
+  return {
+    name: readTag("Code") ?? res.statusText ?? `HTTP_${res.status}`,
+    message: readTag("Message"),
+  };
 }
 function permissionNextAction(bucket: string | null) {
   return `Create or update Cloudflare R2 API token with Object Read, Object Write, and Object Delete permissions for bucket ${bucket ?? "the configured bucket"}, then update Railway variables.`;
@@ -381,9 +429,30 @@ function diagnoseR2Health(
     };
   if (health.canRead && (!health.canWrite || !health.canDelete))
     return {
-      suspectedCause:
-        "R2 is reachable and readable, but write/delete failed. The most likely causes are a read-only R2 API token, token scoped to the wrong bucket, missing Object Write permission, missing Object Delete permission, bucket name mismatch, or endpoint/account mismatch. This is not a browser CORS issue because the server uses signed S3-compatible PutObject/GetObject/DeleteObject requests.",
-      nextAction: permissionNextAction(health.bucket),
+      suspectedCause: [
+        health.bucketUsed !== "swingup" ? "bucket name mismatch" : null,
+        health.endpointUsedHost !==
+        "d8a569e33989279f8b0d8375c2b9e757.r2.cloudflarestorage.com"
+          ? "wrong account endpoint"
+          : null,
+        health.writeAwsStatusCode === 403 ? "token lacks object write" : null,
+        health.deleteAwsStatusCode === 403 ? "token lacks object delete" : null,
+        health.writeAwsStatusCode === 401 || health.deleteAwsStatusCode === 401
+          ? "Railway still has old token or invalid R2 credentials"
+          : null,
+        health.regionFallbackUsed ? "region config issue" : null,
+        !health.forcePathStyleUsed ? "SDK endpoint config issue" : null,
+        "If the accessKeyIdFingerprint differs from the newly-created key fingerprint, Railway still has old token.",
+      ]
+        .filter(Boolean)
+        .join("; "),
+      nextAction:
+        health.bucketUsed !== "swingup"
+          ? "Set CLOUDFLARE_R2_BUCKET to swingup in Railway and redeploy."
+          : health.endpointUsedHost !==
+              "d8a569e33989279f8b0d8375c2b9e757.r2.cloudflarestorage.com"
+            ? "Set CLOUDFLARE_R2_ENDPOINT to https://d8a569e33989279f8b0d8375c2b9e757.r2.cloudflarestorage.com in Railway and redeploy."
+            : permissionNextAction(health.bucket),
     };
   return { suspectedCause: null, nextAction: null };
 }
@@ -407,6 +476,25 @@ export async function checkR2Health(confirmWrite = false): Promise<R2Health> {
     deleteErrorMessageSafe: null,
     suspectedCause: null,
     nextAction: null,
+    writeAttempted: false,
+    readAfterWriteAttempted: false,
+    deleteAttempted: false,
+    testObjectKey: null,
+    writeAwsStatusCode: null,
+    writeAwsErrorName: null,
+    writeAwsErrorMessageSafe: null,
+    deleteAwsStatusCode: null,
+    deleteAwsErrorName: null,
+    deleteAwsErrorMessageSafe: null,
+    endpointUsedHost: c.endpoint ? new URL(c.endpoint).host : null,
+    bucketUsed: c.bucket || null,
+    regionUsed: c.region,
+    forcePathStyleUsed: c.forcePathStyle,
+    accessKeyIdFingerprint: c.accessKeyIdFingerprint,
+    envLoadedAtRuntime: REQUIRED.every((k) => typeof process.env[k] === "string"),
+    runtimeVariableSource: "Railway env",
+    regionFallbackAttempted: false,
+    regionFallbackUsed: null,
   };
   if (!c.configured) {
     const d = diagnoseR2Health(base);
@@ -430,16 +518,46 @@ export async function checkR2Health(confirmWrite = false): Promise<R2Health> {
     const health: R2Health = { ...base, connected: true, canRead: true };
     if (confirmWrite) {
       const testKey = `logs/r2-health/${Date.now()}-${crypto.randomUUID()}.json`;
+      health.testObjectKey = testKey;
       const body = JSON.stringify({
         service: "swing-up",
         kind: "r2-health",
         checkedAt: new Date().toISOString(),
       });
-      const write = await signedFetch("PUT", testKey, body, "application/json");
+      health.writeAttempted = true;
+      let write = await signedFetch("PUT", testKey, body, "application/json");
+      if (!write.ok && c.region === "auto") {
+        health.regionFallbackAttempted = true;
+        const fallbackWrite = await signedFetch(
+          "PUT",
+          testKey,
+          body,
+          "application/json",
+          "us-east-1",
+        );
+        if (fallbackWrite.ok) {
+          write = fallbackWrite;
+          health.regionFallbackUsed = "us-east-1";
+          health.regionUsed = "us-east-1";
+        }
+      }
+      const writeAws = await awsErrorDetails(write);
       health.canWrite = write.ok;
+      health.writeAwsStatusCode = write.status;
+      health.writeAwsErrorName = writeAws.name;
+      health.writeAwsErrorMessageSafe = writeAws.message;
       health.writeErrorCategory = responseCategory("write", write);
       health.writeErrorMessageSafe = await safeResponseMessage("write", write);
-      const read = write.ok ? await signedFetch("GET", testKey) : null;
+      health.readAfterWriteAttempted = write.ok;
+      const read = write.ok
+        ? await signedFetch(
+            "GET",
+            testKey,
+            undefined,
+            "application/octet-stream",
+            health.regionFallbackUsed ?? undefined,
+          )
+        : null;
       const readText = read?.ok ? await read.text().catch(() => "") : "";
       health.canRead = Boolean(read?.ok && readText === body);
       if (read && !health.canRead) {
@@ -448,8 +566,21 @@ export async function checkR2Health(confirmWrite = false): Promise<R2Health> {
           (await safeResponseMessage("readback", read)) ??
           "R2 readback did not match the test object.";
       }
-      const del = write.ok ? await signedFetch("DELETE", testKey) : null;
+      health.deleteAttempted = write.ok;
+      const del = write.ok
+        ? await signedFetch(
+            "DELETE",
+            testKey,
+            undefined,
+            "application/octet-stream",
+            health.regionFallbackUsed ?? undefined,
+          )
+        : null;
+      const deleteAws = await awsErrorDetails(del);
       health.canDelete = Boolean(del?.ok);
+      health.deleteAwsStatusCode = del?.status ?? null;
+      health.deleteAwsErrorName = deleteAws.name;
+      health.deleteAwsErrorMessageSafe = deleteAws.message;
       health.deleteErrorCategory = responseCategory("delete", del);
       health.deleteErrorMessageSafe = await safeResponseMessage("delete", del);
       health.connected = health.canRead;

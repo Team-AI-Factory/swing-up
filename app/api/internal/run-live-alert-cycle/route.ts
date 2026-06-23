@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma, type RawSignal } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
@@ -11,7 +12,7 @@ import { POST as candidateFactoryPOST } from "@/app/api/internal/candidate-facto
 import { POST as publishApprovedAlertPOST } from "@/app/api/internal/publish-approved-alert/route";
 import { runSources } from "@/lib/ops/source-runner";
 import { enrichProofForRawSignal } from "@/lib/proof-enrichment";
-import { checkR2Health } from "@/lib/r2-warehouse";
+import { getR2OperationalStatus, saveJsonToR2 } from "@/lib/r2-warehouse";
 import { earRegistrySummary } from "@/lib/ear-registry";
 import { scoreSevenLayerEvidence } from "@/lib/catalyst-impact-scoring";
 import { withRedactionMetadata } from "@/lib/redact-secrets";
@@ -391,6 +392,48 @@ function baseResponse(input: {
   };
 }
 
+function stage1DateKey(date = new Date()) {
+  return date.toISOString().slice(0, 10);
+}
+
+function safeSourceSlug(source: string) {
+  return (source || "unknown")
+    .toLowerCase()
+    .replace(/[^a-z0-9._=-]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "unknown";
+}
+
+async function saveStage1RawObject(
+  output: JsonRecord,
+  r2WriteAvailable: boolean,
+  key: string,
+  payload: unknown,
+  metadata: Record<string, unknown>,
+) {
+  if (!r2WriteAvailable) return null;
+  try {
+    const row = await saveJsonToR2(key, payload, {
+      ...metadata,
+      source: String(metadata.source ?? "stage1"),
+      assetType: String(metadata.assetType ?? "stage1"),
+      dataType: String(metadata.dataType ?? "run-payload"),
+    });
+    output.rawDataStored = true;
+    const existing = Array.isArray(output.rawDataObjectKeys) ? output.rawDataObjectKeys : [];
+    output.rawDataObjectKeys = [...existing, row?.r2Key ?? key];
+    return row?.r2Key ?? key;
+  } catch (error) {
+    output.rawDataStored = false;
+    output.storageMode = "postgresql_summary_only";
+    output.rawWarehouseWriteUnavailable = true;
+    output.reasonStorageFallback = "R2 raw object save failed; Stage 1 continued with PostgreSQL summary-only fallback.";
+    output.rawStorageErrorCategory = error instanceof Error && /status (\d+)/i.test(error.message)
+      ? `r2_save_http_${error.message.match(/status (\d+)/i)?.[1]}`
+      : "r2_save_failed";
+    return null;
+  }
+}
+
 export async function POST(request: NextRequest) {
   const body: JsonRecord = {
     ...DEFAULT_PAYLOAD,
@@ -445,17 +488,15 @@ export async function POST(request: NextRequest) {
   try {
     const [readiness, r2Health] = await Promise.all([
       getEngineStartReadiness(),
-      checkR2Health(false),
+      getR2OperationalStatus({ allowRuntimeWriteCheck: bool(body.allowRuntimeR2WriteCheck, false) }),
     ]);
-    const r2WriteAvailable = r2Health.canWrite && r2Health.canDelete;
-    const storageMode = r2WriteAvailable
-      ? "r2_raw_storage"
-      : "postgresql_summary_only";
+    const r2WriteAvailable = r2Health.writeAvailable;
+    const storageMode = r2Health.storageMode;
     const reasonStorageFallback = r2WriteAvailable
       ? null
       : r2Health.configured
         ? `R2 read health is ${r2Health.canRead ? "available" : "unavailable"}, but write/delete is unavailable; Stage 1 is continuing with PostgreSQL summaries and rawDataStored=false.`
-        : `R2 is not fully configured (${r2Health.missingEnvVars.join(", ") || "missing configuration"}); Stage 1 is continuing with PostgreSQL summaries and rawDataStored=false.`;
+        : `R2 is not fully configured (${r2Health.rawHealth.missingEnvVars.join(", ") || "missing configuration"}); Stage 1 is continuing with PostgreSQL summaries and rawDataStored=false.`;
     const globalSchedulerPlan = buildGlobalSchedulerPlan({
       dryRun,
       universeMode,
@@ -519,20 +560,26 @@ export async function POST(request: NextRequest) {
       rawDataStored: false,
       storageMode,
       reasonStorageFallback,
+      runId: crypto.randomUUID(),
+      rawDataObjectKeys: [] as string[],
       rawWarehouseStatus: {
         configured: r2Health.configured,
         connected: r2Health.connected,
-        bucket: r2Health.bucket,
+        bucket: r2Health.rawHealth.bucket,
         canRead: r2Health.canRead,
         canWrite: r2Health.canWrite,
         canDelete: r2Health.canDelete,
         writeAvailable: r2WriteAvailable,
         mode: storageMode,
-        missingEnvVars: r2Health.missingEnvVars,
-        errorCategory: r2Health.errorCategory,
-        errorMessageSafe: r2Health.errorMessageSafe,
-        suspectedCause: r2Health.suspectedCause,
-        nextAction: r2Health.nextAction,
+        storageMode,
+        lastConfirmedWriteAt: r2Health.lastConfirmedWriteAt,
+        lastConfirmedDeleteAt: r2Health.lastConfirmedDeleteAt,
+        sourceOfTruth: r2Health.sourceOfTruth,
+        missingEnvVars: r2Health.rawHealth.missingEnvVars,
+        errorCategory: r2Health.rawHealth.errorCategory,
+        errorMessageSafe: r2Health.rawHealth.errorMessageSafe,
+        suspectedCause: r2Health.rawHealth.suspectedCause,
+        nextAction: r2Health.rawHealth.nextAction,
       },
     };
     if (!confirmRun && !dryRun) {
@@ -797,6 +844,38 @@ export async function POST(request: NextRequest) {
       ? obj(sourceSummary)
       : { selectedSources: preferredSources };
     output.signalFound = Boolean(rawSignals.length || candidateAlertId);
+    const runId = String(output.runId);
+    const dateKey = stage1DateKey();
+    if (sourceSummary) {
+      const rows = Array.isArray(obj(sourceSummary).table) ? (obj(sourceSummary).table as unknown[]) : [];
+      const sourcesToStore = rows.length
+        ? Array.from(new Set(rows.map((row) => text(obj(row).sourceName) || "source-run")))
+        : preferredSources;
+      for (const sourceName of sourcesToStore) {
+        const sourceSlug = safeSourceSlug(sourceName);
+        await saveStage1RawObject(
+          output,
+          r2WriteAvailable,
+          `raw/stage1/source-runs/${sourceSlug}/${dateKey}/${runId}.json`,
+          { sourceName, sourceSummary },
+          { source: sourceName, assetType: "stage1", dataType: "source-run", recordCount: rows.length },
+        );
+        await saveStage1RawObject(
+          output,
+          r2WriteAvailable,
+          `logs/source-runs/${sourceSlug}/${dateKey}/${runId}.json`,
+          { sourceName, sourceSummary },
+          { source: sourceName, assetType: "logs", dataType: "source-run-log", recordCount: rows.length },
+        );
+      }
+    }
+    await saveStage1RawObject(
+      output,
+      r2WriteAvailable,
+      `raw/stage1/candidates/${dateKey}/${runId}.json`,
+      { rawSignals: rawSignals.map((signal) => ({ id: signal.id, source: signal.source, ticker: signal.ticker, title: signal.title, summary: signal.summary, sourceUrl: signal.sourceUrl, receivedAt: signal.receivedAt, payload: signal.payload })) },
+      { source: "stage1", assetType: "candidates", dataType: "candidate-raw-signals", recordCount: rawSignals.length },
+    );
 
     if (!candidateAlertId && rawSignals.length) {
       const discoveryRows: DiscoveryRow[] = [];
@@ -1057,6 +1136,13 @@ export async function POST(request: NextRequest) {
         proofCompletionSummary,
       };
       output.proofEnrichmentSummary = proofEnrichmentSummary;
+      await saveStage1RawObject(
+        output,
+        r2WriteAvailable,
+        `raw/stage1/proof-enrichment/${stage1DateKey()}/${String(output.runId)}.json`,
+        { proofEnrichmentSummary, enrichmentSummaries },
+        { source: "stage1", assetType: "proof", dataType: "proof-enrichment", recordCount: enrichmentSummaries.length },
+      );
       const summary = {
         rawSignalsInspected: discoveryRows.length,
         sourcesInspected: Array.from(

@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma, type RawSignal } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
@@ -11,7 +12,7 @@ import { POST as candidateFactoryPOST } from "@/app/api/internal/candidate-facto
 import { POST as publishApprovedAlertPOST } from "@/app/api/internal/publish-approved-alert/route";
 import { runSources } from "@/lib/ops/source-runner";
 import { enrichProofForRawSignal } from "@/lib/proof-enrichment";
-import { checkR2Health } from "@/lib/r2-warehouse";
+import { checkR2Health, saveJsonToR2 } from "@/lib/r2-warehouse";
 import { earRegistrySummary } from "@/lib/ear-registry";
 import { scoreSevenLayerEvidence } from "@/lib/catalyst-impact-scoring";
 import { withRedactionMetadata } from "@/lib/redact-secrets";
@@ -57,6 +58,18 @@ type DiscoveryRow = {
   eligibleForBest: boolean;
   reasonNotPromoted: string | null;
   sevenLayerEvidence: ReturnType<typeof scoreSevenLayerEvidence>;
+  seriousSignalScore: number;
+  directImpactScore: number;
+  hiddenImpactScore: number;
+  proofGapScore: number;
+  rippleQualityScore: number;
+  officialProofScore: number;
+  businessQualityProofScore: number;
+  moneyMovementProofScore: number;
+  historicalMemoryScore: number;
+  noiseRiskScore: number;
+  opinionOnlyPenalty: number;
+  missingProofPenalty: number;
 };
 
 const MIN_STOCK_SPECIFICITY_SCORE = 55;
@@ -76,6 +89,21 @@ function numericRank(value: number | null | undefined) {
 }
 function arrayIncludes(values: string[], item: string) {
   return values.includes(item);
+}
+function seriousSignalScores(input: { proofTypes: string[]; missingProof: string[]; impact: number | null; specificity: number | null; rippleCandidate?: boolean; text: string }) {
+  const proof = new Set(input.proofTypes);
+  const opinionOnlyPenalty = /\b(opinion|commentary|column)\b/i.test(input.text) && !/\d|%|guidance|contract|filing/i.test(input.text) ? 25 : 0;
+  const missingProofPenalty = Math.min(45, input.missingProof.length * 12);
+  const officialProofScore = proof.has("filing") ? 90 : 0;
+  const businessQualityProofScore = proof.has("fundamentals") ? 75 : 0;
+  const moneyMovementProofScore = proof.has("price_volume") ? 70 : 0;
+  const historicalMemoryScore = proof.has("pattern_match") ? 65 : 0;
+  const directImpactScore = Math.max(input.impact ?? 0, input.specificity ?? 0);
+  const hiddenImpactScore = input.rippleCandidate ? 70 : 25;
+  const rippleQualityScore = input.rippleCandidate ? 70 : 20;
+  const noiseRiskScore = Math.min(100, 25 + opinionOnlyPenalty + missingProofPenalty - Math.floor(directImpactScore / 5));
+  const seriousSignalScore = Math.max(0, Math.min(100, Math.round(directImpactScore * 0.3 + hiddenImpactScore * 0.12 + rippleQualityScore * 0.1 + officialProofScore * 0.16 + businessQualityProofScore * 0.12 + moneyMovementProofScore * 0.1 + historicalMemoryScore * 0.08 - noiseRiskScore * 0.18)));
+  return { seriousSignalScore, directImpactScore, hiddenImpactScore, proofGapScore: Math.max(0, 100 - missingProofPenalty), rippleQualityScore, officialProofScore, businessQualityProofScore, moneyMovementProofScore, historicalMemoryScore, noiseRiskScore, opinionOnlyPenalty, missingProofPenalty };
 }
 
 function isBroadMarketNoise(
@@ -445,7 +473,7 @@ export async function POST(request: NextRequest) {
   try {
     const [readiness, r2Health] = await Promise.all([
       getEngineStartReadiness(),
-      checkR2Health(false),
+      checkR2Health(true),
     ]);
     const r2WriteAvailable = r2Health.canWrite && r2Health.canDelete;
     const storageMode = r2WriteAvailable
@@ -473,7 +501,7 @@ export async function POST(request: NextRequest) {
       confirmRun,
       freshnessWindowHours,
     });
-    const output = {
+    const output: JsonRecord = {
       ...baseResponse({ dryRun, readiness, warnings }),
       universeMode,
       assetsConsidered: globalSchedulerPlan.assetsConsidered,
@@ -485,7 +513,11 @@ export async function POST(request: NextRequest) {
       meaningfulMetricsCalculated: MEANINGFUL_METRIC_REGISTRY.map((metric) => metric.name),
       highestValueCallsUsed: confirmRun ? globalSchedulerPlan.highestValueNextCalls : [],
       genericNewsScanned: genericTriage.genericItemsScannedToday,
+      seriousSignalsFound: genericTriage.seriousGenericSignalsFound,
       seriousGenericSignalsFound: genericTriage.seriousGenericSignalsFound,
+      genericRippleCandidates: genericTriage.genericRippleCandidates,
+      directCompanyCatalysts: 0,
+      opinionOnlyRejected: genericTriage.opinionOnlyRejected,
       rippleCandidatesCreated: genericTriage.rippleCandidatesCreated,
       genericSignalsRejectedAsNoise: genericTriage.genericSignalsRejectedAsNoise,
       topGenericSignal: genericTriage.topGenericSignal,
@@ -504,6 +536,7 @@ export async function POST(request: NextRequest) {
         noOpenAIWhenConfirmRunFalse: confirmRun !== true,
         noPublish: true,
         noTelegram: true,
+        rejectionTypeCounts: genericTriage.rejectionTypeCounts,
       },
       callsSkippedToAvoidWaste: [
         `${genericTriage.callsSavedByGenericTriage} generic-news deep checks saved by triage`,
@@ -514,9 +547,17 @@ export async function POST(request: NextRequest) {
         "Alpha Vantage backup call skipped unless a proof gap remains",
       ],
       proofGapsRemaining: ["at least 2 clean proof types beyond raw source", "clean direct ticker/company/topic match"],
+      proofFillingAttempts: [],
+      proofFilledBySource: {},
+      remainingProofGaps: ["at least 2 clean proof types beyond raw source", "clean direct ticker/company/topic match"],
+      bestSeriousCandidate: null,
+      topRejectedButInterestingSignals: genericTriage.classifications.filter((item) => item.seriousnessScore >= 60 && !item.rippleCandidate).slice(0, 5),
+      nextBestEarToImprove: "targeted official proof waterfall for mapped generic ripple candidates",
+      recommendedDeepProofCalls: genericTriage.deepChecksTriggeredByGenericNews,
       rawWarehouseAvailable: r2Health.connected || r2Health.canRead,
       rawWarehouseWriteUnavailable: !r2WriteAvailable,
       rawDataStored: false,
+      rawDataStoredKeys: [],
       storageMode,
       reasonStorageFallback,
       rawWarehouseStatus: {
@@ -535,6 +576,28 @@ export async function POST(request: NextRequest) {
         nextAction: r2Health.nextAction,
       },
     };
+    if (r2WriteAvailable) {
+      const dateKey = new Date().toISOString().slice(0, 10);
+      const runId = crypto.randomUUID();
+      const rawDataStoredKeys: string[] = [];
+      const saveStage1Raw = async (key: string, payload: unknown) => {
+        await saveJsonToR2(key, payload, { source: "stage1", dataType: "stage1_raw", runId, dateKey });
+        rawDataStoredKeys.push(key);
+      };
+      await Promise.all([
+        saveStage1Raw(`raw/stage1/source-runs/stage1/${dateKey}/${runId}.json`, { sourceSummary: output.sourceSummary ?? null, rawWarehouseStatus: output.rawWarehouseStatus }),
+        saveStage1Raw(`raw/stage1/candidates/${dateKey}/${runId}.json`, { candidateDiscoverySummary: output.candidateDiscoverySummary ?? null, genericRippleCandidates: output.genericRippleCandidates }),
+        saveStage1Raw(`raw/stage1/proof-enrichment/${dateKey}/${runId}.json`, { proofFillingAttempts: output.proofFillingAttempts, recommendedDeepProofCalls: output.recommendedDeepProofCalls }),
+        saveStage1Raw(`raw/stage1/generic-triage/${dateKey}/${runId}.json`, genericTriage),
+      ]).catch((error: unknown) => {
+        output.rawWarehouseWriteUnavailable = true;
+        output.reasonStorageFallback = error instanceof Error ? error.message : "stage1_r2_raw_save_failed";
+      });
+      output.rawDataStoredKeys = rawDataStoredKeys;
+      output.rawDataStored = rawDataStoredKeys.length > 0;
+      output.rawWarehouseWriteUnavailable = rawDataStoredKeys.length === 0;
+    }
+
     if (!confirmRun && !dryRun) {
       return redactedJson({
         ...output,
@@ -943,6 +1006,7 @@ export async function POST(request: NextRequest) {
             proofTypes: enrichment.proofTypes,
             promotionScore: payloadImpact(signal).promotionScore,
           }),
+          ...seriousSignalScores({ proofTypes: enrichment.proofTypes, missingProof: enrichment.missingProof, impact: payloadImpact(signal).catalystImpactScore, specificity: payloadImpact(signal).stockSpecificityScore, rippleCandidate: signal.signalType === "generic_ripple_candidate" || String(obj(signal.payload).sourceCategory ?? "").includes("generic"), text: `${signal.title} ${signal.summary}` }),
         });
       }
       for (const row of discoveryRows) {
@@ -1098,6 +1162,11 @@ export async function POST(request: NextRequest) {
             }
           : null,
         proofCompletionSummary,
+        seriousSignalsFound: rankedCandidates.filter((row) => row.seriousSignalScore >= 60).length,
+        bestSeriousCandidate: rankedCandidates.find((row) => row.seriousSignalScore >= 60) ?? rankedCandidates[0] ?? null,
+        remainingProofGaps: Array.from(new Set(rankedCandidates.flatMap((row) => row.stillMissingProof))),
+        proofFillingAttempts: proofCompletionSummary.attemptedCandidates,
+        proofFilledBySource: Object.fromEntries(enrichmentSummaries.map((item) => [String(item.rawSignalId), item.receiptsAdded ?? []])),
         rankedCandidates,
         blockedReasonsBySignal,
         recommendedNextSource,

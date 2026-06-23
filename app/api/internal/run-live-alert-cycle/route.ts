@@ -377,6 +377,17 @@ function baseResponse(input: {
     deepChecksTriggeredByGenericNews: [] as unknown[],
     callsSavedByGenericTriage: 0,
     genericNewsDidNotBypassProofGate: true,
+    seriousSignalsFound: 0,
+    genericRippleCandidates: [] as unknown[],
+    directCompanyCatalysts: [] as unknown[],
+    opinionOnlyRejected: [] as unknown[],
+    proofFillingAttempts: [] as unknown[],
+    proofFilledBySource: {} as Record<string, unknown>,
+    remainingProofGaps: [] as string[],
+    bestSeriousCandidate: null as unknown,
+    topRejectedButInterestingSignals: [] as unknown[],
+    nextBestEarToImprove: null as string | null,
+    recommendedDeepProofCalls: [] as unknown[],
     signalFound: false,
     aiCommitteeRan: false,
     approved: false,
@@ -534,6 +545,25 @@ export async function POST(request: NextRequest) {
       deepChecksTriggeredByGenericNews: genericTriage.deepChecksTriggeredByGenericNews,
       callsSavedByGenericTriage: genericTriage.callsSavedByGenericTriage,
       genericNewsDidNotBypassProofGate: true,
+      seriousSignalsFound: genericTriage.seriousGenericSignalsFound,
+      genericRippleCandidates: Array.isArray(genericTriage.classifications)
+        ? genericTriage.classifications.filter((item) => obj(item).rippleCandidate === true).slice(0, 10) as unknown[]
+        : ([] as unknown[]),
+      directCompanyCatalysts: [] as unknown[],
+      opinionOnlyRejected: Array.isArray(genericTriage.classifications)
+        ? genericTriage.classifications.filter((item) => text(obj(item).rejectedReason).includes("opinion")).slice(0, 10) as unknown[]
+        : ([] as unknown[]),
+      proofFillingAttempts: [] as unknown[],
+      proofFilledBySource: {} as Record<string, unknown>,
+      remainingProofGaps: ["at least 2 clean proof types beyond raw source", "clean direct ticker/company/topic match"],
+      bestSeriousCandidate: (genericTriage.topGenericSignal ?? null) as unknown,
+      topRejectedButInterestingSignals: Array.isArray(genericTriage.classifications)
+        ? genericTriage.classifications
+            .filter((item) => obj(item).rippleCandidate !== true && numericRank(obj(item).seriousnessScore as number | null) >= 55)
+            .slice(0, 5) as unknown[]
+        : ([] as unknown[]),
+      nextBestEarToImprove: null as string | null,
+      recommendedDeepProofCalls: genericTriage.deepChecksTriggeredByGenericNews as unknown[],
       genericNewsTriageSummary: {
         enabled: genericTriage.enabled,
         broadSourcesUsed: genericTriage.broadSourcesUsed,
@@ -1136,6 +1166,22 @@ export async function POST(request: NextRequest) {
         proofCompletionSummary,
       };
       output.proofEnrichmentSummary = proofEnrichmentSummary;
+      output.proofFillingAttempts = enrichmentSummaries.map((item) => ({
+        rawSignalId: item.rawSignalId,
+        attempts: item.attempts,
+        proofAddedTypes: item.proofAddedTypes,
+        stillMissingProof: item.stillMissingProof,
+      }));
+      output.proofFilledBySource = enrichmentSummaries.reduce<Record<string, unknown>>((acc, item) => {
+        const key = String(item.rawSignalId ?? "unknown");
+        acc[key] = {
+          receiptsAdded: item.receiptsAdded,
+          urlsAdded: item.urlsAdded,
+          proofAddedCount: item.proofAddedCount,
+        };
+        return acc;
+      }, {});
+      output.remainingProofGaps = proofEnrichmentSummary.stillMissingProof;
       await saveStage1RawObject(
         output,
         r2WriteAvailable,
@@ -1215,6 +1261,20 @@ export async function POST(request: NextRequest) {
           .slice(0, 5),
       };
       output.candidateDiscoverySummary = summary;
+      output.directCompanyCatalysts = rankedCandidates
+        .filter((row) => row.directTickerMatch === true || row.directCompanyMatch === true)
+        .slice(0, 10) as unknown[];
+      output.bestSeriousCandidate = (best ?? bestDirectTickerCandidate ?? obj(output.bestSeriousCandidate)) as unknown;
+      output.topRejectedButInterestingSignals = rankedCandidates
+        .filter((row) => row.eligibleForBest !== true)
+        .slice(0, 5) as unknown[];
+      output.nextBestEarToImprove = recommendedNextSource;
+      output.recommendedDeepProofCalls = [
+        ...((Array.isArray(output.recommendedDeepProofCalls) ? output.recommendedDeepProofCalls : []) as unknown[]),
+        ...topDirectCandidates.flatMap((row) =>
+          row.stillMissingProof.map((proofType) => ({ rawSignalId: row.rawSignalId, proofType, source: recommendedNextSource })),
+        ),
+      ] as unknown[];
       const rawSignal = best
         ? (rawSignals.find((signal) => signal.id === best.rawSignalId) ?? null)
         : bestFailed

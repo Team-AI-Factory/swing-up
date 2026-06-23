@@ -16,6 +16,7 @@ import { earRegistrySummary } from "@/lib/ear-registry";
 import { scoreSevenLayerEvidence } from "@/lib/catalyst-impact-scoring";
 import { withRedactionMetadata } from "@/lib/redact-secrets";
 import { buildGlobalSchedulerPlan, MEANINGFUL_METRIC_REGISTRY } from "@/lib/global-ear-scheduler";
+import { runGenericNewsTriage } from "@/lib/generic-news-triage";
 
 export const dynamic = "force-dynamic";
 
@@ -366,6 +367,15 @@ function baseResponse(input: {
     finalJudgeSummary: {},
     approvalGateSummary: {},
     publishLedgerSummary: {},
+    genericNewsScanned: 0,
+    seriousGenericSignalsFound: 0,
+    rippleCandidatesCreated: 0,
+    genericSignalsRejectedAsNoise: 0,
+    topGenericSignal: null as unknown,
+    affectedTickersFromGenericNews: [] as string[],
+    deepChecksTriggeredByGenericNews: [] as unknown[],
+    callsSavedByGenericTriage: 0,
+    genericNewsDidNotBypassProofGate: true,
     signalFound: false,
     aiCommitteeRan: false,
     approved: false,
@@ -456,6 +466,13 @@ export async function POST(request: NextRequest) {
       confirmRun,
       r2RawStorageReady: r2WriteAvailable,
     });
+    const genericTriage = await runGenericNewsTriage({
+      maxGenericItemsToScan: Math.min(maxRawSignalsToInspect, 50),
+      maxRippleCandidates: Math.min(maxDeepScans || 10, 10),
+      maxDeepChecks: confirmRun ? maxDeepScans : 0,
+      confirmRun,
+      freshnessWindowHours,
+    });
     const output = {
       ...baseResponse({ dryRun, readiness, warnings }),
       universeMode,
@@ -467,7 +484,29 @@ export async function POST(request: NextRequest) {
       deepScanCount: globalSchedulerPlan.deepScansPlanned,
       meaningfulMetricsCalculated: MEANINGFUL_METRIC_REGISTRY.map((metric) => metric.name),
       highestValueCallsUsed: confirmRun ? globalSchedulerPlan.highestValueNextCalls : [],
+      genericNewsScanned: genericTriage.genericItemsScannedToday,
+      seriousGenericSignalsFound: genericTriage.seriousGenericSignalsFound,
+      rippleCandidatesCreated: genericTriage.rippleCandidatesCreated,
+      genericSignalsRejectedAsNoise: genericTriage.genericSignalsRejectedAsNoise,
+      topGenericSignal: genericTriage.topGenericSignal,
+      affectedTickersFromGenericNews: genericTriage.affectedTickersFromGenericNews,
+      deepChecksTriggeredByGenericNews: genericTriage.deepChecksTriggeredByGenericNews,
+      callsSavedByGenericTriage: genericTriage.callsSavedByGenericTriage,
+      genericNewsDidNotBypassProofGate: true,
+      genericNewsTriageSummary: {
+        enabled: genericTriage.enabled,
+        broadSourcesUsed: genericTriage.broadSourcesUsed,
+        topGenericSignalTypes: genericTriage.topGenericSignalTypes,
+        topAffectedSectors: genericTriage.topAffectedSectors,
+        topAffectedTickers: genericTriage.topAffectedTickers,
+        exampleRejectedAsNoise: genericTriage.exampleRejectedAsNoise,
+        examplePromotedIntoRippleCandidate: genericTriage.examplePromotedIntoRippleCandidate,
+        noOpenAIWhenConfirmRunFalse: confirmRun !== true,
+        noPublish: true,
+        noTelegram: true,
+      },
       callsSkippedToAvoidWaste: [
+        `${genericTriage.callsSavedByGenericTriage} generic-news deep checks saved by triage`,
         "generic broad market articles",
         "ticker-only comparisons",
         "stale proof",

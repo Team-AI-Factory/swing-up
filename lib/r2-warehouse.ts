@@ -2,6 +2,26 @@ import crypto from "node:crypto";
 import { prisma } from "@/lib/db/client";
 import { redactSecrets } from "@/lib/redact-secrets";
 
+export type R2SourceOfTruth = "recent_write_test" | "runtime_write_check" | "read_only_get_check";
+
+export type R2OperationalStatus = {
+  configured: boolean;
+  connected: boolean;
+  canRead: boolean;
+  canWrite: boolean;
+  canDelete: boolean;
+  writeAvailable: boolean;
+  storageMode: "r2_raw_storage" | "postgresql_summary_only";
+  lastConfirmedWriteAt: string | null;
+  lastConfirmedDeleteAt: string | null;
+  sourceOfTruth: R2SourceOfTruth;
+  rawHealth: R2Health;
+};
+
+type RecentR2WriteTest = { writeAt: string; deleteAt: string; regionUsed: string | null; testObjectKey: string | null };
+const R2_WRITE_TEST_FRESH_MS = 24 * 60 * 60 * 1000;
+const globalR2State = globalThis as typeof globalThis & { __swingUpRecentR2WriteTest?: RecentR2WriteTest };
+
 export type R2Health = {
   connected: boolean;
   configured: boolean;
@@ -90,6 +110,29 @@ function fingerprintAccessKeyId(accessKeyId: string) {
   if (accessKeyId.length <= 8)
     return `${accessKeyId.slice(0, 1)}***${accessKeyId.slice(-1)}`;
   return `${accessKeyId.slice(0, 4)}***${accessKeyId.slice(-4)}`;
+}
+
+
+function rememberSuccessfulR2WriteTest(health: R2Health) {
+  if (health.canWrite && health.canDelete) {
+    const now = new Date().toISOString();
+    globalR2State.__swingUpRecentR2WriteTest = {
+      writeAt: now,
+      deleteAt: now,
+      regionUsed: health.regionUsed,
+      testObjectKey: health.testObjectKey,
+    };
+  }
+}
+
+function recentR2WriteTest() {
+  const recent = globalR2State.__swingUpRecentR2WriteTest;
+  if (!recent) return null;
+  const writeMs = Date.parse(recent.writeAt);
+  const deleteMs = Date.parse(recent.deleteAt);
+  if (!Number.isFinite(writeMs) || !Number.isFinite(deleteMs)) return null;
+  const fresh = Date.now() - Math.min(writeMs, deleteMs) <= R2_WRITE_TEST_FRESH_MS;
+  return fresh ? recent : null;
 }
 
 async function signedFetch(
@@ -574,6 +617,7 @@ export async function checkR2Health(confirmWrite = false): Promise<R2Health> {
       health.deleteErrorMessageSafe = await safeResponseMessage("delete", del);
       health.connected = health.canRead;
     }
+    if (confirmWrite) rememberSuccessfulR2WriteTest(health);
     return { ...health, ...diagnoseR2Health(health) };
   } catch (e) {
     const failed = {
@@ -584,6 +628,41 @@ export async function checkR2Health(confirmWrite = false): Promise<R2Health> {
     return { ...failed, ...diagnoseR2Health(failed) };
   }
 }
+export async function getR2OperationalStatus(options: { allowRuntimeWriteCheck?: boolean } = {}): Promise<R2OperationalStatus> {
+  const recent = recentR2WriteTest();
+  if (recent) {
+    const rawHealth = await checkR2Health(false);
+    return {
+      configured: rawHealth.configured,
+      connected: rawHealth.connected || rawHealth.canRead,
+      canRead: rawHealth.canRead,
+      canWrite: true,
+      canDelete: true,
+      writeAvailable: true,
+      storageMode: "r2_raw_storage",
+      lastConfirmedWriteAt: recent.writeAt,
+      lastConfirmedDeleteAt: recent.deleteAt,
+      sourceOfTruth: "recent_write_test",
+      rawHealth,
+    };
+  }
+  const rawHealth = await checkR2Health(options.allowRuntimeWriteCheck === true);
+  const writeAvailable = rawHealth.canWrite && rawHealth.canDelete;
+  return {
+    configured: rawHealth.configured,
+    connected: rawHealth.connected || rawHealth.canRead,
+    canRead: rawHealth.canRead,
+    canWrite: writeAvailable,
+    canDelete: writeAvailable,
+    writeAvailable,
+    storageMode: writeAvailable ? "r2_raw_storage" : "postgresql_summary_only",
+    lastConfirmedWriteAt: writeAvailable ? rawHealth.lastChecked : null,
+    lastConfirmedDeleteAt: writeAvailable ? rawHealth.lastChecked : null,
+    sourceOfTruth: options.allowRuntimeWriteCheck === true ? "runtime_write_check" : "read_only_get_check",
+    rawHealth,
+  };
+}
+
 export async function getRawWarehouseStatus() {
   if (!process.env.DATABASE_URL)
     return { count: 0, latest: null, snapshots: 0 };

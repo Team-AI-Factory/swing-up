@@ -145,6 +145,31 @@ const DEFAULT_PAYLOAD = {
   excludeLowImpactReferenceUpdates: true,
 };
 
+const PUBLIC_DRY_RUN_EXAMPLE_BODY = {
+  dryRun: true,
+  confirmRun: false,
+  confirmPublish: false,
+  confirmSend: false,
+  maxAlertsToPublish: 1,
+  allowTelegram: false,
+  maxRawSignalsToInspect: 50,
+  maxFreshPullPerSource: 3,
+  freshnessWindowHours: 72,
+};
+
+export async function GET() {
+  return NextResponse.json({
+    ok: false,
+    route: "/api/internal/run-live-alert-cycle",
+    methodRequired: "POST",
+    message:
+      "Use POST with a dry-run payload, or use the Stage 1 Dry Run button on /ops/engine-control.",
+    engineControlUrl:
+      "https://swing-up-production.up.railway.app/ops/engine-control",
+    exampleBody: PUBLIC_DRY_RUN_EXAMPLE_BODY,
+  });
+}
+
 function bool(value: unknown, fallback: boolean) {
   return typeof value === "boolean" ? value : fallback;
 }
@@ -415,7 +440,7 @@ export async function POST(request: NextRequest) {
         nextAction: r2Health.nextAction,
       },
     };
-    if (!confirmRun) {
+    if (!confirmRun && !dryRun) {
       return NextResponse.json({
         ...output,
         stage: "dry_run_confirm_required",

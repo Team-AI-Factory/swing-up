@@ -433,6 +433,102 @@ function yesNo(value: boolean | null) {
   return value ? "yes" : "no";
 }
 
+function resultValue(value: JsonValue | undefined): string {
+  if (value === undefined || value === null) return "—";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number" || typeof value === "string")
+    return String(value);
+  return JSON.stringify(value, null, 2);
+}
+
+function stage1ResultPanel(row: StageResult | undefined) {
+  const json = row?.json;
+  const discovery =
+    isRecord(json) && isRecord(json.candidateDiscoverySummary)
+      ? json.candidateDiscoverySummary
+      : null;
+  const proof =
+    isRecord(json) && isRecord(json.proofEnrichmentSummary)
+      ? json.proofEnrichmentSummary
+      : null;
+  const catalyst =
+    isRecord(json) && isRecord(json.catalystSummary) ? json.catalystSummary : null;
+  const ranked =
+    discovery && Array.isArray(discovery.rankedCandidates)
+      ? discovery.rankedCandidates
+      : [];
+  const bestCandidate =
+    discovery && discovery.bestDirectTickerCandidate
+      ? discovery.bestDirectTickerCandidate
+      : ranked.find((item) => isRecord(item) && item.eligibleForBest === true) ??
+        null;
+  const stage2Unlocked =
+    isRecord(json) && typeof json.stage2Allowed === "boolean"
+      ? json.stage2Allowed
+      : row?.discovery.stage2Allowed ?? null;
+
+  return [
+    { label: "ok", value: isRecord(json) ? json.ok : undefined },
+    {
+      label: "readyToStartEngine",
+      value: findBoolean(json ?? null, [
+        "readyToStartEngine",
+        "readyForFirstPublicAlert",
+      ]),
+    },
+    {
+      label: "sourcesAttempted",
+      value:
+        discovery?.sourcesInspected ??
+        catalyst?.attemptedProviders ??
+        catalyst?.configuredProviders,
+    },
+    {
+      label: "rawSignalsFound",
+      value:
+        discovery?.catalystSignalsFound ??
+        catalyst?.catalystSignalsFound ??
+        (row?.signalFound === true ? 1 : row?.signalFound === false ? 0 : null),
+    },
+    { label: "candidatesInspected", value: discovery?.rawSignalsInspected },
+    { label: "candidatesPassed", value: discovery?.passCount },
+    { label: "bestCandidate", value: bestCandidate },
+    {
+      label: "rejectedReasons",
+      value:
+        discovery?.blockedReasonsBySignal ??
+        proof?.enrichmentBlockedReasons ??
+        row?.blockers,
+    },
+    { label: "proofAccepted", value: proof?.acceptedProofItems },
+    { label: "proofRejected", value: proof?.rejectedProofItems },
+    {
+      label: "aiCommitteeCalled",
+      value:
+        findBoolean(json ?? null, [
+          "aiCommitteeRan",
+          "committeeRan",
+          "aiCommitteeCalled",
+        ]) ?? false,
+    },
+    { label: "published", value: row?.published ?? false },
+    {
+      label: "telegramSent",
+      value:
+        findBoolean(json ?? null, ["sentToTelegram", "telegramSent"]) ?? false,
+    },
+    { label: "stage2Unlocked", value: stage2Unlocked },
+    {
+      label: "reasonStage2Locked",
+      value:
+        stage2Unlocked === true
+          ? "—"
+          : row?.nextAction ??
+            "Stage 1 has not found a candidate strong enough for Stage 2.",
+    },
+  ];
+}
+
 export default function EngineControlPanel() {
   const [secret, setSecret] = useState("");
   const [confirmPublish, setConfirmPublish] = useState(false);
@@ -462,6 +558,10 @@ export default function EngineControlPanel() {
           row.signalFound === true &&
           row.published !== true,
       ),
+    [rows],
+  );
+  const latestStage1Row = useMemo(
+    () => rows.find((row) => row.stage === "Stage 1 dry run"),
     [rows],
   );
 
@@ -528,7 +628,11 @@ export default function EngineControlPanel() {
     } as const;
     setBusy(stage);
     try {
-      const response = await fetch(RUN_ROUTE, {
+      const route =
+        stage === "stage1" && typeof window !== "undefined"
+          ? `${window.location.origin}${RUN_ROUTE}`
+          : RUN_ROUTE;
+      const response = await fetch(route, {
         method: "POST",
         headers: headers(),
         body: JSON.stringify(runPayloads[stage]),
@@ -552,7 +656,7 @@ export default function EngineControlPanel() {
         const json = await readResponse(response);
         const row = summarize(
           labels[stage],
-          RUN_ROUTE,
+          route,
           "POST",
           response.status,
           json,
@@ -677,6 +781,23 @@ export default function EngineControlPanel() {
         >
           Stage 3 Publish One Approved Website Alert
         </button>
+      </section>
+
+      <section style={styles.card}>
+        <h2 style={styles.heading}>Stage 1 Dry Run result</h2>
+        <p style={styles.small}>
+          Click the visible Stage 1 Dry Run button above to POST the safe dry-run
+          payload. This panel stays explicit about publish, Telegram, and AI
+          committee status.
+        </p>
+        <div style={styles.resultGrid}>
+          {stage1ResultPanel(latestStage1Row).map((item) => (
+            <div key={item.label} style={styles.resultItem}>
+              <strong>{item.label}</strong>
+              <pre style={styles.resultValue}>{resultValue(item.value)}</pre>
+            </div>
+          ))}
+        </div>
       </section>
 
       <section style={styles.card}>
@@ -884,6 +1005,25 @@ const styles: Record<string, React.CSSProperties> = {
   danger: { background: "#991b1b", borderColor: "rgba(252,165,165,.5)" },
   checkbox: { color: "#fef3c7", display: "flex", gap: 8, alignItems: "center" },
   heading: { marginTop: 0 },
+  small: { color: "#b6c9c6", lineHeight: 1.5 },
+  resultGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+    gap: 12,
+  },
+  resultItem: {
+    border: "1px solid rgba(148,163,184,.18)",
+    borderRadius: 16,
+    padding: 12,
+    background: "rgba(2,6,23,.42)",
+  },
+  resultValue: {
+    margin: "8px 0 0",
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-word",
+    color: "#bbf7d0",
+    fontSize: 12,
+  },
   tableWrap: { overflowX: "auto" },
   table: { width: "100%", minWidth: 1400, borderCollapse: "collapse" },
   th: {

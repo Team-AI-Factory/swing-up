@@ -90,6 +90,11 @@ const startupChecks: Array<{ key: StageKey; label: string; route: string }> = [
     label: "Live cycle status",
     route: "/api/internal/live-alert-cycle-status",
   },
+  {
+    key: "initial",
+    label: "7-layer ear registry",
+    route: "/api/internal/ear-registry",
+  },
   { key: "initial", label: "Alerts page", route: "/alerts" },
   { key: "initial", label: "Ledger page", route: "/ledger" },
 ];
@@ -441,6 +446,15 @@ function resultValue(value: JsonValue | undefined): string {
   return JSON.stringify(value, null, 2);
 }
 
+function registryPanel(row: StageResult | undefined) {
+  const json = row?.json;
+  const summary = isRecord(json) && isRecord(json.summary) ? json.summary : null;
+  const rawWarehouse = isRecord(json) && isRecord(json.rawWarehouse) ? json.rawWarehouse : null;
+  const ears = isRecord(json) && Array.isArray(json.ears) ? json.ears : [];
+  const blocked = ears.filter((ear) => isRecord(ear) && (ear.status === "blocked" || ear.status === "planned" || ear.status === "not_configured"));
+  return { summary, rawWarehouse, tier1: ears.filter((ear) => isRecord(ear) && ear.tier === "Tier 1").length, tier2: ears.filter((ear) => isRecord(ear) && ear.tier === "Tier 2").length, blockedPlanned: blocked.map((ear) => isRecord(ear) ? `${ear.earName}: ${ear.status} — ${ear.howToSolve ?? ear.blocker ?? "review"}` : String(ear)) };
+}
+
 function stage1ResultPanel(row: StageResult | undefined) {
   const json = row?.json;
   const discovery =
@@ -517,6 +531,7 @@ function stage1ResultPanel(row: StageResult | undefined) {
       value:
         findBoolean(json ?? null, ["sentToTelegram", "telegramSent"]) ?? false,
     },
+    { label: "bestEarlySignalCandidate", value: discovery?.sevenLayerEvidenceModel ?? null },
     { label: "stage2Unlocked", value: stage2Unlocked },
     {
       label: "reasonStage2Locked",
@@ -562,6 +577,10 @@ export default function EngineControlPanel() {
   );
   const latestStage1Row = useMemo(
     () => rows.find((row) => row.stage === "Stage 1 dry run"),
+    [rows],
+  );
+  const registryRow = useMemo(
+    () => rows.find((row) => row.stage === "7-layer ear registry"),
     [rows],
   );
 
@@ -781,6 +800,12 @@ export default function EngineControlPanel() {
         >
           Stage 3 Publish One Approved Website Alert
         </button>
+      </section>
+
+      <section style={styles.card}>
+        <h2 style={styles.heading}>7-layer ear status</h2>
+        <p style={styles.small}>Shows Tier 1/Tier 2 ears, blocked/planned ears with how to solve, and R2 raw storage status from /api/internal/ear-registry.</p>
+        <pre style={styles.resultValue}>{JSON.stringify(registryPanel(registryRow), null, 2)}</pre>
       </section>
 
       <section style={styles.card}>

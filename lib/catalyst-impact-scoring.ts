@@ -44,3 +44,52 @@ export function catalystImpactScores(input: {
   const promotionScore = Math.round(100 * (impactScore * 0.35 + stockSpecificityScore * 0.35 + sourceReliabilityScore * 0.2 + proofDiversityScore * 0.1));
   return { directTickerMatch, directCompanyMatch, hasReceiptUrl, freshWithin72h, sourceReliabilityScore, catalystType: type, likelyMarketImpact, proofDiversityScore, stockSpecificityScore, promotionScore };
 }
+
+export type SevenLayerEvidenceScore = {
+  layerScores: Record<string, number>;
+  layersSupportingCandidate: string[];
+  layersMissing: string[];
+  strongestLayer: string;
+  weakestLayer: string;
+  earlySignalPossible: boolean;
+  marketReactionStatus: "none" | "weak" | "bonus_confirmed" | "unknown";
+  promotionScore: number;
+  reasonNotPromoted: string | null;
+};
+
+function layerStrengthFromText(haystack: string, needles: string[], fallback = 0) {
+  return needles.some((needle) => haystack.includes(needle)) ? 75 : fallback;
+}
+
+export function scoreSevenLayerEvidence(input: {
+  source?: string | null;
+  title?: string | null;
+  summary?: string | null;
+  proofTypes?: string[];
+  promotionScore?: number | null;
+  priceMovePercent?: number | null;
+  riskSignals?: number | null;
+}): SevenLayerEvidenceScore {
+  const textBlob = `${input.source ?? ""} ${input.title ?? ""} ${input.summary ?? ""}`.toLowerCase();
+  const proofTypes = new Set(input.proofTypes ?? []);
+  const priceMove = typeof input.priceMovePercent === "number" ? input.priceMovePercent : null;
+  const layerScores: Record<string, number> = {
+    "Layer 1 — Official truth": Math.max(proofTypes.has("filing") ? 85 : 0, layerStrengthFromText(textBlob, ["sec", "edgar", "8-k", "fda", "clinical", "contract", "award", "recall", "approval"])),
+    "Layer 2 — Fast market news": Math.max(proofTypes.has("news") ? 65 : 0, layerStrengthFromText(textBlob, ["marketaux", "alpha vantage", "gdelt", "google news", "press release", "news"], 0)),
+    "Layer 3 — Money movement": Math.max(proofTypes.has("price_volume") ? 55 : 0, layerStrengthFromText(textBlob, ["form 4", "insider", "13f", "short", "options", "volume"], 0)),
+    "Layer 4 — Business quality": Math.max(proofTypes.has("fundamentals") ? 60 : 0, layerStrengthFromText(textBlob, ["revenue", "margin", "eps", "cash flow", "debt", "valuation", "estimate", "price target"], 0)),
+    "Layer 5 — Real-world demand": layerStrengthFromText(textBlob, ["job", "app rank", "review", "traffic", "pricing", "product launch", "customer", "supplier", "patent"], 0),
+    "Layer 6 — Risk detector": Math.max((input.riskSignals ?? 0) > 0 ? 70 : 0, layerStrengthFromText(textBlob, ["lawsuit", "investigation", "auditor", "resignation", "default", "dilution", "recall", "enforcement"], 0)),
+    "Layer 7 — Historical memory": proofTypes.has("pattern_match") ? 65 : 0,
+  };
+  const layersSupportingCandidate = Object.entries(layerScores).filter(([, score]) => score >= 50).map(([layer]) => layer);
+  const layersMissing = Object.entries(layerScores).filter(([, score]) => score < 50).map(([layer]) => layer);
+  const sorted = Object.entries(layerScores).sort((a, b) => b[1] - a[1]);
+  const marketReactionStatus = priceMove == null ? "unknown" : Math.abs(priceMove) >= 5 ? "bonus_confirmed" : Math.abs(priceMove) >= 2 ? "weak" : "none";
+  const nonMarketScore = sorted.reduce((sum, [, score]) => sum + score, 0) / 7;
+  const marketBonus = marketReactionStatus === "bonus_confirmed" ? 8 : marketReactionStatus === "weak" ? 3 : 0;
+  const promotionScore = Math.max(0, Math.min(100, Math.round((input.promotionScore ?? nonMarketScore) * 0.65 + nonMarketScore * 0.35 + marketBonus)));
+  const earlySignalPossible = marketReactionStatus === "none" || marketReactionStatus === "unknown";
+  const reasonNotPromoted = promotionScore < 55 ? "promotion_score_below_threshold_or_missing_clean_proof" : null;
+  return { layerScores, layersSupportingCandidate, layersMissing, strongestLayer: sorted[0]?.[0] ?? "Layer 1 — Official truth", weakestLayer: sorted[sorted.length - 1]?.[0] ?? "Layer 7 — Historical memory", earlySignalPossible, marketReactionStatus, promotionScore, reasonNotPromoted };
+}

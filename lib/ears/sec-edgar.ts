@@ -303,6 +303,26 @@ function recentFilingCandidates(ticker: string, submission: SecSubmissions, limi
   return candidates;
 }
 
+function classify8KMaterialEvents(candidate: FilingCandidate) {
+  if (candidate.formType !== "8-K") return [];
+  const text = `${candidate.primaryDocDescription ?? ""} ${candidate.primaryDocument ?? ""}`.toLowerCase();
+  const rules: Array<[string, RegExp]> = [
+    ["contracts", /contract|customer|award|order/],
+    ["guidance", /guidance|outlook|forecast/],
+    ["leadership_changes", /departure|appoint|resign|ceo|cfo|officer|director/],
+    ["auditor_changes", /auditor|accountant/],
+    ["debt_default", /default|debt|credit agreement|loan/],
+    ["investigation", /investigation|subpoena|inquiry/],
+    ["litigation", /litigation|lawsuit|complaint|settlement/],
+    ["acquisition_disposition", /acquisition|merger|disposition|sale of assets/],
+    ["financing_dilution", /offering|private placement|warrant|convertible|equity|dilution/],
+    ["material_agreement", /material definitive agreement|entry into a material/],
+    ["risk_warning", /risk|going concern|impairment|delist/],
+  ];
+  const matches = rules.filter(([, pattern]) => pattern.test(text)).map(([label]) => label);
+  return matches.length ? matches : ["material_event_unclassified"];
+}
+
 async function createRawSignal(candidate: FilingCandidate, dryRun: boolean) {
   const result = await writeRawSignal({
     sourceName: SEC_EDGAR_SOURCE,
@@ -320,6 +340,8 @@ async function createRawSignal(candidate: FilingCandidate, dryRun: boolean) {
       formType: candidate.formType,
       filingDate: candidate.filingDate,
       reportDate: candidate.reportDate ?? null,
+      sec8kMaterialEventClasses: classify8KMaterialEvents(candidate),
+      sec8kClassifierVersion: candidate.formType === "8-K" ? "build-157-keyword-v1" : null,
       secUrls: {
         filing: candidate.filingUrl,
         companySubmissions: candidate.secCompanyUrl,

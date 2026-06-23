@@ -12,6 +12,8 @@ import { POST as publishApprovedAlertPOST } from "@/app/api/internal/publish-app
 import { runSources } from "@/lib/ops/source-runner";
 import { enrichProofForRawSignal } from "@/lib/proof-enrichment";
 import { checkR2Health } from "@/lib/r2-warehouse";
+import { earRegistrySummary } from "@/lib/ear-registry";
+import { scoreSevenLayerEvidence } from "@/lib/catalyst-impact-scoring";
 
 export const dynamic = "force-dynamic";
 
@@ -47,6 +49,7 @@ type DiscoveryRow = {
   proofDiversity: number;
   eligibleForBest: boolean;
   reasonNotPromoted: string | null;
+  sevenLayerEvidence: ReturnType<typeof scoreSevenLayerEvidence>;
 };
 
 const MIN_STOCK_SPECIFICITY_SCORE = 55;
@@ -339,7 +342,9 @@ function baseResponse(input: {
     stage: "initialized",
     readiness: input.readiness,
     rawWarehouseAvailable: false,
+    rawWarehouseWriteUnavailable: true,
     rawWarehouseStatus: {},
+    earRegistrySummary: earRegistrySummary(),
     sourceSummary: {},
     selectedRawSignalId: null as string | null,
     rawSignalSummary: {},
@@ -423,6 +428,7 @@ export async function POST(request: NextRequest) {
     const output = {
       ...baseResponse({ dryRun, readiness, warnings }),
       rawWarehouseAvailable: r2WriteAvailable,
+      rawWarehouseWriteUnavailable: !r2WriteAvailable,
       rawDataStored: false,
       rawWarehouseStatus: {
         configured: r2Health.configured,
@@ -837,12 +843,20 @@ export async function POST(request: NextRequest) {
           ).size,
           eligibleForBest: false,
           reasonNotPromoted: null,
+          sevenLayerEvidence: scoreSevenLayerEvidence({
+            source: signal.source,
+            title: signal.title,
+            summary: signal.summary,
+            proofTypes: enrichment.proofTypes,
+            promotionScore: payloadImpact(signal).promotionScore,
+          }),
         });
       }
       for (const row of discoveryRows) {
         const failures = bestEligibilityFailure(row);
         row.eligibleForBest = failures.length === 0;
-        row.reasonNotPromoted = failures.length ? failures.join("; ") : null;
+        const layerFailures = row.sevenLayerEvidence.reasonNotPromoted ? [row.sevenLayerEvidence.reasonNotPromoted] : [];
+        row.reasonNotPromoted = failures.length || layerFailures.length ? [...failures, ...layerFailures].join("; ") : null;
       }
       const rankedCandidates = sortDiscoveryRows(discoveryRows);
       const topDirectCandidates = rankedCandidates
@@ -982,6 +996,12 @@ export async function POST(request: NextRequest) {
               proofTypesFound: bestDirectTickerCandidate.proofAddedTypes,
               proofTypesMissing: bestDirectTickerCandidate.stillMissingProof,
               reasonNotPromoted: bestDirectTickerCandidate.reasonNotPromoted,
+              layersSupportingCandidate: bestDirectTickerCandidate.sevenLayerEvidence.layersSupportingCandidate,
+              layersMissing: bestDirectTickerCandidate.sevenLayerEvidence.layersMissing,
+              strongestLayer: bestDirectTickerCandidate.sevenLayerEvidence.strongestLayer,
+              weakestLayer: bestDirectTickerCandidate.sevenLayerEvidence.weakestLayer,
+              earlySignalPossible: bestDirectTickerCandidate.sevenLayerEvidence.earlySignalPossible,
+              marketReactionStatus: bestDirectTickerCandidate.sevenLayerEvidence.marketReactionStatus,
             }
           : null,
         proofCompletionSummary,
@@ -991,6 +1011,10 @@ export async function POST(request: NextRequest) {
         bestCandidateFailureReason: bestFailed
           ? `${bestFailed.title}: ${(bestFailed.blockedReasons.length ? bestFailed.blockedReasons : [bestFailed.bestFailureReason ?? "missing_matching_independent_proof"]).join("; ")}`
           : null,
+        sevenLayerEvidenceModel: {
+          marketReactionRule: "bonus_only_never_required",
+          bestEarlySignalCandidate: (best ?? bestDirectTickerCandidate ?? rankedCandidates[0] ?? null)?.sevenLayerEvidence ?? null,
+        },
         recommendedNextAction: best
           ? "Stage 1 found a candidate strong enough for Stage 2 AI review. Re-run with dryRun=false and confirmRun=true to create/review exactly one candidate."
           : bestFailed

@@ -170,6 +170,7 @@ async function smokeTestFmp(apiKey: string) {
   const simpleEndpoints: Array<{ key: string; path: string; params: Record<string, string> }> = [
     { key: "/stable/profile?symbol=AAPL", path: "/stable/profile", params: { symbol: "AAPL" } },
     { key: "/stable/search-symbol?query=AAPL", path: "/stable/search-symbol", params: { query: "AAPL" } },
+    { key: "/stable/stock-list", path: "/stable/stock-list", params: {} },
   ];
 
   for (const endpoint of simpleEndpoints) {

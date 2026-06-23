@@ -1,5 +1,6 @@
 import { checkR2Health, getRawWarehouseStatus } from "@/lib/r2-warehouse";
 import { getSourceHealth } from "@/lib/source-health";
+import EngineControlPanel from "./EngineControlPanel";
 
 export const dynamic = "force-dynamic";
 
@@ -10,9 +11,9 @@ export default async function EngineControlPage() {
     getSourceHealth(),
   ]);
   return (
-    <main style={{ padding: 24, fontFamily: "system-ui", lineHeight: 1.5 }}>
-      <h1>Engine Control</h1>
-      <section>
+    <>
+      <EngineControlPanel />
+      <section style={{ padding: 24, fontFamily: "system-ui", lineHeight: 1.5 }}>
         <h2>Raw Warehouse</h2>
         <ul>
           <li>
@@ -96,6 +97,6 @@ export default async function EngineControlPage() {
           </tbody>
         </table>
       </section>
-    </main>
+    </>
   );
 }

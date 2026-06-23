@@ -102,15 +102,14 @@ const startupChecks: Array<{ key: StageKey; label: string; route: string }> = [
 const runPayloads = {
   stage1: {
     dryRun: true,
-    maxRawSignalsToInspect: 50,
-    maxFreshPullPerSource: 3,
-    freshnessWindowHours: 72,
-    excludeLowImpactReferenceUpdates: true,
     confirmRun: false,
     confirmPublish: false,
     confirmSend: false,
     maxAlertsToPublish: 1,
     allowTelegram: false,
+    maxRawSignalsToInspect: 50,
+    maxFreshPullPerSource: 3,
+    freshnessWindowHours: 72,
   },
   stage2: {
     dryRun: false,

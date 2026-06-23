@@ -15,6 +15,7 @@ import { checkR2Health } from "@/lib/r2-warehouse";
 import { earRegistrySummary } from "@/lib/ear-registry";
 import { scoreSevenLayerEvidence } from "@/lib/catalyst-impact-scoring";
 import { withRedactionMetadata } from "@/lib/redact-secrets";
+import { buildGlobalSchedulerPlan, MEANINGFUL_METRIC_REGISTRY } from "@/lib/global-ear-scheduler";
 
 export const dynamic = "force-dynamic";
 
@@ -420,6 +421,10 @@ export async function POST(request: NextRequest) {
     body.excludeLowImpactReferenceUpdates,
     true,
   );
+  const universeMode = text(body.universeMode) || "watchlist";
+  const maxAssetsToPlan = Math.min(Math.max(int(body.maxAssetsToPlan, 1000), 1), 10000);
+  const maxAssetsToScanNow = Math.min(Math.max(int(body.maxAssetsToScanNow, 50), 1), maxAssetsToPlan);
+  const maxDeepScans = Math.min(Math.max(int(body.maxDeepScans, 5), 0), maxAssetsToScanNow);
   const warnings = [
     "Telegram is disabled for this founder website test; this route never sends Telegram.",
     ...(confirmSend || allowTelegram
@@ -441,8 +446,35 @@ export async function POST(request: NextRequest) {
       : r2Health.configured
         ? `R2 read health is ${r2Health.canRead ? "available" : "unavailable"}, but write/delete is unavailable; Stage 1 is continuing with PostgreSQL summaries and rawDataStored=false.`
         : `R2 is not fully configured (${r2Health.missingEnvVars.join(", ") || "missing configuration"}); Stage 1 is continuing with PostgreSQL summaries and rawDataStored=false.`;
+    const globalSchedulerPlan = buildGlobalSchedulerPlan({
+      dryRun,
+      universeMode,
+      maxAssetsToPlan,
+      maxAssetsToScanNow,
+      maxDeepScans,
+      respectProviderLimits: true,
+      confirmRun,
+      r2RawStorageReady: r2WriteAvailable,
+    });
     const output = {
       ...baseResponse({ dryRun, readiness, warnings }),
+      universeMode,
+      assetsConsidered: globalSchedulerPlan.assetsConsidered,
+      globalCoveragePercent: universeMode === "global" ? 100 : 0,
+      sourcesConsideredPerAsset: globalSchedulerPlan.sourcesConsideredPerAsset,
+      sourcesConsidered: globalSchedulerPlan.sourcesConsidered,
+      wideScanCount: globalSchedulerPlan.wideScansPlanned,
+      deepScanCount: globalSchedulerPlan.deepScansPlanned,
+      meaningfulMetricsCalculated: MEANINGFUL_METRIC_REGISTRY.map((metric) => metric.name),
+      highestValueCallsUsed: confirmRun ? globalSchedulerPlan.highestValueNextCalls : [],
+      callsSkippedToAvoidWaste: [
+        "generic broad market articles",
+        "ticker-only comparisons",
+        "stale proof",
+        "unrelated topics",
+        "Alpha Vantage backup call skipped unless a proof gap remains",
+      ],
+      proofGapsRemaining: ["at least 2 clean proof types beyond raw source", "clean direct ticker/company/topic match"],
       rawWarehouseAvailable: r2Health.connected || r2Health.canRead,
       rawWarehouseWriteUnavailable: !r2WriteAvailable,
       rawDataStored: false,
@@ -715,6 +747,7 @@ export async function POST(request: NextRequest) {
         blockers: [],
         stage2Unlocked: false,
         reasonStage2Locked: "No raw signal passed Stage 1 proof inspection.",
+        proofGapsRemaining: ["No raw signal passed Stage 1 proof inspection."],
         finalRecommendation: "Continue testing",
         nextRecommendedAction: summary.recommendedNextAction,
       });
@@ -1084,6 +1117,7 @@ export async function POST(request: NextRequest) {
           blockers: [],
           stage2Unlocked: false,
           reasonStage2Locked: summary.bestCandidateFailureReason ?? "No candidate passed strict proof gates.",
+          proofGapsRemaining: bestFailed?.stillMissingProof ?? ["No candidate passed strict proof gates."],
           finalRecommendation: r2WriteAvailable ? "Do not run Stage 2" : "Fix R2 before large history backfill; do not run Stage 2",
           nextRecommendedAction: summary.recommendedNextAction,
         });

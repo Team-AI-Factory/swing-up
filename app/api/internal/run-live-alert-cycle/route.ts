@@ -14,8 +14,13 @@ import { enrichProofForRawSignal } from "@/lib/proof-enrichment";
 import { checkR2Health } from "@/lib/r2-warehouse";
 import { earRegistrySummary } from "@/lib/ear-registry";
 import { scoreSevenLayerEvidence } from "@/lib/catalyst-impact-scoring";
+import { withRedactionMetadata } from "@/lib/redact-secrets";
 
 export const dynamic = "force-dynamic";
+
+function redactedJson(payload: Record<string, unknown>, init?: ResponseInit) {
+  return NextResponse.json(withRedactionMetadata(payload), init);
+}
 
 type JsonRecord = Record<string, unknown>;
 type DiscoveryRow = {
@@ -161,7 +166,7 @@ const PUBLIC_DRY_RUN_EXAMPLE_BODY = {
 };
 
 export async function GET() {
-  return NextResponse.json({
+  return redactedJson({
     ok: false,
     route: "/api/internal/run-live-alert-cycle",
     methodRequired: "POST",
@@ -460,7 +465,7 @@ export async function POST(request: NextRequest) {
       },
     };
     if (!confirmRun && !dryRun) {
-      return NextResponse.json({
+      return redactedJson({
         ...output,
         stage: "dry_run_confirm_required",
         blockers: dryRun ? [] : ["confirmRun_required"],
@@ -469,7 +474,7 @@ export async function POST(request: NextRequest) {
       });
     }
     if (!readiness.readyForFirstPublicAlert) {
-      return NextResponse.json(
+      return redactedJson(
         {
           ...output,
           ok: false,
@@ -483,7 +488,7 @@ export async function POST(request: NextRequest) {
       );
     }
     if (!process.env.DATABASE_URL) {
-      return NextResponse.json(
+      return redactedJson(
         {
           ...output,
           ok: false,
@@ -698,7 +703,7 @@ export async function POST(request: NextRequest) {
           ? "No useful real raw signal was available after attempting configured catalyst providers. Check degraded/failed catalyst provider reasons, then try SEC EDGAR, GDELT, or Google News RSS; do not create a fake alert."
           : "No useful real raw signal was available because no catalyst providers were attempted. Check missing API keys/source runner configuration before trying SEC EDGAR; do not create a fake alert.",
       };
-      return NextResponse.json({
+      return redactedJson({
         ...output,
         ok: true,
         stage: "no_signal",
@@ -1070,7 +1075,7 @@ export async function POST(request: NextRequest) {
           }
         : {};
       if (!best)
-        return NextResponse.json({
+        return redactedJson({
           ...output,
           stage: "no_publish",
           approved: false,
@@ -1083,7 +1088,7 @@ export async function POST(request: NextRequest) {
           nextRecommendedAction: summary.recommendedNextAction,
         });
       if (dryRun)
-        return NextResponse.json({
+        return redactedJson({
           ...output,
           stage: "dry_run_planned",
           approved: false,
@@ -1147,7 +1152,7 @@ export async function POST(request: NextRequest) {
         createdCandidateIds: created.slice(0, 1),
       };
       if (!candidateAlertId)
-        return NextResponse.json({
+        return redactedJson({
           ...output,
           stage: "candidate_blocked",
           approved: false,
@@ -1173,7 +1178,7 @@ export async function POST(request: NextRequest) {
 
     const provider = getAiCommitteeProviderStatus();
     if (!confirmRun || !provider.enabled || !provider.configured) {
-      return NextResponse.json({
+      return redactedJson({
         ...output,
         stage: "ai_committee_planned",
         aiCommitteeSummary: {
@@ -1248,7 +1253,7 @@ export async function POST(request: NextRequest) {
     output.publishable = approved;
 
     if (!approved || dryRun || !confirmPublish || maxAlertsToPublish < 1) {
-      return NextResponse.json({
+      return redactedJson({
         ...output,
         stage: approved ? "approved_not_published" : "approval_blocked",
         blockers: approved ? [] : ["approval_gate_or_final_judge_not_approved"],
@@ -1269,7 +1274,7 @@ export async function POST(request: NextRequest) {
       }),
     );
     const publishJson = await jsonFromRoute(publishResponse);
-    return NextResponse.json(
+    return redactedJson(
       {
         ...output,
         stage: publishJson.published ? "published" : "publish_blocked",
@@ -1291,7 +1296,7 @@ export async function POST(request: NextRequest) {
       error.code === "P2023"
         ? 400
         : 500;
-    return NextResponse.json(
+    return redactedJson(
       {
         ...baseResponse({ dryRun, readiness: {}, warnings }),
         ok: false,

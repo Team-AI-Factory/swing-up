@@ -14,6 +14,7 @@ import { runPolygonIngestion } from "@/lib/ears/polygon";
 import { DEFAULT_SEC_TICKERS, runSecEdgarIngestion } from "@/lib/ears/sec-edgar";
 import { runWikidataRippleIngestion } from "@/lib/ears/wikidata-ripple";
 import { normalizeSourceName as normalizeCanonicalSourceName } from "@/lib/source-aliases";
+import { redactSecrets } from "@/lib/redact-secrets";
 
 export const DEFAULT_SOURCE_RUN_ORDER = ["FMP Catalyst", "Marketaux Catalyst", "Alpha Vantage Catalyst", "SEC EDGAR", "GDELT", "Google News RSS", "openFDA", "CoinGecko", "FRED Macro", "Frankfurter FX", "FINRA Short Sale", "Polygon", "Wikidata"] as const;
 export type RunnableSourceName = (typeof DEFAULT_SOURCE_RUN_ORDER)[number];
@@ -61,7 +62,7 @@ function selectedSources(sources?: string[]) {
 }
 
 function safeError(error: unknown) {
-  if (error instanceof Error) return error.message.split("\n")[0]?.slice(0, 220) || "Source run failed";
+  if (error instanceof Error) return redactSecrets(error.message).split("\n")[0]?.slice(0, 220) || "Source run failed";
   return "Source run failed";
 }
 
@@ -86,8 +87,8 @@ function fmpDiagnosis(errors: string[]) {
 }
 
 function finishRow(row: SourceRunSummaryRow, patch: Partial<SourceRunSummaryRow>): SourceRunSummaryRow {
-  const errors = patch.errors ?? (patch.error ? [patch.error] : row.errors);
-  const error = patch.error ?? errors[0] ?? null;
+  const errors = redactSecrets(patch.errors ?? (patch.error ? [patch.error] : row.errors));
+  const error = redactSecrets(patch.error ?? errors[0] ?? null);
   return { ...row, ...patch, errors, error, finishedAt: new Date().toISOString() };
 }
 

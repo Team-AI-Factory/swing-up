@@ -45,6 +45,9 @@ export type GenericNewsClassification = {
   confidence: number;
   whyItMayMatter: string;
   whyItMayBeNoise: string;
+  impactMechanism: string;
+  recommendedDeepChecks: string[];
+  rejectionType: "rejected_noise" | "rejected_duplicate" | "rejected_no_clear_mechanism" | "promoted_to_ripple_candidate" | "needs_mapping" | "needs_deep_check";
   clearMechanism: boolean;
   freshSourceUrl: boolean;
   broadMarketCommentary: boolean;
@@ -81,6 +84,7 @@ const RULES: Rule[] = [
   { type: "creditLiquidityShock", terms: ["credit crunch", "bank run", "liquidity", "default", "debt ceiling", "downgrade"], seriousness: 78, ripple: 78, sectors: ["Banks", "Credit", "REITs", "Small caps"], currencies: ["USD"], tickers: ["JPM", "BAC", "KRE", "HYG", "IWM", "VNQ"], assetTypes: ["equity", "ETF", "currency", "macro"], why: "Liquidity stress can affect lending, risk appetite, funding costs, and weaker balance sheets first." },
 ];
 
+const OPINION_TERMS = ["opinion", "column", "commentary", "could", "might", "why investors", "to watch"];
 const NOISE_TERMS = ["stocks mixed", "stock market today", "market recap", "10 stocks", "to watch", "opinion", "etf strategy", "markets end", "wall street mixed"];
 const BROAD_SOURCES = new Set(["GDELT", "Google News RSS", "Marketaux Catalyst", "FRED Macro", "Frankfurter FX", "CoinGecko"]);
 
@@ -98,7 +102,8 @@ export function classifyGenericNews(signal: GenericRawSignal): GenericNewsClassi
   const text = `${signal.title} ${signal.summary} ${JSON.stringify(signal.payload ?? {})}`.toLowerCase();
   const matched = RULES.filter((rule) => includesAny(text, rule.terms));
   const best = matched.sort((a, b) => b.seriousness + b.ripple - (a.seriousness + a.ripple))[0];
-  const broadMarketCommentary = includesAny(text, NOISE_TERMS) && !best;
+  const opinionOnly = includesAny(text, OPINION_TERMS) && !/\d|%|\$|billion|million|guidance|filing|contract|recall|approval/i.test(text);
+  const broadMarketCommentary = (includesAny(text, NOISE_TERMS) || opinionOnly) && !best;
   const freshSourceUrl = Boolean(signal.sourceUrl && /^https?:\/\//i.test(signal.sourceUrl));
   const affectedSectors = uniq(matched.flatMap((rule) => rule.sectors ?? []));
   const affectedTickers = uniq([...(signal.ticker ? [signal.ticker] : []), ...matched.flatMap((rule) => rule.tickers ?? [])]).slice(0, 14);
@@ -111,7 +116,11 @@ export function classifyGenericNews(signal: GenericRawSignal): GenericNewsClassi
   const seriousnessScore = scoreClamp((best?.seriousness ?? 18) + (freshSourceUrl ? 4 : -8) + (broadMarketCommentary ? -25 : 0));
   const ripplePotentialScore = scoreClamp((best?.ripple ?? 15) + Math.min(12, affectedTickers.length * 2) + (clearMechanism ? 6 : -10) + (broadMarketCommentary ? -25 : 0));
   const rippleCandidate = seriousnessScore >= 68 && ripplePotentialScore >= 68 && clearMechanism && freshSourceUrl && !broadMarketCommentary;
-  const rejectedReason = rippleCandidate ? null : broadMarketCommentary ? "broad_market_commentary_or_listicle" : !freshSourceUrl ? "specific_fresh_source_url_required" : !clearMechanism ? "no_clear_impact_mechanism_or_asset_mapping" : "seriousness_or_ripple_score_below_threshold";
+  const needsMapping = seriousnessScore >= 68 && !affectedTickers.length;
+  const needsDeepCheck = seriousnessScore >= 68 && ripplePotentialScore >= 60 && clearMechanism && !rippleCandidate;
+  const rejectionType = rippleCandidate ? "promoted_to_ripple_candidate" : needsMapping ? "needs_mapping" : needsDeepCheck ? "needs_deep_check" : !clearMechanism ? "rejected_no_clear_mechanism" : "rejected_noise";
+  const rejectedReason = rippleCandidate ? null : broadMarketCommentary ? "broad_market_commentary_or_opinion_only" : !freshSourceUrl ? "specific_fresh_source_url_required" : !clearMechanism ? "no_clear_impact_mechanism_or_asset_mapping" : "seriousness_or_ripple_score_below_threshold";
+  const recommendedDeepChecks = rippleCandidate ? ["official_filing_or_regulator_search", "targeted_company_press_release_search", "fmp_fundamentals_estimates_targets", "fmp_price_volume_anomaly", "r2_historical_pattern_compare", "wikidata_relationship_mapping"].slice(0, 6) : needsMapping ? ["map_affected_tickers_before_spending_deep_calls"] : needsDeepCheck ? ["verify_source_specificity_and_mechanism"] : [];
   return redactSecrets({
     rawSignalId: signal.id ?? null,
     source: signal.source,
@@ -130,13 +139,16 @@ export function classifyGenericNews(signal: GenericRawSignal): GenericNewsClassi
     affectedTickers,
     confidence: scoreClamp((matched.length ? 58 : 35) + matched.length * 8 + (freshSourceUrl ? 7 : 0)),
     whyItMayMatter: best?.why ?? "No clear market mechanism was found beyond broad commentary.",
-    whyItMayBeNoise: broadMarketCommentary ? "The headline looks like a recap, listicle, or vague market commentary." : rippleCandidate ? "It still needs independent proof before any alert can move forward." : "The mapping, mechanism, source specificity, or score is not strong enough yet.",
+    whyItMayBeNoise: broadMarketCommentary ? "The headline looks like a recap, listicle, opinion-only, or vague market commentary." : rippleCandidate ? "It still needs mapped ticker proof before any alert can move forward." : "The mapping, mechanism, source specificity, or score is not strong enough yet.",
+    impactMechanism: best?.why ?? "No clear mechanism identified.",
+    recommendedDeepChecks,
+    rejectionType,
     clearMechanism,
     freshSourceUrl,
     broadMarketCommentary,
     rippleCandidate,
     rejectedReason,
-    deepChecksPlanned: rippleCandidate ? ["targeted_google_news_proof", "marketaux_ticker_proof", "sec_or_regulator_check_if_relevant", "fmp_price_fundamental_context_if_relevant"].slice(0, 4) : [],
+    deepChecksPlanned: recommendedDeepChecks,
   });
 }
 
@@ -157,7 +169,10 @@ export async function runGenericNewsTriage(input: { maxGenericItemsToScan?: numb
     genericItemsScannedToday: classifications.length,
     seriousGenericSignalsFound: classifications.filter((item) => item.seriousnessScore >= 68).length,
     rippleCandidatesCreated: rippleCandidates.length,
-    genericSignalsRejectedAsNoise: noise.length,
+    genericSignalsRejectedAsNoise: noise.filter((item) => item.rejectionType === "rejected_noise").length,
+    genericRippleCandidates: rippleCandidates,
+    opinionOnlyRejected: classifications.filter((item) => item.rejectedReason === "broad_market_commentary_or_opinion_only").length,
+    rejectionTypeCounts: topCounts(classifications.map((item) => item.rejectionType)),
     topGenericSignalTypes: topCounts(classifications.map((item) => item.genericNewsType)),
     topAffectedSectors: topCounts(classifications.flatMap((item) => item.affectedSectors)),
     topAffectedTickers: topCounts(rippleCandidates.flatMap((item) => item.affectedTickers)),

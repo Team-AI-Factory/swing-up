@@ -22,6 +22,8 @@ export function secretFingerprint(value: string | null | undefined) {
   return `${key.slice(0, 4)}***${key.slice(-4)}`;
 }
 
+export const redactionMode = "secret_only" as const;
+
 function redactString(input: string) {
   let output = input;
   for (const envName of SECRET_ENV_NAMES) {
@@ -31,10 +33,11 @@ function redactString(input: string) {
     }
   }
   output = output
-    .replace(/\b(?:sk-|api_|pk_)[A-Za-z0-9_\-]{8,}\b/g, SECRET_PLACEHOLDER)
+    .replace(/\b(?:sk-[A-Za-z0-9_\-]{16,}|sk_live_[A-Za-z0-9_\-]{12,}|sk_test_[A-Za-z0-9_\-]{12,})\b/g, SECRET_PLACEHOLDER)
     .replace(/\bAKIA[A-Z0-9]{12,}\b/g, SECRET_PLACEHOLDER)
-    .replace(/([?&](?:apikey|api_key|token|access_key|secret|key)=)[^\s&#]+/gi, `$1${SECRET_PLACEHOLDER}`)
-    .replace(/\b[A-Za-z0-9_\-]{32,}\b/g, SECRET_PLACEHOLDER);
+    .replace(/\b(?:Bearer\s+)[A-Za-z0-9._\-]{12,}/gi, `Bearer ${SECRET_PLACEHOLDER}`)
+    .replace(/([?&](?:apikey|api_key|token|access_token|access_key|secret|secret_access_key|key)=)[^\s&#]+/gi, `$1${SECRET_PLACEHOLDER}`)
+    .replace(/((?:cookie|set-cookie|authorization)\s*[:=]\s*)[^;\n]+/gi, `$1${SECRET_PLACEHOLDER}`);
   return output;
 }
 
@@ -56,7 +59,7 @@ export function redactSecrets<T>(input: T): T {
   return input;
 }
 
-export function withRedactionMetadata<T extends Record<string, unknown>>(payload: T): T & { secretsRedacted: true; providerSecretLeakPrevented?: true; nextAction?: string } {
+export function withRedactionMetadata<T extends Record<string, unknown>>(payload: T): T & { secretsRedacted: true; redactionMode: "secret_only"; providerSecretLeakPrevented?: true; nextAction?: string } {
   const redacted = redactSecrets(payload);
   const before = JSON.stringify(payload);
   const after = JSON.stringify(redacted);
@@ -64,6 +67,7 @@ export function withRedactionMetadata<T extends Record<string, unknown>>(payload
   return {
     ...redacted,
     secretsRedacted: true,
+    redactionMode,
     ...(leaked ? { providerSecretLeakPrevented: true as const, nextAction: "Rotate the affected provider key and update Railway variables." } : {}),
   };
 }

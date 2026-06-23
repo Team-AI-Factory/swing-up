@@ -11,6 +11,7 @@ import { POST as candidateFactoryPOST } from "@/app/api/internal/candidate-facto
 import { POST as publishApprovedAlertPOST } from "@/app/api/internal/publish-approved-alert/route";
 import { runSources } from "@/lib/ops/source-runner";
 import { enrichProofForRawSignal } from "@/lib/proof-enrichment";
+import { checkR2Health } from "@/lib/r2-warehouse";
 
 export const dynamic = "force-dynamic";
 
@@ -259,6 +260,8 @@ function baseResponse(input: {
     dryRun: input.dryRun,
     stage: "initialized",
     readiness: input.readiness,
+    rawWarehouseAvailable: false,
+    rawWarehouseStatus: {},
     sourceSummary: {},
     selectedRawSignalId: null as string | null,
     rawSignalSummary: {},
@@ -334,8 +337,16 @@ export async function POST(request: NextRequest) {
   ];
 
   try {
-    const readiness = await getEngineStartReadiness();
-    const output = baseResponse({ dryRun, readiness, warnings });
+    const [readiness, r2Health] = await Promise.all([getEngineStartReadiness(), checkR2Health(false)]);
+    const output = { ...baseResponse({ dryRun, readiness, warnings }), rawWarehouseAvailable: r2Health.connected, rawWarehouseStatus: { configured: r2Health.configured, connected: r2Health.connected, bucket: r2Health.bucket, missingEnvVars: r2Health.missingEnvVars, errorCategory: r2Health.errorCategory, errorMessageSafe: r2Health.errorMessageSafe } };
+    if (!confirmRun) {
+      return NextResponse.json({
+        ...output,
+        stage: "dry_run_confirm_required",
+        blockers: dryRun ? [] : ["confirmRun_required"],
+        nextRecommendedAction: "Set confirmRun=true only when you intend to inspect real source data. No OpenAI, publish, or Telegram actions ran.",
+      });
+    }
     if (!readiness.readyForFirstPublicAlert) {
       return NextResponse.json(
         {

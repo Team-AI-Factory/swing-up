@@ -13,7 +13,7 @@ const DEFAULT_LIMIT = 3;
 const MAX_LIMIT = 3;
 
 type FmpRunOptions = { dryRun?: boolean; limit?: number; tickers?: string[] };
-type FmpEventType = "press_release" | "stock_news" | "earnings_transcript" | "earnings_event" | "guidance_update" | "analyst_estimate" | "price_target" | "management_commentary";
+type FmpEventType = "press_release" | "stock_news" | "earnings_transcript" | "earnings_event" | "calendar_event" | "guidance_update" | "analyst_estimate" | "price_target" | "management_commentary";
 type FmpCandidate = {
   ticker: string;
   eventType: FmpEventType;
@@ -119,7 +119,8 @@ function earningsCandidate(ticker: string, rows: Record<string, unknown>[]): Fmp
   const row = rows.find((item) => item.symbol === ticker) ?? rows[0];
   if (!row) return null;
   const date = dateValue(row.date);
-  return { ticker, eventType: "earnings_event", title: `${ticker} FMP earnings calendar signal`, summary: `${ticker} has an earnings calendar item in the FMP sample dated ${date.slice(0, 10)}. This is raw scheduling evidence only.`, url: `https://financialmodelingprep.com/financial-summary/${ticker}`, detectedAt: date, duplicateKey: `${FMP_SOURCE}|earnings_event|${ticker}|${date.slice(0, 10)}`, importanceHint: "medium", payload: { provider: FMP_SOURCE, endpoint: "earning_calendar", row: row as Prisma.InputJsonObject, noFinalAlerts: true } };
+  const eventType: FmpEventType = new Date(date).getTime() > Date.now() ? "calendar_event" : "earnings_event";
+  return { ticker, eventType, title: `${ticker} FMP earnings calendar signal`, summary: `${ticker} has an earnings calendar item in the FMP sample dated ${date.slice(0, 10)}. Future earnings calendar items are calendar_event context only, not strong catalyst proof.`, url: `https://financialmodelingprep.com/financial-summary/${ticker}`, detectedAt: date, duplicateKey: `${FMP_SOURCE}|earnings_calendar|${ticker}|${date.slice(0, 10)}`, importanceHint: eventType === "calendar_event" ? "low" : "medium", payload: { provider: FMP_SOURCE, endpoint: "earning_calendar", catalystType: eventType, proofStrength: "weak_context_only", row: row as Prisma.InputJsonObject, noFinalAlerts: true } };
 }
 
 

@@ -10,6 +10,7 @@ const MARKETAUX_NEWS_URL = "https://api.marketaux.com/v1/news/all";
 const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_QUERIES_PER_RUN = 10;
 const MAX_ARTICLES_PER_QUERY = 3;
+const MAX_RECORDS_PER_RUN = 30;
 
 const WATCHLIST = { NVDA: "Nvidia", AAPL: "Apple", MSFT: "Microsoft", TSLA: "Tesla", AMZN: "Amazon", META: "Meta", GOOGL: "Alphabet", AMD: "AMD", SHOP: "Shopify", PLTR: "Palantir" } as const;
 const SAFE_QUERIES = Object.entries(WATCHLIST).map(([symbol, company]) => ({ label: `${symbol} ${company}`, symbols: symbol, company, countries: "us" }));
@@ -101,7 +102,8 @@ function classifyArticle(article: MarketauxArticle): { candidate: MarketauxCandi
   const title = text(article.title);
   const url = text(article.url, 1000);
   const blob = `${article.title ?? ""} ${article.description ?? ""} ${article.snippet ?? ""}`.toLowerCase();
-  const weakBroad = ["weekly market review", "portfolio holdings", "portfolio", "broad bank", "broad market", "market recap"].find((needle) => blob.includes(needle));
+  const broadTopic = ["weekly market review", "portfolio holdings", "portfolio", "broad bank", "broad market", "market recap", "stocks to watch", "market today", "wall street", "sector etf", "etf strategy", "index fund", "opinion:"].find((needle) => blob.includes(needle));
+  const directEvent = ["guidance", "price target", "analyst", "contract", "customer", "partnership", "lawsuit", "investigation", "regulation", "approval", "recall", "launch", "pricing", "ceo", "cfo", "leadership", "earnings", "revenue", "margin"].some((needle) => blob.includes(needle));
   const entities = (article.entities ?? []).filter(Boolean);
   const watchSymbols = new Set(Object.keys(WATCHLIST));
   const entity = entities.find((item) => watchSymbols.has((text(item?.symbol, 32) ?? "").toUpperCase())) ?? null;
@@ -112,12 +114,14 @@ function classifyArticle(article: MarketauxArticle): { candidate: MarketauxCandi
   const published = detectedAt(article);
   const fresh = Date.now() - new Date(published).getTime() <= 72 * 60 * 60 * 1000;
   const directCompanyMention = Boolean(ticker && (blob.includes(ticker.toLowerCase()) || blob.includes(String(company).toLowerCase())));
+  const entityIsMainSubject = Boolean(entity && (text(entity.symbol, 32)?.toUpperCase() === ticker) && ((title ?? "").toLowerCase().includes(ticker.toLowerCase()) || (title ?? "").toLowerCase().includes(String(company).toLowerCase()) || directEvent));
   if (!title) return { candidate: null, reason: "rejected: missing_title" };
   if (!url) return { candidate: null, reason: `rejected ${title}: missing_url` };
-  if (weakBroad && !directCompanyMention) return { candidate: null, reason: `rejected ${title}: weak_broad_topic:${weakBroad}` };
+  if (broadTopic && !directEvent) return { candidate: null, reason: `rejected ${title}: broad_or_generic_topic:${broadTopic}` };
   if (!entity || !ticker || !directCompanyMention) return { candidate: null, reason: `rejected ${title}: no_direct_watchlist_ticker_entity` };
+  if (!entityIsMainSubject) return { candidate: null, reason: `rejected ${title}: company_not_main_subject_or_comparison_only` };
 
-  const reasons = ["accepted:direct_watchlist_entity", "url_present", fresh ? "fresh_within_72h" : "stale_over_72h", article.source ? "source_present" : "source_missing", sentiment !== null ? "sentiment_metadata" : "sentiment_missing", relevance !== null ? "relevance_metadata" : "relevance_missing"];
+  const reasons = ["accepted:direct_watchlist_entity", directEvent ? "direct_company_event" : "direct_company_subject", "url_present", fresh ? "fresh_within_72h" : "stale_over_72h", article.source ? "source_present" : "source_missing", sentiment !== null ? "sentiment_metadata" : "sentiment_missing", relevance !== null ? "relevance_metadata" : "relevance_missing"];
   const eventType = sentiment !== null && Math.abs(sentiment) >= 0.35 ? "marketaux_sentiment_news" : "marketaux_entity_news";
   const importanceHint = sentiment !== null && Math.abs(sentiment) >= 0.5 ? "high" : relevance !== null && relevance >= 0.7 && fresh ? "medium" : "low";
   const id = text(article.uuid, 120) ?? url ?? title;
@@ -196,6 +200,7 @@ export async function runMarketauxIngestion(options: MarketauxRunOptions = {}): 
   }
 
   for (const query of SAFE_QUERIES.slice(0, MAX_QUERIES_PER_RUN)) {
+    if (articlesChecked >= MAX_RECORDS_PER_RUN) break;
     queriesChecked += 1;
     try {
       const articles = await fetchMarketauxQuery(query, apiKey);

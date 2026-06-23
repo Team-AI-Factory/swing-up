@@ -343,6 +343,9 @@ function baseResponse(input: {
     readiness: input.readiness,
     rawWarehouseAvailable: false,
     rawWarehouseWriteUnavailable: true,
+    rawDataStored: false,
+    storageMode: "postgresql_summary_only",
+    reasonStorageFallback: "R2 write/delete health has not been checked yet.",
     rawWarehouseStatus: {},
     earRegistrySummary: earRegistrySummary(),
     sourceSummary: {},
@@ -425,11 +428,21 @@ export async function POST(request: NextRequest) {
       checkR2Health(false),
     ]);
     const r2WriteAvailable = r2Health.canWrite && r2Health.canDelete;
+    const storageMode = r2WriteAvailable
+      ? "r2_raw_storage"
+      : "postgresql_summary_only";
+    const reasonStorageFallback = r2WriteAvailable
+      ? null
+      : r2Health.configured
+        ? `R2 read health is ${r2Health.canRead ? "available" : "unavailable"}, but write/delete is unavailable; Stage 1 is continuing with PostgreSQL summaries and rawDataStored=false.`
+        : `R2 is not fully configured (${r2Health.missingEnvVars.join(", ") || "missing configuration"}); Stage 1 is continuing with PostgreSQL summaries and rawDataStored=false.`;
     const output = {
       ...baseResponse({ dryRun, readiness, warnings }),
-      rawWarehouseAvailable: r2WriteAvailable,
+      rawWarehouseAvailable: r2Health.connected || r2Health.canRead,
       rawWarehouseWriteUnavailable: !r2WriteAvailable,
       rawDataStored: false,
+      storageMode,
+      reasonStorageFallback,
       rawWarehouseStatus: {
         configured: r2Health.configured,
         connected: r2Health.connected,
@@ -438,7 +451,7 @@ export async function POST(request: NextRequest) {
         canWrite: r2Health.canWrite,
         canDelete: r2Health.canDelete,
         writeAvailable: r2WriteAvailable,
-        mode: r2WriteAvailable ? "r2" : "postgresql-summary-only",
+        mode: storageMode,
         missingEnvVars: r2Health.missingEnvVars,
         errorCategory: r2Health.errorCategory,
         errorMessageSafe: r2Health.errorMessageSafe,
@@ -695,6 +708,9 @@ export async function POST(request: NextRequest) {
         approved: false,
         published: false,
         blockers: [],
+        stage2Unlocked: false,
+        reasonStage2Locked: "No raw signal passed Stage 1 proof inspection.",
+        finalRecommendation: "Continue testing",
         nextRecommendedAction: summary.recommendedNextAction,
       });
     }
@@ -1061,6 +1077,9 @@ export async function POST(request: NextRequest) {
           publishable: false,
           published: false,
           blockers: [],
+          stage2Unlocked: false,
+          reasonStage2Locked: summary.bestCandidateFailureReason ?? "No candidate passed strict proof gates.",
+          finalRecommendation: r2WriteAvailable ? "Do not run Stage 2" : "Fix R2 before large history backfill; do not run Stage 2",
           nextRecommendedAction: summary.recommendedNextAction,
         });
       if (dryRun)
@@ -1075,6 +1094,27 @@ export async function POST(request: NextRequest) {
             best.afterProofCount > 0 &&
             proofEnrichmentSummary.proofMatchingClean === true &&
             !best.unsafeProofMismatchWarning,
+          stage2Unlocked:
+            best.eligibleForBest === true &&
+            best.afterProofCount > 0 &&
+            proofEnrichmentSummary.proofMatchingClean === true &&
+            !best.unsafeProofMismatchWarning,
+          reasonStage2Locked:
+            best.eligibleForBest === true &&
+            best.afterProofCount > 0 &&
+            proofEnrichmentSummary.proofMatchingClean === true &&
+            !best.unsafeProofMismatchWarning
+              ? null
+              : best.reasonNotPromoted ?? "Strict proof gates did not pass cleanly.",
+          finalRecommendation:
+            best.eligibleForBest === true &&
+            best.afterProofCount > 0 &&
+            proofEnrichmentSummary.proofMatchingClean === true &&
+            !best.unsafeProofMismatchWarning
+              ? "Stage 2 allowed"
+              : r2WriteAvailable
+                ? "Do not run Stage 2"
+                : "Fix R2 before large history backfill; do not run Stage 2",
           approvedForAiReview:
             best.eligibleForBest === true &&
             best.afterProofCount > 0 &&

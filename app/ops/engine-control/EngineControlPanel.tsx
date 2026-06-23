@@ -12,7 +12,7 @@ type JsonValue =
   | { [key: string]: JsonValue };
 type JsonRecord = { [key: string]: JsonValue };
 
-type StageKey = "initial" | "refresh" | "stage1" | "stage2" | "stage3";
+type StageKey = "initial" | "refresh" | "stage1" | "stage2" | "stage3" | "r2" | "source";
 
 type StageResult = {
   stage: string;
@@ -37,6 +37,7 @@ type StageResult = {
     proofCompletionSummary: string;
     fmpProvider403Note: string;
     stage2Allowed: boolean | null;
+    storageMode: string;
   };
   catalyst: {
     configured: string;
@@ -334,6 +335,7 @@ function discoverySummary(json: JsonValue | null) {
     proofCompletionSummary: proofCompletion ? JSON.stringify(proofCompletion) : "—",
     fmpProvider403Note: fmpProvider403 ? "FMP plan/key blocked — Check FMP key, account activation, or plan access." : "—",
     stage2Allowed,
+    storageMode: isRecord(json) && typeof json.storageMode === "string" ? json.storageMode : "—",
   };
 }
 
@@ -496,6 +498,11 @@ function stage1ResultPanel(row: StageResult | undefined) {
         catalyst?.attemptedProviders ??
         catalyst?.configuredProviders,
     },
+    { label: "rawWarehouseAvailable", value: isRecord(json) ? json.rawWarehouseAvailable : undefined },
+    { label: "rawWarehouseWriteUnavailable", value: isRecord(json) ? json.rawWarehouseWriteUnavailable : undefined },
+    { label: "rawDataStored", value: isRecord(json) ? json.rawDataStored : undefined },
+    { label: "storageMode", value: isRecord(json) ? json.storageMode : row?.discovery.storageMode },
+    { label: "reasonStorageFallback", value: isRecord(json) ? json.reasonStorageFallback : undefined },
     {
       label: "rawSignalsFound",
       value:
@@ -503,20 +510,24 @@ function stage1ResultPanel(row: StageResult | undefined) {
         catalyst?.catalystSignalsFound ??
         (row?.signalFound === true ? 1 : row?.signalFound === false ? 0 : null),
     },
+    { label: "catalystSignalsFound", value: catalyst?.catalystSignalsFound ?? discovery?.catalystSignalsFound },
+    { label: "catalystSignalsSaved", value: catalyst?.catalystSignalsSaved },
     { label: "candidatesInspected", value: discovery?.rawSignalsInspected },
     { label: "candidatesPassed", value: discovery?.passCount },
     { label: "bestCandidate", value: bestCandidate },
     {
-      label: "rejectedReasons",
+      label: "missingProof",
       value:
         discovery?.blockedReasonsBySignal ??
         proof?.enrichmentBlockedReasons ??
         row?.blockers,
     },
+    { label: "proofMatchingClean", value: proof?.proofMatchingClean },
+    { label: "cleanAcceptedProofCount", value: Array.isArray(proof?.acceptedProofItems) ? proof?.acceptedProofItems.length : 0 },
     { label: "proofAccepted", value: proof?.acceptedProofItems },
     { label: "proofRejected", value: proof?.rejectedProofItems },
     {
-      label: "aiCommitteeCalled",
+      label: "aiCommitteeRan",
       value:
         findBoolean(json ?? null, [
           "aiCommitteeRan",
@@ -526,12 +537,12 @@ function stage1ResultPanel(row: StageResult | undefined) {
     },
     { label: "published", value: row?.published ?? false },
     {
-      label: "telegramSent",
+      label: "sentToTelegram",
       value:
         findBoolean(json ?? null, ["sentToTelegram", "telegramSent"]) ?? false,
     },
     { label: "bestEarlySignalCandidate", value: discovery?.sevenLayerEvidenceModel ?? null },
-    { label: "stage2Unlocked", value: stage2Unlocked },
+    { label: "stage2Unlocked", value: isRecord(json) && typeof json.stage2Unlocked === "boolean" ? json.stage2Unlocked : stage2Unlocked },
     {
       label: "reasonStage2Locked",
       value:
@@ -540,6 +551,7 @@ function stage1ResultPanel(row: StageResult | undefined) {
           : row?.nextAction ??
             "Stage 1 has not found a candidate strong enough for Stage 2.",
     },
+    { label: "finalRecommendation", value: isRecord(json) ? json.finalRecommendation : undefined },
   ];
 }
 
@@ -621,6 +633,47 @@ export default function EngineControlPanel() {
     setMessage(
       "Startup status loaded. Missing optional routes are reported without crashing.",
     );
+    setBusy(null);
+  }
+
+  async function refreshSourceHealth() {
+    setBusy("source-health");
+    const row = await callGet("Refresh source health", "/api/source-health");
+    setRows((current) => [
+      row,
+      ...current.filter((item) => item.stage !== row.stage),
+    ]);
+    setMessage("Source health refreshed.");
+    setBusy(null);
+  }
+
+  async function checkR2Health(confirmWrite: boolean) {
+    setBusy(confirmWrite ? "r2-write" : "r2-health");
+    try {
+      const response = await fetch("/api/internal/r2-health", {
+        method: confirmWrite ? "POST" : "GET",
+        headers: headers(),
+        body: confirmWrite ? JSON.stringify({ confirmWrite: true }) : undefined,
+        cache: "no-store",
+      });
+      const json = await readResponse(response);
+      const row = summarize(
+        confirmWrite ? "Run R2 write test" : "Check R2 health",
+        "/api/internal/r2-health",
+        confirmWrite ? "POST" : "GET",
+        response.status,
+        json,
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
+      setMessage(confirmWrite ? "R2 write/delete health test completed." : "R2 health refreshed.");
+    } catch (error) {
+      const row = summarize(confirmWrite ? "Run R2 write test" : "Check R2 health", "/api/internal/r2-health", confirmWrite ? "POST" : "GET", "error", { ok: false, error: error instanceof Error ? error.message : "Unknown error" });
+      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      setMessage("R2 health request failed.");
+    }
     setBusy(null);
   }
 
@@ -753,16 +806,37 @@ export default function EngineControlPanel() {
         <button
           style={styles.button}
           disabled={busy !== null}
-          onClick={refreshReadiness}
+          onClick={() => checkR2Health(false)}
         >
-          Refresh Engine Readiness
+          Check R2 Health
+        </button>
+        <button
+          style={styles.button}
+          disabled={busy !== null}
+          onClick={() => checkR2Health(true)}
+        >
+          Run R2 Write Test
         </button>
         <button
           style={styles.button}
           disabled={busy !== null}
           onClick={() => runStage("stage1")}
         >
-          Stage 1 Dry Run
+          Run Stage 1 Dry Run
+        </button>
+        <button
+          style={styles.button}
+          disabled={busy !== null}
+          onClick={refreshSourceHealth}
+        >
+          Refresh Source Health
+        </button>
+        <button
+          style={styles.button}
+          disabled={busy !== null}
+          onClick={refreshReadiness}
+        >
+          Refresh Engine Readiness
         </button>
         <button
           title={

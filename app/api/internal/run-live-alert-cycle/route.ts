@@ -1315,24 +1315,24 @@ export async function POST(request: NextRequest) {
           published: false,
           stage2Allowed:
             best.eligibleForBest === true &&
-            best.afterProofCount > 0 &&
+            best.afterProofCount >= 2 &&
             proofEnrichmentSummary.proofMatchingClean === true &&
             !best.unsafeProofMismatchWarning,
           stage2Unlocked:
             best.eligibleForBest === true &&
-            best.afterProofCount > 0 &&
+            best.afterProofCount >= 2 &&
             proofEnrichmentSummary.proofMatchingClean === true &&
             !best.unsafeProofMismatchWarning,
           reasonStage2Locked:
             best.eligibleForBest === true &&
-            best.afterProofCount > 0 &&
+            best.afterProofCount >= 2 &&
             proofEnrichmentSummary.proofMatchingClean === true &&
             !best.unsafeProofMismatchWarning
               ? null
               : best.reasonNotPromoted ?? "Strict proof gates did not pass cleanly.",
           finalRecommendation:
             best.eligibleForBest === true &&
-            best.afterProofCount > 0 &&
+            best.afterProofCount >= 2 &&
             proofEnrichmentSummary.proofMatchingClean === true &&
             !best.unsafeProofMismatchWarning
               ? "Stage 2 allowed"
@@ -1341,7 +1341,7 @@ export async function POST(request: NextRequest) {
                 : "Fix R2 before large history backfill; do not run Stage 2",
           approvedForAiReview:
             best.eligibleForBest === true &&
-            best.afterProofCount > 0 &&
+            best.afterProofCount >= 2 &&
             proofEnrichmentSummary.proofMatchingClean === true &&
             !best.unsafeProofMismatchWarning,
           nextRecommendedAction: summary.recommendedNextAction,

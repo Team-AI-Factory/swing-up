@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { prisma } from "@/lib/db/client";
+import { redactSecrets } from "@/lib/redact-secrets";
 
 export type R2Health = {
   connected: boolean;
@@ -38,6 +39,9 @@ export type R2Health = {
   runtimeVariableSource: "Railway env";
   regionFallbackAttempted: boolean;
   regionFallbackUsed: string | null;
+  writeTestNotRun: boolean;
+  message: string | null;
+  secretsRedacted: true;
 };
 const REQUIRED = [
   "CLOUDFLARE_R2_ACCOUNT_ID",
@@ -359,14 +363,7 @@ export async function indexRawDataObject(
   });
 }
 function safeMessage(e: unknown) {
-  return e instanceof Error
-    ? e.message
-        .replace(
-          /(secret|key|token|password|credential|signature|authorization)=?[^\s&]*/gi,
-          "$1=[redacted]",
-        )
-        .slice(0, 220)
-    : "R2 request failed";
+  return e instanceof Error ? redactSecrets(e.message).slice(0, 220) : "R2 request failed";
 }
 function responseCategory(prefix: string, res: Response | null) {
   if (!res) return `${prefix}_not_attempted`;
@@ -382,13 +379,9 @@ async function safeResponseMessage(action: string, res: Response | null) {
   if (!res) return `${action} was not attempted.`;
   if (res.ok) return null;
   const text = await res.clone().text().catch(() => "");
-  const hint = text
+  const hint = redactSecrets(text)
     .replace(/<[^>]+>/g, " ")
     .replace(/\s+/g, " ")
-    .replace(
-      /(AWSAccessKeyId|Signature|Credential|Authorization|AccessKey|Secret|Token)[^\s<]*/gi,
-      "$1=[redacted]",
-    )
     .slice(0, 160);
   return `R2 ${action} failed with status ${res.status}${hint ? `: ${hint}` : ""}`;
 }
@@ -399,11 +392,8 @@ async function awsErrorDetails(res: Response | null) {
   const readTag = (tag: string) =>
     text
       .match(new RegExp(`<${tag}>([^<]*)</${tag}>`, "i"))?.[1]
-      ?.replace(
-        /(AWSAccessKeyId|Signature|Credential|Authorization|AccessKey|Secret|Token)[^\s<]*/gi,
-        "$1=[redacted]",
-      )
-      .slice(0, 180) ?? null;
+      ? redactSecrets(text.match(new RegExp(`<${tag}>([^<]*)</${tag}>`, "i"))?.[1] ?? "").slice(0, 180)
+      : null;
   return {
     name: readTag("Code") ?? res.statusText ?? `HTTP_${res.status}`,
     message: readTag("Message"),
@@ -495,6 +485,9 @@ export async function checkR2Health(confirmWrite = false): Promise<R2Health> {
     runtimeVariableSource: "Railway env",
     regionFallbackAttempted: false,
     regionFallbackUsed: null,
+    writeTestNotRun: !confirmWrite,
+    message: confirmWrite ? null : "Use POST with confirmWrite=true to test write/delete.",
+    secretsRedacted: true,
   };
   if (!c.configured) {
     const d = diagnoseR2Health(base);
@@ -548,16 +541,14 @@ export async function checkR2Health(confirmWrite = false): Promise<R2Health> {
       health.writeAwsErrorMessageSafe = writeAws.message;
       health.writeErrorCategory = responseCategory("write", write);
       health.writeErrorMessageSafe = await safeResponseMessage("write", write);
-      health.readAfterWriteAttempted = write.ok;
-      const read = write.ok
-        ? await signedFetch(
+      health.readAfterWriteAttempted = true;
+      const read = await signedFetch(
             "GET",
             testKey,
             undefined,
             "application/octet-stream",
             health.regionFallbackUsed ?? undefined,
-          )
-        : null;
+          );
       const readText = read?.ok ? await read.text().catch(() => "") : "";
       health.canRead = Boolean(read?.ok && readText === body);
       if (read && !health.canRead) {
@@ -566,16 +557,14 @@ export async function checkR2Health(confirmWrite = false): Promise<R2Health> {
           (await safeResponseMessage("readback", read)) ??
           "R2 readback did not match the test object.";
       }
-      health.deleteAttempted = write.ok;
-      const del = write.ok
-        ? await signedFetch(
+      health.deleteAttempted = true;
+      const del = await signedFetch(
             "DELETE",
             testKey,
             undefined,
             "application/octet-stream",
             health.regionFallbackUsed ?? undefined,
-          )
-        : null;
+          );
       const deleteAws = await awsErrorDetails(del);
       health.canDelete = Boolean(del?.ok);
       health.deleteAwsStatusCode = del?.status ?? null;

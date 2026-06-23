@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db/client";
 import { AI_COMMITTEE_AGENTS } from "@/lib/ai-committee/agents";
 import { getAiCommitteeProviderStatus } from "@/lib/ai-committee/provider";
+import { redactSecrets } from "@/lib/redact-secrets";
 import { SOURCE_ALIAS_MAP, aliasesForSource, isSourceAlias, normalizeSourceName } from "@/lib/source-aliases";
 
 type DefaultSourceHealthRow = {
@@ -144,9 +145,9 @@ function serializeRow(row: SourceHealthRecord, hiddenLegacyRowsCount = 0) {
     lastChecked: row.checkedAt.toISOString(),
     lastSuccess: row.lastSuccessAt?.toISOString() ?? null,
     responseTimeMs: row.responseTimeMs,
-    errorMessage: row.errorMessage ? row.errorMessage.slice(0, 240) : null,
+    errorMessage: row.errorMessage ? redactSecrets(row.errorMessage).slice(0, 240) : null,
     usage: row.usage,
-    notes: row.notes,
+    notes: row.notes ? redactSecrets(row.notes) : row.notes,
     aliases: aliasesForSource(row.source),
     realOrStubbed: isStaleStubRow(row) ? "stubbed" : "real",
     apiKeyNeeded: row.source === "FMP Catalyst" ? "FMP_API_KEY" : row.source === "Alpha Vantage Catalyst" ? "ALPHA_VANTAGE_API_KEY" : row.source === "Marketaux Catalyst" ? "MARKETAUX_API_KEY" : row.source === "Polygon" ? "POLYGON_API_KEY" : null,
@@ -231,7 +232,7 @@ export async function getSourceHealthDedupeReport() {
     aliases: aliasesForSource(canonicalSource),
     actionTaken: row.source === canonicalSource && !isStaleStubRow(row) ? "merged" : "hidden",
     currentCanonicalStatus: chooseCanonicalRow(group.map((item) => ({ ...item, source: normalizeSourceName(item.source) }))).status,
-    notes: row.notes ?? row.errorMessage ?? null,
+    notes: redactSecrets(row.notes ?? row.errorMessage ?? null),
   })));
   return { ok: true, duplicateSourcesFound: reportRows.filter((row) => row.duplicateSourcesFound).length, stalePlaceholderRows: reportRows.flatMap((row) => row.stalePlaceholderRows), rows: reportRows };
 }
@@ -248,7 +249,7 @@ function fallbackSourceHealthRows() {
     responseTimeMs: row.responseTimeMs ?? null,
     errorMessage: null,
     usage: row.usage,
-    notes: row.notes,
+    notes: row.notes ? redactSecrets(row.notes) : row.notes,
   } satisfies SourceHealthRecord));
 }
 
@@ -281,7 +282,7 @@ export async function getSourceHealth(): Promise<SourceHealthPayload> {
   } catch (error) {
     return {
       ok: false,
-      message: summarizeDatabaseError(error),
+      message: redactSecrets(summarizeDatabaseError(error)),
       sources: [],
     };
   }

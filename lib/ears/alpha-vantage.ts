@@ -9,7 +9,7 @@ export const DEFAULT_ALPHA_VANTAGE_TICKERS = ["NVDA", "AAPL", "MSFT", "TSLA", "A
 
 const ALPHA_VANTAGE_BASE_URL = "https://www.alphavantage.co/query";
 const DEFAULT_LIMIT = 1;
-const MAX_LIMIT = 1;
+const MAX_LIMIT = 3;
 const MIN_CALL_SPACING_MS = 1_200;
 const MAX_ENDPOINT_CALLS_PER_RUN = 2;
 
@@ -64,8 +64,10 @@ function requestedTickers(tickers?: string[], limit?: number) {
 }
 
 function safeError(error: unknown) {
-  if (error instanceof Error) return error.message.split("\n")[0]?.slice(0, 220) || "Alpha Vantage request failed";
-  return "Alpha Vantage request failed";
+  const apiKey = getApiKey();
+  const message = error instanceof Error ? error.message : "Alpha Vantage request failed";
+  const redacted = apiKey ? message.replaceAll(apiKey, "[redacted]") : message;
+  return redacted.split("\n")[0]?.slice(0, 220) || "Alpha Vantage request failed";
 }
 
 async function updateAlphaVantageSourceHealth(status: "connected" | "not_configured" | "degraded" | "error", startedAt: number, errorMessage: string | null) {

@@ -241,12 +241,12 @@ function isApproved(value: unknown) {
 }
 
 const DISCOVERY_SOURCE_PRIORITY = [
-  "FMP Catalyst",
   "Marketaux Catalyst",
-  "Alpha Vantage Catalyst",
-  "SEC EDGAR",
-  "GDELT",
+  "FMP Catalyst",
   "Google News RSS",
+  "SEC EDGAR",
+  "Alpha Vantage Catalyst",
+  "GDELT",
   "openFDA",
   "CoinGecko",
   "FRED Macro",
@@ -501,9 +501,10 @@ export async function POST(request: NextRequest) {
       "Marketaux Catalyst",
       "Alpha Vantage Catalyst",
     ];
+    const discoveryCatalystSources = ["Marketaux Catalyst", "FMP Catalyst"];
     let sourceSummary: unknown = null;
     if (!rawSignalId) {
-      const catalystToAttempt = catalystSources.filter((provider) =>
+      const catalystToAttempt = discoveryCatalystSources.filter((provider) =>
         provider === "FMP Catalyst"
           ? Boolean(process.env.FMP_API_KEY)
           : provider === "Marketaux Catalyst"
@@ -969,13 +970,19 @@ export async function POST(request: NextRequest) {
             ),
           0,
         ),
-        proofMatchingClean: !enrichmentSummaries.some(
-          (item) =>
-            Array.isArray(item.rejectedProofItems) &&
-            item.rejectedProofItems.length > 0 &&
-            (!Array.isArray(item.acceptedProofItems) ||
-              item.acceptedProofItems.length === 0),
-        ),
+        proofMatchingClean:
+          enrichmentSummaries.some(
+            (item) =>
+              Array.isArray(item.acceptedProofItems) &&
+              item.acceptedProofItems.length >= 2,
+          ) &&
+          !enrichmentSummaries.some(
+            (item) =>
+              Array.isArray(item.rejectedProofItems) &&
+              item.rejectedProofItems.length > 0 &&
+              (!Array.isArray(item.acceptedProofItems) ||
+                item.acceptedProofItems.length < 2),
+          ),
         enrichmentBlockedReasons: blockedReasonsBySignal,
         proofCompletionSummary,
       };
@@ -1091,24 +1098,24 @@ export async function POST(request: NextRequest) {
           published: false,
           stage2Allowed:
             best.eligibleForBest === true &&
-            best.afterProofCount > 0 &&
+            best.afterProofCount >= 2 &&
             proofEnrichmentSummary.proofMatchingClean === true &&
             !best.unsafeProofMismatchWarning,
           stage2Unlocked:
             best.eligibleForBest === true &&
-            best.afterProofCount > 0 &&
+            best.afterProofCount >= 2 &&
             proofEnrichmentSummary.proofMatchingClean === true &&
             !best.unsafeProofMismatchWarning,
           reasonStage2Locked:
             best.eligibleForBest === true &&
-            best.afterProofCount > 0 &&
+            best.afterProofCount >= 2 &&
             proofEnrichmentSummary.proofMatchingClean === true &&
             !best.unsafeProofMismatchWarning
               ? null
               : best.reasonNotPromoted ?? "Strict proof gates did not pass cleanly.",
           finalRecommendation:
             best.eligibleForBest === true &&
-            best.afterProofCount > 0 &&
+            best.afterProofCount >= 2 &&
             proofEnrichmentSummary.proofMatchingClean === true &&
             !best.unsafeProofMismatchWarning
               ? "Stage 2 allowed"
@@ -1117,7 +1124,7 @@ export async function POST(request: NextRequest) {
                 : "Fix R2 before large history backfill; do not run Stage 2",
           approvedForAiReview:
             best.eligibleForBest === true &&
-            best.afterProofCount > 0 &&
+            best.afterProofCount >= 2 &&
             proofEnrichmentSummary.proofMatchingClean === true &&
             !best.unsafeProofMismatchWarning,
           nextRecommendedAction: summary.recommendedNextAction,

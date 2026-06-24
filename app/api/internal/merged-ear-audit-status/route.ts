@@ -20,7 +20,7 @@ const REQUIRED_ENDPOINTS = [
   { method: "POST", path: "/api/internal/run-live-alert-cycle" },
 ] as const;
 
-const EARS = {
+const EARS: Record<string, { build: number; name: string; status: "implemented_real" | "partially_implemented" | "stub_only"; reasons: string[] }> = {
   insiderCluster: {
     build: 167,
     name: "SEC Form 4 Insider Cluster Parser",
@@ -42,12 +42,13 @@ const EARS = {
     ],
   },
   fmpProof: {
-    build: 169,
+    build: 173,
     name: "FMP Fundamentals + Analyst Estimate Proof",
-    status: "partially_implemented",
+    status: "implemented_real",
     reasons: [
-      "Uses only returned FMP endpoint data and reports unavailable endpoints safely.",
-      "Current scoring is endpoint-availability based, so it is support context and not clean Stage 2 proof by itself.",
+      "Calculates proof scores from returned FMP revenue, margin, earnings, cash-flow, debt, valuation, estimate, and price-target values.",
+      "Profile, earnings-calendar, and endpoint availability alone are not clean proof.",
+      "Stage 2 can count FMP proof only when fundamentalsProofClean=true or estimatesProofClean=true.",
     ],
   },
   priceVolumeProof: {

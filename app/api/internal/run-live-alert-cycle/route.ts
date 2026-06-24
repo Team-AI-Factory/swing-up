@@ -769,14 +769,6 @@ function stage1DateKey(date = new Date()) {
   return date.toISOString().slice(0, 10);
 }
 
-function safeSourceSlug(source: string) {
-  return (
-    (source || "unknown")
-      .toLowerCase()
-      .replace(/[^a-z0-9._=-]+/g, "-")
-      .replace(/^-+|-+$/g, "") || "unknown"
-  );
-}
 
 async function saveStage1RawObject(
   output: JsonRecord,
@@ -794,10 +786,14 @@ async function saveStage1RawObject(
       dataType: String(metadata.dataType ?? "run-payload"),
     });
     output.rawDataStored = true;
-    const existing = Array.isArray(output.rawDataObjectKeys)
-      ? output.rawDataObjectKeys
-      : [];
-    output.rawDataObjectKeys = [...existing, row?.r2Key ?? key];
+    const existing = Array.isArray(output.r2ObjectKeys)
+      ? output.r2ObjectKeys
+      : Array.isArray(output.rawDataObjectKeys)
+        ? output.rawDataObjectKeys
+        : [];
+    output.r2ObjectKeys = [...existing, row?.r2Key ?? key];
+    output.rawDataObjectKeys = output.r2ObjectKeys;
+    output.r2ObjectsWritten = (output.r2ObjectKeys as unknown[]).length;
     return row?.r2Key ?? key;
   } catch (error) {
     output.rawDataStored = false;
@@ -1001,6 +997,8 @@ export async function POST(request: NextRequest) {
       reasonStorageFallback,
       runId: crypto.randomUUID(),
       rawDataObjectKeys: [] as string[],
+      r2ObjectsWritten: 0,
+      r2ObjectKeys: [] as string[],
       rawWarehouseStatus: {
         configured: r2Health.configured,
         connected: r2Health.connected,
@@ -1289,40 +1287,18 @@ export async function POST(request: NextRequest) {
       const rows = Array.isArray(obj(sourceSummary).table)
         ? (obj(sourceSummary).table as unknown[])
         : [];
-      const sourcesToStore = rows.length
-        ? Array.from(
-            new Set(
-              rows.map((row) => text(obj(row).sourceName) || "source-run"),
-            ),
-          )
-        : preferredSources;
-      for (const sourceName of sourcesToStore) {
-        const sourceSlug = safeSourceSlug(sourceName);
-        await saveStage1RawObject(
-          output,
-          r2WriteAvailable,
-          `raw/stage1/source-runs/${sourceSlug}/${dateKey}/${runId}.json`,
-          { sourceName, sourceSummary },
-          {
-            source: sourceName,
-            assetType: "stage1",
-            dataType: "source-run",
-            recordCount: rows.length,
-          },
-        );
-        await saveStage1RawObject(
-          output,
-          r2WriteAvailable,
-          `logs/source-runs/${sourceSlug}/${dateKey}/${runId}.json`,
-          { sourceName, sourceSummary },
-          {
-            source: sourceName,
-            assetType: "logs",
-            dataType: "source-run-log",
-            recordCount: rows.length,
-          },
-        );
-      }
+      await saveStage1RawObject(
+        output,
+        r2WriteAvailable,
+        `raw/stage1/source-runs/${dateKey}/${runId}.json`,
+        { sourceSummary },
+        {
+          source: "stage1",
+          assetType: "stage1",
+          dataType: "source-run",
+          recordCount: rows.length,
+        },
+      );
     }
     await saveStage1RawObject(
       output,
@@ -1346,6 +1322,21 @@ export async function POST(request: NextRequest) {
         dataType: "candidate-raw-signals",
         recordCount: rawSignals.length,
       },
+    );
+
+    await saveStage1RawObject(
+      output,
+      r2WriteAvailable,
+      `raw/stage1/generic-ripple/${dateKey}/${runId}.json`,
+      { genericTriage, genericRippleCandidates: output.genericRippleCandidates },
+      { source: "stage1", assetType: "generic-ripple", dataType: "generic-ripple", recordCount: Array.isArray(output.genericRippleCandidates) ? output.genericRippleCandidates.length : 0 },
+    );
+    await saveStage1RawObject(
+      output,
+      r2WriteAvailable,
+      `raw/stage1/great-signal-scorecards/${dateKey}/${runId}.json`,
+      { greatSignalSummary: output.greatSignalSummary ?? null, scorecards: [] },
+      { source: "stage1", assetType: "scorecards", dataType: "great-signal-scorecards", recordCount: 0 },
     );
 
     if (!candidateAlertId && rawSignals.length) {

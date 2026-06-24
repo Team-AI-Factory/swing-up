@@ -52,6 +52,23 @@ type GreatSignalScorecard = {
   whyItCouldBeGreat: string[];
   whyItIsBlocked: string[];
   nextBestProofToFetch: string;
+  relevantProofTypes: string[];
+  irrelevantProofTypes: string[];
+  requiredProofTypesForThisCandidate: string[];
+  optionalProofTypesForThisCandidate: string[];
+  missingRequiredProof: string[];
+  missingOptionalProof: string[];
+  uniqueProofTypesClean: string[];
+  uniqueIndependentSourcesClean: string[];
+  duplicateProofRejected: string[];
+  weakContextOnlyProof: string[];
+  proofDiversityClean: number;
+  proofRouterAttempted: boolean;
+  proofRouterCalls: string[];
+  proofAttachedByType: Record<string, number>;
+  proofUnavailableByType: Record<string, string>;
+  proofStillMissingAfterRouter: string[];
+  nextBestProofToFetchAfterRouter: string;
 };
 
 type DiscoveryRow = {
@@ -92,6 +109,23 @@ type DiscoveryRow = {
   whyItCouldBeGreat: string[];
   whyItIsBlocked: string[];
   nextBestProofToFetch: string;
+  relevantProofTypes: string[];
+  irrelevantProofTypes: string[];
+  requiredProofTypesForThisCandidate: string[];
+  optionalProofTypesForThisCandidate: string[];
+  missingRequiredProof: string[];
+  missingOptionalProof: string[];
+  uniqueProofTypesClean: string[];
+  uniqueIndependentSourcesClean: string[];
+  duplicateProofRejected: string[];
+  weakContextOnlyProof: string[];
+  proofDiversityClean: number;
+  proofRouterAttempted: boolean;
+  proofRouterCalls: string[];
+  proofAttachedByType: Record<string, number>;
+  proofUnavailableByType: Record<string, string>;
+  proofStillMissingAfterRouter: string[];
+  nextBestProofToFetchAfterRouter: string;
 };
 
 const MIN_STOCK_SPECIFICITY_SCORE = 55;
@@ -145,12 +179,13 @@ function gradeFromScore(
   const newsOnly =
     cleanProofTypes.length === 1 && cleanProofTypes[0] === "news";
   const opinionOnly = blocked.some((reason) => /opinion/i.test(reason));
+  const missingRequired = blocked.some((reason) => /Missing proof/i.test(reason));
   if (blocked.includes("source_health_is_diagnostic_not_proof") || score < 20)
     return "F" as const;
-  if (score >= 82 && blocked.length === 0 && !newsOnly && !opinionOnly)
+  if (score >= 82 && cleanProofTypes.length >= 2 && !missingRequired && !newsOnly && !opinionOnly)
     return "A" as const;
-  if (score >= 62 && !opinionOnly && !newsOnly) return "B" as const;
-  if (score >= 42) return "C" as const;
+  if (score >= 62 && cleanProofTypes.length >= 2 && !missingRequired && !opinionOnly && !newsOnly) return "B" as const;
+  if (score >= 42 && cleanProofTypes.length >= 1) return "C" as const;
   if (score >= 20) return "D" as const;
   return "F" as const;
 }
@@ -162,13 +197,11 @@ function buildGreatSignalScorecard(input: {
   impact: ReturnType<typeof payloadImpact>;
 }): GreatSignalScorecard {
   const { signal, blockedReasons, enrichment, impact } = input;
-  const proofTypes = enrichment.proofTypes.filter((type) =>
-    VALID_CANDIDATE_PROOF_TYPES.has(type),
-  );
+  const profile = proofNeedProfile(signal, impact);
+  const diversity = cleanProofDiversity({ enrichment });
+  const proofTypes = diversity.uniqueProofTypesClean;
   const proofSet = new Set(proofTypes);
-  const missingProof = enrichment.missingProof.filter((type) =>
-    VALID_CANDIDATE_PROOF_TYPES.has(type),
-  );
+  const missingProof = missingNeedGroups(profile.requiredProofTypesForThisCandidate, proofTypes, signal, impact);
   const title = `${signal.title} ${signal.summary}`.toLowerCase();
   const genericNoise = isBroadMarketNoise({
     directTickerMatch: impact.directTickerMatch,
@@ -196,7 +229,7 @@ function buildGreatSignalScorecard(input: {
         ...enrichment.acceptedProofItems.map((item) => item.proofMatchScore),
       )
     : 0;
-  const proofDiversityScore = clampScore((new Set(proofTypes).size / 4) * 100);
+  const proofDiversityScore = clampScore((diversity.proofDiversityClean / 4) * 100);
   const businessImpactScore = clampScore(
     impact.promotionScore ?? catalystStrengthScore,
   );
@@ -262,7 +295,7 @@ function buildGreatSignalScorecard(input: {
   ];
   const whyItIsBlocked = [
     ...blockedReasons,
-    ...(proofTypes.length < 2
+    ...(diversity.proofDiversityClean < 2
       ? ["Needs at least two clean proof types beyond the raw source."]
       : []),
     ...(opinionOnly
@@ -302,7 +335,99 @@ function buildGreatSignalScorecard(input: {
     whyItCouldBeGreat,
     whyItIsBlocked,
     nextBestProofToFetch: nextBestProof(missingProof),
+    relevantProofTypes: profile.relevantProofTypes,
+    irrelevantProofTypes: profile.irrelevantProofTypes,
+    requiredProofTypesForThisCandidate: profile.requiredProofTypesForThisCandidate,
+    optionalProofTypesForThisCandidate: profile.optionalProofTypesForThisCandidate,
+    missingRequiredProof: missingProof,
+    missingOptionalProof: missingNeedGroups(profile.optionalProofTypesForThisCandidate, proofTypes, signal, impact),
+    ...diversity,
+    ...proofRouterSummary(missingProof, enrichment),
   };
+}
+
+
+function uniqueStrings(values: string[]) {
+  return Array.from(new Set(values.filter(Boolean)));
+}
+
+type ProofNeedProfile = {
+  relevantProofTypes: string[];
+  irrelevantProofTypes: string[];
+  requiredProofTypesForThisCandidate: string[];
+  optionalProofTypesForThisCandidate: string[];
+};
+
+const ALL_PROOF_TYPE_NAMES = Array.from(VALID_CANDIDATE_PROOF_TYPES);
+
+function proofNeedProfile(signal: RawSignal, impact: ReturnType<typeof payloadImpact>): ProofNeedProfile {
+  const haystack = `${signal.source} ${signal.title} ${signal.summary} ${impact.catalystType ?? ""}`.toLowerCase();
+  let required: string[] = ["news", "price_volume", "fundamentals"];
+  let optional: string[] = ["filing", "pattern_match", "contract", "regulatory"];
+  if (/8-k|10-q|10-k|filing|sec|earnings release|official company event/.test(haystack)) {
+    required = ["filing", "price_volume_or_fundamentals"];
+    optional = ["insider", "pattern_match"];
+  } else if (/insider|form 4|institutional buying|13f|open-market buy|open market buy/.test(haystack)) {
+    required = ["insider_or_filing", "price_volume"];
+    optional = ["fundamentals", "pattern_match"];
+  } else if (/regulatory|lawsuit|litigation|fda|government action|doj|ftc|sec probe|legal/.test(haystack)) {
+    required = ["regulatory_or_legal_risk_or_filing", "news"];
+    optional = ["price_volume", "fundamentals", "pattern_match"];
+  } else if (/contract|award|customer win|government award|purchase order|customer/.test(haystack)) {
+    required = ["contract_or_filing_or_official_receipt", "fundamentals_or_price_volume"];
+    optional = ["pattern_match"];
+  } else if (!impact.directTickerMatch && !impact.directCompanyMatch && /sector|stocks|index|rout|plunge|supercycle|supply chain|commodity|cyber|quantum|chip stocks|ai rout/.test(haystack)) {
+    required = ["mapped_affected_ticker_or_sector", "news_or_official_source", "price_volume_or_fundamentals"];
+    optional = ["pattern_match", "ripple_proof"];
+  }
+  const relevant = uniqueStrings([...required, ...optional].flatMap((item) => item.split("_or_")));
+  return { relevantProofTypes: relevant, irrelevantProofTypes: ALL_PROOF_TYPE_NAMES.filter((type) => !relevant.includes(type)), requiredProofTypesForThisCandidate: required, optionalProofTypesForThisCandidate: optional };
+}
+
+function missingNeedGroups(groups: string[], proofTypes: string[], signal: RawSignal, impact: ReturnType<typeof payloadImpact>) {
+  const set = new Set(proofTypes);
+  return groups.filter((group) => {
+    if (group === "mapped_affected_ticker_or_sector") return !(signal.ticker || impact.directTickerMatch || impact.directCompanyMatch);
+    if (group === "official_receipt") return !impact.hasReceiptUrl;
+    return !group.split("_or_").some((type) => set.has(type) || (type === "official_receipt" && impact.hasReceiptUrl));
+  });
+}
+
+function cleanProofDiversity(input: { enrichment: Awaited<ReturnType<typeof enrichProofForRawSignal>> }) {
+  const seenUrl = new Set<string>();
+  const seenTopic = new Set<string>();
+  const duplicateProofRejected: string[] = [];
+  const weakContextOnlyProof: string[] = [];
+  const clean = input.enrichment.acceptedProofItems.filter((item) => {
+    if (item.proofType === "unknown" || item.proofType === "source_health") return false;
+    const urlKey = item.url ?? "";
+    const topicKey = `${item.source}:${item.title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().slice(0, 90)}`;
+    if (urlKey && seenUrl.has(urlKey)) { duplicateProofRejected.push(`duplicate_url:${urlKey}`); return false; }
+    if (seenTopic.has(topicKey)) { duplicateProofRejected.push(`duplicate_topic:${item.source}:${item.title}`); return false; }
+    if (/financial summary|quote summary|source health/i.test(`${item.source} ${item.title}`)) { weakContextOnlyProof.push(`${item.source}:${item.title}`); return false; }
+    if (urlKey) seenUrl.add(urlKey);
+    seenTopic.add(topicKey);
+    return true;
+  });
+  const uniqueProofTypesClean = uniqueStrings(clean.map((item) => String(item.proofType)));
+  const uniqueIndependentSourcesClean = uniqueStrings(clean.map((item) => item.source));
+  return { uniqueProofTypesClean, uniqueIndependentSourcesClean, duplicateProofRejected, weakContextOnlyProof, proofDiversityClean: uniqueProofTypesClean.length };
+}
+
+function proofRouterSummary(missingRequiredProof: string[], enrichment: Awaited<ReturnType<typeof enrichProofForRawSignal>>) {
+  const proofAttachedByType = enrichment.enrichmentProofs.reduce<Record<string, number>>((acc, proof) => { acc[proof.type] = (acc[proof.type] ?? 0) + 1; return acc; }, {});
+  const calls = missingRequiredProof.map((need) => {
+    if (/price_volume/.test(need)) return "price_volume:FMP_quote_historical_or_polygon_when_configured";
+    if (/fundamentals/.test(need)) return "fundamentals:FMP_real_values_only";
+    if (/filing/.test(need)) return "filing:SEC_specific_filing_url_required";
+    if (/insider/.test(need)) return "insider:SEC_Form_4_open_market_buys_only";
+    if (/regulatory|legal/.test(need)) return "regulatory_legal:mapped_source_only";
+    if (/contract/.test(need)) return "contract:mapped_source_only";
+    if (/pattern_match/.test(need)) return "pattern_match:stored_samples_only";
+    return `${need}:mapped_source_only`;
+  });
+  const proofUnavailableByType = Object.fromEntries(missingRequiredProof.map((need) => [need, "real_values_or_specific_receipt_not_available_in_this_run"]));
+  return { proofRouterAttempted: missingRequiredProof.length > 0, proofRouterCalls: calls, proofAttachedByType, proofUnavailableByType, proofStillMissingAfterRouter: missingRequiredProof, nextBestProofToFetchAfterRouter: nextBestProof(missingRequiredProof) };
 }
 
 function truthyRank(value: boolean | null | undefined) {
@@ -798,6 +923,9 @@ export async function POST(request: NextRequest) {
       seriousGenericSignalsFound: genericTriage.seriousGenericSignalsFound,
       rippleCandidatesCreated: genericTriage.rippleCandidatesCreated,
       genericSignalsRejectedAsNoise:
+        genericTriage.genericSignalsRejectedAsNoise,
+      broadGenericSignalsMapped: genericTriage.rippleCandidatesCreated,
+      broadGenericSignalsRejectedAsNoise:
         genericTriage.genericSignalsRejectedAsNoise,
       topGenericSignal: genericTriage.topGenericSignal,
       affectedTickersFromGenericNews:
@@ -1378,6 +1506,23 @@ export async function POST(request: NextRequest) {
           whyItCouldBeGreat: greatSignalScorecard.whyItCouldBeGreat,
           whyItIsBlocked: greatSignalScorecard.whyItIsBlocked,
           nextBestProofToFetch: greatSignalScorecard.nextBestProofToFetch,
+          relevantProofTypes: greatSignalScorecard.relevantProofTypes,
+          irrelevantProofTypes: greatSignalScorecard.irrelevantProofTypes,
+          requiredProofTypesForThisCandidate: greatSignalScorecard.requiredProofTypesForThisCandidate,
+          optionalProofTypesForThisCandidate: greatSignalScorecard.optionalProofTypesForThisCandidate,
+          missingRequiredProof: greatSignalScorecard.missingRequiredProof,
+          missingOptionalProof: greatSignalScorecard.missingOptionalProof,
+          uniqueProofTypesClean: greatSignalScorecard.uniqueProofTypesClean,
+          uniqueIndependentSourcesClean: greatSignalScorecard.uniqueIndependentSourcesClean,
+          duplicateProofRejected: greatSignalScorecard.duplicateProofRejected,
+          weakContextOnlyProof: greatSignalScorecard.weakContextOnlyProof,
+          proofDiversityClean: greatSignalScorecard.proofDiversityClean,
+          proofRouterAttempted: greatSignalScorecard.proofRouterAttempted,
+          proofRouterCalls: greatSignalScorecard.proofRouterCalls,
+          proofAttachedByType: greatSignalScorecard.proofAttachedByType,
+          proofUnavailableByType: greatSignalScorecard.proofUnavailableByType,
+          proofStillMissingAfterRouter: greatSignalScorecard.proofStillMissingAfterRouter,
+          nextBestProofToFetchAfterRouter: greatSignalScorecard.nextBestProofToFetchAfterRouter,
         });
       }
       for (const row of discoveryRows) {
@@ -1412,7 +1557,7 @@ export async function POST(request: NextRequest) {
         { A: 0, B: 0, C: 0, D: 0, F: 0 },
       );
       const missingProofCounts = rankedCandidates
-        .flatMap((row) => row.stillMissingProof)
+        .flatMap((row) => row.missingRequiredProof)
         .filter((type) => VALID_CANDIDATE_PROOF_TYPES.has(type))
         .reduce<Record<string, number>>((acc, type) => {
           acc[type] = (acc[type] ?? 0) + 1;
@@ -1446,7 +1591,10 @@ export async function POST(request: NextRequest) {
         blockedByUnsafeProofCount: rankedCandidates.filter(
           (row) => row.unsafeProofMismatchWarning,
         ).length,
+        mostCommonMissingRequiredProof: mostCommonMissingProof,
         mostCommonMissingProof,
+        proofDiversityClean: rankedCandidates.map((row) => ({ rawSignalId: row.rawSignalId, proofDiversityClean: row.proofDiversityClean, uniqueProofTypesClean: row.uniqueProofTypesClean })),
+        duplicateProofRejected: rankedCandidates.flatMap((row) => row.duplicateProofRejected),
         nextBestSystemFix: mostCommonMissingProof
           ? `Improve ${mostCommonMissingProof} proof fetching for top direct ticker candidates.`
           : "Keep proof gates strict and expand clean proof coverage only when specific URLs exist.",
@@ -1454,14 +1602,14 @@ export async function POST(request: NextRequest) {
       const proofCompletionSummary = {
         attemptedCandidates: topDirectCandidates.map((row) => row.rawSignalId),
         priceVolumeAttempted: topDirectCandidates
-          .filter((row) => arrayIncludes(row.stillMissingProof, "price_volume"))
+          .filter((row) => arrayIncludes(row.missingRequiredProof, "price_volume"))
           .map((row) => row.rawSignalId),
         fundamentalsAttempted: topDirectCandidates
-          .filter((row) => arrayIncludes(row.stillMissingProof, "fundamentals"))
+          .filter((row) => arrayIncludes(row.missingRequiredProof, "fundamentals"))
           .map((row) => row.rawSignalId),
         patternMatchAttempted: topDirectCandidates
           .filter((row) =>
-            arrayIncludes(row.stillMissingProof, "pattern_match"),
+            arrayIncludes(row.missingRequiredProof, "pattern_match"),
           )
           .map((row) => row.rawSignalId),
         proofAdded: topDirectCandidates.flatMap((row) =>
@@ -1473,9 +1621,15 @@ export async function POST(request: NextRequest) {
         proofStillMissing: Object.fromEntries(
           topDirectCandidates.map((row) => [
             row.rawSignalId,
-            row.stillMissingProof,
+            row.missingRequiredProof,
           ]),
         ),
+        proofRouterAttempted: topDirectCandidates.some((row) => row.proofRouterAttempted),
+        proofRouterCalls: topDirectCandidates.flatMap((row) => row.proofRouterCalls),
+        proofAttachedByType: topDirectCandidates.reduce<Record<string, number>>((acc, row) => { for (const [type, count] of Object.entries(row.proofAttachedByType)) acc[type] = (acc[type] ?? 0) + Number(count); return acc; }, {}),
+        proofUnavailableByType: Object.assign({}, ...topDirectCandidates.map((row) => row.proofUnavailableByType)),
+        proofStillMissingAfterRouter: Object.fromEntries(topDirectCandidates.map((row) => [row.rawSignalId, row.proofStillMissingAfterRouter])),
+        nextBestProofToFetchAfterRouter: topDirectCandidates[0]?.nextBestProofToFetchAfterRouter ?? "none",
         providerSkippedReasons,
       };
       const proofEnrichmentSummary = {
@@ -1604,7 +1758,7 @@ export async function POST(request: NextRequest) {
               stockSpecificityScore:
                 bestDirectTickerCandidate.stockSpecificityScore,
               proofTypesFound: bestDirectTickerCandidate.proofAddedTypes,
-              proofTypesMissing: bestDirectTickerCandidate.stillMissingProof,
+              proofTypesMissing: bestDirectTickerCandidate.missingRequiredProof,
               reasonNotPromoted: bestDirectTickerCandidate.reasonNotPromoted,
               layersSupportingCandidate:
                 bestDirectTickerCandidate.sevenLayerEvidence
@@ -1640,7 +1794,7 @@ export async function POST(request: NextRequest) {
         recommendedNextAction: best
           ? "Stage 1 found a candidate strong enough for Stage 2 AI review. Re-run with dryRun=false and confirmRun=true to create/review exactly one candidate."
           : bestFailed
-            ? `No inspected signal passed safety gates. Best candidate "${bestFailed.title}" failed because ${(bestFailed.blockedReasons.length ? bestFailed.blockedReasons : ["matching proof is still required"]).join("; ")}. Missing: ${(bestFailed.stillMissingProof.length ? bestFailed.stillMissingProof : ["at least 2 independent matching proof types, a specific receipt URL, price/volume or fundamentals/pattern confirmation"]).join(", ")}. Use ${recommendedNextSource} next; FMP plan/key block ${catalystSummaryBase.failedCatalystProviders.includes("FMP Catalyst") ? "may be blocking useful FMP proof but must not be retried in this run" : "is not the active blocker"}. Marketaux/Alpha data is useful only when ticker/company/topic-specific proof matches.`
+            ? `No inspected signal passed safety gates. Best candidate "${bestFailed.title}" failed because ${(bestFailed.blockedReasons.length ? bestFailed.blockedReasons : ["matching proof is still required"]).join("; ")}. Missing: ${(bestFailed.missingRequiredProof.length ? bestFailed.missingRequiredProof : ["at least 2 independent matching proof types, a specific receipt URL, price/volume or fundamentals/pattern confirmation"]).join(", ")}. Use ${recommendedNextSource} next; FMP plan/key block ${catalystSummaryBase.failedCatalystProviders.includes("FMP Catalyst") ? "may be blocking useful FMP proof but must not be retried in this run" : "is not the active blocker"}. Marketaux/Alpha data is useful only when ticker/company/topic-specific proof matches.`
             : `No inspected signal passed safety gates and catalyst providers were not attempted. Fix catalyst provider execution before trying ${recommendedNextSource}.`,
       };
       output.catalystSummary = {
@@ -1677,7 +1831,7 @@ export async function POST(request: NextRequest) {
           ? output.recommendedDeepProofCalls
           : []) as unknown[]),
         ...topDirectCandidates.flatMap((row) =>
-          row.stillMissingProof.map((proofType) => ({
+          row.missingRequiredProof.map((proofType) => ({
             rawSignalId: row.rawSignalId,
             proofType,
             source: recommendedNextSource,
@@ -1713,7 +1867,7 @@ export async function POST(request: NextRequest) {
           reasonStage2Locked:
             summary.bestCandidateFailureReason ??
             "No candidate passed strict proof gates.",
-          proofGapsRemaining: bestFailed?.stillMissingProof ?? [
+          proofGapsRemaining: bestFailed?.missingRequiredProof ?? [
             "No candidate passed strict proof gates.",
           ],
           finalRecommendation: r2WriteAvailable
@@ -1731,20 +1885,20 @@ export async function POST(request: NextRequest) {
           stage2Allowed:
             confirmRun === true &&
             best.eligibleForBest === true &&
-            best.proofDiversity >= 2 &&
+            best.proofDiversityClean >= 2 &&
             proofEnrichmentSummary.proofMatchingClean === true &&
             !best.unsafeProofMismatchWarning,
           stage2Unlocked:
             confirmRun === true &&
             best.eligibleForBest === true &&
-            best.proofDiversity >= 2 &&
+            best.proofDiversityClean >= 2 &&
             proofEnrichmentSummary.proofMatchingClean === true &&
             !best.unsafeProofMismatchWarning,
           reasonStage2Locked:
             confirmRun !== true
               ? "confirmRun=false; Stage 2 AI Committee stayed locked and OpenAI was not called."
               : best.eligibleForBest === true &&
-                  best.proofDiversity >= 2 &&
+                  best.proofDiversityClean >= 2 &&
                   proofEnrichmentSummary.proofMatchingClean === true &&
                   !best.unsafeProofMismatchWarning
                 ? null
@@ -1753,7 +1907,7 @@ export async function POST(request: NextRequest) {
           finalRecommendation:
             confirmRun === true &&
             best.eligibleForBest === true &&
-            best.proofDiversity >= 2 &&
+            best.proofDiversityClean >= 2 &&
             proofEnrichmentSummary.proofMatchingClean === true &&
             !best.unsafeProofMismatchWarning
               ? "Stage 2 allowed"
@@ -1763,7 +1917,7 @@ export async function POST(request: NextRequest) {
           approvedForAiReview:
             confirmRun === true &&
             best.eligibleForBest === true &&
-            best.proofDiversity >= 2 &&
+            best.proofDiversityClean >= 2 &&
             proofEnrichmentSummary.proofMatchingClean === true &&
             !best.unsafeProofMismatchWarning,
           nextRecommendedAction: summary.recommendedNextAction,

@@ -32,13 +32,13 @@ const EARS = {
     ],
   },
   sec8kClassifier: {
-    build: 168,
+    build: 172,
     name: "SEC 8-K Material Event Classifier",
-    status: "partially_implemented",
+    status: "implemented_real",
     reasons: [
-      "Uses real SEC 8-K filings and specific SEC Archives filing URLs.",
-      "Classifies common material 8-K topics from metadata, but does not yet parse full item text from every filing body.",
-      "Generic SEC homepage URLs are not used as proof.",
+      "Fetches the specific SEC Archives filing document for recent 8-K filings.",
+      "Parses item sections from filing text/HTML and classifies material events from extracted item text.",
+      "Generic SEC homepage URLs are rejected; Stage 2 proof requires a specific filing URL, parsed item text, clean ticker/company match, and a materiality threshold pass.",
     ],
   },
   fmpProof: {

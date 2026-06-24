@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db/client";
 import { trySaveRawDataToR2 } from "@/lib/r2-warehouse";
 import { writeRawSignal, type WriteRawSignalResult } from "@/lib/raw-signal-writer";
 import { catalystImpactScores } from "@/lib/catalyst-impact-scoring";
+import { classifyGenericNews } from "@/lib/generic-news-triage";
 
 export const MARKETAUX_SOURCE = "Marketaux Catalyst";
 
@@ -115,7 +116,15 @@ function classifyArticle(article: MarketauxArticle): { candidate: MarketauxCandi
   if (!title) return { candidate: null, reason: "rejected: missing_title" };
   if (!url) return { candidate: null, reason: `rejected ${title}: missing_url` };
   if (weakBroad && !directCompanyMention) return { candidate: null, reason: `rejected ${title}: weak_broad_topic:${weakBroad}` };
-  if (!entity || !ticker || !directCompanyMention) return { candidate: null, reason: `rejected ${title}: no_direct_watchlist_ticker_entity` };
+  if (!entity || !ticker || !directCompanyMention) {
+    const generic = classifyGenericNews({ id: "", source: MARKETAUX_SOURCE, ticker: null, title, summary: text(article.description ?? article.snippet, 1000) ?? "", sourceUrl: url, receivedAt: new Date(published), payload: { article } });
+    if (generic.rippleCandidate) {
+      const reasons = ["accepted:generic_ripple_candidate", generic.genericNewsType, "no_direct_ticker_promotion", ...generic.affectedSectors.map((sector) => `sector:${sector}`), ...generic.affectedTickers.slice(0, 6).map((mappedTicker) => `affectedTicker:${mappedTicker}`)];
+      const id = text(article.uuid, 120) ?? url ?? title;
+      return { candidate: { article, entity: null, eventType: "generic_ripple_candidate", ticker: null, company: null, sentiment: null, importanceHint: "high", reasons, acceptedReason: reasons.join(" | "), duplicateKey: `${MARKETAUX_SOURCE}|generic_ripple_candidate|${generic.genericNewsType}|${id}` }, reason: `accepted generic_ripple_candidate: ${generic.genericNewsType} | affectedTickers:${generic.affectedTickers.join(",")}` };
+    }
+    return { candidate: null, reason: `rejected ${title}: no_direct_watchlist_ticker_entity` };
+  }
 
   const reasons = ["accepted:direct_watchlist_entity", "url_present", fresh ? "fresh_within_72h" : "stale_over_72h", article.source ? "source_present" : "source_missing", sentiment !== null ? "sentiment_metadata" : "sentiment_missing", relevance !== null ? "relevance_metadata" : "relevance_missing"];
   const eventType = sentiment !== null && Math.abs(sentiment) >= 0.35 ? "marketaux_sentiment_news" : "marketaux_entity_news";
@@ -172,7 +181,7 @@ async function writeCandidate(candidate: MarketauxCandidate, dryRun: boolean): P
     detectedAt: detectedAt(candidate.article),
     duplicateKey: candidate.duplicateKey,
     qualityHints: { importanceHint: candidate.importanceHint, confidence: Math.min(Math.max(Math.abs(candidate.sentiment ?? 0.35), 0.25), 0.95), sourceQuality: "medium", useful: true, reasons: [...candidate.reasons, `impact:${scoring.likelyMarketImpact}`, `specificity:${scoring.stockSpecificityScore}`] },
-    rawPayload: { sourceCategory: "live_catalyst", catalystType: candidate.eventType === "marketaux_sentiment_news" ? "stock_news" : "sector_competitor_event", provider: MARKETAUX_SOURCE, ticker: candidate.ticker, companyName: candidate.company, headline: text(candidate.article.title), summary: text(candidate.article.description ?? candidate.article.snippet, 1000), publishedAt: detectedAt(candidate.article), url: candidate.article.url, rawPayloadReference: "news/all", urgency: candidate.importanceHint === "high" ? "high" : "medium", likelyMarketImpact: candidate.importanceHint === "high" ? "high" : "medium", sourceReliability: "medium", proofNeeds: ["company_or_second_news_receipt", "price_reaction_if_material"], article: candidate.article as Prisma.InputJsonObject, entity: candidate.entity as Prisma.InputJsonObject | null, sentimentScore: candidate.sentiment, acceptedReason: candidate.acceptedReason, catalystImpact: scoring, noFinalAlerts: true },
+    rawPayload: { sourceCategory: candidate.eventType === "generic_ripple_candidate" ? "generic_ripple_candidate" : "live_catalyst", catalystType: candidate.eventType === "generic_ripple_candidate" ? "generic_ripple_candidate" : candidate.eventType === "marketaux_sentiment_news" ? "stock_news" : "sector_competitor_event", provider: MARKETAUX_SOURCE, ticker: candidate.ticker, companyName: candidate.company, headline: text(candidate.article.title), summary: text(candidate.article.description ?? candidate.article.snippet, 1000), publishedAt: detectedAt(candidate.article), url: candidate.article.url, rawPayloadReference: "news/all", urgency: candidate.importanceHint === "high" ? "high" : "medium", likelyMarketImpact: candidate.importanceHint === "high" ? "high" : "medium", sourceReliability: "medium", proofNeeds: ["company_or_second_news_receipt", "price_reaction_if_material"], article: candidate.article as Prisma.InputJsonObject, entity: candidate.entity as Prisma.InputJsonObject | null, sentimentScore: candidate.sentiment, acceptedReason: candidate.acceptedReason, catalystImpact: scoring, noFinalAlerts: true },
     dryRun,
   });
 }

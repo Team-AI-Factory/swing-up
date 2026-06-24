@@ -1,14 +1,14 @@
 import { NextResponse } from "next/server";
 import { buildEarRegistry, earRegistrySummary, EAR_LAYERS } from "@/lib/ear-registry";
-import { checkR2Health } from "@/lib/r2-warehouse";
+import { getR2OperationalStatus } from "@/lib/r2-warehouse";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const r2 = await checkR2Health(false);
+  const r2 = await getR2OperationalStatus();
   const ears = buildEarRegistry().map((ear) => ({
     ...ear,
-    r2RawStorageEnabled: ear.r2RawStorageEnabled && r2.connected,
+    r2RawStorageEnabled: ear.r2RawStorageEnabled && r2.writeAvailable,
   }));
   return NextResponse.json({
     ok: true,
@@ -24,10 +24,16 @@ export async function GET() {
     },
     rawWarehouse: {
       r2Connected: r2.connected,
-      r2WriteAvailable: r2.canWrite && r2.canDelete,
-      rawWarehouseWriteUnavailable: !(r2.canWrite && r2.canDelete),
-      bucket: r2.bucket,
-      nextAction: r2.nextAction,
+      r2WriteAvailable: r2.writeAvailable,
+      rawWarehouseWriteUnavailable: !r2.writeAvailable,
+      bucket: r2.rawHealth.bucket,
+      storageMode: r2.storageMode,
+      lastConfirmedWriteAt: r2.lastConfirmedWriteAt,
+      lastConfirmedDeleteAt: r2.lastConfirmedDeleteAt,
+      sourceOfTruth: r2.sourceOfTruth,
+      detectedEnvNames: r2.rawHealth.detectedEnvNames,
+      accessKeyIdFingerprint: r2.rawHealth.accessKeyIdFingerprint,
+      nextAction: r2.rawHealth.nextAction,
     },
     layers: EAR_LAYERS,
     summary: earRegistrySummary(),

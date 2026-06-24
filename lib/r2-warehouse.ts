@@ -55,6 +55,7 @@ export type R2Health = {
   regionUsed: string | null;
   forcePathStyleUsed: boolean;
   accessKeyIdFingerprint: string | null;
+  detectedEnvNames: string[];
   envLoadedAtRuntime: boolean;
   runtimeVariableSource: "Railway env";
   regionFallbackAttempted: boolean;
@@ -63,34 +64,44 @@ export type R2Health = {
   message: string | null;
   secretsRedacted: true;
 };
-const REQUIRED = [
-  "CLOUDFLARE_R2_ACCOUNT_ID",
+const R2_ENV_NAMES = [
+  "R2_BUCKET",
+  "R2_ENDPOINT",
+  "R2_REGION",
+  "R2_FORCE_PATH_STYLE",
+  "R2_ACCESS_KEY_ID",
+  "R2_SECRET_ACCESS_KEY",
+  "CLOUDFLARE_R2_BUCKET",
+  "CLOUDFLARE_R2_ENDPOINT",
+  "CLOUDFLARE_R2_REGION",
   "CLOUDFLARE_R2_ACCESS_KEY_ID",
   "CLOUDFLARE_R2_SECRET_ACCESS_KEY",
-  "CLOUDFLARE_R2_BUCKET",
+  "CLOUDFLARE_R2_ACCOUNT_ID",
 ] as const;
+function env(name: string) { return process.env[name]?.trim() || ""; }
+function envFirst(preferred: string, legacy: string) { return env(preferred) || env(legacy); }
+function boolEnv(v: string, fallback: boolean) { if (!v) return fallback; return /^(1|true|yes)$/i.test(v); }
 export function getR2Config(regionOverride?: string) {
-  const missingEnvVars = REQUIRED.filter((k) => !process.env[k]?.trim());
-  const accountId = process.env.CLOUDFLARE_R2_ACCOUNT_ID?.trim() || "";
+  const accountId = env("CLOUDFLARE_R2_ACCOUNT_ID");
   const endpoint = (
-    process.env.CLOUDFLARE_R2_ENDPOINT?.trim() ||
+    envFirst("R2_ENDPOINT", "CLOUDFLARE_R2_ENDPOINT") ||
     (accountId ? `https://${accountId}.r2.cloudflarestorage.com` : "")
   ).replace(/\/$/, "");
-  const region =
-    regionOverride ?? process.env.CLOUDFLARE_R2_REGION?.trim() ?? "auto";
-  const accessKeyId = process.env.CLOUDFLARE_R2_ACCESS_KEY_ID?.trim() || "";
+  const region = regionOverride ?? (envFirst("R2_REGION", "CLOUDFLARE_R2_REGION") || "auto");
+  const accessKeyId = envFirst("R2_ACCESS_KEY_ID", "CLOUDFLARE_R2_ACCESS_KEY_ID");
+  const secretAccessKey = envFirst("R2_SECRET_ACCESS_KEY", "CLOUDFLARE_R2_SECRET_ACCESS_KEY");
+  const bucket = envFirst("R2_BUCKET", "CLOUDFLARE_R2_BUCKET");
+  const missingEnvVars = [
+    accessKeyId ? null : "R2_ACCESS_KEY_ID or CLOUDFLARE_R2_ACCESS_KEY_ID",
+    secretAccessKey ? null : "R2_SECRET_ACCESS_KEY or CLOUDFLARE_R2_SECRET_ACCESS_KEY",
+    bucket ? null : "R2_BUCKET or CLOUDFLARE_R2_BUCKET",
+    endpoint ? null : "R2_ENDPOINT or CLOUDFLARE_R2_ENDPOINT/CLOUDFLARE_R2_ACCOUNT_ID",
+  ].filter(Boolean) as string[];
+  const detectedEnvNames = R2_ENV_NAMES.filter((k) => Boolean(process.env[k]?.trim()));
   return {
-    accountId,
-    accessKeyId,
-    accessKeyIdFingerprint: fingerprintAccessKeyId(accessKeyId),
-    secretAccessKey: process.env.CLOUDFLARE_R2_SECRET_ACCESS_KEY?.trim() || "",
-    bucket: process.env.CLOUDFLARE_R2_BUCKET?.trim() || "",
-    publicBaseUrl: process.env.CLOUDFLARE_R2_PUBLIC_BASE_URL?.trim() || null,
-    endpoint,
-    region,
-    forcePathStyle: true,
-    missingEnvVars,
-    configured: missingEnvVars.length === 0,
+    accountId, accessKeyId, accessKeyIdFingerprint: fingerprintAccessKeyId(accessKeyId), secretAccessKey, bucket,
+    publicBaseUrl: process.env.CLOUDFLARE_R2_PUBLIC_BASE_URL?.trim() || null, endpoint, region,
+    forcePathStyle: boolEnv(env("R2_FORCE_PATH_STYLE"), true), missingEnvVars, detectedEnvNames, configured: missingEnvVars.length === 0,
   };
 }
 function hmac(key: crypto.BinaryLike, data: string) {
@@ -526,7 +537,8 @@ export async function checkR2Health(confirmWrite = false): Promise<R2Health> {
     regionUsed: c.region,
     forcePathStyleUsed: c.forcePathStyle,
     accessKeyIdFingerprint: c.accessKeyIdFingerprint,
-    envLoadedAtRuntime: REQUIRED.every((k) => typeof process.env[k] === "string"),
+    detectedEnvNames: c.detectedEnvNames,
+    envLoadedAtRuntime: c.configured,
     runtimeVariableSource: "Railway env",
     regionFallbackAttempted: false,
     regionFallbackUsed: null,
@@ -618,6 +630,7 @@ export async function checkR2Health(confirmWrite = false): Promise<R2Health> {
       health.deleteErrorCategory = responseCategory("delete", del);
       health.deleteErrorMessageSafe = await safeResponseMessage("delete", del);
       health.connected = health.canRead;
+      health.writeTestNotRun = false;
     }
     if (confirmWrite) rememberSuccessfulR2WriteTest(health);
     return { ...health, ...diagnoseR2Health(health) };
@@ -689,7 +702,15 @@ export async function trySaveRawDataToR2(
   payload: unknown,
   metadata: Record<string, unknown> = {},
 ) {
+  const op = await getR2OperationalStatus();
   const cfg = getR2Config();
+  if (!op.writeAvailable)
+    return {
+      saved: false,
+      reason: "r2_write_not_confirmed",
+      missingEnvVars: cfg.missingEnvVars,
+      r2Key: buildR2Key(source, assetType, symbol, dataType, dateKey, metadata),
+    };
   if (!cfg.configured)
     return {
       saved: false,

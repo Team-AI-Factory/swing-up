@@ -15,6 +15,8 @@ const REQUIRED_ENDPOINTS = [
   { method: "POST", path: "/api/internal/price-volume-proof-run" },
   { method: "GET", path: "/api/internal/historical-pattern-status" },
   { method: "POST", path: "/api/internal/historical-pattern-run" },
+  { method: "GET", path: "/api/internal/historical-memory-seed-status" },
+  { method: "POST", path: "/api/internal/historical-memory-seed-run" },
   { method: "GET", path: "/api/internal/r2-health" },
   { method: "POST", path: "/api/internal/r2-health" },
   { method: "POST", path: "/api/internal/run-live-alert-cycle" },
@@ -61,12 +63,13 @@ const EARS: Record<string, { build: number; name: string; status: "implemented_r
     ],
   },
   historicalPattern: {
-    build: 171,
+    build: 175,
     name: "R2 Historical Pattern Match Ear",
-    status: "stub_only",
+    status: "partially_implemented",
     reasons: [
       "Does not fake historical matches or outcomes.",
-      "Currently returns zero matches with sample-size warnings until real stored/fetched historical samples exist.",
+      "Can report seeded historical-memory event counts from R2/Postgres indexes.",
+      "Keeps sample-size warnings and Stage 2 locked unless enough real outcomes exist.",
     ],
   },
 } as const;
@@ -87,6 +90,8 @@ const REQUIRED_ROUTE_FILES = new Set([
   "app/api/internal/price-volume-proof-run/route.ts",
   "app/api/internal/historical-pattern-status/route.ts",
   "app/api/internal/historical-pattern-run/route.ts",
+  "app/api/internal/historical-memory-seed-status/route.ts",
+  "app/api/internal/historical-memory-seed-run/route.ts",
   "app/api/internal/r2-health/route.ts",
   "app/api/internal/run-live-alert-cycle/route.ts",
 ]);
@@ -105,7 +110,7 @@ export async function GET() {
 
   return NextResponse.json(withRedactionMetadata({
     ok: endpointsMissing.length === 0 && !fakeProofDetected && !fakeHistoryDetected,
-    mergedBuildsDetected: [167, 168, 169, 170, 171],
+    mergedBuildsDetected: [167, 168, 169, 170, 171, 175],
     endpointsPresent,
     endpointsMissing,
     endpointsBroken: [],
@@ -145,7 +150,7 @@ export async function GET() {
       "Run POST /api/internal/r2-health with confirmWrite=true in production to confirm write/delete.",
       "Promote the 8-K classifier from partial to real by parsing full filing text item sections, not just metadata.",
       "Promote FMP proof from partial to real by deriving fundamentals and estimate deltas from returned values, not endpoint availability.",
-      "Promote historical patterns from stub-only to real only after enough stored historical samples exist in R2.",
+      "Run the historical memory seed with confirmRun=true only after R2 write/delete has been confirmed and the sample size is acceptable.",
     ],
   }));
 }

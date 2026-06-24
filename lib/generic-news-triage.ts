@@ -42,6 +42,12 @@ export type GenericNewsClassification = {
   affectedCurrencies: string[];
   affectedCompanies: string[];
   affectedTickers: string[];
+  affectedETFs: string[];
+  broadNewsClass: string;
+  impactMechanism: string;
+  mappedBy: string;
+  promotedToRippleCandidate: boolean;
+  rejectedAsNoise: boolean;
   confidence: number;
   whyItMayMatter: string;
   whyItMayBeNoise: string;
@@ -107,6 +113,7 @@ export function classifyGenericNews(signal: GenericRawSignal): GenericNewsClassi
   const affectedCurrencies = uniq(matched.flatMap((rule) => rule.currencies ?? []));
   const affectedAssetTypes = uniq(matched.flatMap((rule) => rule.assetTypes ?? ["equity"]));
   const affectedCompanies = uniq(affectedTickers.map((ticker) => ({ NVDA: "Nvidia", AMD: "Advanced Micro Devices", TSM: "TSMC", ASML: "ASML", MU: "Micron", XOM: "Exxon Mobil", CVX: "Chevron", OXY: "Occidental", MSFT: "Microsoft", GOOGL: "Alphabet", META: "Meta", JPM: "JPMorgan", BAC: "Bank of America" })[ticker] ?? ticker));
+  const affectedETFs = affectedTickers.filter((ticker) => ["SMH", "SOXX", "XLE", "XLV", "IBB", "KRE", "HYG", "IWM", "VNQ", "QQQ", "GLD", "XLU"].includes(ticker));
   const clearMechanism = Boolean(best?.why && (affectedSectors.length || affectedCountries.length || affectedCommodities.length || affectedTickers.length));
   const seriousnessScore = scoreClamp((best?.seriousness ?? 18) + (freshSourceUrl ? 4 : -8) + (broadMarketCommentary ? -25 : 0));
   const ripplePotentialScore = scoreClamp((best?.ripple ?? 15) + Math.min(12, affectedTickers.length * 2) + (clearMechanism ? 6 : -10) + (broadMarketCommentary ? -25 : 0));
@@ -119,6 +126,7 @@ export function classifyGenericNews(signal: GenericRawSignal): GenericNewsClassi
     sourceUrl: signal.sourceUrl,
     receivedAt: signal.receivedAt.toISOString(),
     genericNewsType: best?.type ?? "genericNoise",
+    broadNewsClass: best?.type ?? "genericNoise",
     seriousnessScore,
     ripplePotentialScore,
     affectedAssetTypes,
@@ -128,6 +136,11 @@ export function classifyGenericNews(signal: GenericRawSignal): GenericNewsClassi
     affectedCurrencies,
     affectedCompanies,
     affectedTickers,
+    affectedETFs,
+    impactMechanism: best?.why ?? "No clear market mechanism was found beyond broad commentary.",
+    mappedBy: matched.length ? "keyword_sector_ticker_rule" : "no_mapping",
+    promotedToRippleCandidate: rippleCandidate,
+    rejectedAsNoise: !rippleCandidate,
     confidence: scoreClamp((matched.length ? 58 : 35) + matched.length * 8 + (freshSourceUrl ? 7 : 0)),
     whyItMayMatter: best?.why ?? "No clear market mechanism was found beyond broad commentary.",
     whyItMayBeNoise: broadMarketCommentary ? "The headline looks like a recap, listicle, or vague market commentary." : rippleCandidate ? "It still needs independent proof before any alert can move forward." : "The mapping, mechanism, source specificity, or score is not strong enough yet.",

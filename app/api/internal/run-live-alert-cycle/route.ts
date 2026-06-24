@@ -16,7 +16,10 @@ import { getR2OperationalStatus, saveJsonToR2 } from "@/lib/r2-warehouse";
 import { earRegistrySummary } from "@/lib/ear-registry";
 import { scoreSevenLayerEvidence } from "@/lib/catalyst-impact-scoring";
 import { withRedactionMetadata } from "@/lib/redact-secrets";
-import { buildGlobalSchedulerPlan, MEANINGFUL_METRIC_REGISTRY } from "@/lib/global-ear-scheduler";
+import {
+  buildGlobalSchedulerPlan,
+  MEANINGFUL_METRIC_REGISTRY,
+} from "@/lib/global-ear-scheduler";
 import { runGenericNewsTriage } from "@/lib/generic-news-triage";
 
 export const dynamic = "force-dynamic";
@@ -26,6 +29,31 @@ function redactedJson(payload: Record<string, unknown>, init?: ResponseInit) {
 }
 
 type JsonRecord = Record<string, unknown>;
+type SignalGrade = "A" | "B" | "C" | "D" | "F";
+
+type GreatSignalScorecard = {
+  catalystStrengthScore: number;
+  directAssetMatchScore: number;
+  proofQualityScore: number;
+  proofDiversityScore: number;
+  businessImpactScore: number;
+  timingScore: number;
+  priceVolumeContextScore: number;
+  fundamentalsSupportScore: number;
+  officialProofScore: number;
+  historicalMemoryScore: number;
+  riskClarityScore: number;
+  noisePenalty: number;
+  hypePenalty: number;
+  unsafeProofPenalty: number;
+  missingProofPenalty: number;
+  finalGreatSignalScore: number;
+  signalGrade: SignalGrade;
+  whyItCouldBeGreat: string[];
+  whyItIsBlocked: string[];
+  nextBestProofToFetch: string;
+};
+
 type DiscoveryRow = {
   rawSignalId: string;
   ticker: string | null;
@@ -58,6 +86,12 @@ type DiscoveryRow = {
   eligibleForBest: boolean;
   reasonNotPromoted: string | null;
   sevenLayerEvidence: ReturnType<typeof scoreSevenLayerEvidence>;
+  greatSignalScorecard: GreatSignalScorecard;
+  finalGreatSignalScore: number;
+  signalGrade: SignalGrade;
+  whyItCouldBeGreat: string[];
+  whyItIsBlocked: string[];
+  nextBestProofToFetch: string;
 };
 
 const MIN_STOCK_SPECIFICITY_SCORE = 55;
@@ -68,6 +102,208 @@ const CORE_PROOF_TYPES = new Set([
   "fundamentals",
   "pattern_match",
 ]);
+
+const VALID_CANDIDATE_PROOF_TYPES = new Set([
+  "filing",
+  "news",
+  "price_volume",
+  "fundamentals",
+  "pattern_match",
+  "insider",
+  "regulatory",
+  "contract",
+  "legal_risk",
+]);
+
+function clampScore(value: number) {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function nextBestProof(missingProof: string[]) {
+  const priority = [
+    "filing",
+    "price_volume",
+    "fundamentals",
+    "pattern_match",
+    "regulatory",
+    "insider",
+    "contract",
+    "legal_risk",
+    "news",
+  ];
+  return priority.find((type) => missingProof.includes(type)) ?? "none";
+}
+
+function gradeFromScore(
+  score: number,
+  blocked: string[],
+  proofTypes: string[],
+) {
+  const cleanProofTypes = proofTypes.filter((type) =>
+    VALID_CANDIDATE_PROOF_TYPES.has(type),
+  );
+  const newsOnly =
+    cleanProofTypes.length === 1 && cleanProofTypes[0] === "news";
+  const opinionOnly = blocked.some((reason) => /opinion/i.test(reason));
+  if (blocked.includes("source_health_is_diagnostic_not_proof") || score < 20)
+    return "F" as const;
+  if (score >= 82 && blocked.length === 0 && !newsOnly && !opinionOnly)
+    return "A" as const;
+  if (score >= 62 && !opinionOnly && !newsOnly) return "B" as const;
+  if (score >= 42) return "C" as const;
+  if (score >= 20) return "D" as const;
+  return "F" as const;
+}
+
+function buildGreatSignalScorecard(input: {
+  signal: RawSignal;
+  blockedReasons: string[];
+  enrichment: Awaited<ReturnType<typeof enrichProofForRawSignal>>;
+  impact: ReturnType<typeof payloadImpact>;
+}): GreatSignalScorecard {
+  const { signal, blockedReasons, enrichment, impact } = input;
+  const proofTypes = enrichment.proofTypes.filter((type) =>
+    VALID_CANDIDATE_PROOF_TYPES.has(type),
+  );
+  const proofSet = new Set(proofTypes);
+  const missingProof = enrichment.missingProof.filter((type) =>
+    VALID_CANDIDATE_PROOF_TYPES.has(type),
+  );
+  const title = `${signal.title} ${signal.summary}`.toLowerCase();
+  const genericNoise = isBroadMarketNoise({
+    directTickerMatch: impact.directTickerMatch,
+    directCompanyMatch: impact.directCompanyMatch,
+    stockSpecificityScore: impact.stockSpecificityScore,
+    title: signal.title,
+  });
+  const opinionOnly =
+    /opinion|commentary|why i think|could be|might be|rumor/.test(title);
+  const hype =
+    /moon|rocket|explosive|massive upside|guaranteed|can't miss|game.?changer/i.test(
+      title,
+    );
+  const sourceHealthRejected = enrichment.rejectedProofReasons.includes(
+    "source_health_is_diagnostic_not_proof",
+  );
+  const catalystStrengthScore = clampScore(impact.catalystImpactScore ?? 0);
+  const directAssetMatchScore = impact.directTickerMatch
+    ? 100
+    : impact.directCompanyMatch
+      ? 75
+      : 15;
+  const proofQualityScore = enrichment.acceptedProofItems.length
+    ? Math.max(
+        ...enrichment.acceptedProofItems.map((item) => item.proofMatchScore),
+      )
+    : 0;
+  const proofDiversityScore = clampScore((new Set(proofTypes).size / 4) * 100);
+  const businessImpactScore = clampScore(
+    impact.promotionScore ?? catalystStrengthScore,
+  );
+  const timingScore = impact.freshWithin72h ? 100 : 35;
+  const priceVolumeContextScore = proofSet.has("price_volume") ? 100 : 0;
+  const fundamentalsSupportScore = proofSet.has("fundamentals") ? 100 : 0;
+  const officialProofScore =
+    proofSet.has("filing") || proofSet.has("regulatory")
+      ? 100
+      : proofSet.has("contract") ||
+          proofSet.has("legal_risk") ||
+          proofSet.has("insider")
+        ? 75
+        : 0;
+  const historicalMemoryScore = proofSet.has("pattern_match") ? 100 : 0;
+  const riskClarityScore = enrichment.rejectedProofItems.length ? 35 : 80;
+  const noisePenalty = genericNoise ? 25 : 0;
+  const hypePenalty = hype || opinionOnly ? 20 : 0;
+  const unsafeProofPenalty =
+    input.enrichment.rejectedProofItems.length &&
+    !input.enrichment.acceptedProofItems.length
+      ? 30
+      : 0;
+  const missingProofPenalty = Math.min(35, missingProof.length * 7);
+  const positive =
+    catalystStrengthScore * 0.16 +
+    directAssetMatchScore * 0.14 +
+    proofQualityScore * 0.18 +
+    proofDiversityScore * 0.12 +
+    businessImpactScore * 0.12 +
+    timingScore * 0.08 +
+    priceVolumeContextScore * 0.06 +
+    fundamentalsSupportScore * 0.06 +
+    officialProofScore * 0.04 +
+    historicalMemoryScore * 0.02 +
+    riskClarityScore * 0.02;
+  const finalGreatSignalScore = clampScore(
+    positive -
+      noisePenalty -
+      hypePenalty -
+      unsafeProofPenalty -
+      missingProofPenalty -
+      (sourceHealthRejected ? 20 : 0),
+  );
+  const whyItCouldBeGreat = [
+    ...(catalystStrengthScore >= 55 ? ["Real catalyst detected."] : []),
+    ...(impact.directTickerMatch
+      ? ["Direct ticker match found."]
+      : impact.directCompanyMatch
+        ? ["Direct company match found."]
+        : []),
+    ...(impact.hasReceiptUrl ? ["Specific receipt URL exists."] : []),
+    ...(proofSet.has("filing") ? ["Official filing proof is present."] : []),
+    ...(proofSet.has("price_volume")
+      ? ["Price/volume context is present."]
+      : []),
+    ...(proofSet.has("fundamentals")
+      ? ["Fundamentals support is present."]
+      : []),
+    ...(proofSet.has("pattern_match")
+      ? ["Historical pattern support is present."]
+      : []),
+  ];
+  const whyItIsBlocked = [
+    ...blockedReasons,
+    ...(proofTypes.length < 2
+      ? ["Needs at least two clean proof types beyond the raw source."]
+      : []),
+    ...(opinionOnly
+      ? ["Opinion-only content cannot receive an A or B grade."]
+      : []),
+    ...(genericNoise
+      ? ["Generic market/news noise is not specific enough yet."]
+      : []),
+    ...(sourceHealthRejected ? ["source_health_is_diagnostic_not_proof"] : []),
+    ...(missingProof.length
+      ? [`Missing proof: ${missingProof.join(", ")}.`]
+      : []),
+  ];
+  const signalGrade = gradeFromScore(
+    finalGreatSignalScore,
+    whyItIsBlocked,
+    proofTypes,
+  );
+  return {
+    catalystStrengthScore,
+    directAssetMatchScore,
+    proofQualityScore,
+    proofDiversityScore,
+    businessImpactScore,
+    timingScore,
+    priceVolumeContextScore,
+    fundamentalsSupportScore,
+    officialProofScore,
+    historicalMemoryScore,
+    riskClarityScore,
+    noisePenalty,
+    hypePenalty,
+    unsafeProofPenalty,
+    missingProofPenalty,
+    finalGreatSignalScore,
+    signalGrade,
+    whyItCouldBeGreat,
+    whyItIsBlocked,
+    nextBestProofToFetch: nextBestProof(missingProof),
+  };
+}
 
 function truthyRank(value: boolean | null | undefined) {
   return value === true ? 1 : 0;
@@ -360,6 +596,7 @@ function baseResponse(input: {
     selectedRawSignalId: null as string | null,
     rawSignalSummary: {},
     candidateDiscoverySummary: {},
+    greatSignalSummary: {},
     catalystSummary: {},
     proofEnrichmentSummary: {},
     candidateSummary: {},
@@ -408,10 +645,12 @@ function stage1DateKey(date = new Date()) {
 }
 
 function safeSourceSlug(source: string) {
-  return (source || "unknown")
-    .toLowerCase()
-    .replace(/[^a-z0-9._=-]+/g, "-")
-    .replace(/^-+|-+$/g, "") || "unknown";
+  return (
+    (source || "unknown")
+      .toLowerCase()
+      .replace(/[^a-z0-9._=-]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "unknown"
+  );
 }
 
 async function saveStage1RawObject(
@@ -430,17 +669,21 @@ async function saveStage1RawObject(
       dataType: String(metadata.dataType ?? "run-payload"),
     });
     output.rawDataStored = true;
-    const existing = Array.isArray(output.rawDataObjectKeys) ? output.rawDataObjectKeys : [];
+    const existing = Array.isArray(output.rawDataObjectKeys)
+      ? output.rawDataObjectKeys
+      : [];
     output.rawDataObjectKeys = [...existing, row?.r2Key ?? key];
     return row?.r2Key ?? key;
   } catch (error) {
     output.rawDataStored = false;
     output.storageMode = "postgresql_summary_only";
     output.rawWarehouseWriteUnavailable = true;
-    output.reasonStorageFallback = "R2 raw object save failed; Stage 1 continued with PostgreSQL summary-only fallback.";
-    output.rawStorageErrorCategory = error instanceof Error && /status (\d+)/i.test(error.message)
-      ? `r2_save_http_${error.message.match(/status (\d+)/i)?.[1]}`
-      : "r2_save_failed";
+    output.reasonStorageFallback =
+      "R2 raw object save failed; Stage 1 continued with PostgreSQL summary-only fallback.";
+    output.rawStorageErrorCategory =
+      error instanceof Error && /status (\d+)/i.test(error.message)
+        ? `r2_save_http_${error.message.match(/status (\d+)/i)?.[1]}`
+        : "r2_save_failed";
     return null;
   }
 }
@@ -486,9 +729,18 @@ export async function POST(request: NextRequest) {
     true,
   );
   const universeMode = text(body.universeMode) || "watchlist";
-  const maxAssetsToPlan = Math.min(Math.max(int(body.maxAssetsToPlan, 1000), 1), 10000);
-  const maxAssetsToScanNow = Math.min(Math.max(int(body.maxAssetsToScanNow, 50), 1), maxAssetsToPlan);
-  const maxDeepScans = Math.min(Math.max(int(body.maxDeepScans, 5), 0), maxAssetsToScanNow);
+  const maxAssetsToPlan = Math.min(
+    Math.max(int(body.maxAssetsToPlan, 1000), 1),
+    10000,
+  );
+  const maxAssetsToScanNow = Math.min(
+    Math.max(int(body.maxAssetsToScanNow, 50), 1),
+    maxAssetsToPlan,
+  );
+  const maxDeepScans = Math.min(
+    Math.max(int(body.maxDeepScans, 5), 0),
+    maxAssetsToScanNow,
+  );
   const warnings = [
     "Telegram is disabled for this founder website test; this route never sends Telegram.",
     ...(confirmSend || allowTelegram
@@ -499,7 +751,9 @@ export async function POST(request: NextRequest) {
   try {
     const [readiness, r2Health] = await Promise.all([
       getEngineStartReadiness(),
-      getR2OperationalStatus({ allowRuntimeWriteCheck: bool(body.allowRuntimeR2WriteCheck, false) }),
+      getR2OperationalStatus({
+        allowRuntimeWriteCheck: bool(body.allowRuntimeR2WriteCheck, false),
+      }),
     ]);
     const r2WriteAvailable = r2Health.writeAvailable;
     const storageMode = r2Health.storageMode;
@@ -534,36 +788,59 @@ export async function POST(request: NextRequest) {
       sourcesConsidered: globalSchedulerPlan.sourcesConsidered,
       wideScanCount: globalSchedulerPlan.wideScansPlanned,
       deepScanCount: globalSchedulerPlan.deepScansPlanned,
-      meaningfulMetricsCalculated: MEANINGFUL_METRIC_REGISTRY.map((metric) => metric.name),
-      highestValueCallsUsed: confirmRun ? globalSchedulerPlan.highestValueNextCalls : [],
+      meaningfulMetricsCalculated: MEANINGFUL_METRIC_REGISTRY.map(
+        (metric) => metric.name,
+      ),
+      highestValueCallsUsed: confirmRun
+        ? globalSchedulerPlan.highestValueNextCalls
+        : [],
       genericNewsScanned: genericTriage.genericItemsScannedToday,
       seriousGenericSignalsFound: genericTriage.seriousGenericSignalsFound,
       rippleCandidatesCreated: genericTriage.rippleCandidatesCreated,
-      genericSignalsRejectedAsNoise: genericTriage.genericSignalsRejectedAsNoise,
+      genericSignalsRejectedAsNoise:
+        genericTriage.genericSignalsRejectedAsNoise,
       topGenericSignal: genericTriage.topGenericSignal,
-      affectedTickersFromGenericNews: genericTriage.affectedTickersFromGenericNews,
-      deepChecksTriggeredByGenericNews: genericTriage.deepChecksTriggeredByGenericNews,
+      affectedTickersFromGenericNews:
+        genericTriage.affectedTickersFromGenericNews,
+      deepChecksTriggeredByGenericNews:
+        genericTriage.deepChecksTriggeredByGenericNews,
       callsSavedByGenericTriage: genericTriage.callsSavedByGenericTriage,
       genericNewsDidNotBypassProofGate: true,
       seriousSignalsFound: genericTriage.seriousGenericSignalsFound,
       genericRippleCandidates: Array.isArray(genericTriage.classifications)
-        ? genericTriage.classifications.filter((item) => obj(item).rippleCandidate === true).slice(0, 10) as unknown[]
+        ? (genericTriage.classifications
+            .filter((item) => obj(item).rippleCandidate === true)
+            .slice(0, 10) as unknown[])
         : ([] as unknown[]),
       directCompanyCatalysts: [] as unknown[],
       opinionOnlyRejected: Array.isArray(genericTriage.classifications)
-        ? genericTriage.classifications.filter((item) => text(obj(item).rejectedReason).includes("opinion")).slice(0, 10) as unknown[]
+        ? (genericTriage.classifications
+            .filter((item) =>
+              text(obj(item).rejectedReason).includes("opinion"),
+            )
+            .slice(0, 10) as unknown[])
         : ([] as unknown[]),
       proofFillingAttempts: [] as unknown[],
       proofFilledBySource: {} as Record<string, unknown>,
-      remainingProofGaps: ["at least 2 clean proof types beyond raw source", "clean direct ticker/company/topic match"],
+      remainingProofGaps: [
+        "at least 2 clean proof types beyond raw source",
+        "clean direct ticker/company/topic match",
+      ],
       bestSeriousCandidate: (genericTriage.topGenericSignal ?? null) as unknown,
-      topRejectedButInterestingSignals: Array.isArray(genericTriage.classifications)
-        ? genericTriage.classifications
-            .filter((item) => obj(item).rippleCandidate !== true && numericRank(obj(item).seriousnessScore as number | null) >= 55)
-            .slice(0, 5) as unknown[]
+      topRejectedButInterestingSignals: Array.isArray(
+        genericTriage.classifications,
+      )
+        ? (genericTriage.classifications
+            .filter(
+              (item) =>
+                obj(item).rippleCandidate !== true &&
+                numericRank(obj(item).seriousnessScore as number | null) >= 55,
+            )
+            .slice(0, 5) as unknown[])
         : ([] as unknown[]),
       nextBestEarToImprove: null as string | null,
-      recommendedDeepProofCalls: genericTriage.deepChecksTriggeredByGenericNews as unknown[],
+      recommendedDeepProofCalls:
+        genericTriage.deepChecksTriggeredByGenericNews as unknown[],
       genericNewsTriageSummary: {
         enabled: genericTriage.enabled,
         broadSourcesUsed: genericTriage.broadSourcesUsed,
@@ -571,7 +848,8 @@ export async function POST(request: NextRequest) {
         topAffectedSectors: genericTriage.topAffectedSectors,
         topAffectedTickers: genericTriage.topAffectedTickers,
         exampleRejectedAsNoise: genericTriage.exampleRejectedAsNoise,
-        examplePromotedIntoRippleCandidate: genericTriage.examplePromotedIntoRippleCandidate,
+        examplePromotedIntoRippleCandidate:
+          genericTriage.examplePromotedIntoRippleCandidate,
         noOpenAIWhenConfirmRunFalse: confirmRun !== true,
         noPublish: true,
         noTelegram: true,
@@ -584,7 +862,10 @@ export async function POST(request: NextRequest) {
         "unrelated topics",
         "Alpha Vantage backup call skipped unless a proof gap remains",
       ],
-      proofGapsRemaining: ["at least 2 clean proof types beyond raw source", "clean direct ticker/company/topic match"],
+      proofGapsRemaining: [
+        "at least 2 clean proof types beyond raw source",
+        "clean direct ticker/company/topic match",
+      ],
       rawWarehouseAvailable: r2Health.connected || r2Health.canRead,
       rawWarehouseWriteUnavailable: !r2WriteAvailable,
       rawDataStored: false,
@@ -877,9 +1158,15 @@ export async function POST(request: NextRequest) {
     const runId = String(output.runId);
     const dateKey = stage1DateKey();
     if (sourceSummary) {
-      const rows = Array.isArray(obj(sourceSummary).table) ? (obj(sourceSummary).table as unknown[]) : [];
+      const rows = Array.isArray(obj(sourceSummary).table)
+        ? (obj(sourceSummary).table as unknown[])
+        : [];
       const sourcesToStore = rows.length
-        ? Array.from(new Set(rows.map((row) => text(obj(row).sourceName) || "source-run")))
+        ? Array.from(
+            new Set(
+              rows.map((row) => text(obj(row).sourceName) || "source-run"),
+            ),
+          )
         : preferredSources;
       for (const sourceName of sourcesToStore) {
         const sourceSlug = safeSourceSlug(sourceName);
@@ -888,14 +1175,24 @@ export async function POST(request: NextRequest) {
           r2WriteAvailable,
           `raw/stage1/source-runs/${sourceSlug}/${dateKey}/${runId}.json`,
           { sourceName, sourceSummary },
-          { source: sourceName, assetType: "stage1", dataType: "source-run", recordCount: rows.length },
+          {
+            source: sourceName,
+            assetType: "stage1",
+            dataType: "source-run",
+            recordCount: rows.length,
+          },
         );
         await saveStage1RawObject(
           output,
           r2WriteAvailable,
           `logs/source-runs/${sourceSlug}/${dateKey}/${runId}.json`,
           { sourceName, sourceSummary },
-          { source: sourceName, assetType: "logs", dataType: "source-run-log", recordCount: rows.length },
+          {
+            source: sourceName,
+            assetType: "logs",
+            dataType: "source-run-log",
+            recordCount: rows.length,
+          },
         );
       }
     }
@@ -903,8 +1200,24 @@ export async function POST(request: NextRequest) {
       output,
       r2WriteAvailable,
       `raw/stage1/candidates/${dateKey}/${runId}.json`,
-      { rawSignals: rawSignals.map((signal) => ({ id: signal.id, source: signal.source, ticker: signal.ticker, title: signal.title, summary: signal.summary, sourceUrl: signal.sourceUrl, receivedAt: signal.receivedAt, payload: signal.payload })) },
-      { source: "stage1", assetType: "candidates", dataType: "candidate-raw-signals", recordCount: rawSignals.length },
+      {
+        rawSignals: rawSignals.map((signal) => ({
+          id: signal.id,
+          source: signal.source,
+          ticker: signal.ticker,
+          title: signal.title,
+          summary: signal.summary,
+          sourceUrl: signal.sourceUrl,
+          receivedAt: signal.receivedAt,
+          payload: signal.payload,
+        })),
+      },
+      {
+        source: "stage1",
+        assetType: "candidates",
+        dataType: "candidate-raw-signals",
+        recordCount: rawSignals.length,
+      },
     );
 
     if (!candidateAlertId && rawSignals.length) {
@@ -989,6 +1302,13 @@ export async function POST(request: NextRequest) {
           ? candidateJson.scoreSummary
           : [];
         const score = obj(scores[0]);
+        const impact = payloadImpact(signal);
+        const greatSignalScorecard = buildGreatSignalScorecard({
+          signal,
+          blockedReasons: reasons,
+          enrichment,
+          impact,
+        });
         discoveryRows.push({
           rawSignalId: signal.id,
           ticker: signal.ticker,
@@ -1019,13 +1339,13 @@ export async function POST(request: NextRequest) {
             (proof) => proof.type,
           ),
           stillMissingProof: enrichment.missingProof,
-          catalystImpactScore: payloadImpact(signal).catalystImpactScore,
-          stockSpecificityScore: payloadImpact(signal).stockSpecificityScore,
-          directTickerMatch: payloadImpact(signal).directTickerMatch,
-          directCompanyMatch: payloadImpact(signal).directCompanyMatch,
-          hasReceiptUrl: payloadImpact(signal).hasReceiptUrl,
-          freshWithin72h: payloadImpact(signal).freshWithin72h,
-          promotionScore: payloadImpact(signal).promotionScore,
+          catalystImpactScore: impact.catalystImpactScore,
+          stockSpecificityScore: impact.stockSpecificityScore,
+          directTickerMatch: impact.directTickerMatch,
+          directCompanyMatch: impact.directCompanyMatch,
+          hasReceiptUrl: impact.hasReceiptUrl,
+          freshWithin72h: impact.freshWithin72h,
+          promotionScore: impact.promotionScore,
           bestFailureReason: reasons[0] ?? null,
           unsafeProofMismatchWarning:
             enrichment.rejectedProofItems.length > 0 &&
@@ -1050,15 +1370,26 @@ export async function POST(request: NextRequest) {
             title: signal.title,
             summary: signal.summary,
             proofTypes: enrichment.proofTypes,
-            promotionScore: payloadImpact(signal).promotionScore,
+            promotionScore: impact.promotionScore,
           }),
+          greatSignalScorecard,
+          finalGreatSignalScore: greatSignalScorecard.finalGreatSignalScore,
+          signalGrade: greatSignalScorecard.signalGrade,
+          whyItCouldBeGreat: greatSignalScorecard.whyItCouldBeGreat,
+          whyItIsBlocked: greatSignalScorecard.whyItIsBlocked,
+          nextBestProofToFetch: greatSignalScorecard.nextBestProofToFetch,
         });
       }
       for (const row of discoveryRows) {
         const failures = bestEligibilityFailure(row);
         row.eligibleForBest = failures.length === 0;
-        const layerFailures = row.sevenLayerEvidence.reasonNotPromoted ? [row.sevenLayerEvidence.reasonNotPromoted] : [];
-        row.reasonNotPromoted = failures.length || layerFailures.length ? [...failures, ...layerFailures].join("; ") : null;
+        const layerFailures = row.sevenLayerEvidence.reasonNotPromoted
+          ? [row.sevenLayerEvidence.reasonNotPromoted]
+          : [];
+        row.reasonNotPromoted =
+          failures.length || layerFailures.length
+            ? [...failures, ...layerFailures].join("; ")
+            : null;
       }
       const rankedCandidates = sortDiscoveryRows(discoveryRows);
       const topDirectCandidates = rankedCandidates
@@ -1073,6 +1404,53 @@ export async function POST(request: NextRequest) {
           preferredSources[0] ??
           "SEC EDGAR",
       );
+      const gradeCounts = rankedCandidates.reduce<Record<SignalGrade, number>>(
+        (acc, row) => {
+          acc[row.signalGrade] += 1;
+          return acc;
+        },
+        { A: 0, B: 0, C: 0, D: 0, F: 0 },
+      );
+      const missingProofCounts = rankedCandidates
+        .flatMap((row) => row.stillMissingProof)
+        .filter((type) => VALID_CANDIDATE_PROOF_TYPES.has(type))
+        .reduce<Record<string, number>>((acc, type) => {
+          acc[type] = (acc[type] ?? 0) + 1;
+          return acc;
+        }, {});
+      const mostCommonMissingProof =
+        Object.entries(missingProofCounts).sort(
+          (a, b) => b[1] - a[1],
+        )[0]?.[0] ?? null;
+      const bestGreatSignalCandidate =
+        rankedCandidates.find((row) => row.signalGrade === "A") ??
+        rankedCandidates.find((row) => row.signalGrade === "B") ??
+        null;
+      const bestWatchOnlyCandidate =
+        rankedCandidates.find((row) => row.signalGrade === "C") ??
+        rankedCandidates.find((row) => row.signalGrade === "D") ??
+        null;
+      const greatSignalSummary = {
+        candidatesScored: rankedCandidates.length,
+        gradeCounts,
+        bestGreatSignalCandidate,
+        bestWatchOnlyCandidate,
+        rejectedAsNoiseCount: rankedCandidates.filter((row) =>
+          row.whyItIsBlocked.some((reason) => /noise|generic/i.test(reason)),
+        ).length,
+        blockedByMissingProofCount: rankedCandidates.filter((row) =>
+          row.whyItIsBlocked.some((reason) =>
+            /Missing proof|two clean proof/i.test(reason),
+          ),
+        ).length,
+        blockedByUnsafeProofCount: rankedCandidates.filter(
+          (row) => row.unsafeProofMismatchWarning,
+        ).length,
+        mostCommonMissingProof,
+        nextBestSystemFix: mostCommonMissingProof
+          ? `Improve ${mostCommonMissingProof} proof fetching for top direct ticker candidates.`
+          : "Keep proof gates strict and expand clean proof coverage only when specific URLs exist.",
+      };
       const proofCompletionSummary = {
         attemptedCandidates: topDirectCandidates.map((row) => row.rawSignalId),
         priceVolumeAttempted: topDirectCandidates
@@ -1172,7 +1550,9 @@ export async function POST(request: NextRequest) {
         proofAddedTypes: item.proofAddedTypes,
         stillMissingProof: item.stillMissingProof,
       }));
-      output.proofFilledBySource = enrichmentSummaries.reduce<Record<string, unknown>>((acc, item) => {
+      output.proofFilledBySource = enrichmentSummaries.reduce<
+        Record<string, unknown>
+      >((acc, item) => {
         const key = String(item.rawSignalId ?? "unknown");
         acc[key] = {
           receiptsAdded: item.receiptsAdded,
@@ -1187,7 +1567,12 @@ export async function POST(request: NextRequest) {
         r2WriteAvailable,
         `raw/stage1/proof-enrichment/${stage1DateKey()}/${String(output.runId)}.json`,
         { proofEnrichmentSummary, enrichmentSummaries },
-        { source: "stage1", assetType: "proof", dataType: "proof-enrichment", recordCount: enrichmentSummaries.length },
+        {
+          source: "stage1",
+          assetType: "proof",
+          dataType: "proof-enrichment",
+          recordCount: enrichmentSummaries.length,
+        },
       );
       const summary = {
         rawSignalsInspected: discoveryRows.length,
@@ -1221,15 +1606,25 @@ export async function POST(request: NextRequest) {
               proofTypesFound: bestDirectTickerCandidate.proofAddedTypes,
               proofTypesMissing: bestDirectTickerCandidate.stillMissingProof,
               reasonNotPromoted: bestDirectTickerCandidate.reasonNotPromoted,
-              layersSupportingCandidate: bestDirectTickerCandidate.sevenLayerEvidence.layersSupportingCandidate,
-              layersMissing: bestDirectTickerCandidate.sevenLayerEvidence.layersMissing,
-              strongestLayer: bestDirectTickerCandidate.sevenLayerEvidence.strongestLayer,
-              weakestLayer: bestDirectTickerCandidate.sevenLayerEvidence.weakestLayer,
-              earlySignalPossible: bestDirectTickerCandidate.sevenLayerEvidence.earlySignalPossible,
-              marketReactionStatus: bestDirectTickerCandidate.sevenLayerEvidence.marketReactionStatus,
+              layersSupportingCandidate:
+                bestDirectTickerCandidate.sevenLayerEvidence
+                  .layersSupportingCandidate,
+              layersMissing:
+                bestDirectTickerCandidate.sevenLayerEvidence.layersMissing,
+              strongestLayer:
+                bestDirectTickerCandidate.sevenLayerEvidence.strongestLayer,
+              weakestLayer:
+                bestDirectTickerCandidate.sevenLayerEvidence.weakestLayer,
+              earlySignalPossible:
+                bestDirectTickerCandidate.sevenLayerEvidence
+                  .earlySignalPossible,
+              marketReactionStatus:
+                bestDirectTickerCandidate.sevenLayerEvidence
+                  .marketReactionStatus,
             }
           : null,
         proofCompletionSummary,
+        greatSignalSummary,
         rankedCandidates,
         blockedReasonsBySignal,
         recommendedNextSource,
@@ -1238,7 +1633,9 @@ export async function POST(request: NextRequest) {
           : null,
         sevenLayerEvidenceModel: {
           marketReactionRule: "bonus_only_never_required",
-          bestEarlySignalCandidate: (best ?? bestDirectTickerCandidate ?? rankedCandidates[0] ?? null)?.sevenLayerEvidence ?? null,
+          bestEarlySignalCandidate:
+            (best ?? bestDirectTickerCandidate ?? rankedCandidates[0] ?? null)
+              ?.sevenLayerEvidence ?? null,
         },
         recommendedNextAction: best
           ? "Stage 1 found a candidate strong enough for Stage 2 AI review. Re-run with dryRun=false and confirmRun=true to create/review exactly one candidate."
@@ -1260,19 +1657,31 @@ export async function POST(request: NextRequest) {
           .filter((row) => catalystSources.includes(row.source))
           .slice(0, 5),
       };
+      output.greatSignalSummary = greatSignalSummary;
       output.candidateDiscoverySummary = summary;
       output.directCompanyCatalysts = rankedCandidates
-        .filter((row) => row.directTickerMatch === true || row.directCompanyMatch === true)
+        .filter(
+          (row) =>
+            row.directTickerMatch === true || row.directCompanyMatch === true,
+        )
         .slice(0, 10) as unknown[];
-      output.bestSeriousCandidate = (best ?? bestDirectTickerCandidate ?? obj(output.bestSeriousCandidate)) as unknown;
+      output.bestSeriousCandidate = (best ??
+        bestDirectTickerCandidate ??
+        obj(output.bestSeriousCandidate)) as unknown;
       output.topRejectedButInterestingSignals = rankedCandidates
         .filter((row) => row.eligibleForBest !== true)
         .slice(0, 5) as unknown[];
       output.nextBestEarToImprove = recommendedNextSource;
       output.recommendedDeepProofCalls = [
-        ...((Array.isArray(output.recommendedDeepProofCalls) ? output.recommendedDeepProofCalls : []) as unknown[]),
+        ...((Array.isArray(output.recommendedDeepProofCalls)
+          ? output.recommendedDeepProofCalls
+          : []) as unknown[]),
         ...topDirectCandidates.flatMap((row) =>
-          row.stillMissingProof.map((proofType) => ({ rawSignalId: row.rawSignalId, proofType, source: recommendedNextSource })),
+          row.stillMissingProof.map((proofType) => ({
+            rawSignalId: row.rawSignalId,
+            proofType,
+            source: recommendedNextSource,
+          })),
         ),
       ] as unknown[];
       const rawSignal = best
@@ -1301,9 +1710,15 @@ export async function POST(request: NextRequest) {
           published: false,
           blockers: [],
           stage2Unlocked: false,
-          reasonStage2Locked: summary.bestCandidateFailureReason ?? "No candidate passed strict proof gates.",
-          proofGapsRemaining: bestFailed?.stillMissingProof ?? ["No candidate passed strict proof gates."],
-          finalRecommendation: r2WriteAvailable ? "Do not run Stage 2" : "Fix R2 before large history backfill; do not run Stage 2",
+          reasonStage2Locked:
+            summary.bestCandidateFailureReason ??
+            "No candidate passed strict proof gates.",
+          proofGapsRemaining: bestFailed?.stillMissingProof ?? [
+            "No candidate passed strict proof gates.",
+          ],
+          finalRecommendation: r2WriteAvailable
+            ? "Do not run Stage 2"
+            : "Fix R2 before large history backfill; do not run Stage 2",
           nextRecommendedAction: summary.recommendedNextAction,
         });
       if (dryRun)
@@ -1314,25 +1729,31 @@ export async function POST(request: NextRequest) {
           publishable: false,
           published: false,
           stage2Allowed:
+            confirmRun === true &&
             best.eligibleForBest === true &&
-            best.afterProofCount >= 2 &&
+            best.proofDiversity >= 2 &&
             proofEnrichmentSummary.proofMatchingClean === true &&
             !best.unsafeProofMismatchWarning,
           stage2Unlocked:
+            confirmRun === true &&
             best.eligibleForBest === true &&
-            best.afterProofCount >= 2 &&
+            best.proofDiversity >= 2 &&
             proofEnrichmentSummary.proofMatchingClean === true &&
             !best.unsafeProofMismatchWarning,
           reasonStage2Locked:
-            best.eligibleForBest === true &&
-            best.afterProofCount >= 2 &&
-            proofEnrichmentSummary.proofMatchingClean === true &&
-            !best.unsafeProofMismatchWarning
-              ? null
-              : best.reasonNotPromoted ?? "Strict proof gates did not pass cleanly.",
+            confirmRun !== true
+              ? "confirmRun=false; Stage 2 AI Committee stayed locked and OpenAI was not called."
+              : best.eligibleForBest === true &&
+                  best.proofDiversity >= 2 &&
+                  proofEnrichmentSummary.proofMatchingClean === true &&
+                  !best.unsafeProofMismatchWarning
+                ? null
+                : (best.reasonNotPromoted ??
+                  "Strict proof gates did not pass cleanly."),
           finalRecommendation:
+            confirmRun === true &&
             best.eligibleForBest === true &&
-            best.afterProofCount >= 2 &&
+            best.proofDiversity >= 2 &&
             proofEnrichmentSummary.proofMatchingClean === true &&
             !best.unsafeProofMismatchWarning
               ? "Stage 2 allowed"
@@ -1340,8 +1761,9 @@ export async function POST(request: NextRequest) {
                 ? "Do not run Stage 2"
                 : "Fix R2 before large history backfill; do not run Stage 2",
           approvedForAiReview:
+            confirmRun === true &&
             best.eligibleForBest === true &&
-            best.afterProofCount >= 2 &&
+            best.proofDiversity >= 2 &&
             proofEnrichmentSummary.proofMatchingClean === true &&
             !best.unsafeProofMismatchWarning,
           nextRecommendedAction: summary.recommendedNextAction,

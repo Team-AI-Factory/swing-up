@@ -50,6 +50,18 @@ export type ProofEnrichmentResult = {
   proofBundle: ProofBundle | null;
 };
 
+const VALID_CANDIDATE_PROOF_TYPES = new Set<ProofType>([
+  "filing",
+  "news",
+  "price_volume",
+  "fundamentals",
+  "pattern_match",
+  "insider",
+  "regulatory",
+  "contract",
+  "legal_risk",
+]);
+
 const SOURCE_TO_PROOF: Array<{
   pattern: RegExp;
   type: ProofType;
@@ -134,23 +146,65 @@ const GENERIC_URL_PATTERNS = [
 
 function isSpecificUrl(url: string) {
   if (!/^https?:\/\//i.test(url)) return false;
-  if (GENERIC_URL_PATTERNS.some((pattern) => pattern.test(url.trim()))) return false;
+  if (GENERIC_URL_PATTERNS.some((pattern) => pattern.test(url.trim())))
+    return false;
   try {
     const parsed = new URL(url);
     if (parsed.pathname === "/" || parsed.pathname === "") return false;
-    if (/query|api|v3|v4/i.test(parsed.pathname) && parsed.search && !/article|filing|accession|document|news|press|ticker|symbol/i.test(parsed.pathname + parsed.search)) return false;
-    if (/sec\.gov$/i.test(parsed.hostname)) return /Archives\/edgar\/data|ixviewer\/doc\/action|getcompany|browse-edgar/i.test(parsed.pathname + parsed.search);
+    if (
+      /query|api|v3|v4/i.test(parsed.pathname) &&
+      parsed.search &&
+      !/article|filing|accession|document|news|press|ticker|symbol/i.test(
+        parsed.pathname + parsed.search,
+      )
+    )
+      return false;
+    if (/sec\.gov$/i.test(parsed.hostname))
+      return /Archives\/edgar\/data|ixviewer\/doc\/action|getcompany|browse-edgar/i.test(
+        parsed.pathname + parsed.search,
+      );
     return true;
   } catch {
     return false;
   }
 }
 
-const TOPIC_KEYWORDS = ["earnings", "guidance", "filing", "8-k", "10-q", "10-k", "partnership", "customer", "contract", "approval", "recall", "demand", "margin", "price target", "estimate", "dividend", "buyback", "merger", "acquisition", "semiconductor", "ai", "gpu", "memory", "hbm", "revenue", "profit"];
+const TOPIC_KEYWORDS = [
+  "earnings",
+  "guidance",
+  "filing",
+  "8-k",
+  "10-q",
+  "10-k",
+  "partnership",
+  "customer",
+  "contract",
+  "approval",
+  "recall",
+  "demand",
+  "margin",
+  "price target",
+  "estimate",
+  "dividend",
+  "buyback",
+  "merger",
+  "acquisition",
+  "semiconductor",
+  "ai",
+  "gpu",
+  "memory",
+  "hbm",
+  "revenue",
+  "profit",
+];
 
 function companyTerms(rawSignal: RawSignal) {
   const payload = objectValue(rawSignal.payload);
-  return unique([text(payload.company), text(payload.companyName), text(payload.entityName)]).filter((term) => term.length >= 3);
+  return unique([
+    text(payload.company),
+    text(payload.companyName),
+    text(payload.entityName),
+  ]).filter((term) => term.length >= 3);
 }
 
 function topicTerms(...texts: string[]) {
@@ -158,33 +212,101 @@ function topicTerms(...texts: string[]) {
   return TOPIC_KEYWORDS.filter((term) => haystack.includes(term));
 }
 
-function proofMatchReport(signal: RawSignal, proofSignal: RawSignal, type: ProofType | null, url: string): ProofMatchReport {
+function proofMatchReport(
+  signal: RawSignal,
+  proofSignal: RawSignal,
+  type: ProofType | null,
+  url: string,
+): ProofMatchReport {
   const targetTicker = text(signal.ticker).toUpperCase();
   const proofTicker = text(proofSignal.ticker).toUpperCase();
-  const proofHaystack = `${proofSignal.title} ${proofSignal.summary} ${proofTicker}`.toLowerCase();
-  const signalHaystack = `${signal.title} ${signal.summary} ${targetTicker}`.toLowerCase();
+  const proofHaystack =
+    `${proofSignal.title} ${proofSignal.summary} ${proofTicker}`.toLowerCase();
+  const signalHaystack =
+    `${signal.title} ${signal.summary} ${targetTicker}`.toLowerCase();
   const companies = companyTerms(signal);
   const proofCompanies = companyTerms(proofSignal);
-  const matchedTicker = Boolean(targetTicker && (proofTicker === targetTicker || proofHaystack.includes(targetTicker.toLowerCase())));
-  const matchedCompany = companies.some((company) => proofHaystack.includes(company.toLowerCase())) || proofCompanies.some((company) => signalHaystack.includes(company.toLowerCase()));
+  const matchedTicker = Boolean(
+    targetTicker &&
+    (proofTicker === targetTicker ||
+      proofHaystack.includes(targetTicker.toLowerCase())),
+  );
+  const matchedCompany =
+    companies.some((company) =>
+      proofHaystack.includes(company.toLowerCase()),
+    ) ||
+    proofCompanies.some((company) =>
+      signalHaystack.includes(company.toLowerCase()),
+    );
   const targetTopics = topicTerms(signal.title, signal.summary);
   const proofTopics = topicTerms(proofSignal.title, proofSignal.summary);
-  const matchedTopic = targetTopics.some((topic) => proofTopics.includes(topic));
-  const freshWithin72h = Date.now() - proofSignal.receivedAt.getTime() <= 72 * 60 * 60 * 1000;
+  const matchedTopic = targetTopics.some((topic) =>
+    proofTopics.includes(topic),
+  );
+  const freshWithin72h =
+    Date.now() - proofSignal.receivedAt.getTime() <= 72 * 60 * 60 * 1000;
   const urlIsSpecific = isSpecificUrl(url);
-  const differentEntity = Boolean((targetTicker && proofTicker && targetTicker !== proofTicker) || (companies.length && proofCompanies.length && !matchedCompany && !matchedTicker));
+  const differentEntity = Boolean(
+    (targetTicker && proofTicker && targetTicker !== proofTicker) ||
+    (companies.length &&
+      proofCompanies.length &&
+      !matchedCompany &&
+      !matchedTicker),
+  );
   let proofMatchScore = 0;
   const reasons: string[] = [];
-  if (matchedTicker) { proofMatchScore += 35; reasons.push("same_ticker"); }
-  if (matchedCompany) { proofMatchScore += 25; reasons.push("same_company"); }
-  if (matchedTopic) { proofMatchScore += 20; reasons.push("same_or_related_topic"); }
-  if (freshWithin72h) { proofMatchScore += 10; reasons.push("fresh_within_72h"); } else { proofMatchScore -= 20; reasons.push("stale_evidence"); }
-  if (urlIsSpecific) { proofMatchScore += 10; reasons.push("specific_receipt_url"); } else { proofMatchScore -= 30; reasons.push("generic_or_api_url"); }
-  if (differentEntity) { proofMatchScore -= 50; reasons.push("different_ticker_or_company"); }
-  if (!matchedTopic) { proofMatchScore -= 30; reasons.push("unrelated_topic"); }
-  if (type === "source_health") { proofMatchScore = Math.min(proofMatchScore, 0); reasons.push("source_health_only_not_proof"); }
+  if (matchedTicker) {
+    proofMatchScore += 35;
+    reasons.push("same_ticker");
+  }
+  if (matchedCompany) {
+    proofMatchScore += 25;
+    reasons.push("same_company");
+  }
+  if (matchedTopic) {
+    proofMatchScore += 20;
+    reasons.push("same_or_related_topic");
+  }
+  if (freshWithin72h) {
+    proofMatchScore += 10;
+    reasons.push("fresh_within_72h");
+  } else {
+    proofMatchScore -= 20;
+    reasons.push("stale_evidence");
+  }
+  if (urlIsSpecific) {
+    proofMatchScore += 10;
+    reasons.push("specific_receipt_url");
+  } else {
+    proofMatchScore -= 30;
+    reasons.push("generic_or_api_url");
+  }
+  if (differentEntity) {
+    proofMatchScore -= 50;
+    reasons.push("different_ticker_or_company");
+  }
+  if (!matchedTopic) {
+    proofMatchScore -= 30;
+    reasons.push("unrelated_topic");
+  }
+  if (type === "source_health") {
+    proofMatchScore = 0;
+    reasons.push("source_health_is_diagnostic_not_proof");
+  }
   proofMatchScore = Math.max(0, Math.min(100, proofMatchScore));
-  return { proofType: type ?? "unknown", source: proofSignal.source, title: proofSignal.title, url: url || null, proofMatchScore, matchedTicker, matchedCompany, matchedTopic, freshWithin72h, urlIsSpecific, reasons };
+  return {
+    proofType: type ?? "unknown",
+    source: proofSignal.source,
+    title: proofSignal.title,
+    url: url || null,
+    proofMatchScore,
+    matchedTicker,
+    matchedCompany,
+    matchedTopic,
+    freshWithin72h,
+    urlIsSpecific,
+    reasons,
+  };
 }
 
 function proofFromRelatedSignal(
@@ -250,6 +372,24 @@ export async function enrichProofForRawSignal(
   const acceptedProofItems: ProofMatchReport[] = [];
   const rejectedProofItems: ProofMatchReport[] = [];
 
+  for (const proof of base.proofs.filter(
+    (item) => item.type === "source_health",
+  )) {
+    rejectedProofItems.push({
+      proofType: "source_health",
+      source: proof.source,
+      title: proof.label,
+      url: proof.url ?? null,
+      proofMatchScore: 0,
+      matchedTicker: false,
+      matchedCompany: false,
+      matchedTopic: false,
+      freshWithin72h: false,
+      urlIsSpecific: false,
+      reasons: ["source_health_is_diagnostic_not_proof"],
+    });
+  }
+
   if (shouldSkipReferenceUpdate(rawSignal)) {
     attempts.push({
       source: rawSignal.source,
@@ -300,7 +440,10 @@ export async function enrichProofForRawSignal(
         const proof = related
           ? proofFromRelatedSignal(related, rawSignal)
           : null;
-        const match = related && proof?.url ? proofMatchReport(rawSignal, related, proof.type, proof.url) : null;
+        const match =
+          related && proof?.url
+            ? proofMatchReport(rawSignal, related, proof.type, proof.url)
+            : null;
         if (match && match.proofMatchScore < 70) rejectedProofItems.push(match);
         if (
           proof &&
@@ -352,24 +495,50 @@ export async function enrichProofForRawSignal(
       "No additional real supporting proof was found; candidate remains blocked if proof gates fail.",
     );
   return {
-    proofCount: enriched?.proofCount ?? base.proofCount,
-    proofTypes: enriched?.proofTypes ?? base.proofTypes,
+    proofCount: (enriched?.proofs ?? base.proofs).filter((proof) =>
+      VALID_CANDIDATE_PROOF_TYPES.has(proof.type),
+    ).length,
+    proofTypes: (enriched?.proofTypes ?? base.proofTypes).filter((type) =>
+      VALID_CANDIDATE_PROOF_TYPES.has(type),
+    ),
     receipts: unique([
       ...(enriched?.proofs ?? base.proofs).map((proof) => proof.source),
     ]),
     urls: unique(
       (enriched?.proofs ?? base.proofs).map((proof) => text(proof.url)),
     ),
-    strongestProof: enriched?.strongestProof ?? base.strongestProof,
-    missingProof: enriched?.missingProof ?? base.missingProof,
+    strongestProof:
+      (enriched?.proofs ?? base.proofs)
+        .filter((proof) => VALID_CANDIDATE_PROOF_TYPES.has(proof.type))
+        .sort(
+          (a, b) =>
+            ({ weak: 1, medium: 2, strong: 3 })[b.strength] -
+            { weak: 1, medium: 2, strong: 3 }[a.strength],
+        )[0] ?? null,
+    missingProof: (enriched?.missingProof ?? base.missingProof).filter((type) =>
+      VALID_CANDIDATE_PROOF_TYPES.has(type),
+    ),
     confidenceScore: enriched?.confidenceScore ?? base.confidenceScore,
-    safeToPromote: enriched?.safeToPromote === "yes",
+    safeToPromote:
+      enriched?.safeToPromote === "yes" &&
+      (enriched.proofTypes ?? []).filter((type) =>
+        VALID_CANDIDATE_PROOF_TYPES.has(type),
+      ).length >= 2,
     enrichmentProofs,
     acceptedProofItems,
     rejectedProofItems,
-    rejectedProofReasons: unique(rejectedProofItems.flatMap((item) => item.reasons)),
+    rejectedProofReasons: unique(
+      rejectedProofItems.flatMap((item) => item.reasons),
+    ),
     enrichmentAttempts: attempts,
-    enrichmentWarnings: warnings,
+    enrichmentWarnings: [
+      ...warnings,
+      ...((enriched?.proofs ?? base.proofs).some((proof) =>
+        VALID_CANDIDATE_PROOF_TYPES.has(proof.type),
+      )
+        ? []
+        : ["No valid supporting proof found."]),
+    ],
     enrichmentErrors: errors,
     proofBundle: enriched,
   };

@@ -251,6 +251,8 @@ export function buildR2Key(
     return `raw/fmp/press-releases/${sym}/${dk}.json`;
   if (s === "fmp" && d === "transcripts")
     return `raw/fmp/transcripts/${sym}/${year}/q${quarter || clean(extraMetadata.period ?? "unknown")}.json`;
+  if (s === "fmp" && a === "proof")
+    return `raw/fmp/proof/${sym}/${dk}/${clean(extraMetadata.runId ?? d)}.json`;
   if (s === "fmp" && d === "sec-filings")
     return `raw/fmp/sec-filings/${sym}/${clean(extraMetadata.formType ?? "filing")}/${clean(extraMetadata.accession ?? dk)}.json`;
   if (s === "sec")

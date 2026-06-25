@@ -69,6 +69,26 @@ type StageResult = {
 const SAFE_HEADERS = { "Content-Type": "application/json" };
 const RUN_ROUTE = "/api/internal/run-live-alert-cycle";
 
+const r2ResultFields = [
+  "configured",
+  "connected",
+  "bucket",
+  "canRead",
+  "canWrite",
+  "canDelete",
+  "writeAttempted",
+  "readAfterWriteAttempted",
+  "deleteAttempted",
+  "sourceOfTruth",
+  "storageMode",
+  "lastConfirmedWriteAt",
+  "lastConfirmedDeleteAt",
+  "errorCategory",
+  "errorMessageSafe",
+  "suspectedCause",
+  "nextAction",
+] as const;
+
 const startupChecks: Array<{ key: StageKey; label: string; route: string }> = [
   { key: "initial", label: "Health", route: "/api/health" },
   {
@@ -594,6 +614,10 @@ export default function EngineControlPanel() {
     () => rows.find((row) => row.stage === "7-layer ear registry"),
     [rows],
   );
+  const latestR2Row = useMemo(
+    () => rows.find((row) => row.stage === "Test R2 Write/Delete" || row.stage === "Check R2 health"),
+    [rows],
+  );
 
   function headers() {
     return secret.trim()
@@ -649,6 +673,11 @@ export default function EngineControlPanel() {
 
   async function checkR2Health(confirmWrite: boolean) {
     setBusy(confirmWrite ? "r2-write" : "r2-health");
+    setMessage(
+      confirmWrite
+        ? "Testing R2 write/delete… this may take a few seconds."
+        : "Checking read-only R2 health…",
+    );
     try {
       const response = await fetch("/api/internal/r2-health", {
         method: confirmWrite ? "POST" : "GET",
@@ -658,7 +687,7 @@ export default function EngineControlPanel() {
       });
       const json = await readResponse(response);
       const row = summarize(
-        confirmWrite ? "Run R2 write test" : "Check R2 health",
+        confirmWrite ? "Test R2 Write/Delete" : "Check R2 health",
         "/api/internal/r2-health",
         confirmWrite ? "POST" : "GET",
         response.status,
@@ -668,9 +697,9 @@ export default function EngineControlPanel() {
         row,
         ...current.filter((item) => item.stage !== row.stage),
       ]);
-      setMessage(confirmWrite ? "R2 write/delete health test completed." : "R2 health refreshed.");
+      setMessage(confirmWrite ? "R2 write/delete health test completed." : "R2 read-only health refreshed.");
     } catch (error) {
-      const row = summarize(confirmWrite ? "Run R2 write test" : "Check R2 health", "/api/internal/r2-health", confirmWrite ? "POST" : "GET", "error", { ok: false, error: error instanceof Error ? error.message : "Unknown error" });
+      const row = summarize(confirmWrite ? "Test R2 Write/Delete" : "Check R2 health", "/api/internal/r2-health", confirmWrite ? "POST" : "GET", "error", { ok: false, error: error instanceof Error ? error.message : "Unknown error" });
       setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
       setMessage("R2 health request failed.");
     }
@@ -815,7 +844,7 @@ export default function EngineControlPanel() {
           disabled={busy !== null}
           onClick={() => checkR2Health(true)}
         >
-          Run R2 Write Test
+          Test R2 Write/Delete
         </button>
         <button
           style={styles.button}
@@ -873,6 +902,32 @@ export default function EngineControlPanel() {
         >
           Stage 3 Publish One Approved Website Alert
         </button>
+      </section>
+
+
+      {busy === "r2-write" ? (
+        <section style={styles.card}>
+          <h2 style={styles.heading}>R2 Write/Delete Test</h2>
+          <p style={styles.small}>Testing R2 write/delete… this may take a few seconds.</p>
+        </section>
+      ) : null}
+
+      <section style={styles.card}>
+        <h2 style={styles.heading}>R2 Write/Delete result</h2>
+        <p style={styles.small}>
+          The button calls POST /api/internal/r2-health with {`{"confirmWrite":true}`}.
+          This panel only shows safe health fields and never displays access keys, secret keys, tokens, or unredacted environment values.
+        </p>
+        <div style={styles.resultGrid}>
+          {r2ResultFields.map((field) => (
+            <div key={field} style={styles.resultItem}>
+              <strong>{field}</strong>
+              <pre style={styles.resultValue}>
+                {resultValue(isRecord(latestR2Row?.json) ? latestR2Row.json[field] : undefined)}
+              </pre>
+            </div>
+          ))}
+        </div>
       </section>
 
       <section style={styles.card}>

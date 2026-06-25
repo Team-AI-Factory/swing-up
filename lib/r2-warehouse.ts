@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { prisma } from "@/lib/db/client";
 import { redactSecrets } from "@/lib/redact-secrets";
 
-export type R2SourceOfTruth = "recent_write_test" | "runtime_write_check" | "read_only_get_check";
+export type R2SourceOfTruth = "recent_write_test" | "runtime_write_check" | "read_only_get_check" | "route_did_not_receive_confirmWrite";
 
 export type R2OperationalStatus = {
   configured: boolean;
@@ -30,6 +30,10 @@ export type R2Health = {
   canRead: boolean;
   canWrite: boolean;
   canDelete: boolean;
+  storageMode: "r2_raw_storage" | "postgresql_summary_only";
+  lastConfirmedWriteAt: string | null;
+  lastConfirmedDeleteAt: string | null;
+  sourceOfTruth: R2SourceOfTruth;
   lastChecked: string;
   missingEnvVars: string[];
   errorCategory: string | null;
@@ -424,11 +428,11 @@ function safeMessage(e: unknown) {
 function responseCategory(prefix: string, res: Response | null) {
   if (!res) return `${prefix}_not_attempted`;
   if (res.ok) return null;
-  if (res.status === 401 || res.status === 403)
-    return `${prefix}_permission_${res.status}`;
-  if (res.status === 404) return `${prefix}_bucket_or_key_not_found_404`;
-  if (res.status === 405) return `${prefix}_method_not_allowed_405`;
-  if (res.status >= 500) return `${prefix}_r2_service_${res.status}`;
+  if (res.status === 401 || res.status === 403) return "access_denied";
+  if (res.status === 404) return "bucket_not_found";
+  if (res.status === 400) return "signature_mismatch";
+  if (res.status === 405) return "endpoint_mismatch";
+  if (res.status >= 500) return "unknown_r2_error";
   return `${prefix}_http_${res.status}`;
 }
 async function safeResponseMessage(action: string, res: Response | null) {
@@ -512,6 +516,10 @@ export async function checkR2Health(confirmWrite = false): Promise<R2Health> {
     canRead: false,
     canWrite: false,
     canDelete: false,
+    storageMode: "postgresql_summary_only",
+    lastConfirmedWriteAt: null,
+    lastConfirmedDeleteAt: null,
+    sourceOfTruth: confirmWrite ? "runtime_write_check" : "read_only_get_check",
     lastChecked: new Date().toISOString(),
     missingEnvVars: c.missingEnvVars,
     errorCategory: null,
@@ -543,7 +551,9 @@ export async function checkR2Health(confirmWrite = false): Promise<R2Health> {
     regionFallbackAttempted: false,
     regionFallbackUsed: null,
     writeTestNotRun: !confirmWrite,
-    message: confirmWrite ? null : "Use POST with confirmWrite=true to test write/delete.",
+    message: confirmWrite
+      ? null
+      : "This is read-only health. Use POST with confirmWrite=true to test write/delete.",
     secretsRedacted: true,
   };
   if (!c.configured) {
@@ -631,13 +641,19 @@ export async function checkR2Health(confirmWrite = false): Promise<R2Health> {
       health.deleteErrorMessageSafe = await safeResponseMessage("delete", del);
       health.connected = health.canRead;
       health.writeTestNotRun = false;
+      if (health.canRead && health.canWrite && health.canDelete) {
+        health.storageMode = "r2_raw_storage";
+        health.lastConfirmedWriteAt = health.lastChecked;
+        health.lastConfirmedDeleteAt = health.lastChecked;
+        health.sourceOfTruth = "recent_write_test";
+      }
     }
     if (confirmWrite) rememberSuccessfulR2WriteTest(health);
     return { ...health, ...diagnoseR2Health(health) };
   } catch (e) {
     const failed = {
       ...base,
-      errorCategory: "request_error",
+      errorCategory: confirmWrite ? "unknown_r2_error" : "request_error",
       errorMessageSafe: safeMessage(e),
     };
     return { ...failed, ...diagnoseR2Health(failed) };

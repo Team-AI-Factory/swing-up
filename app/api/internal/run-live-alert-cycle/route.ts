@@ -24,6 +24,7 @@ import { runGenericNewsTriage } from "@/lib/generic-news-triage";
 import { runFmpProviderContractTest } from "@/lib/fmp-provider-contract";
 import { runFmpProof, runPriceVolume } from "@/lib/proof-ears";
 import type { ProofItem } from "@/lib/proof/proof-bundle-builder";
+import { articleIdentity, readArticleForMemory } from "@/lib/article-reader";
 
 export const dynamic = "force-dynamic";
 
@@ -189,6 +190,7 @@ type DiscoveryRow = {
   recheckAfter: string | null;
   missingProofToRecheck: string[];
   watchPriority: "high" | "medium" | "low" | null;
+  [key: string]: unknown;
 };
 
 type SignalPlaybook = {
@@ -1664,6 +1666,18 @@ function baseResponse(input: {
     finalJudgeSummary: {},
     approvalGateSummary: {},
     publishLedgerSummary: {},
+    articleReaderSummary: {},
+    articlesSeenThisRun: [] as string[],
+    articleReadAttemptedCount: 0,
+    articleReadSuccessCount: 0,
+    articleReadFailedCount: 0,
+    articleMemoryReusedCount: 0,
+    articleDuplicateSkippedCount: 0,
+    articleTitleSnippetOnlyCount: 0,
+    articleFullTextAvailableCount: 0,
+    articleMemoryProofUsedCount: 0,
+    articleReaderFailureReasons: [] as string[],
+    articleReaderExamples: [] as unknown[],
     genericNewsScanned: 0,
     seriousGenericSignalsFound: 0,
     rippleCandidatesCreated: 0,
@@ -2292,7 +2306,26 @@ export async function POST(request: NextRequest) {
       const blockedReasonsBySignal: Record<string, string[]> = {};
       const enrichedProofsBySignal: Record<string, unknown[]> = {};
       const enrichmentSummaries = [] as JsonRecord[];
+      const articleResultsBySignal: Record<string, JsonRecord> = {};
+      const articleResultsByHash = new Map<string, JsonRecord>();
+      const maxArticleReadsPerRun = Math.max(0, Math.min(Number(obj(body).maxArticleReadsPerRun ?? 5) || 5, 10));
+      let articleReadBudgetUsed = 0;
       for (const signal of rawSignals) {
+        const articleInput = { articleUrl: signal.sourceUrl, title: signal.title, snippet: signal.summary, source: signal.source, ticker: signal.ticker, receivedAt: signal.receivedAt, confirmRun, dryRun, duplicateArticleSourceId: signal.id };
+        const identity = articleIdentity(articleInput);
+        const hash = identity.articleUrlHash;
+        let articleMemory: JsonRecord;
+        if (hash && articleResultsByHash.has(hash)) {
+          articleMemory = { ...articleResultsByHash.get(hash)!, duplicateArticleInRun: true, duplicateArticleSourceId: signal.id, duplicateArticleReuseReason: "same articleUrlHash already processed in this Stage 1 run", articleReadAttempted: false };
+        } else if (articleReadBudgetUsed >= maxArticleReadsPerRun) {
+          articleMemory = { ...identity, hasArticleUrl: Boolean(identity.articleUrl), articleReadAttempted: false, articleTextAvailable: false, articleSummaryAvailable: false, articleInputMode: "title_snippet_only", articleMemoryUsed: false, articleMemoryAvailable: false, articleAlreadySeen: false, articleMemoryProofUsed: false, articleMemoryRejectedReason: "maxArticleReadsPerRun exceeded", errorCategory: "dry_run_budget_exceeded", errorMessageSafe: "maxArticleReadsPerRun exceeded" };
+          if (hash) articleResultsByHash.set(hash, articleMemory);
+        } else {
+          articleMemory = await readArticleForMemory(articleInput) as JsonRecord;
+          if (articleMemory.articleReadAttempted === true) articleReadBudgetUsed += 1;
+          if (hash) articleResultsByHash.set(hash, articleMemory);
+        }
+        articleResultsBySignal[signal.id] = articleMemory;
         const beforeResponse = await candidateFactoryPOST(
           new NextRequest(
             "http://internal/api/internal/candidate-factory-run",
@@ -2507,6 +2540,21 @@ export async function POST(request: NextRequest) {
               /opinion|calendar|unsafe/i.test(reason),
             ),
           aiCommitteeCalled: false,
+          articleInputMode: articleMemory.articleInputMode,
+          hasArticleUrl: articleMemory.hasArticleUrl,
+          articleUrlHash: articleMemory.articleUrlHash,
+          articleAlreadySeen: articleMemory.articleAlreadySeen,
+          articleMemoryAvailable: articleMemory.articleMemoryAvailable,
+          articleMemoryUsed: articleMemory.articleMemoryUsed,
+          articleReadAttempted: articleMemory.articleReadAttempted,
+          articleTextAvailable: articleMemory.articleTextAvailable,
+          articleSummaryAvailable: articleMemory.articleSummaryAvailable,
+          articleMemoryProofUsed: articleMemory.articleMemoryProofUsed,
+          articleMemoryProofReason: articleMemory.articleMemoryProofReason,
+          articleMemoryRejectedReason: articleMemory.articleMemoryRejectedReason,
+          duplicateArticleInRun: articleMemory.duplicateArticleInRun,
+          duplicateArticleSourceId: articleMemory.duplicateArticleSourceId,
+          duplicateArticleReuseReason: articleMemory.duplicateArticleReuseReason,
         });
       }
       for (const row of discoveryRows) {
@@ -2536,6 +2584,26 @@ export async function POST(request: NextRequest) {
             ? [...failures, ...layerFailures].join("; ")
             : null;
       }
+      const articleRows = Object.values(articleResultsBySignal);
+      const articleReaderFailureReasons = Array.from(new Set(articleRows.map((row) => String(row.errorCategory ?? "")).filter(Boolean)));
+      const articleReaderSummary = {
+        maxArticleReadsPerRun,
+        articlesSeenThisRun: Array.from(articleResultsByHash.keys()),
+        articleReadAttemptedCount: articleRows.filter((row) => row.articleReadAttempted === true).length,
+        articleReadSuccessCount: articleRows.filter((row) => row.articleReadAttempted === true && row.articleTextAvailable === true).length,
+        articleReadFailedCount: articleRows.filter((row) => row.articleReadAttempted === true && row.articleTextAvailable !== true).length,
+        articleMemoryReusedCount: articleRows.filter((row) => row.articleMemoryUsed === true).length,
+        articleDuplicateSkippedCount: articleRows.filter((row) => row.duplicateArticleInRun === true).length,
+        articleTitleSnippetOnlyCount: articleRows.filter((row) => row.articleInputMode === "title_snippet_only" || row.articleInputMode === "memory_title_snippet_only").length,
+        articleFullTextAvailableCount: articleRows.filter((row) => row.articleTextAvailable === true).length,
+        articleMemoryProofUsedCount: articleRows.filter((row) => row.articleMemoryProofUsed === true).length,
+        articleReaderFailureReasons,
+        articleReaderExamples: articleRows.slice(0, 5).map((row) => ({ articleUrlHash: row.articleUrlHash, articleInputMode: row.articleInputMode, articleReadAttempted: row.articleReadAttempted, articleMemoryUsed: row.articleMemoryUsed, articleSummary: String(row.articleSummary ?? row.reusedArticleSummary ?? "").slice(0, 240), errorCategory: row.errorCategory ?? null })),
+        openAiCalled: false,
+        published: false,
+        sentToTelegram: false,
+      };
+      Object.assign(output, articleReaderSummary, { articleReaderSummary, articlesSeenThisRun: articleReaderSummary.articlesSeenThisRun });
       const rankedCandidates = sortDiscoveryRows(discoveryRows);
       const topDirectCandidates = rankedCandidates
         .filter((row) => row.directTickerMatch === true)

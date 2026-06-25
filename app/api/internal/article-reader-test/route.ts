@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { articleIdentity, latestArticleSignals, readArticleForMemory } from "@/lib/article-reader";
+import { articleIdentity, latestArticleSignals, readArticleForMemory, ensureArticleMemoryTable, safeArticleMemoryError } from "@/lib/article-reader";
 
 function bool(v: unknown) { return v === true || v === "true"; }
 function num(v: unknown, fallback: number) { const n=Number(v); return Number.isFinite(n)?n:fallback; }
@@ -13,6 +13,11 @@ export async function POST(request: NextRequest) {
     const maxArticles = Math.max(1, Math.min(num(body.maxArticles, 5), 10));
     if (!process.env.DATABASE_URL) {
       return NextResponse.json({ ok: true, dryRun, confirmRun, warnings: ["DATABASE_URL is not configured; article-reader test could not load newest raw signal URLs in this environment."], articleReadAttemptedCount: 0, articleReadSuccessCount: 0, articleReadFailedCount: 0, articleMemoryReusedCount: 0, articleDuplicateSkippedCount: 0, articleSummariesCreatedCount: 0, articleMemoryProofUsedCount: 0, openAiCalled: false, published: false, sentToTelegram: false, table: [] });
+    }
+    try {
+      await ensureArticleMemoryTable();
+    } catch (e) {
+      return NextResponse.json({ ok:false, errorCategory:"article_memory_setup_failed", errorMessageSafe:safeArticleMemoryError(e), openAiCalled:false, published:false, sentToTelegram:false }, { status: 200 });
     }
     const signals = await latestArticleSignals(maxArticles);
     const seen = new Map<string, Awaited<ReturnType<typeof readArticleForMemory>>>();

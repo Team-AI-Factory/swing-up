@@ -24,6 +24,7 @@ import { runGenericNewsTriage } from "@/lib/generic-news-triage";
 import { runFmpProviderContractTest } from "@/lib/fmp-provider-contract";
 import { getLiveSourceContractSummary, buildLiveSourceSchedulerPlan } from "@/lib/live-source-contracts";
 import { runFmpProof, runPriceVolume } from "@/lib/proof-ears";
+import { runLiveEarRun } from "@/lib/live-ear-runner";
 import type { ProofItem } from "@/lib/proof/proof-bundle-builder";
 import { articleIdentity, readArticleForMemory } from "@/lib/article-reader";
 
@@ -1679,6 +1680,7 @@ function baseResponse(input: {
     articleMemoryProofUsedCount: 0,
     articleReaderFailureReasons: [] as string[],
     articleReaderExamples: [] as unknown[],
+    liveEarSummary: null as unknown,
     genericNewsScanned: 0,
     seriousGenericSignalsFound: 0,
     rippleCandidatesCreated: 0,
@@ -1831,6 +1833,7 @@ export async function POST(request: NextRequest) {
     Math.max(int(body.maxDeepScans, 5), 0),
     maxAssetsToScanNow,
   );
+  const includeLiveEars = bool(body.includeLiveEars, false);
   const warnings = [
     "Telegram is disabled for this founder website test; this route never sends Telegram.",
     ...(confirmSend || allowTelegram
@@ -1862,6 +1865,34 @@ export async function POST(request: NextRequest) {
       confirmRun,
       r2RawStorageReady: r2WriteAvailable,
     });
+    const liveEarSummary = includeLiveEars
+      ? await runLiveEarRun({
+          dryRun: true,
+          confirmRun: false,
+          maxSources: 20,
+          maxItemsPerSource: 20,
+          priorityMode: "balanced",
+          symbols: ["NVDA", "AMD", "MSFT", "GOOGL"],
+          keywords: [
+            "product launch",
+            "guidance",
+            "FDA approval",
+            "contract award",
+            "lawsuit",
+            "investigation",
+            "revenue",
+            "partnership",
+          ],
+        }).catch((error: unknown) => ({
+          ok: false,
+          safeErrorCategory: "live_ear_stage1_failed_safely",
+          safeErrorMessage:
+            error instanceof Error ? error.message.slice(0, 160) : "Unknown error",
+          noOpenAI: true,
+          noPublish: true,
+          noTelegram: true,
+        }))
+      : null;
     const genericTriage = await runGenericNewsTriage({
       maxGenericItemsToScan: Math.min(maxRawSignalsToInspect, 50),
       maxRippleCandidates: Math.min(maxDeepScans || 10, 10),
@@ -1900,6 +1931,8 @@ export async function POST(request: NextRequest) {
       callsSavedByGenericTriage: genericTriage.callsSavedByGenericTriage,
       genericNewsDidNotBypassProofGate: true,
       ...safeLiveSourceStage1Summary(),
+      includeLiveEars,
+      liveEarSummary,
       seriousSignalsFound: genericTriage.seriousGenericSignalsFound,
       genericRippleCandidates: Array.isArray(genericTriage.classifications)
         ? (genericTriage.classifications

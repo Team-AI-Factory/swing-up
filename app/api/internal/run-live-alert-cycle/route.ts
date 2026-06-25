@@ -71,6 +71,10 @@ type GreatSignalScorecard = {
   proofUnavailableByType: Record<string, string>;
   proofStillMissingAfterRouter: string[];
   nextBestProofToFetchAfterRouter: string;
+  priceVolumeProofExamples?: JsonRecord[];
+  fundamentalsProofExamples?: JsonRecord[];
+  fmpProofUnavailableReason?: string | null;
+  priceVolumeUnavailableReason?: string | null;
   routerFailureReasons?: string[];
 };
 
@@ -129,6 +133,10 @@ type DiscoveryRow = {
   proofUnavailableByType: Record<string, string>;
   proofStillMissingAfterRouter: string[];
   nextBestProofToFetchAfterRouter: string;
+  priceVolumeProofExamples?: JsonRecord[];
+  fundamentalsProofExamples?: JsonRecord[];
+  fmpProofUnavailableReason?: string | null;
+  priceVolumeUnavailableReason?: string | null;
   routerFailureReasons?: string[];
 };
 
@@ -158,18 +166,14 @@ function clampScore(value: number) {
 }
 
 function nextBestProof(missingProof: string[]) {
-  const priority = [
-    "price_volume",
-    "fundamentals",
-    "filing",
-    "pattern_match",
-    "regulatory",
-    "insider",
-    "contract",
-    "legal_risk",
-    "news",
-  ];
-  return priority.find((type) => missingProof.includes(type)) ?? "none";
+  const missing = new Set(missingProof.filter(Boolean));
+  if (!missing.size) return "none";
+  if (missing.has("price_volume")) return "price_volume";
+  if (missing.has("fundamentals")) return "fundamentals";
+  if (missing.has("filing") || missing.has("regulatory") || missing.has("legal_risk")) return "filing";
+  if (missing.has("news")) return "news";
+  if (missing.has("pattern_match")) return "pattern_match";
+  return missingProof.find(Boolean) ?? "none";
 }
 
 function gradeFromScore(
@@ -431,6 +435,17 @@ function proofReceiptUrl(type: "price_volume" | "fundamentals", ticker: string) 
   return `internal://proof-router/${type}/${ticker}/${stage1DateKey()}`;
 }
 
+const FUNDAMENTALS_VALUE_KEYS = ["revenueGrowthPct", "marginTrendPct", "epsOrIncomeGrowthPct", "earningsSurpriseAverage", "cashFlowToNetIncome", "debtToEquity", "currentRatio", "peRatio", "evToSales", "estimateRevisionPct", "priceTargetRevisionPct"];
+const FUNDAMENTALS_SCORE_KEYS = ["revenueGrowthScore", "marginTrendScore", "earningsQualityScore", "cashFlowQualityScore", "debtRiskScore", "valuationSupportScore", "estimateRevisionScore", "priceTargetRevisionScore"];
+
+function realFundamentalsValueCount(values: JsonRecord) {
+  return FUNDAMENTALS_VALUE_KEYS.filter((key) => numberOrNull(values[key]) !== null).length;
+}
+
+function realFundamentalsScoreCount(row: JsonRecord) {
+  return FUNDAMENTALS_SCORE_KEYS.filter((key) => numberOrNull(row[key]) !== null && numberOrNull(row[key])! > 0).length;
+}
+
 async function attachRoutedProofForSignal(
   signal: RawSignal,
   enrichment: Awaited<ReturnType<typeof enrichProofForRawSignal>>,
@@ -461,18 +476,21 @@ async function attachRoutedProofForSignal(
         const volume = numberOrNull(row.volume);
         const averageVolume = numberOrNull(row.averageVolume) ?? numberOrNull(row.avgVolume);
         const volumeRatio = numberOrNull(row.volumeRatio);
+        const marketReactionStatus = text(row.marketReactionStatus) || "early_signal_possible";
+        const earlySignalPossible = row.earlySignalPossible === true || marketReactionStatus === "early_signal_possible" || marketReactionStatus === "no_reaction_yet";
         const metadata = {
+          ticker,
           latestPrice,
-          priceChange,
-          priceMove1d: numberOrNull(row.priceMove1d),
-          priceMove5d: numberOrNull(row.priceMove5d),
-          priceMove30d: numberOrNull(row.priceMove30d),
+          priceChange1d: priceChange,
+          priceChange5d: numberOrNull(row.priceMove5d),
           volume,
           averageVolume,
           volumeRatio,
-          marketReactionStatus: text(row.marketReactionStatus),
-          earlySignalPossible: row.earlySignalPossible === true,
+          marketReactionStatus,
+          earlySignalPossible,
           pricedInRiskScore: numberOrNull(row.pricedInRiskScore),
+          source: "FMP",
+          receiptUrl: proofReceiptUrl("price_volume", ticker),
         };
         extraProofs.push({ type: "price_volume", strength: "medium", label: "Real FMP price and volume context", source: "FMP Price Volume Proof", summary: `${ticker} real price/volume values returned: price ${latestPrice}, volume ${volume}.`, url: proofReceiptUrl("price_volume", ticker), observedAt: new Date().toISOString(), metadata });
         acceptedProofItems.push({ proofType: "price_volume", source: "FMP Price Volume Proof", title: `${ticker} price/volume proof`, url: proofReceiptUrl("price_volume", ticker), proofMatchScore: 90, matchedTicker: true, matchedCompany: false, matchedTopic: true, freshWithin72h: true, urlIsSpecific: true, reasons: ["same_ticker", "real_latest_price", "real_volume", "market_reaction_bonus_only"] });
@@ -492,15 +510,21 @@ async function attachRoutedProofForSignal(
       const result = await runFmpProof({ tickers: [ticker], maxTickers: 1, dryRun: true, confirmRun: false });
       const row = (Array.isArray(result.proof) ? result.proof : []).map(obj).find((item) => text(item.ticker).toUpperCase() === ticker);
       const values = obj(row?.valuesUsed);
-      const realValueCount = ["revenueGrowthPct", "marginTrendPct", "epsOrIncomeGrowthPct", "earningsSurpriseAverage", "cashFlowToNetIncome", "debtToEquity", "currentRatio", "peRatio", "evToSales"].filter((key) => numberOrNull(values[key]) !== null).length;
-      if (row && row.fundamentalsProofClean === true && realValueCount >= 3) {
+      const realValueCount = realFundamentalsValueCount(values);
+      const realScoreCount = row ? realFundamentalsScoreCount(row) : 0;
+      const hasCleanFundamentalsProof = row && (row.fundamentalsProofClean === true || row.estimatesProofClean === true || row.priceTargetProofClean === true);
+      if (row && hasCleanFundamentalsProof && realValueCount >= 3 && realScoreCount >= 3) {
         const metadata = {
-          revenueGrowth: numberOrNull(values.revenueGrowthPct),
-          marginTrend: numberOrNull(values.marginTrendPct),
-          epsEarningsSupport: numberOrNull(values.epsOrIncomeGrowthPct) ?? numberOrNull(values.earningsSurpriseAverage),
-          cashFlowSupport: numberOrNull(values.cashFlowToNetIncome),
-          debtRisk: { debtToEquity: numberOrNull(values.debtToEquity), currentRatio: numberOrNull(values.currentRatio), score: numberOrNull(row.debtRiskScore) },
-          valuationSupport: { peRatio: numberOrNull(values.peRatio), evToSales: numberOrNull(values.evToSales), score: numberOrNull(row.valuationSupportScore) },
+          revenueGrowthScore: numberOrNull(row.revenueGrowthScore),
+          marginTrendScore: numberOrNull(row.marginTrendScore),
+          earningsQualityScore: numberOrNull(row.earningsQualityScore),
+          cashFlowQualityScore: numberOrNull(row.cashFlowQualityScore),
+          debtRiskScore: numberOrNull(row.debtRiskScore),
+          valuationSupportScore: numberOrNull(row.valuationSupportScore),
+          estimateRevisionScore: numberOrNull(row.estimateRevisionScore),
+          priceTargetRevisionScore: numberOrNull(row.priceTargetRevisionScore),
+          valuesUsed: values,
+          unavailableEndpoints: Array.isArray(row.unavailableEndpoints) ? row.unavailableEndpoints : [],
           fundamentalsProofScore: numberOrNull(row.fundamentalsProofScore),
           realValueCount,
         };
@@ -509,7 +533,8 @@ async function attachRoutedProofForSignal(
         attempts.push({ source: "FMP Fundamentals Proof", status: "added", detail: "Attached fundamentals proof from real FMP values only.", proofType: "fundamentals" });
       } else {
         routerFailureReasons.push("fundamentals_clean_real_values_unavailable");
-        attempts.push({ source: "FMP Fundamentals Proof", status: "missing", detail: "FMP route did not return clean fundamentals proof with at least three real values." });
+        const unavailable = Array.isArray(row?.unavailableEndpoints) ? row.unavailableEndpoints.slice(0, 6).join(",") : "none_returned";
+        attempts.push({ source: "FMP Fundamentals Proof", status: "missing", detail: `FMP proof unavailable: clean=${String(hasCleanFundamentalsProof)}, realValues=${realValueCount}, realScores=${realScoreCount}, unavailable=${unavailable}` });
       }
     } catch {
       routerFailureReasons.push("fundamentals_route_error_safe");
@@ -550,7 +575,8 @@ function proofRouterSummary(missingRequiredProof: string[], enrichment: Awaited<
     return `${need}:mapped_source_only`;
   });
   const proofUnavailableByType = Object.fromEntries(missingRequiredProof.map((need) => [need, "real_values_or_specific_receipt_not_available_in_this_run"]));
-  return { proofRouterAttempted: missingRequiredProof.length > 0, proofRouterCalls: calls, proofAttachedByType, proofUnavailableByType, proofStillMissingAfterRouter: missingRequiredProof, nextBestProofToFetchAfterRouter: nextBestProof(missingRequiredProof) };
+  const proofExamples = (type: string) => enrichment.enrichmentProofs.filter((proof) => proof.type === type).slice(0, 3).map((proof) => ({ ticker: proof.metadata?.ticker, source: proof.source, receiptUrl: proof.url, ...obj(proof.metadata) }));
+  return { proofRouterAttempted: missingRequiredProof.length > 0, proofRouterCalls: calls, proofAttachedByType, proofUnavailableByType, proofStillMissingAfterRouter: missingRequiredProof, nextBestProofToFetchAfterRouter: nextBestProof(missingRequiredProof), priceVolumeProofExamples: proofExamples("price_volume"), fundamentalsProofExamples: proofExamples("fundamentals"), fmpProofUnavailableReason: missingRequiredProof.includes("fundamentals") ? proofUnavailableByType.fundamentals : null, priceVolumeUnavailableReason: missingRequiredProof.includes("price_volume") ? proofUnavailableByType.price_volume : null };
 }
 
 function truthyRank(value: boolean | null | undefined) {
@@ -1746,6 +1772,10 @@ export async function POST(request: NextRequest) {
         proofRouterCalls: topDirectCandidates.flatMap((row) => row.proofRouterCalls),
         priceVolumeProofAttachedCount: topDirectCandidates.reduce((total, row) => total + Number(row.proofAttachedByType.price_volume ?? 0), 0),
         fundamentalsProofAttachedCount: topDirectCandidates.reduce((total, row) => total + Number(row.proofAttachedByType.fundamentals ?? 0), 0),
+        priceVolumeProofExamples: topDirectCandidates.flatMap((row) => row.priceVolumeProofExamples ?? []).slice(0, 5),
+        fundamentalsProofExamples: topDirectCandidates.flatMap((row) => row.fundamentalsProofExamples ?? []).slice(0, 5),
+        fmpProofUnavailableReason: topDirectCandidates.find((row) => row.fmpProofUnavailableReason)?.fmpProofUnavailableReason ?? null,
+        priceVolumeUnavailableReason: topDirectCandidates.find((row) => row.priceVolumeUnavailableReason)?.priceVolumeUnavailableReason ?? null,
         proofRouterSuccessCount: topDirectCandidates.reduce((total, row) => total + Object.values(row.proofAttachedByType).reduce((sum, count) => sum + Number(count), 0), 0),
         proofRouterFailureReasons: Array.from(new Set(topDirectCandidates.flatMap((row) => row.routerFailureReasons ?? []))),
         proofAttachedByType: topDirectCandidates.reduce<Record<string, number>>((acc, row) => { for (const [type, count] of Object.entries(row.proofAttachedByType)) acc[type] = (acc[type] ?? 0) + Number(count); return acc; }, {}),

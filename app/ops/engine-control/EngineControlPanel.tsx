@@ -12,7 +12,7 @@ type JsonValue =
   | { [key: string]: JsonValue };
 type JsonRecord = { [key: string]: JsonValue };
 
-type StageKey = "initial" | "refresh" | "stage1" | "stage2" | "stage3" | "r2" | "source" | "fmp";
+type StageKey = "initial" | "refresh" | "stage1" | "stage2" | "stage3" | "r2" | "source" | "fmp" | "article";
 
 type StageResult = {
   stage: string;
@@ -542,6 +542,9 @@ function stage1ResultPanel(row: StageResult | undefined) {
         proof?.enrichmentBlockedReasons ??
         row?.blockers,
     },
+    { label: "articleReaderSummary", value: isRecord(json) ? json.articleReaderSummary : undefined },
+    { label: "articleMemoryReusedCount", value: isRecord(json) ? json.articleMemoryReusedCount : undefined },
+    { label: "articleReadAttemptedCount", value: isRecord(json) ? json.articleReadAttemptedCount : undefined },
     { label: "proofMatchingClean", value: proof?.proofMatchingClean },
     { label: "cleanAcceptedProofCount", value: Array.isArray(proof?.acceptedProofItems) ? proof?.acceptedProofItems.length : 0 },
     { label: "proofAccepted", value: proof?.acceptedProofItems },
@@ -728,6 +731,27 @@ export default function EngineControlPanel() {
     setBusy(null);
   }
 
+  async function runArticleReaderTest() {
+    setBusy("article-reader");
+    try {
+      const response = await fetch("/api/internal/article-reader-test", {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({ dryRun: true, maxArticles: 5, confirmRun: false }),
+        cache: "no-store",
+      });
+      const json = await readResponse(response);
+      const row = summarize("Test Article Reader", "/api/internal/article-reader-test", "POST", response.status, json);
+      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      setMessage("Article reader test completed. No OpenAI, publish, or Telegram permission was allowed.");
+    } catch (error) {
+      const row = summarize("Test Article Reader", "/api/internal/article-reader-test", "POST", "error", { ok: false, error: error instanceof Error ? error.message : "Unknown error" });
+      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      setMessage("Article reader test failed safely.");
+    }
+    setBusy(null);
+  }
+
   async function runFmpProviderContractTest() {
     setBusy("fmp-contract");
     try {
@@ -881,6 +905,13 @@ export default function EngineControlPanel() {
           onClick={() => runStage("stage1")}
         >
           Run Stage 1 Dry Run
+        </button>
+        <button
+          style={styles.button}
+          disabled={busy !== null}
+          onClick={runArticleReaderTest}
+        >
+          Test Article Reader
         </button>
         <button
           style={styles.button}

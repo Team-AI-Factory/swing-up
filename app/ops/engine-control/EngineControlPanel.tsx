@@ -12,7 +12,7 @@ type JsonValue =
   | { [key: string]: JsonValue };
 type JsonRecord = { [key: string]: JsonValue };
 
-type StageKey = "initial" | "refresh" | "stage1" | "stage2" | "stage3" | "r2" | "source" | "fmp" | "article";
+type StageKey = "initial" | "refresh" | "stage1" | "stage2" | "stage3" | "r2" | "source" | "fmp" | "article" | "liveSource";
 
 type StageResult = {
   stage: string;
@@ -773,6 +773,42 @@ export default function EngineControlPanel() {
     setBusy(null);
   }
 
+  async function testLiveSourceContracts() {
+    setBusy("live-source-contract-test");
+    try {
+      const response = await fetch("/api/internal/live-source-contract-test", {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({
+          dryRun: true,
+          confirmRun: false,
+          maxSources: 20,
+          symbols: ["NVDA", "AMD", "MSFT", "GOOGL"],
+          keywords: ["product launch", "guidance", "FDA approval", "contract award", "lawsuit", "investigation"],
+        }),
+        cache: "no-store",
+      });
+      const json = await readResponse(response);
+      const row = summarize("Test Live Source Contracts", "/api/internal/live-source-contract-test", "POST", response.status, json);
+      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      setMessage("Live source contracts tested in dry-run mode. No OpenAI, publish, Telegram, social scraping, or unconfirmed source calls were allowed.");
+    } catch (error) {
+      const row = summarize("Test Live Source Contracts", "/api/internal/live-source-contract-test", "POST", "error", { ok: false, error: error instanceof Error ? error.message : "Unknown error" });
+      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      setMessage("Live source contract test failed safely.");
+    }
+    setBusy(null);
+  }
+
+  async function showLiveSourceSchedulerPlan() {
+    setBusy("live-source-scheduler-plan");
+    const row = await callGet("Show Live Source Scheduler Plan", "/api/internal/live-source-scheduler-plan");
+    setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+    setMessage("Live source scheduler plan loaded. This is a plan only; no automatic pulling started.");
+    setBusy(null);
+  }
+
+
   async function runStage(stage: "stage1" | "stage2" | "stage3") {
     const labels = {
       stage1: "Stage 1 dry run",
@@ -919,6 +955,20 @@ export default function EngineControlPanel() {
           onClick={runFmpProviderContractTest}
         >
           Run FMP Provider Contract Test
+        </button>
+        <button
+          style={styles.button}
+          disabled={busy !== null}
+          onClick={testLiveSourceContracts}
+        >
+          Test Live Source Contracts
+        </button>
+        <button
+          style={styles.button}
+          disabled={busy !== null}
+          onClick={showLiveSourceSchedulerPlan}
+        >
+          Show Live Source Scheduler Plan
         </button>
         <button
           style={styles.button}

@@ -22,6 +22,7 @@ import {
 } from "@/lib/global-ear-scheduler";
 import { runGenericNewsTriage } from "@/lib/generic-news-triage";
 import { runFmpProviderContractTest } from "@/lib/fmp-provider-contract";
+import { getLiveSourceContractSummary, buildLiveSourceSchedulerPlan } from "@/lib/live-source-contracts";
 import { runFmpProof, runPriceVolume } from "@/lib/proof-ears";
 import type { ProofItem } from "@/lib/proof/proof-bundle-builder";
 import { articleIdentity, readArticleForMemory } from "@/lib/article-reader";
@@ -1713,6 +1714,27 @@ function baseResponse(input: {
   };
 }
 
+function safeLiveSourceStage1Summary() {
+  try {
+    const summary = getLiveSourceContractSummary();
+    return {
+      liveSourceContractsLoaded: summary.contractsLoadedCount,
+      liveSourceContractsEnabled: summary.enabledContractsCount,
+      liveSourceContractsMissingKeys: summary.missingApiKeys,
+      liveSourceSchedulerPlanAvailable: Boolean(buildLiveSourceSchedulerPlan().ok),
+      liveSourceNextBestAdditions: summary.liveSourceNextBestAdditions,
+    };
+  } catch {
+    return {
+      liveSourceContractsLoaded: 0,
+      liveSourceContractsEnabled: 0,
+      liveSourceContractsMissingKeys: [],
+      liveSourceSchedulerPlanAvailable: false,
+      liveSourceNextBestAdditions: ["Live source contract registry failed safely; Stage 1 continued."],
+    };
+  }
+}
+
 function stage1DateKey(date = new Date()) {
   return date.toISOString().slice(0, 10);
 }
@@ -1877,6 +1899,7 @@ export async function POST(request: NextRequest) {
         genericTriage.deepChecksTriggeredByGenericNews,
       callsSavedByGenericTriage: genericTriage.callsSavedByGenericTriage,
       genericNewsDidNotBypassProofGate: true,
+      ...safeLiveSourceStage1Summary(),
       seriousSignalsFound: genericTriage.seriousGenericSignalsFound,
       genericRippleCandidates: Array.isArray(genericTriage.classifications)
         ? (genericTriage.classifications

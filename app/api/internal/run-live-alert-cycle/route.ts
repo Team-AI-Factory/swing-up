@@ -32,8 +32,26 @@ function redactedJson(payload: Record<string, unknown>, init?: ResponseInit) {
 
 type JsonRecord = Record<string, unknown>;
 type SignalGrade = "A" | "B" | "C" | "D" | "F";
-type PipelineStage = "radar_item" | "watch_candidate" | "proof_needed" | "ai_review_ready" | "approval_ready" | "publish_ready" | "rejected_noise";
-type SignalType = "direct_company_news" | "official_filing_event" | "insider_or_institutional_activity" | "price_volume_anomaly" | "fundamentals_change" | "regulatory_or_legal_event" | "contract_or_customer_event" | "broad_macro_or_sector_ripple" | "product_or_demand_signal" | "calendar_only_event" | "opinion_or_noise";
+type PipelineStage =
+  | "radar_item"
+  | "watch_candidate"
+  | "proof_needed"
+  | "ai_review_ready"
+  | "approval_ready"
+  | "publish_ready"
+  | "rejected_noise";
+type SignalType =
+  | "direct_company_news"
+  | "official_filing_event"
+  | "insider_or_institutional_activity"
+  | "price_volume_anomaly"
+  | "fundamentals_change"
+  | "regulatory_or_legal_event"
+  | "contract_or_customer_event"
+  | "broad_macro_or_sector_ripple"
+  | "product_or_demand_signal"
+  | "calendar_only_event"
+  | "opinion_or_noise";
 
 type GreatSignalScorecard = {
   catalystStrengthScore: number;
@@ -146,6 +164,11 @@ type DiscoveryRow = {
   fmpProofUnavailableReason?: string | null;
   priceVolumeUnavailableReason?: string | null;
   routerFailureReasons?: string[];
+  cleanNewsReceiptAttached: boolean;
+  cleanNewsReceiptReason: string | null;
+  rejectedNewsReceiptReason: string | null;
+  aiReviewEligible: boolean;
+  aiCommitteeCalled: boolean;
   pipelineStage: PipelineStage;
   stageReason: string;
   nextPipelineAction: string;
@@ -167,7 +190,6 @@ type DiscoveryRow = {
   watchPriority: "high" | "medium" | "low" | null;
 };
 
-
 type SignalPlaybook = {
   signalType: SignalType;
   requiredProofTypes: string[];
@@ -178,17 +200,115 @@ type SignalPlaybook = {
 };
 
 const SIGNAL_PLAYBOOKS: Record<SignalType, SignalPlaybook> = {
-  direct_company_news: { signalType: "direct_company_news", requiredProofTypes: ["news", "price_volume_or_fundamentals"], optionalProofTypes: ["filing", "pattern_match", "regulatory", "contract"], proofThatDoesNotApply: [], minimumCleanProofTypes: 2, stage2EligibilityRule: "Requires company/topic match plus news and price-volume or fundamentals proof." },
-  official_filing_event: { signalType: "official_filing_event", requiredProofTypes: ["filing", "price_volume_or_fundamentals"], optionalProofTypes: ["insider", "pattern_match"], proofThatDoesNotApply: ["generic_sec_homepage"], minimumCleanProofTypes: 2, stage2EligibilityRule: "Requires a specific SEC filing URL plus price-volume or fundamentals proof." },
-  insider_or_institutional_activity: { signalType: "insider_or_institutional_activity", requiredProofTypes: ["filing_or_insider", "price_volume"], optionalProofTypes: ["fundamentals", "pattern_match"], proofThatDoesNotApply: ["non_open_market_insider_context"], minimumCleanProofTypes: 2, stage2EligibilityRule: "Requires clean insider/filing proof and real price-volume context." },
-  price_volume_anomaly: { signalType: "price_volume_anomaly", requiredProofTypes: ["price_volume", "news_or_filing_or_fundamentals"], optionalProofTypes: ["pattern_match"], proofThatDoesNotApply: ["market_reaction_required"], minimumCleanProofTypes: 2, stage2EligibilityRule: "Price/volume can support a signal but needs a separate real catalyst proof type." },
-  fundamentals_change: { signalType: "fundamentals_change", requiredProofTypes: ["fundamentals", "news_or_filing"], optionalProofTypes: ["price_volume", "pattern_match"], proofThatDoesNotApply: ["profile_page_only"], minimumCleanProofTypes: 2, stage2EligibilityRule: "Requires real FMP values and a separate matched catalyst receipt." },
-  regulatory_or_legal_event: { signalType: "regulatory_or_legal_event", requiredProofTypes: ["regulatory_or_legal_risk_or_filing", "news"], optionalProofTypes: ["price_volume", "fundamentals", "pattern_match"], proofThatDoesNotApply: [], minimumCleanProofTypes: 2, stage2EligibilityRule: "Requires regulatory/legal/filing proof plus matched news." },
-  contract_or_customer_event: { signalType: "contract_or_customer_event", requiredProofTypes: ["contract_or_filing_or_official_receipt", "price_volume_or_fundamentals"], optionalProofTypes: ["pattern_match"], proofThatDoesNotApply: [], minimumCleanProofTypes: 2, stage2EligibilityRule: "Requires specific contract/customer receipt and business or market context." },
-  broad_macro_or_sector_ripple: { signalType: "broad_macro_or_sector_ripple", requiredProofTypes: ["affected_ticker_or_sector_mapping", "news_or_official_source", "price_volume_or_fundamentals"], optionalProofTypes: ["pattern_match"], proofThatDoesNotApply: ["generic_unmapped_broad_news"], minimumCleanProofTypes: 2, stage2EligibilityRule: "May reach AI review only when mapped to a sector/ticker and supported by clean proof." },
-  product_or_demand_signal: { signalType: "product_or_demand_signal", requiredProofTypes: ["news_or_official_source", "price_volume_or_fundamentals"], optionalProofTypes: ["contract", "pattern_match"], proofThatDoesNotApply: [], minimumCleanProofTypes: 2, stage2EligibilityRule: "Requires product/demand proof plus market or business context." },
-  calendar_only_event: { signalType: "calendar_only_event", requiredProofTypes: ["calendar_event"], optionalProofTypes: [], proofThatDoesNotApply: ["earnings_calendar_only"], minimumCleanProofTypes: 99, stage2EligibilityRule: "Calendar-only events cannot become public alerts by themselves and stop at watch_candidate." },
-  opinion_or_noise: { signalType: "opinion_or_noise", requiredProofTypes: [], optionalProofTypes: ["another_clean_proof_source"], proofThatDoesNotApply: ["opinion_only"], minimumCleanProofTypes: 99, stage2EligibilityRule: "Opinion/noise cannot become a public alert unless another clean proof source changes classification." },
+  direct_company_news: {
+    signalType: "direct_company_news",
+    requiredProofTypes: ["news", "price_volume_or_fundamentals"],
+    optionalProofTypes: ["filing", "pattern_match", "regulatory", "contract"],
+    proofThatDoesNotApply: [],
+    minimumCleanProofTypes: 2,
+    stage2EligibilityRule:
+      "Requires company/topic match plus news and price-volume or fundamentals proof.",
+  },
+  official_filing_event: {
+    signalType: "official_filing_event",
+    requiredProofTypes: ["filing", "price_volume_or_fundamentals"],
+    optionalProofTypes: ["insider", "pattern_match"],
+    proofThatDoesNotApply: ["generic_sec_homepage"],
+    minimumCleanProofTypes: 2,
+    stage2EligibilityRule:
+      "Requires a specific SEC filing URL plus price-volume or fundamentals proof.",
+  },
+  insider_or_institutional_activity: {
+    signalType: "insider_or_institutional_activity",
+    requiredProofTypes: ["filing_or_insider", "price_volume"],
+    optionalProofTypes: ["fundamentals", "pattern_match"],
+    proofThatDoesNotApply: ["non_open_market_insider_context"],
+    minimumCleanProofTypes: 2,
+    stage2EligibilityRule:
+      "Requires clean insider/filing proof and real price-volume context.",
+  },
+  price_volume_anomaly: {
+    signalType: "price_volume_anomaly",
+    requiredProofTypes: ["price_volume", "news_or_filing_or_fundamentals"],
+    optionalProofTypes: ["pattern_match"],
+    proofThatDoesNotApply: ["market_reaction_required"],
+    minimumCleanProofTypes: 2,
+    stage2EligibilityRule:
+      "Price/volume can support a signal but needs a separate real catalyst proof type.",
+  },
+  fundamentals_change: {
+    signalType: "fundamentals_change",
+    requiredProofTypes: ["fundamentals", "news_or_filing"],
+    optionalProofTypes: ["price_volume", "pattern_match"],
+    proofThatDoesNotApply: ["profile_page_only"],
+    minimumCleanProofTypes: 2,
+    stage2EligibilityRule:
+      "Requires real FMP values and a separate matched catalyst receipt.",
+  },
+  regulatory_or_legal_event: {
+    signalType: "regulatory_or_legal_event",
+    requiredProofTypes: ["regulatory_or_legal_risk_or_filing", "news"],
+    optionalProofTypes: ["price_volume", "fundamentals", "pattern_match"],
+    proofThatDoesNotApply: [],
+    minimumCleanProofTypes: 2,
+    stage2EligibilityRule:
+      "Requires regulatory/legal/filing proof plus matched news.",
+  },
+  contract_or_customer_event: {
+    signalType: "contract_or_customer_event",
+    requiredProofTypes: [
+      "contract_or_filing_or_official_receipt",
+      "price_volume_or_fundamentals",
+    ],
+    optionalProofTypes: ["pattern_match"],
+    proofThatDoesNotApply: [],
+    minimumCleanProofTypes: 2,
+    stage2EligibilityRule:
+      "Requires specific contract/customer receipt and business or market context.",
+  },
+  broad_macro_or_sector_ripple: {
+    signalType: "broad_macro_or_sector_ripple",
+    requiredProofTypes: [
+      "affected_ticker_or_sector_mapping",
+      "news_or_official_source",
+      "price_volume_or_fundamentals",
+    ],
+    optionalProofTypes: ["pattern_match"],
+    proofThatDoesNotApply: ["generic_unmapped_broad_news"],
+    minimumCleanProofTypes: 2,
+    stage2EligibilityRule:
+      "May reach AI review only when mapped to a sector/ticker and supported by clean proof.",
+  },
+  product_or_demand_signal: {
+    signalType: "product_or_demand_signal",
+    requiredProofTypes: [
+      "news_or_official_source",
+      "price_volume_or_fundamentals",
+    ],
+    optionalProofTypes: ["contract", "pattern_match"],
+    proofThatDoesNotApply: [],
+    minimumCleanProofTypes: 2,
+    stage2EligibilityRule:
+      "Requires product/demand proof plus market or business context.",
+  },
+  calendar_only_event: {
+    signalType: "calendar_only_event",
+    requiredProofTypes: ["calendar_event"],
+    optionalProofTypes: [],
+    proofThatDoesNotApply: ["earnings_calendar_only"],
+    minimumCleanProofTypes: 99,
+    stage2EligibilityRule:
+      "Calendar-only events cannot become public alerts by themselves and stop at watch_candidate.",
+  },
+  opinion_or_noise: {
+    signalType: "opinion_or_noise",
+    requiredProofTypes: [],
+    optionalProofTypes: ["another_clean_proof_source"],
+    proofThatDoesNotApply: ["opinion_only"],
+    minimumCleanProofTypes: 99,
+    stage2EligibilityRule:
+      "Opinion/noise cannot become a public alert unless another clean proof source changes classification.",
+  },
 };
 
 const MIN_STOCK_SPECIFICITY_SCORE = 55;
@@ -221,7 +341,12 @@ function nextBestProof(missingProof: string[]) {
   if (!missing.size) return "none";
   if (missing.has("price_volume")) return "price_volume";
   if (missing.has("fundamentals")) return "fundamentals";
-  if (missing.has("filing") || missing.has("regulatory") || missing.has("legal_risk")) return "filing";
+  if (
+    missing.has("filing") ||
+    missing.has("regulatory") ||
+    missing.has("legal_risk")
+  )
+    return "filing";
   if (missing.has("news")) return "news";
   if (missing.has("pattern_match")) return "pattern_match";
   return missingProof.find(Boolean) ?? "none";
@@ -238,77 +363,281 @@ function gradeFromScore(
   const newsOnly =
     cleanProofTypes.length === 1 && cleanProofTypes[0] === "news";
   const opinionOnly = blocked.some((reason) => /opinion/i.test(reason));
-  const missingRequired = blocked.some((reason) => /Missing proof/i.test(reason));
+  const missingRequired = blocked.some((reason) =>
+    /Missing proof/i.test(reason),
+  );
   if (blocked.includes("source_health_is_diagnostic_not_proof") || score < 20)
     return "F" as const;
-  if (score >= 82 && cleanProofTypes.length >= 2 && !missingRequired && !newsOnly && !opinionOnly)
+  if (
+    score >= 82 &&
+    cleanProofTypes.length >= 2 &&
+    !missingRequired &&
+    !newsOnly &&
+    !opinionOnly
+  )
     return "A" as const;
-  if (score >= 62 && cleanProofTypes.length >= 2 && !missingRequired && !opinionOnly && !newsOnly) return "B" as const;
+  if (
+    score >= 62 &&
+    cleanProofTypes.length >= 2 &&
+    !missingRequired &&
+    !opinionOnly &&
+    !newsOnly
+  )
+    return "B" as const;
   if (score >= 42 && cleanProofTypes.length >= 1) return "C" as const;
   if (score >= 20) return "D" as const;
   return "F" as const;
 }
 
-function classifySignalType(signal: RawSignal, impact: ReturnType<typeof payloadImpact>): SignalType {
-  const haystack = `${signal.source} ${signal.title} ${signal.summary} ${impact.catalystType ?? ""}`.toLowerCase();
-  if (/opinion|commentary|rumou?r|why i think/.test(haystack)) return "opinion_or_noise";
-  if (/earnings calendar|calendar|ex-dividend|conference date/.test(haystack)) return "calendar_only_event";
-  if (/8-k|10-q|10-k|sec filing|filed with sec|annual report|quarterly report/.test(haystack)) return "official_filing_event";
-  if (/insider|form 4|13f|institutional|open-market buy|open market buy/.test(haystack)) return "insider_or_institutional_activity";
-  if (/fda|regulatory|lawsuit|litigation|sanction|doj|ftc|government policy|legal/.test(haystack)) return "regulatory_or_legal_event";
-  if (/contract|customer|award|purchase order|supplier|partnership/.test(haystack)) return "contract_or_customer_event";
-  if (/volume|breakout|price move|unusual trading|rally|selloff/.test(haystack)) return "price_volume_anomaly";
-  if (/revenue|margin|eps|guidance|estimate|fundamental/.test(haystack)) return "fundamentals_change";
-  if (/product|demand|launch|orders|platform/.test(haystack)) return "product_or_demand_signal";
-  if (!impact.directTickerMatch && !impact.directCompanyMatch && /chip stocks|ai rout|commodity supercycle|sanctions|cyber defense|government policy|fda|regulatory action|sector selloff|supply chain shock|oil|rates|fx|sector|macro|geopolitical|commodity|currency/.test(haystack)) return "broad_macro_or_sector_ripple";
+function classifySignalType(
+  signal: RawSignal,
+  impact: ReturnType<typeof payloadImpact>,
+): SignalType {
+  const haystack =
+    `${signal.source} ${signal.title} ${signal.summary} ${impact.catalystType ?? ""}`.toLowerCase();
+  if (/opinion|commentary|rumou?r|why i think/.test(haystack))
+    return "opinion_or_noise";
+  if (/earnings calendar|calendar|ex-dividend|conference date/.test(haystack))
+    return "calendar_only_event";
+  if (
+    /8-k|10-q|10-k|sec filing|filed with sec|annual report|quarterly report/.test(
+      haystack,
+    )
+  )
+    return "official_filing_event";
+  if (
+    /insider|form 4|13f|institutional|open-market buy|open market buy/.test(
+      haystack,
+    )
+  )
+    return "insider_or_institutional_activity";
+  if (
+    /fda|regulatory|lawsuit|litigation|sanction|doj|ftc|government policy|legal/.test(
+      haystack,
+    )
+  )
+    return "regulatory_or_legal_event";
+  if (
+    /contract|customer|award|purchase order|supplier|partnership/.test(haystack)
+  )
+    return "contract_or_customer_event";
+  if (/volume|breakout|price move|unusual trading|rally|selloff/.test(haystack))
+    return "price_volume_anomaly";
+  if (/revenue|margin|eps|guidance|estimate|fundamental/.test(haystack))
+    return "fundamentals_change";
+  if (/product|demand|launch|orders|platform/.test(haystack))
+    return "product_or_demand_signal";
+  if (
+    !impact.directTickerMatch &&
+    !impact.directCompanyMatch &&
+    /chip stocks|ai rout|tech rout|commodity supercycle|sanctions|cyber defense|government policy|fda|regulatory action|sector selloff|supply chain shock|oil|rates|fx|spacex|ai infrastructure|ripple events|sector|macro|geopolitical|commodity|currency/.test(
+      haystack,
+    )
+  )
+    return "broad_macro_or_sector_ripple";
   return "direct_company_news";
 }
 
 function broadRippleMetadata(signal: RawSignal, signalType: SignalType) {
   const payload = obj(signal.payload);
-  const triage = obj(payload.genericNewsTriage ?? payload.genericTriage ?? payload.broadNews);
+  const triage = obj(
+    payload.genericNewsTriage ?? payload.genericTriage ?? payload.broadNews,
+  );
   const haystack = `${signal.title} ${signal.summary}`.toLowerCase();
   const isBroad = signalType === "broad_macro_or_sector_ripple";
   const chip = /chip|semiconductor|ai/.test(haystack);
   const oil = /oil|energy|sanction/.test(haystack);
   const fda = /fda|health|drug|device/.test(haystack);
   const cyber = /cyber|defense|defence/.test(haystack);
-  const affectedSectors = arrayText(triage.affectedSectors).length ? arrayText(triage.affectedSectors) : chip ? ["Semiconductors", "AI infrastructure"] : oil ? ["Energy", "Airlines", "Shipping"] : fda ? ["Healthcare", "Biotech"] : cyber ? ["Cybersecurity", "Defense"] : [];
-  const affectedTickers = arrayText(triage.affectedTickers).length ? arrayText(triage.affectedTickers) : chip ? ["NVDA", "AMD", "TSM", "ASML", "MU"] : oil ? ["XOM", "CVX", "OXY"] : [];
-  const affectedETFs = arrayText(triage.affectedETFs).length ? arrayText(triage.affectedETFs) : chip ? ["SMH", "SOXX"] : oil ? ["XLE"] : fda ? ["XLV", "XBI"] : [];
+  const tech = /tech rout|ai rout|ai infrastructure|spacex/.test(haystack);
+  const supply = /supply chain shock|shipping disruption/.test(haystack);
+  const rates = /rates|fx|dollar|currency|inflation/.test(haystack);
+  const affectedSectors = arrayText(triage.affectedSectors).length
+    ? arrayText(triage.affectedSectors)
+    : chip
+      ? ["Semiconductors", "AI infrastructure"]
+      : tech
+        ? ["Technology", "AI infrastructure"]
+        : oil
+          ? ["Energy", "Airlines", "Shipping"]
+          : fda
+            ? ["Healthcare", "Biotech"]
+            : cyber
+              ? ["Cybersecurity", "Defense"]
+              : supply
+                ? ["Retail", "Autos", "Logistics"]
+                : rates
+                  ? ["Banks", "Real Estate", "Exporters"]
+                  : [];
+  const affectedTickers = arrayText(triage.affectedTickers).length
+    ? arrayText(triage.affectedTickers)
+    : chip
+      ? ["NVDA", "AMD", "TSM", "ASML", "MU"]
+      : tech
+        ? ["MSFT", "GOOGL", "META", "NVDA"]
+        : oil
+          ? ["XOM", "CVX", "OXY"]
+          : supply
+            ? ["WMT", "AMZN", "FDX", "UPS"]
+            : [];
+  const affectedETFs = arrayText(triage.affectedETFs).length
+    ? arrayText(triage.affectedETFs)
+    : chip
+      ? ["SMH", "SOXX"]
+      : tech
+        ? ["XLK", "QQQ"]
+        : oil
+          ? ["XLE"]
+          : fda
+            ? ["XLV", "XBI"]
+            : rates
+              ? ["TLT", "UUP", "XLF"]
+              : [];
   return {
-    broadNewsClass: text(triage.broadNewsClass) || (isBroad ? (chip ? "sectorShock" : oil ? "commodityShock" : fda ? "healthRegulatoryShock" : cyber ? "defenceSecurityShock" : "macroShock") : null),
-    seriousnessScore: typeof triage.seriousnessScore === "number" ? triage.seriousnessScore : isBroad ? 65 : null,
-    affectedSectors, affectedTickers, affectedETFs,
-    impactMechanism: text(triage.impactMechanism) || (isBroad ? "Broad item may affect revenue, margins, risk, sentiment, or cost of capital for mapped sectors/tickers." : null),
-    mappedBy: isBroad ? "serious_signal_pipeline_v1_keyword_and_payload_mapping" : null,
-    promotedToRippleCandidate: isBroad && (affectedSectors.length > 0 || affectedTickers.length > 0),
+    broadNewsClass:
+      text(triage.broadNewsClass) ||
+      (isBroad
+        ? chip
+          ? "sectorShock"
+          : oil
+            ? "commodityShock"
+            : fda
+              ? "healthRegulatoryShock"
+              : cyber
+                ? "defenceSecurityShock"
+                : "macroShock"
+        : null),
+    seriousnessScore:
+      typeof triage.seriousnessScore === "number"
+        ? triage.seriousnessScore
+        : isBroad
+          ? 65
+          : null,
+    affectedSectors,
+    affectedTickers,
+    affectedETFs,
+    impactMechanism:
+      text(triage.impactMechanism) ||
+      (isBroad
+        ? "Broad item may affect revenue, margins, risk, sentiment, or cost of capital for mapped sectors/tickers."
+        : null),
+    mappedBy: isBroad
+      ? "serious_signal_pipeline_v1_keyword_and_payload_mapping"
+      : null,
+    promotedToRippleCandidate:
+      isBroad && (affectedSectors.length > 0 || affectedTickers.length > 0),
   };
 }
 
-function pipelineDecision(input: { scorecard: GreatSignalScorecard; signalType: SignalType; passed: boolean; unsafeProofMismatchWarning: boolean; broad: ReturnType<typeof broadRippleMetadata>; confirmRun: boolean; }) {
-  const { scorecard, signalType, passed, unsafeProofMismatchWarning, broad } = input;
+function pipelineDecision(input: {
+  scorecard: GreatSignalScorecard;
+  signalType: SignalType;
+  passed: boolean;
+  unsafeProofMismatchWarning: boolean;
+  broad: ReturnType<typeof broadRippleMetadata>;
+  confirmRun: boolean;
+}) {
+  const { scorecard, signalType, passed, unsafeProofMismatchWarning, broad } =
+    input;
   const blocked = [...scorecard.whyItIsBlocked];
   let pipelineStage: PipelineStage = "radar_item";
-  if (scorecard.signalGrade === "F" || signalType === "opinion_or_noise") pipelineStage = signalType === "opinion_or_noise" && scorecard.proofDiversityClean > 0 ? "watch_candidate" : "rejected_noise";
-  else if (signalType === "calendar_only_event") pipelineStage = "watch_candidate";
-  else if (scorecard.missingRequiredProof.length > 0 || scorecard.proofDiversityClean < 2) pipelineStage = scorecard.finalGreatSignalScore >= 45 || broad.promotedToRippleCandidate ? "proof_needed" : "watch_candidate";
-  else if (passed && !unsafeProofMismatchWarning && scorecard.proofDiversityClean >= 2) pipelineStage = "ai_review_ready";
+  if (scorecard.signalGrade === "F" || signalType === "opinion_or_noise")
+    pipelineStage =
+      signalType === "opinion_or_noise" && scorecard.proofDiversityClean > 0
+        ? "watch_candidate"
+        : "rejected_noise";
+  else if (signalType === "calendar_only_event")
+    pipelineStage = "watch_candidate";
+  else if (
+    scorecard.missingRequiredProof.length > 0 ||
+    scorecard.proofDiversityClean < 2
+  )
+    pipelineStage =
+      scorecard.finalGreatSignalScore >= 45 || broad.promotedToRippleCandidate
+        ? "proof_needed"
+        : "watch_candidate";
+  else if (
+    passed &&
+    !unsafeProofMismatchWarning &&
+    scorecard.proofDiversityClean >= 2 &&
+    scorecard.missingRequiredProof.length === 0 &&
+    !scorecard.whyItIsBlocked.some((reason) => /opinion|calendar/i.test(reason))
+  )
+    pipelineStage = "ai_review_ready";
   else pipelineStage = "watch_candidate";
-  if (signalType === "broad_macro_or_sector_ripple" && !broad.promotedToRippleCandidate) pipelineStage = "watch_candidate";
-  if (signalType === "calendar_only_event") blocked.push("calendar_only_event_cannot_be_public_alert_by_itself");
-  if (signalType === "opinion_or_noise") blocked.push("opinion_or_noise_cannot_be_public_alert_by_itself");
-  if (signalType === "broad_macro_or_sector_ripple" && (!broad.promotedToRippleCandidate || scorecard.proofDiversityClean < 2)) blocked.push("broad_news_requires_mapping_and_clean_proof_before_ai_review");
-  const canMoveToNextStage = pipelineStage === "ai_review_ready" ? input.confirmRun : (["proof_needed", "watch_candidate", "radar_item"] as PipelineStage[]).includes(pipelineStage);
-  const nextPipelineAction = pipelineStage === "proof_needed" ? `fetch_${scorecard.nextBestProofToFetchAfterRouter}` : pipelineStage === "watch_candidate" ? "store_in_watch_queue_for_recheck" : pipelineStage === "ai_review_ready" ? "run_ai_committee_only_if_confirmRun_true" : pipelineStage === "rejected_noise" ? "do_not_publish" : "continue_triage";
-  return { pipelineStage, stageReason: blocked[0] ?? (pipelineStage === "ai_review_ready" ? "clean_proof_ready_for_ai_gate" : "candidate_needs_more_triage"), nextPipelineAction, canMoveToNextStage, blockedFromNextStageBecause: pipelineStage === "ai_review_ready" && !input.confirmRun ? ["confirmRun=false"] : blocked };
+  if (
+    signalType === "broad_macro_or_sector_ripple" &&
+    !broad.promotedToRippleCandidate
+  )
+    pipelineStage = "watch_candidate";
+  if (signalType === "calendar_only_event")
+    blocked.push("calendar_only_event_cannot_be_public_alert_by_itself");
+  if (signalType === "opinion_or_noise")
+    blocked.push("opinion_or_noise_cannot_be_public_alert_by_itself");
+  if (
+    signalType === "broad_macro_or_sector_ripple" &&
+    (!broad.promotedToRippleCandidate || scorecard.proofDiversityClean < 2)
+  )
+    blocked.push(
+      "broad_news_requires_mapping_and_clean_proof_before_ai_review",
+    );
+  const canMoveToNextStage =
+    pipelineStage === "ai_review_ready"
+      ? input.confirmRun
+      : (
+          ["proof_needed", "watch_candidate", "radar_item"] as PipelineStage[]
+        ).includes(pipelineStage);
+  const nextPipelineAction =
+    pipelineStage === "proof_needed"
+      ? `fetch_${scorecard.nextBestProofToFetchAfterRouter}`
+      : pipelineStage === "watch_candidate"
+        ? "store_in_watch_queue_for_recheck"
+        : pipelineStage === "ai_review_ready"
+          ? "run_ai_committee_only_if_confirmRun_true"
+          : pipelineStage === "rejected_noise"
+            ? "do_not_publish"
+            : "continue_triage";
+  return {
+    pipelineStage,
+    stageReason:
+      blocked[0] ??
+      (pipelineStage === "ai_review_ready"
+        ? "clean_proof_ready_for_ai_gate"
+        : "candidate_needs_more_triage"),
+    nextPipelineAction,
+    canMoveToNextStage,
+    blockedFromNextStageBecause:
+      pipelineStage === "ai_review_ready" && !input.confirmRun
+        ? ["confirmRun=false"]
+        : blocked,
+  };
 }
 
-function watchQueueFields(stage: PipelineStage, score: number, missing: string[]) {
+function watchQueueFields(
+  stage: PipelineStage,
+  score: number,
+  missing: string[],
+) {
   const eligible = stage === "watch_candidate" || stage === "proof_needed";
   const now = Date.now();
-  const priority = score >= 65 ? "high" : score >= 45 ? "medium" : eligible ? "low" : null;
-  return { watchQueueEligible: eligible, watchQueueReason: eligible ? "Candidate may become useful after missing proof is rechecked; watch candidates never publish or send Telegram." : null, watchUntil: eligible ? new Date(now + 72 * 60 * 60 * 1000).toISOString() : null, recheckAfter: eligible ? new Date(now + (priority === "high" ? 6 : 24) * 60 * 60 * 1000).toISOString() : null, missingProofToRecheck: missing, watchPriority: priority as "high" | "medium" | "low" | null };
+  const priority =
+    score >= 65 ? "high" : score >= 45 ? "medium" : eligible ? "low" : null;
+  return {
+    watchQueueEligible: eligible,
+    watchQueueReason: eligible
+      ? "Candidate may become useful after missing proof is rechecked; watch candidates never publish or send Telegram."
+      : null,
+    watchUntil: eligible
+      ? new Date(now + 72 * 60 * 60 * 1000).toISOString()
+      : null,
+    recheckAfter: eligible
+      ? new Date(
+          now + (priority === "high" ? 6 : 24) * 60 * 60 * 1000,
+        ).toISOString()
+      : null,
+    missingProofToRecheck: missing,
+    watchPriority: priority as "high" | "medium" | "low" | null,
+  };
 }
 
 function buildGreatSignalScorecard(input: {
@@ -324,7 +653,12 @@ function buildGreatSignalScorecard(input: {
   const diversity = cleanProofDiversity({ enrichment });
   const proofTypes = diversity.uniqueProofTypesClean;
   const proofSet = new Set(proofTypes);
-  const missingProof = missingNeedGroups(profile.requiredProofTypesForThisCandidate, proofTypes, signal, impact);
+  const missingProof = missingNeedGroups(
+    profile.requiredProofTypesForThisCandidate,
+    proofTypes,
+    signal,
+    impact,
+  );
   const title = `${signal.title} ${signal.summary}`.toLowerCase();
   const genericNoise = isBroadMarketNoise({
     directTickerMatch: impact.directTickerMatch,
@@ -352,7 +686,9 @@ function buildGreatSignalScorecard(input: {
         ...enrichment.acceptedProofItems.map((item) => item.proofMatchScore),
       )
     : 0;
-  const proofDiversityScore = clampScore((diversity.proofDiversityClean / 4) * 100);
+  const proofDiversityScore = clampScore(
+    (diversity.proofDiversityClean / 4) * 100,
+  );
   const businessImpactScore = clampScore(
     impact.promotionScore ?? catalystStrengthScore,
   );
@@ -437,7 +773,16 @@ function buildGreatSignalScorecard(input: {
     whyItIsBlocked,
     proofTypes,
   );
-  const stageRecommendation: PipelineStage = signalGrade === "A" && missingProof.length === 0 && diversity.proofDiversityClean >= signalPlaybook.minimumCleanProofTypes ? "ai_review_ready" : signalGrade === "F" ? "rejected_noise" : missingProof.length ? "proof_needed" : "watch_candidate";
+  const stageRecommendation: PipelineStage =
+    signalGrade === "A" &&
+    missingProof.length === 0 &&
+    diversity.proofDiversityClean >= signalPlaybook.minimumCleanProofTypes
+      ? "ai_review_ready"
+      : signalGrade === "F"
+        ? "rejected_noise"
+        : missingProof.length
+          ? "proof_needed"
+          : "watch_candidate";
   return {
     catalystStrengthScore,
     directAssetMatchScore,
@@ -464,15 +809,21 @@ function buildGreatSignalScorecard(input: {
     nextBestProofToFetch: nextBestProof(missingProof),
     relevantProofTypes: profile.relevantProofTypes,
     irrelevantProofTypes: profile.irrelevantProofTypes,
-    requiredProofTypesForThisCandidate: profile.requiredProofTypesForThisCandidate,
-    optionalProofTypesForThisCandidate: profile.optionalProofTypesForThisCandidate,
+    requiredProofTypesForThisCandidate:
+      profile.requiredProofTypesForThisCandidate,
+    optionalProofTypesForThisCandidate:
+      profile.optionalProofTypesForThisCandidate,
     missingRequiredProof: missingProof,
-    missingOptionalProof: missingNeedGroups(profile.optionalProofTypesForThisCandidate, proofTypes, signal, impact),
+    missingOptionalProof: missingNeedGroups(
+      profile.optionalProofTypesForThisCandidate,
+      proofTypes,
+      signal,
+      impact,
+    ),
     ...diversity,
     ...proofRouterSummary(missingProof, enrichment),
   };
 }
-
 
 function uniqueStrings(values: string[]) {
   return Array.from(new Set(values.filter(Boolean)));
@@ -487,60 +838,155 @@ type ProofNeedProfile = {
 
 const ALL_PROOF_TYPE_NAMES = Array.from(VALID_CANDIDATE_PROOF_TYPES);
 
-function proofNeedProfile(signal: RawSignal, impact: ReturnType<typeof payloadImpact>): ProofNeedProfile {
-  const haystack = `${signal.source} ${signal.title} ${signal.summary} ${impact.catalystType ?? ""}`.toLowerCase();
+function proofNeedProfile(
+  signal: RawSignal,
+  impact: ReturnType<typeof payloadImpact>,
+): ProofNeedProfile {
+  const haystack =
+    `${signal.source} ${signal.title} ${signal.summary} ${impact.catalystType ?? ""}`.toLowerCase();
   let required: string[] = ["news", "price_volume", "fundamentals"];
-  let optional: string[] = ["filing", "pattern_match", "contract", "regulatory"];
-  if (/8-k|10-q|10-k|filing|sec|earnings release|official company event/.test(haystack)) {
+  let optional: string[] = [
+    "filing",
+    "pattern_match",
+    "contract",
+    "regulatory",
+  ];
+  if (
+    /8-k|10-q|10-k|filing|sec|earnings release|official company event/.test(
+      haystack,
+    )
+  ) {
     required = ["filing", "price_volume_or_fundamentals"];
     optional = ["insider", "pattern_match"];
-  } else if (/insider|form 4|institutional buying|13f|open-market buy|open market buy/.test(haystack)) {
+  } else if (
+    /insider|form 4|institutional buying|13f|open-market buy|open market buy/.test(
+      haystack,
+    )
+  ) {
     required = ["insider_or_filing", "price_volume"];
     optional = ["fundamentals", "pattern_match"];
-  } else if (/regulatory|lawsuit|litigation|fda|government action|doj|ftc|sec probe|legal/.test(haystack)) {
+  } else if (
+    /regulatory|lawsuit|litigation|fda|government action|doj|ftc|sec probe|legal/.test(
+      haystack,
+    )
+  ) {
     required = ["regulatory_or_legal_risk_or_filing", "news"];
     optional = ["price_volume", "fundamentals", "pattern_match"];
-  } else if (/contract|award|customer win|government award|purchase order|customer/.test(haystack)) {
-    required = ["contract_or_filing_or_official_receipt", "fundamentals_or_price_volume"];
+  } else if (
+    /contract|award|customer win|government award|purchase order|customer/.test(
+      haystack,
+    )
+  ) {
+    required = [
+      "contract_or_filing_or_official_receipt",
+      "fundamentals_or_price_volume",
+    ];
     optional = ["pattern_match"];
-  } else if (!impact.directTickerMatch && !impact.directCompanyMatch && /sector|stocks|index|rout|plunge|supercycle|supply chain|commodity|cyber|quantum|chip stocks|ai rout/.test(haystack)) {
-    required = ["mapped_affected_ticker_or_sector", "news_or_official_source", "price_volume_or_fundamentals"];
+  } else if (
+    !impact.directTickerMatch &&
+    !impact.directCompanyMatch &&
+    /sector|stocks|index|rout|plunge|supercycle|supply chain|commodity|cyber|quantum|chip stocks|ai rout/.test(
+      haystack,
+    )
+  ) {
+    required = [
+      "mapped_affected_ticker_or_sector",
+      "news_or_official_source",
+      "price_volume_or_fundamentals",
+    ];
     optional = ["pattern_match", "ripple_proof"];
   }
-  const relevant = uniqueStrings([...required, ...optional].flatMap((item) => item.split("_or_")));
-  return { relevantProofTypes: relevant, irrelevantProofTypes: ALL_PROOF_TYPE_NAMES.filter((type) => !relevant.includes(type)), requiredProofTypesForThisCandidate: required, optionalProofTypesForThisCandidate: optional };
+  const relevant = uniqueStrings(
+    [...required, ...optional].flatMap((item) => item.split("_or_")),
+  );
+  return {
+    relevantProofTypes: relevant,
+    irrelevantProofTypes: ALL_PROOF_TYPE_NAMES.filter(
+      (type) => !relevant.includes(type),
+    ),
+    requiredProofTypesForThisCandidate: required,
+    optionalProofTypesForThisCandidate: optional,
+  };
 }
 
-function missingNeedGroups(groups: string[], proofTypes: string[], signal: RawSignal, impact: ReturnType<typeof payloadImpact>) {
+function missingNeedGroups(
+  groups: string[],
+  proofTypes: string[],
+  signal: RawSignal,
+  impact: ReturnType<typeof payloadImpact>,
+) {
   const set = new Set(proofTypes);
   return groups.filter((group) => {
-    if (group === "mapped_affected_ticker_or_sector") return !(signal.ticker || impact.directTickerMatch || impact.directCompanyMatch);
+    if (group === "mapped_affected_ticker_or_sector")
+      return !(
+        signal.ticker ||
+        impact.directTickerMatch ||
+        impact.directCompanyMatch ||
+        classifySignalType(signal, impact) === "broad_macro_or_sector_ripple"
+      );
     if (group === "official_receipt") return !impact.hasReceiptUrl;
-    return !group.split("_or_").some((type) => set.has(type) || (type === "official_receipt" && impact.hasReceiptUrl));
+    return !group
+      .split("_or_")
+      .some(
+        (type) =>
+          set.has(type) ||
+          (type === "official_receipt" && impact.hasReceiptUrl),
+      );
   });
 }
 
-function cleanProofDiversity(input: { enrichment: Awaited<ReturnType<typeof enrichProofForRawSignal>> }) {
+function cleanProofDiversity(input: {
+  enrichment: Awaited<ReturnType<typeof enrichProofForRawSignal>>;
+}) {
   const seenUrl = new Set<string>();
   const seenTopic = new Set<string>();
   const duplicateProofRejected: string[] = [];
   const weakContextOnlyProof: string[] = [];
   const clean = input.enrichment.acceptedProofItems.filter((item) => {
-    if (item.proofType === "unknown" || item.proofType === "source_health") return false;
+    if (item.proofType === "unknown" || item.proofType === "source_health")
+      return false;
     const urlKey = item.url ?? "";
-    const topicKey = `${item.source}:${item.title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().slice(0, 90)}`;
-    if (urlKey && seenUrl.has(urlKey)) { duplicateProofRejected.push(`duplicate_url:${urlKey}`); return false; }
-    if (seenTopic.has(topicKey)) { duplicateProofRejected.push(`duplicate_topic:${item.source}:${item.title}`); return false; }
-    if (/financial summary|quote summary|source health/i.test(`${item.source} ${item.title}`)) { weakContextOnlyProof.push(`${item.source}:${item.title}`); return false; }
+    const topicKey = `${item.source}:${item.title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim()
+      .slice(0, 90)}`;
+    if (urlKey && seenUrl.has(urlKey)) {
+      duplicateProofRejected.push(`duplicate_url:${urlKey}`);
+      return false;
+    }
+    if (seenTopic.has(topicKey)) {
+      duplicateProofRejected.push(
+        `duplicate_topic:${item.source}:${item.title}`,
+      );
+      return false;
+    }
+    if (
+      /financial summary|quote summary|source health/i.test(
+        `${item.source} ${item.title}`,
+      )
+    ) {
+      weakContextOnlyProof.push(`${item.source}:${item.title}`);
+      return false;
+    }
     if (urlKey) seenUrl.add(urlKey);
     seenTopic.add(topicKey);
     return true;
   });
-  const uniqueProofTypesClean = uniqueStrings(clean.map((item) => String(item.proofType)));
-  const uniqueIndependentSourcesClean = uniqueStrings(clean.map((item) => item.source));
-  return { uniqueProofTypesClean, uniqueIndependentSourcesClean, duplicateProofRejected, weakContextOnlyProof, proofDiversityClean: uniqueProofTypesClean.length };
+  const uniqueProofTypesClean = uniqueStrings(
+    clean.map((item) => String(item.proofType)),
+  );
+  const uniqueIndependentSourcesClean = uniqueStrings(
+    clean.map((item) => item.source),
+  );
+  return {
+    uniqueProofTypesClean,
+    uniqueIndependentSourcesClean,
+    duplicateProofRejected,
+    weakContextOnlyProof,
+    proofDiversityClean: uniqueProofTypesClean.length,
+  };
 }
-
 
 function numberOrNull(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -550,19 +996,47 @@ function hasRealNumber(record: JsonRecord, keys: string[]) {
   return keys.some((key) => numberOrNull(record[key]) !== null);
 }
 
-function proofReceiptUrl(type: "price_volume" | "fundamentals", ticker: string) {
+function proofReceiptUrl(
+  type: "price_volume" | "fundamentals",
+  ticker: string,
+) {
   return `internal://proof-router/${type}/${ticker}/${stage1DateKey()}`;
 }
 
-const FUNDAMENTALS_VALUE_KEYS = ["revenueGrowthPct", "marginTrendPct", "epsOrIncomeGrowthPct", "earningsSurpriseAverage", "cashFlowToNetIncome", "debtToEquity", "currentRatio", "peRatio", "evToSales", "estimateRevisionPct", "priceTargetRevisionPct"];
-const FUNDAMENTALS_SCORE_KEYS = ["revenueGrowthScore", "marginTrendScore", "earningsQualityScore", "cashFlowQualityScore", "debtRiskScore", "valuationSupportScore", "estimateRevisionScore", "priceTargetRevisionScore"];
+const FUNDAMENTALS_VALUE_KEYS = [
+  "revenueGrowthPct",
+  "marginTrendPct",
+  "epsOrIncomeGrowthPct",
+  "earningsSurpriseAverage",
+  "cashFlowToNetIncome",
+  "debtToEquity",
+  "currentRatio",
+  "peRatio",
+  "evToSales",
+  "estimateRevisionPct",
+  "priceTargetRevisionPct",
+];
+const FUNDAMENTALS_SCORE_KEYS = [
+  "revenueGrowthScore",
+  "marginTrendScore",
+  "earningsQualityScore",
+  "cashFlowQualityScore",
+  "debtRiskScore",
+  "valuationSupportScore",
+  "estimateRevisionScore",
+  "priceTargetRevisionScore",
+];
 
 function realFundamentalsValueCount(values: JsonRecord) {
-  return FUNDAMENTALS_VALUE_KEYS.filter((key) => numberOrNull(values[key]) !== null).length;
+  return FUNDAMENTALS_VALUE_KEYS.filter(
+    (key) => numberOrNull(values[key]) !== null,
+  ).length;
 }
 
 function realFundamentalsScoreCount(row: JsonRecord) {
-  return FUNDAMENTALS_SCORE_KEYS.filter((key) => numberOrNull(row[key]) !== null && numberOrNull(row[key])! > 0).length;
+  return FUNDAMENTALS_SCORE_KEYS.filter(
+    (key) => numberOrNull(row[key]) !== null && numberOrNull(row[key])! > 0,
+  ).length;
 }
 
 async function attachRoutedProofForSignal(
@@ -572,7 +1046,9 @@ async function attachRoutedProofForSignal(
   const ticker = text(signal.ticker).toUpperCase();
   const routerFailureReasons: string[] = [];
   if (!ticker) {
-    routerFailureReasons.push("missing_ticker_for_price_volume_or_fundamentals_router");
+    routerFailureReasons.push(
+      "missing_ticker_for_price_volume_or_fundamentals_router",
+    );
     return { enrichment, routerFailureReasons };
   }
 
@@ -584,19 +1060,28 @@ async function attachRoutedProofForSignal(
   if (missing.has("price_volume")) {
     try {
       const result = await runPriceVolume({ tickers: [ticker], maxTickers: 1 });
-      const row = (Array.isArray(result.priceVolumeProof) ? result.priceVolumeProof : [])
+      const row = (
+        Array.isArray(result.priceVolumeProof) ? result.priceVolumeProof : []
+      )
         .map(obj)
         .find((item) => text(item.ticker).toUpperCase() === ticker);
       const hasRealPrice = row && hasRealNumber(row, ["price", "latestPrice"]);
       const hasRealVolume = row && hasRealNumber(row, ["volume"]);
       if (row && hasRealPrice && hasRealVolume) {
-        const latestPrice = numberOrNull(row.latestPrice) ?? numberOrNull(row.price);
-        const priceChange = numberOrNull(row.priceChange) ?? numberOrNull(row.priceMove1d);
+        const latestPrice =
+          numberOrNull(row.latestPrice) ?? numberOrNull(row.price);
+        const priceChange =
+          numberOrNull(row.priceChange) ?? numberOrNull(row.priceMove1d);
         const volume = numberOrNull(row.volume);
-        const averageVolume = numberOrNull(row.averageVolume) ?? numberOrNull(row.avgVolume);
+        const averageVolume =
+          numberOrNull(row.averageVolume) ?? numberOrNull(row.avgVolume);
         const volumeRatio = numberOrNull(row.volumeRatio);
-        const marketReactionStatus = text(row.marketReactionStatus) || "early_signal_possible";
-        const earlySignalPossible = row.earlySignalPossible === true || marketReactionStatus === "early_signal_possible" || marketReactionStatus === "no_reaction_yet";
+        const marketReactionStatus =
+          text(row.marketReactionStatus) || "early_signal_possible";
+        const earlySignalPossible =
+          row.earlySignalPossible === true ||
+          marketReactionStatus === "early_signal_possible" ||
+          marketReactionStatus === "no_reaction_yet";
         const metadata = {
           ticker,
           latestPrice,
@@ -611,29 +1096,87 @@ async function attachRoutedProofForSignal(
           source: "FMP",
           receiptUrl: proofReceiptUrl("price_volume", ticker),
         };
-        extraProofs.push({ type: "price_volume", strength: "medium", label: "Real FMP price and volume context", source: "FMP Price Volume Proof", summary: `${ticker} real price/volume values returned: price ${latestPrice}, volume ${volume}.`, url: proofReceiptUrl("price_volume", ticker), observedAt: new Date().toISOString(), metadata });
-        acceptedProofItems.push({ proofType: "price_volume", source: "FMP Price Volume Proof", title: `${ticker} price/volume proof`, url: proofReceiptUrl("price_volume", ticker), proofMatchScore: 90, matchedTicker: true, matchedCompany: false, matchedTopic: true, freshWithin72h: true, urlIsSpecific: true, reasons: ["same_ticker", "real_latest_price", "real_volume", "market_reaction_bonus_only"] });
-        attempts.push({ source: "FMP Price Volume Proof", status: "added", detail: "Attached price_volume proof from real returned latest price and volume values.", proofType: "price_volume" });
+        extraProofs.push({
+          type: "price_volume",
+          strength: "medium",
+          label: "Real FMP price and volume context",
+          source: "FMP Price Volume Proof",
+          summary: `${ticker} real price/volume values returned: price ${latestPrice}, volume ${volume}.`,
+          url: proofReceiptUrl("price_volume", ticker),
+          observedAt: new Date().toISOString(),
+          metadata,
+        });
+        acceptedProofItems.push({
+          proofType: "price_volume",
+          source: "FMP Price Volume Proof",
+          title: `${ticker} price/volume proof`,
+          url: proofReceiptUrl("price_volume", ticker),
+          proofMatchScore: 90,
+          matchedTicker: true,
+          matchedCompany: false,
+          matchedTopic: true,
+          freshWithin72h: true,
+          urlIsSpecific: true,
+          reasons: [
+            "same_ticker",
+            "real_latest_price",
+            "real_volume",
+            "market_reaction_bonus_only",
+          ],
+        });
+        attempts.push({
+          source: "FMP Price Volume Proof",
+          status: "added",
+          detail:
+            "Attached price_volume proof from real returned latest price and volume values.",
+          proofType: "price_volume",
+        });
       } else {
-        routerFailureReasons.push("price_volume_real_price_or_volume_unavailable");
-        attempts.push({ source: "FMP Price Volume Proof", status: "missing", detail: "Price-volume route returned no real latest price and volume values." });
+        routerFailureReasons.push(
+          "price_volume_real_price_or_volume_unavailable",
+        );
+        attempts.push({
+          source: "FMP Price Volume Proof",
+          status: "missing",
+          detail:
+            "Price-volume route returned no real latest price and volume values.",
+        });
       }
     } catch {
       routerFailureReasons.push("price_volume_route_error_safe");
-      attempts.push({ source: "FMP Price Volume Proof", status: "error", detail: "Price-volume proof route failed safely." });
+      attempts.push({
+        source: "FMP Price Volume Proof",
+        status: "error",
+        detail: "Price-volume proof route failed safely.",
+      });
     }
   }
 
   if (missing.has("fundamentals")) {
     try {
-      const result = await runFmpProof({ tickers: [ticker], maxTickers: 1, dryRun: true, confirmRun: false });
-      const row = (Array.isArray(result.proof) ? result.proof : []).map(obj).find((item) => text(item.ticker).toUpperCase() === ticker);
+      const result = await runFmpProof({
+        tickers: [ticker],
+        maxTickers: 1,
+        dryRun: true,
+        confirmRun: false,
+      });
+      const row = (Array.isArray(result.proof) ? result.proof : [])
+        .map(obj)
+        .find((item) => text(item.ticker).toUpperCase() === ticker);
       const values = obj(row?.valuesUsed);
       const realValueCount = realFundamentalsValueCount(values);
       const realScoreCount = row ? realFundamentalsScoreCount(row) : 0;
-      const hasCleanFundamentalsProof = row && (row.fundamentalsProofClean === true || row.estimatesProofClean === true || row.priceTargetProofClean === true);
-      if (row && hasCleanFundamentalsProof && realValueCount >= 3 && realScoreCount >= 3) {
+      const hasCleanFundamentalsProof =
+        row &&
+        row.fundamentalsProofClean === true &&
+        realValueCount >= 3 &&
+        realScoreCount >= 3;
+      if (row && hasCleanFundamentalsProof) {
         const metadata = {
+          ticker,
+          source: "FMP",
+          receiptUrl: proofReceiptUrl("fundamentals", ticker),
+          providerReference: `FMP fundamentals proof ${ticker} ${stage1DateKey()}`,
           revenueGrowthScore: numberOrNull(row.revenueGrowthScore),
           marginTrendScore: numberOrNull(row.marginTrendScore),
           earningsQualityScore: numberOrNull(row.earningsQualityScore),
@@ -643,26 +1186,78 @@ async function attachRoutedProofForSignal(
           estimateRevisionScore: numberOrNull(row.estimateRevisionScore),
           priceTargetRevisionScore: numberOrNull(row.priceTargetRevisionScore),
           valuesUsed: values,
-          unavailableEndpoints: Array.isArray(row.unavailableEndpoints) ? row.unavailableEndpoints : [],
+          unavailableEndpoints: Array.isArray(row.unavailableEndpoints)
+            ? row.unavailableEndpoints
+            : [],
           fundamentalsProofScore: numberOrNull(row.fundamentalsProofScore),
           realValueCount,
+          fundamentalsProofClean: row.fundamentalsProofClean === true,
+          fundamentalsUnavailableReason:
+            text(row.fmpProofUnavailableReason) || null,
         };
-        extraProofs.push({ type: "fundamentals", strength: "medium", label: "Real FMP fundamentals support", source: "FMP Fundamentals Proof", summary: `${ticker} real FMP fundamentals returned ${realValueCount} usable values.`, url: proofReceiptUrl("fundamentals", ticker), observedAt: new Date().toISOString(), metadata });
-        acceptedProofItems.push({ proofType: "fundamentals", source: "FMP Fundamentals Proof", title: `${ticker} fundamentals proof`, url: proofReceiptUrl("fundamentals", ticker), proofMatchScore: 90, matchedTicker: true, matchedCompany: false, matchedTopic: true, freshWithin72h: true, urlIsSpecific: true, reasons: ["same_ticker", "real_fmp_values", "profile_or_endpoint_availability_not_counted"] });
-        attempts.push({ source: "FMP Fundamentals Proof", status: "added", detail: "Attached fundamentals proof from real FMP values only.", proofType: "fundamentals" });
+        extraProofs.push({
+          type: "fundamentals",
+          strength: "medium",
+          label: "Real FMP fundamentals support",
+          source: "FMP Fundamentals Proof",
+          summary: `${ticker} real FMP fundamentals returned ${realValueCount} usable values.`,
+          url: proofReceiptUrl("fundamentals", ticker),
+          observedAt: new Date().toISOString(),
+          metadata,
+        });
+        acceptedProofItems.push({
+          proofType: "fundamentals",
+          source: "FMP Fundamentals Proof",
+          title: `${ticker} fundamentals proof`,
+          url: proofReceiptUrl("fundamentals", ticker),
+          proofMatchScore: 90,
+          matchedTicker: true,
+          matchedCompany: false,
+          matchedTopic: true,
+          freshWithin72h: true,
+          urlIsSpecific: true,
+          reasons: [
+            "same_ticker",
+            "real_fmp_values",
+            "profile_or_endpoint_availability_not_counted",
+          ],
+        });
+        attempts.push({
+          source: "FMP Fundamentals Proof",
+          status: "added",
+          detail: "Attached fundamentals proof from real FMP values only.",
+          proofType: "fundamentals",
+        });
       } else {
         routerFailureReasons.push("fundamentals_clean_real_values_unavailable");
-        const unavailable = Array.isArray(row?.unavailableEndpoints) ? row.unavailableEndpoints.slice(0, 6).join(",") : "none_returned";
-        attempts.push({ source: "FMP Fundamentals Proof", status: "missing", detail: `FMP proof unavailable: clean=${String(hasCleanFundamentalsProof)}, realValues=${realValueCount}, realScores=${realScoreCount}, unavailable=${unavailable}` });
+        const unavailable = Array.isArray(row?.unavailableEndpoints)
+          ? row.unavailableEndpoints.slice(0, 6).join(",")
+          : "none_returned";
+        attempts.push({
+          source: "FMP Fundamentals Proof",
+          status: "missing",
+          detail: `FMP proof unavailable: clean=${String(hasCleanFundamentalsProof)}, realValues=${realValueCount}, realScores=${realScoreCount}, unavailable=${unavailable}`,
+        });
       }
     } catch {
       routerFailureReasons.push("fundamentals_route_error_safe");
-      attempts.push({ source: "FMP Fundamentals Proof", status: "error", detail: "FMP fundamentals proof route failed safely." });
+      attempts.push({
+        source: "FMP Fundamentals Proof",
+        status: "error",
+        detail: "FMP fundamentals proof route failed safely.",
+      });
     }
   }
 
-  if (!extraProofs.length) return { enrichment: { ...enrichment, enrichmentAttempts: attempts }, routerFailureReasons };
-  const proofTypes = uniqueStrings([...enrichment.proofTypes, ...extraProofs.map((proof) => proof.type)] as string[]) as typeof enrichment.proofTypes;
+  if (!extraProofs.length)
+    return {
+      enrichment: { ...enrichment, enrichmentAttempts: attempts },
+      routerFailureReasons,
+    };
+  const proofTypes = uniqueStrings([
+    ...enrichment.proofTypes,
+    ...extraProofs.map((proof) => proof.type),
+  ] as string[]) as typeof enrichment.proofTypes;
   const proofs = [...enrichment.enrichmentProofs, ...extraProofs];
   return {
     enrichment: {
@@ -671,9 +1266,16 @@ async function attachRoutedProofForSignal(
       acceptedProofItems,
       enrichmentAttempts: attempts,
       proofTypes,
-      proofCount: proofTypes.filter((type) => VALID_CANDIDATE_PROOF_TYPES.has(type)).length,
-      missingProof: enrichment.missingProof.filter((type) => !proofTypes.includes(type)),
-      confidenceScore: Math.min(100, enrichment.confidenceScore + extraProofs.length * 15),
+      proofCount: proofTypes.filter((type) =>
+        VALID_CANDIDATE_PROOF_TYPES.has(type),
+      ).length,
+      missingProof: enrichment.missingProof.filter(
+        (type) => !proofTypes.includes(type),
+      ),
+      confidenceScore: Math.min(
+        100,
+        enrichment.confidenceScore + extraProofs.length * 15,
+      ),
       safeToPromote: proofTypes.length >= 2,
       strongestProof: extraProofs[0] ?? enrichment.strongestProof,
     },
@@ -681,21 +1283,60 @@ async function attachRoutedProofForSignal(
   };
 }
 
-function proofRouterSummary(missingRequiredProof: string[], enrichment: Awaited<ReturnType<typeof enrichProofForRawSignal>>) {
-  const proofAttachedByType = enrichment.enrichmentProofs.reduce<Record<string, number>>((acc, proof) => { acc[proof.type] = (acc[proof.type] ?? 0) + 1; return acc; }, {});
+function proofRouterSummary(
+  missingRequiredProof: string[],
+  enrichment: Awaited<ReturnType<typeof enrichProofForRawSignal>>,
+) {
+  const proofAttachedByType = enrichment.enrichmentProofs.reduce<
+    Record<string, number>
+  >((acc, proof) => {
+    acc[proof.type] = (acc[proof.type] ?? 0) + 1;
+    return acc;
+  }, {});
   const calls = missingRequiredProof.map((need) => {
-    if (/price_volume/.test(need)) return "price_volume:FMP_quote_historical_or_polygon_when_configured";
+    if (/price_volume/.test(need))
+      return "price_volume:FMP_quote_historical_or_polygon_when_configured";
     if (/fundamentals/.test(need)) return "fundamentals:FMP_real_values_only";
     if (/filing/.test(need)) return "filing:SEC_specific_filing_url_required";
     if (/insider/.test(need)) return "insider:SEC_Form_4_open_market_buys_only";
-    if (/regulatory|legal/.test(need)) return "regulatory_legal:mapped_source_only";
+    if (/regulatory|legal/.test(need))
+      return "regulatory_legal:mapped_source_only";
     if (/contract/.test(need)) return "contract:mapped_source_only";
     if (/pattern_match/.test(need)) return "pattern_match:stored_samples_only";
     return `${need}:mapped_source_only`;
   });
-  const proofUnavailableByType = Object.fromEntries(missingRequiredProof.map((need) => [need, "real_values_or_specific_receipt_not_available_in_this_run"]));
-  const proofExamples = (type: string) => enrichment.enrichmentProofs.filter((proof) => proof.type === type).slice(0, 3).map((proof) => ({ ticker: proof.metadata?.ticker, source: proof.source, receiptUrl: proof.url, ...obj(proof.metadata) }));
-  return { proofRouterAttempted: missingRequiredProof.length > 0, proofRouterCalls: calls, proofAttachedByType, proofUnavailableByType, proofStillMissingAfterRouter: missingRequiredProof, nextBestProofToFetchAfterRouter: nextBestProof(missingRequiredProof), priceVolumeProofExamples: proofExamples("price_volume"), fundamentalsProofExamples: proofExamples("fundamentals"), fmpProofUnavailableReason: missingRequiredProof.includes("fundamentals") ? proofUnavailableByType.fundamentals : null, priceVolumeUnavailableReason: missingRequiredProof.includes("price_volume") ? proofUnavailableByType.price_volume : null };
+  const proofUnavailableByType = Object.fromEntries(
+    missingRequiredProof.map((need) => [
+      need,
+      "real_values_or_specific_receipt_not_available_in_this_run",
+    ]),
+  );
+  const proofExamples = (type: string) =>
+    enrichment.enrichmentProofs
+      .filter((proof) => proof.type === type)
+      .slice(0, 3)
+      .map((proof) => ({
+        ticker: proof.metadata?.ticker,
+        source: proof.source,
+        receiptUrl: proof.url,
+        ...obj(proof.metadata),
+      }));
+  return {
+    proofRouterAttempted: missingRequiredProof.length > 0,
+    proofRouterCalls: calls,
+    proofAttachedByType,
+    proofUnavailableByType,
+    proofStillMissingAfterRouter: missingRequiredProof,
+    nextBestProofToFetchAfterRouter: nextBestProof(missingRequiredProof),
+    priceVolumeProofExamples: proofExamples("price_volume"),
+    fundamentalsProofExamples: proofExamples("fundamentals"),
+    fmpProofUnavailableReason: missingRequiredProof.includes("fundamentals")
+      ? proofUnavailableByType.fundamentals
+      : null,
+    priceVolumeUnavailableReason: missingRequiredProof.includes("price_volume")
+      ? proofUnavailableByType.price_volume
+      : null,
+  };
 }
 
 function truthyRank(value: boolean | null | undefined) {
@@ -989,7 +1630,15 @@ function baseResponse(input: {
     selectedRawSignalId: null as string | null,
     rawSignalSummary: {},
     candidateDiscoverySummary: {},
-    pipelineStageCounts: { radar_item: 0, watch_candidate: 0, proof_needed: 0, ai_review_ready: 0, approval_ready: 0, publish_ready: 0, rejected_noise: 0 },
+    pipelineStageCounts: {
+      radar_item: 0,
+      watch_candidate: 0,
+      proof_needed: 0,
+      ai_review_ready: 0,
+      approval_ready: 0,
+      publish_ready: 0,
+      rejected_noise: 0,
+    },
     watchQueueSummary: { eligibleCount: 0, candidates: [] },
     proofNeededCount: 0,
     aiReviewReadyCount: 0,
@@ -1047,7 +1696,6 @@ function baseResponse(input: {
 function stage1DateKey(date = new Date()) {
   return date.toISOString().slice(0, 10);
 }
-
 
 async function saveStage1RawObject(
   output: JsonRecord,
@@ -1607,15 +2255,30 @@ export async function POST(request: NextRequest) {
       output,
       r2WriteAvailable,
       `raw/stage1/generic-ripple/${dateKey}/${runId}.json`,
-      { genericTriage, genericRippleCandidates: output.genericRippleCandidates },
-      { source: "stage1", assetType: "generic-ripple", dataType: "generic-ripple", recordCount: Array.isArray(output.genericRippleCandidates) ? output.genericRippleCandidates.length : 0 },
+      {
+        genericTriage,
+        genericRippleCandidates: output.genericRippleCandidates,
+      },
+      {
+        source: "stage1",
+        assetType: "generic-ripple",
+        dataType: "generic-ripple",
+        recordCount: Array.isArray(output.genericRippleCandidates)
+          ? output.genericRippleCandidates.length
+          : 0,
+      },
     );
     await saveStage1RawObject(
       output,
       r2WriteAvailable,
       `raw/stage1/great-signal-scorecards/${dateKey}/${runId}.json`,
       { greatSignalSummary: output.greatSignalSummary ?? null, scorecards: [] },
-      { source: "stage1", assetType: "scorecards", dataType: "great-signal-scorecards", recordCount: 0 },
+      {
+        source: "stage1",
+        assetType: "scorecards",
+        dataType: "great-signal-scorecards",
+        recordCount: 0,
+      },
     );
 
     if (!candidateAlertId && rawSignals.length) {
@@ -1710,9 +2373,25 @@ export async function POST(request: NextRequest) {
           enrichment,
           impact,
         });
-        const broad = broadRippleMetadata(signal, greatSignalScorecard.signalType);
-        const pipeline = pipelineDecision({ scorecard: greatSignalScorecard, signalType: greatSignalScorecard.signalType, passed: reasons.length === 0, unsafeProofMismatchWarning: enrichment.rejectedProofItems.length > 0 && enrichment.acceptedProofItems.length === 0, broad, confirmRun });
-        const watchQueue = watchQueueFields(pipeline.pipelineStage, greatSignalScorecard.finalGreatSignalScore, greatSignalScorecard.proofStillMissingAfterRouter);
+        const broad = broadRippleMetadata(
+          signal,
+          greatSignalScorecard.signalType,
+        );
+        const pipeline = pipelineDecision({
+          scorecard: greatSignalScorecard,
+          signalType: greatSignalScorecard.signalType,
+          passed: reasons.length === 0,
+          unsafeProofMismatchWarning:
+            enrichment.rejectedProofItems.length > 0 &&
+            enrichment.acceptedProofItems.length === 0,
+          broad,
+          confirmRun,
+        });
+        const watchQueue = watchQueueFields(
+          pipeline.pipelineStage,
+          greatSignalScorecard.finalGreatSignalScore,
+          greatSignalScorecard.proofStillMissingAfterRouter,
+        );
         discoveryRows.push({
           rawSignalId: signal.id,
           ticker: signal.ticker,
@@ -1790,12 +2469,15 @@ export async function POST(request: NextRequest) {
           nextBestProofToFetch: greatSignalScorecard.nextBestProofToFetch,
           relevantProofTypes: greatSignalScorecard.relevantProofTypes,
           irrelevantProofTypes: greatSignalScorecard.irrelevantProofTypes,
-          requiredProofTypesForThisCandidate: greatSignalScorecard.requiredProofTypesForThisCandidate,
-          optionalProofTypesForThisCandidate: greatSignalScorecard.optionalProofTypesForThisCandidate,
+          requiredProofTypesForThisCandidate:
+            greatSignalScorecard.requiredProofTypesForThisCandidate,
+          optionalProofTypesForThisCandidate:
+            greatSignalScorecard.optionalProofTypesForThisCandidate,
           missingRequiredProof: greatSignalScorecard.missingRequiredProof,
           missingOptionalProof: greatSignalScorecard.missingOptionalProof,
           uniqueProofTypesClean: greatSignalScorecard.uniqueProofTypesClean,
-          uniqueIndependentSourcesClean: greatSignalScorecard.uniqueIndependentSourcesClean,
+          uniqueIndependentSourcesClean:
+            greatSignalScorecard.uniqueIndependentSourcesClean,
           duplicateProofRejected: greatSignalScorecard.duplicateProofRejected,
           weakContextOnlyProof: greatSignalScorecard.weakContextOnlyProof,
           proofDiversityClean: greatSignalScorecard.proofDiversityClean,
@@ -1803,14 +2485,43 @@ export async function POST(request: NextRequest) {
           proofRouterCalls: greatSignalScorecard.proofRouterCalls,
           proofAttachedByType: greatSignalScorecard.proofAttachedByType,
           proofUnavailableByType: greatSignalScorecard.proofUnavailableByType,
-          proofStillMissingAfterRouter: greatSignalScorecard.proofStillMissingAfterRouter,
-          nextBestProofToFetchAfterRouter: greatSignalScorecard.nextBestProofToFetchAfterRouter,
+          proofStillMissingAfterRouter:
+            greatSignalScorecard.proofStillMissingAfterRouter,
+          nextBestProofToFetchAfterRouter:
+            greatSignalScorecard.nextBestProofToFetchAfterRouter,
           routerFailureReasons: routed.routerFailureReasons,
+          cleanNewsReceiptAttached: enrichment.cleanNewsReceiptAttached,
+          cleanNewsReceiptReason: enrichment.cleanNewsReceiptReason,
+          rejectedNewsReceiptReason: enrichment.rejectedNewsReceiptReason,
+          aiReviewEligible:
+            pipeline.pipelineStage === "ai_review_ready" &&
+            greatSignalScorecard.missingRequiredProof.length === 0 &&
+            greatSignalScorecard.proofDiversityClean >= 2 &&
+            !pipeline.blockedFromNextStageBecause.some((reason) =>
+              /opinion|calendar|unsafe/i.test(reason),
+            ),
+          aiCommitteeCalled: false,
         });
       }
       for (const row of discoveryRows) {
         const failures = bestEligibilityFailure(row);
-        row.eligibleForBest = failures.length === 0 && row.pipelineStage === "ai_review_ready" && row.missingRequiredProof.length === 0 && row.proofDiversityClean >= 2 && row.signalType !== "opinion_or_noise" && row.signalType !== "calendar_only_event" && !(row.signalType === "broad_macro_or_sector_ripple" && !row.promotedToRippleCandidate);
+        row.eligibleForBest =
+          (row.signalType === "broad_macro_or_sector_ripple"
+            ? failures.filter(
+                (failure) =>
+                  failure !== "direct_ticker_match_required" &&
+                  failure !== "broad_market_or_news_noise",
+              ).length === 0
+            : failures.length === 0) &&
+          row.pipelineStage === "ai_review_ready" &&
+          row.missingRequiredProof.length === 0 &&
+          row.proofDiversityClean >= 2 &&
+          row.signalType !== "opinion_or_noise" &&
+          row.signalType !== "calendar_only_event" &&
+          !(
+            row.signalType === "broad_macro_or_sector_ripple" &&
+            !row.promotedToRippleCandidate
+          );
         const layerFailures = row.sevenLayerEvidence.reasonNotPromoted
           ? [row.sevenLayerEvidence.reasonNotPromoted]
           : [];
@@ -1839,11 +2550,47 @@ export async function POST(request: NextRequest) {
         },
         { A: 0, B: 0, C: 0, D: 0, F: 0 },
       );
-      const pipelineStageCounts = rankedCandidates.reduce<Record<PipelineStage, number>>((acc, row) => { acc[row.pipelineStage] = (acc[row.pipelineStage] ?? 0) + 1; return acc; }, { radar_item: 0, watch_candidate: 0, proof_needed: 0, ai_review_ready: 0, approval_ready: 0, publish_ready: 0, rejected_noise: 0 });
-      const watchQueueCandidates = rankedCandidates.filter((row) => row.watchQueueEligible);
-      const aiReviewReadyCandidates = rankedCandidates.filter((row) => row.pipelineStage === "ai_review_ready" && row.missingRequiredProof.length === 0 && row.proofDiversityClean >= 2 && row.unsafeProofMismatchWarning !== true && row.signalType !== "opinion_or_noise" && row.signalType !== "calendar_only_event" && !(row.signalType === "broad_macro_or_sector_ripple" && !row.promotedToRippleCandidate));
-      const proofNeededCandidates = rankedCandidates.filter((row) => row.pipelineStage === "proof_needed");
-      const broadRippleCandidates = rankedCandidates.filter((row) => row.signalType === "broad_macro_or_sector_ripple" && row.promotedToRippleCandidate);
+      const pipelineStageCounts = rankedCandidates.reduce<
+        Record<PipelineStage, number>
+      >(
+        (acc, row) => {
+          acc[row.pipelineStage] = (acc[row.pipelineStage] ?? 0) + 1;
+          return acc;
+        },
+        {
+          radar_item: 0,
+          watch_candidate: 0,
+          proof_needed: 0,
+          ai_review_ready: 0,
+          approval_ready: 0,
+          publish_ready: 0,
+          rejected_noise: 0,
+        },
+      );
+      const watchQueueCandidates = rankedCandidates.filter(
+        (row) => row.watchQueueEligible,
+      );
+      const aiReviewReadyCandidates = rankedCandidates.filter(
+        (row) =>
+          row.pipelineStage === "ai_review_ready" &&
+          row.missingRequiredProof.length === 0 &&
+          row.proofDiversityClean >= 2 &&
+          row.unsafeProofMismatchWarning !== true &&
+          row.signalType !== "opinion_or_noise" &&
+          row.signalType !== "calendar_only_event" &&
+          !(
+            row.signalType === "broad_macro_or_sector_ripple" &&
+            !row.promotedToRippleCandidate
+          ),
+      );
+      const proofNeededCandidates = rankedCandidates.filter(
+        (row) => row.pipelineStage === "proof_needed",
+      );
+      const broadRippleCandidates = rankedCandidates.filter(
+        (row) =>
+          row.signalType === "broad_macro_or_sector_ripple" &&
+          row.promotedToRippleCandidate,
+      );
       const missingProofCounts = rankedCandidates
         .flatMap((row) => row.missingRequiredProof)
         .filter((type) => VALID_CANDIDATE_PROOF_TYPES.has(type))
@@ -1868,9 +2615,33 @@ export async function POST(request: NextRequest) {
         pipelineStageCounts,
         proofNeededCount: proofNeededCandidates.length,
         aiReviewReadyCount: aiReviewReadyCandidates.length,
+        aiReviewEligibleCount: rankedCandidates.filter(
+          (row) => row.aiReviewEligible,
+        ).length,
+        proofNeededToAIReviewEligibleCount: rankedCandidates.filter(
+          (row) =>
+            row.aiReviewEligible && row.stageRecommendation === "proof_needed",
+        ).length,
         rejectedNoiseCount: pipelineStageCounts.rejected_noise,
         broadRippleCandidates: broadRippleCandidates.slice(0, 10),
-        watchQueueSummary: { eligibleCount: watchQueueCandidates.length, highPriorityCount: watchQueueCandidates.filter((row) => row.watchPriority === "high").length, nextRecheck: watchQueueCandidates.map((row) => row.recheckAfter).filter(Boolean).sort()[0] ?? null, candidates: watchQueueCandidates.slice(0, 10) },
+        broadRippleCandidatesCreated: broadRippleCandidates.length,
+        broadRippleRejectedAsNoise: rankedCandidates.filter(
+          (row) =>
+            row.signalType === "broad_macro_or_sector_ripple" &&
+            !row.promotedToRippleCandidate,
+        ).length,
+        watchQueueSummary: {
+          eligibleCount: watchQueueCandidates.length,
+          highPriorityCount: watchQueueCandidates.filter(
+            (row) => row.watchPriority === "high",
+          ).length,
+          nextRecheck:
+            watchQueueCandidates
+              .map((row) => row.recheckAfter)
+              .filter(Boolean)
+              .sort()[0] ?? null,
+          candidates: watchQueueCandidates.slice(0, 10),
+        },
         gradeCounts,
         bestGreatSignalCandidate,
         bestWatchOnlyCandidate,
@@ -1887,22 +2658,34 @@ export async function POST(request: NextRequest) {
         ).length,
         mostCommonMissingRequiredProof: mostCommonMissingProof,
         mostCommonMissingProof,
-        proofDiversityClean: rankedCandidates.map((row) => ({ rawSignalId: row.rawSignalId, proofDiversityClean: row.proofDiversityClean, uniqueProofTypesClean: row.uniqueProofTypesClean })),
-        duplicateProofRejected: rankedCandidates.flatMap((row) => row.duplicateProofRejected),
+        proofDiversityClean: rankedCandidates.map((row) => ({
+          rawSignalId: row.rawSignalId,
+          proofDiversityClean: row.proofDiversityClean,
+          uniqueProofTypesClean: row.uniqueProofTypesClean,
+        })),
+        duplicateProofRejected: rankedCandidates.flatMap(
+          (row) => row.duplicateProofRejected,
+        ),
         nextBestSystemFix: mostCommonMissingProof
           ? `Improve ${mostCommonMissingProof} proof fetching for top direct ticker candidates.`
           : "Keep proof gates strict and expand clean proof coverage only when specific URLs exist.",
         bestWatchCandidate: watchQueueCandidates[0] ?? null,
         bestProofNeededCandidate: proofNeededCandidates[0] ?? null,
         bestAIReviewReadyCandidate: aiReviewReadyCandidates[0] ?? null,
+        bestAIReviewEligibleCandidate:
+          rankedCandidates.find((row) => row.aiReviewEligible) ?? null,
       };
       const proofCompletionSummary = {
         attemptedCandidates: topDirectCandidates.map((row) => row.rawSignalId),
         priceVolumeAttempted: topDirectCandidates
-          .filter((row) => arrayIncludes(row.missingRequiredProof, "price_volume"))
+          .filter((row) =>
+            arrayIncludes(row.missingRequiredProof, "price_volume"),
+          )
           .map((row) => row.rawSignalId),
         fundamentalsAttempted: topDirectCandidates
-          .filter((row) => arrayIncludes(row.missingRequiredProof, "fundamentals"))
+          .filter((row) =>
+            arrayIncludes(row.missingRequiredProof, "fundamentals"),
+          )
           .map((row) => row.rawSignalId),
         patternMatchAttempted: topDirectCandidates
           .filter((row) =>
@@ -1921,21 +2704,83 @@ export async function POST(request: NextRequest) {
             row.missingRequiredProof,
           ]),
         ),
-        proofRouterAttempted: topDirectCandidates.some((row) => row.proofRouterAttempted),
-        proofRouterCalls: topDirectCandidates.flatMap((row) => row.proofRouterCalls),
-        priceVolumeProofAttachedCount: topDirectCandidates.reduce((total, row) => total + Number(row.proofAttachedByType.price_volume ?? 0), 0),
-        fundamentalsProofAttachedCount: topDirectCandidates.reduce((total, row) => total + Number(row.proofAttachedByType.fundamentals ?? 0), 0),
-        priceVolumeProofExamples: topDirectCandidates.flatMap((row) => row.priceVolumeProofExamples ?? []).slice(0, 5),
-        fundamentalsProofExamples: topDirectCandidates.flatMap((row) => row.fundamentalsProofExamples ?? []).slice(0, 5),
-        fmpProofUnavailableReason: topDirectCandidates.find((row) => row.fmpProofUnavailableReason)?.fmpProofUnavailableReason ?? null,
-        priceVolumeUnavailableReason: topDirectCandidates.find((row) => row.priceVolumeUnavailableReason)?.priceVolumeUnavailableReason ?? null,
-        proofRouterSuccessCount: topDirectCandidates.reduce((total, row) => total + Object.values(row.proofAttachedByType).reduce((sum, count) => sum + Number(count), 0), 0),
-        proofRouterFailureReasons: Array.from(new Set(topDirectCandidates.flatMap((row) => row.routerFailureReasons ?? []))),
-        proofAttachedByType: topDirectCandidates.reduce<Record<string, number>>((acc, row) => { for (const [type, count] of Object.entries(row.proofAttachedByType)) acc[type] = (acc[type] ?? 0) + Number(count); return acc; }, {}),
-        proofUnavailableByType: Object.assign({}, ...topDirectCandidates.map((row) => row.proofUnavailableByType)),
-        proofStillMissingAfterRouter: Object.fromEntries(topDirectCandidates.map((row) => [row.rawSignalId, row.proofStillMissingAfterRouter])),
-        nextBestProofToFetchAfterRouter: topDirectCandidates[0]?.nextBestProofToFetchAfterRouter ?? (mostCommonMissingProof ? nextBestProof([mostCommonMissingProof]) : "none"),
-        nextBestProofToFetchAfterRouterAll: Array.from(new Set(topDirectCandidates.map((row) => row.nextBestProofToFetchAfterRouter).filter((value) => value !== "none"))),
+        proofRouterAttempted: topDirectCandidates.some(
+          (row) => row.proofRouterAttempted,
+        ),
+        proofRouterCalls: topDirectCandidates.flatMap(
+          (row) => row.proofRouterCalls,
+        ),
+        priceVolumeProofAttachedCount: topDirectCandidates.reduce(
+          (total, row) =>
+            total + Number(row.proofAttachedByType.price_volume ?? 0),
+          0,
+        ),
+        fundamentalsProofAttachedCount: rankedCandidates.reduce(
+          (total, row) =>
+            total + Number(row.proofAttachedByType.fundamentals ?? 0),
+          0,
+        ),
+        cleanNewsReceiptAttachedCount: rankedCandidates.filter(
+          (row) => row.cleanNewsReceiptAttached,
+        ).length,
+        priceVolumeProofExamples: topDirectCandidates
+          .flatMap((row) => row.priceVolumeProofExamples ?? [])
+          .slice(0, 5),
+        fundamentalsProofExamples: topDirectCandidates
+          .flatMap((row) => row.fundamentalsProofExamples ?? [])
+          .slice(0, 5),
+        fmpProofUnavailableReason:
+          topDirectCandidates.find((row) => row.fmpProofUnavailableReason)
+            ?.fmpProofUnavailableReason ?? null,
+        priceVolumeUnavailableReason:
+          topDirectCandidates.find((row) => row.priceVolumeUnavailableReason)
+            ?.priceVolumeUnavailableReason ?? null,
+        proofRouterSuccessCount: topDirectCandidates.reduce(
+          (total, row) =>
+            total +
+            Object.values(row.proofAttachedByType).reduce(
+              (sum, count) => sum + Number(count),
+              0,
+            ),
+          0,
+        ),
+        proofRouterFailureReasons: Array.from(
+          new Set(
+            topDirectCandidates.flatMap(
+              (row) => row.routerFailureReasons ?? [],
+            ),
+          ),
+        ),
+        proofAttachedByType: topDirectCandidates.reduce<Record<string, number>>(
+          (acc, row) => {
+            for (const [type, count] of Object.entries(row.proofAttachedByType))
+              acc[type] = (acc[type] ?? 0) + Number(count);
+            return acc;
+          },
+          {},
+        ),
+        proofUnavailableByType: Object.assign(
+          {},
+          ...topDirectCandidates.map((row) => row.proofUnavailableByType),
+        ),
+        proofStillMissingAfterRouter: Object.fromEntries(
+          topDirectCandidates.map((row) => [
+            row.rawSignalId,
+            row.proofStillMissingAfterRouter,
+          ]),
+        ),
+        nextBestProofToFetchAfterRouter:
+          topDirectCandidates[0]?.nextBestProofToFetchAfterRouter ??
+          (mostCommonMissingProof
+            ? nextBestProof([mostCommonMissingProof])
+            : "none"),
+        nextBestProofToFetchAfterRouterAll: Array.from(
+          new Set(
+            topDirectCandidates
+              .map((row) => row.nextBestProofToFetchAfterRouter)
+              .filter((value) => value !== "none"),
+          ),
+        ),
         providerSkippedReasons,
       };
       const proofEnrichmentSummary = {
@@ -2123,12 +2968,30 @@ export async function POST(request: NextRequest) {
         watchQueueSummary: greatSignalSummary.watchQueueSummary,
         proofNeededCount: proofNeededCandidates.length,
         aiReviewReadyCount: aiReviewReadyCandidates.length,
+        aiReviewEligibleCount: rankedCandidates.filter(
+          (row) => row.aiReviewEligible,
+        ).length,
+        proofNeededToAIReviewEligibleCount: rankedCandidates.filter(
+          (row) =>
+            row.aiReviewEligible && row.stageRecommendation === "proof_needed",
+        ).length,
         rejectedNoiseCount: pipelineStageCounts.rejected_noise,
         broadRippleCandidates: broadRippleCandidates.slice(0, 10),
+        broadRippleCandidatesCreated: broadRippleCandidates.length,
+        broadRippleRejectedAsNoise: rankedCandidates.filter(
+          (row) =>
+            row.signalType === "broad_macro_or_sector_ripple" &&
+            !row.promotedToRippleCandidate,
+        ).length,
         proofRouterSummary: proofCompletionSummary,
         bestWatchCandidate: greatSignalSummary.bestWatchCandidate,
         bestProofNeededCandidate: greatSignalSummary.bestProofNeededCandidate,
-        bestAIReviewReadyCandidate: greatSignalSummary.bestAIReviewReadyCandidate,
+        bestAIReviewReadyCandidate:
+          greatSignalSummary.bestAIReviewReadyCandidate,
+        bestAIReviewEligibleCandidate:
+          greatSignalSummary.bestAIReviewEligibleCandidate,
+        cleanNewsReceiptAttachedCount:
+          proofCompletionSummary.cleanNewsReceiptAttachedCount,
         nextBestSystemFix: greatSignalSummary.nextBestSystemFix,
       });
       output.candidateDiscoverySummary = summary;

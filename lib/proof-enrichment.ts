@@ -10,7 +10,7 @@ import {
 
 type JsonRecord = Record<string, unknown>;
 
-type EnrichmentAttempt = {
+export type EnrichmentAttempt = {
   source: string;
   status: "added" | "missing" | "skipped" | "error";
   detail: string;
@@ -48,6 +48,9 @@ export type ProofEnrichmentResult = {
   enrichmentWarnings: string[];
   enrichmentErrors: string[];
   proofBundle: ProofBundle | null;
+  cleanNewsReceiptAttached: boolean;
+  cleanNewsReceiptReason: string | null;
+  rejectedNewsReceiptReason: string | null;
 };
 
 const VALID_CANDIDATE_PROOF_TYPES = new Set<ProofType>([
@@ -341,6 +344,84 @@ function proofFromRelatedSignal(
   };
 }
 
+function rawSignalReceiptUrl(rawSignal: RawSignal) {
+  const receipts = receiptsFromRawSignal(rawSignal);
+  return (
+    text(rawSignal.sourceUrl) ||
+    text(receipts.find((receipt) => text(receipt.url))?.url)
+  );
+}
+
+function isOpinionOrNoiseArticle(rawSignal: RawSignal) {
+  const body =
+    `${rawSignal.source} ${rawSignal.title} ${rawSignal.summary}`.toLowerCase();
+  if (
+    /\b(opinion|commentary|rumou?r|why i think|could be|might be)\b/.test(body)
+  )
+    return "opinion_only_content";
+  if (
+    /\b(moon|rocket|guaranteed|can't miss|explosive upside|hype)\b/.test(body)
+  )
+    return "hype_only_article";
+  if (
+    /\b(markets today|stock market today|generic market update|what to watch)\b/.test(
+      body,
+    ) &&
+    !rawSignal.ticker
+  )
+    return "generic_market_commentary";
+  return null;
+}
+
+function cleanNewsReceiptFromRawSignal(
+  rawSignal: RawSignal,
+):
+  | { proof: ProofItem; match: ProofMatchReport; reason: string }
+  | { rejected: string } {
+  const url = rawSignalReceiptUrl(rawSignal);
+  if (!text(rawSignal.source)) return { rejected: "missing_source" };
+  if (!text(rawSignal.title)) return { rejected: "missing_title" };
+  if (!url || !isSpecificUrl(url))
+    return { rejected: "missing_specific_source_url_or_receipt_url" };
+  if (!rawSignal.receivedAt) return { rejected: "missing_received_at" };
+  const noise = isOpinionOrNoiseArticle(rawSignal);
+  if (noise) return { rejected: noise };
+  const topics = topicTerms(rawSignal.title, rawSignal.summary);
+  if (!topics.length) return { rejected: "missing_topic_match" };
+  const ticker = text(rawSignal.ticker).toUpperCase();
+  const companies = companyTerms(rawSignal);
+  if (!ticker && !companies.length)
+    return { rejected: "missing_ticker_or_company_match" };
+  const match = proofMatchReport(rawSignal, rawSignal, "news", url);
+  if (!(match.matchedTicker || match.matchedCompany))
+    return { rejected: "unrelated_ticker_mention" };
+  if (!match.matchedTopic) return { rejected: "missing_topic_match" };
+  return {
+    proof: {
+      type: "news",
+      strength: "medium",
+      label: "Clean raw news receipt",
+      source: rawSignal.source,
+      summary: rawSignal.summary || rawSignal.title,
+      url,
+      observedAt: rawSignal.receivedAt.toISOString(),
+      metadata: {
+        cleanNewsReceiptAttached: true,
+        rawSignalId: rawSignal.id,
+        ticker: ticker || null,
+        company: companies[0] ?? null,
+        topics,
+      },
+    },
+    match: {
+      ...match,
+      reasons: unique([...match.reasons, "raw_candidate_clean_news_receipt"]),
+    },
+    reason:
+      "Raw candidate has source, title, ticker/company match, specific receipt URL, receivedAt, and topic match.",
+  };
+}
+
 function shouldSkipReferenceUpdate(signal: RawSignal) {
   const payload = objectValue(signal.payload);
   const body = `${signal.title} ${signal.summary}`.toLowerCase();
@@ -371,6 +452,28 @@ export async function enrichProofForRawSignal(
   const enrichmentProofs: ProofItem[] = [];
   const acceptedProofItems: ProofMatchReport[] = [];
   const rejectedProofItems: ProofMatchReport[] = [];
+  const rawNewsReceipt = cleanNewsReceiptFromRawSignal(rawSignal);
+  const cleanNewsReceiptAttached = "proof" in rawNewsReceipt;
+  const cleanNewsReceiptReason =
+    "reason" in rawNewsReceipt ? rawNewsReceipt.reason : null;
+  const rejectedNewsReceiptReason =
+    "rejected" in rawNewsReceipt ? rawNewsReceipt.rejected : null;
+  if ("proof" in rawNewsReceipt) {
+    enrichmentProofs.push(rawNewsReceipt.proof);
+    acceptedProofItems.push(rawNewsReceipt.match);
+    attempts.push({
+      source: rawSignal.source,
+      status: "added",
+      detail: rawNewsReceipt.reason,
+      proofType: "news",
+    });
+  } else {
+    attempts.push({
+      source: rawSignal.source,
+      status: "missing",
+      detail: `Raw candidate news receipt rejected: ${rawNewsReceipt.rejected}.`,
+    });
+  }
 
   for (const proof of base.proofs.filter(
     (item) => item.type === "source_health",
@@ -541,5 +644,8 @@ export async function enrichProofForRawSignal(
     ],
     enrichmentErrors: errors,
     proofBundle: enriched,
+    cleanNewsReceiptAttached,
+    cleanNewsReceiptReason,
+    rejectedNewsReceiptReason,
   };
 }

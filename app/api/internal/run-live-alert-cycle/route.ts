@@ -25,6 +25,7 @@ import { runFmpProviderContractTest } from "@/lib/fmp-provider-contract";
 import { getLiveSourceContractSummary, buildLiveSourceSchedulerPlan } from "@/lib/live-source-contracts";
 import { runFmpProof, runPriceVolume } from "@/lib/proof-ears";
 import { runLiveEarRun } from "@/lib/live-ear-runner";
+import { runStoryClusterRun } from "@/lib/story-clustering";
 import type { ProofItem } from "@/lib/proof/proof-bundle-builder";
 import { articleIdentity, readArticleForMemory } from "@/lib/article-reader";
 
@@ -1681,6 +1682,14 @@ function baseResponse(input: {
     articleReaderFailureReasons: [] as string[],
     articleReaderExamples: [] as unknown[],
     liveEarSummary: null as unknown,
+    storyClusterSummary: null as unknown,
+    clustersCreated: 0,
+    clustersUpdated: 0,
+    topStoryClusters: [] as unknown[],
+    multiSourceConfirmedClusters: [] as unknown[],
+    officialConfirmedClusters: [] as unknown[],
+    callsSavedByStoryClustering: 0,
+    clusterBasedCandidatesCreated: 0,
     genericNewsScanned: 0,
     seriousGenericSignalsFound: 0,
     rippleCandidatesCreated: 0,
@@ -1834,6 +1843,7 @@ export async function POST(request: NextRequest) {
     maxAssetsToScanNow,
   );
   const includeLiveEars = bool(body.includeLiveEars, false);
+  const includeStoryClustering = bool(body.includeStoryClustering, false);
   const warnings = [
     "Telegram is disabled for this founder website test; this route never sends Telegram.",
     ...(confirmSend || allowTelegram
@@ -1893,6 +1903,32 @@ export async function POST(request: NextRequest) {
           noTelegram: true,
         }))
       : null;
+    const storyClusterRun = includeStoryClustering
+      ? await runStoryClusterRun({
+          dryRun: true,
+          confirmRun: false,
+          maxRawSignals: 100,
+          freshnessWindowHours,
+        }).catch((error: unknown) => ({
+          ok: false,
+          storyClusterSummary: {
+            ok: false,
+            safeErrorCategory: "story_clustering_stage1_failed_safely",
+            safeErrorMessage:
+              error instanceof Error ? error.message.slice(0, 160) : "Unknown error",
+          },
+          clustersCreated: 0,
+          clustersUpdated: 0,
+          topStoryClusters: [],
+          multiSourceConfirmedClusters: [],
+          officialConfirmedClusters: [],
+          callsSavedByStoryClustering: 0,
+          clusterBasedCandidatesCreated: 0,
+          noOpenAI: true,
+          noPublish: true,
+          noTelegram: true,
+        }))
+      : null;
     const genericTriage = await runGenericNewsTriage({
       maxGenericItemsToScan: Math.min(maxRawSignalsToInspect, 50),
       maxRippleCandidates: Math.min(maxDeepScans || 10, 10),
@@ -1933,6 +1969,15 @@ export async function POST(request: NextRequest) {
       ...safeLiveSourceStage1Summary(),
       includeLiveEars,
       liveEarSummary,
+      includeStoryClustering,
+      storyClusterSummary: storyClusterRun?.storyClusterSummary ?? storyClusterRun ?? null,
+      clustersCreated: Number(storyClusterRun?.clustersCreated ?? 0),
+      clustersUpdated: Number(storyClusterRun?.clustersUpdated ?? 0),
+      topStoryClusters: Array.isArray(storyClusterRun?.topStoryClusters) ? storyClusterRun.topStoryClusters : [],
+      multiSourceConfirmedClusters: Array.isArray(storyClusterRun?.multiSourceConfirmedClusters) ? storyClusterRun.multiSourceConfirmedClusters : [],
+      officialConfirmedClusters: Array.isArray(storyClusterRun?.officialConfirmedClusters) ? storyClusterRun.officialConfirmedClusters : [],
+      callsSavedByStoryClustering: Number(storyClusterRun?.callsSavedByStoryClustering ?? 0),
+      clusterBasedCandidatesCreated: Number(storyClusterRun?.clusterBasedCandidatesCreated ?? 0),
       seriousSignalsFound: genericTriage.seriousGenericSignalsFound,
       genericRippleCandidates: Array.isArray(genericTriage.classifications)
         ? (genericTriage.classifications

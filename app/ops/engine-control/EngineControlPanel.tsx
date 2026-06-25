@@ -829,6 +829,32 @@ export default function EngineControlPanel() {
   }
 
 
+  async function runStoryClustering() {
+    setBusy("story-cluster-run");
+    try {
+      const response = await fetch("/api/internal/story-cluster-run", {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({
+          dryRun: true,
+          confirmRun: false,
+          maxRawSignals: 100,
+          freshnessWindowHours: 72,
+        }),
+        cache: "no-store",
+      });
+      const json = await readResponse(response);
+      const row = summarize("Run Story Clustering", "/api/internal/story-cluster-run", "POST", response.status, json);
+      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      setMessage("Story clustering ran safely: no OpenAI, publish, or Telegram calls were allowed.");
+    } catch (error) {
+      const row = summarize("Run Story Clustering", "/api/internal/story-cluster-run", "POST", "error", { ok: false, error: error instanceof Error ? error.message : "Unknown error" });
+      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      setMessage("Story clustering failed safely.");
+    }
+    setBusy(null);
+  }
+
   async function showLiveSourceSchedulerPlan() {
     setBusy("live-source-scheduler-plan");
     const row = await callGet("Show Live Source Scheduler Plan", "/api/internal/live-source-scheduler-plan");
@@ -1005,6 +1031,13 @@ export default function EngineControlPanel() {
           onClick={runLiveEarsV1}
         >
           Run Live Ears v1
+        </button>
+        <button
+          style={styles.button}
+          disabled={busy !== null}
+          onClick={runStoryClustering}
+        >
+          Run Story Clustering
         </button>
         <button
           style={styles.button}

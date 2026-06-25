@@ -21,6 +21,7 @@ import {
   MEANINGFUL_METRIC_REGISTRY,
 } from "@/lib/global-ear-scheduler";
 import { runGenericNewsTriage } from "@/lib/generic-news-triage";
+import { runFmpProviderContractTest } from "@/lib/fmp-provider-contract";
 import { runFmpProof, runPriceVolume } from "@/lib/proof-ears";
 import type { ProofItem } from "@/lib/proof/proof-bundle-builder";
 
@@ -1094,7 +1095,12 @@ async function attachRoutedProofForSignal(
           earlySignalPossible,
           pricedInRiskScore: numberOrNull(row.pricedInRiskScore),
           source: "FMP",
+          symbolUsed: text(row.ticker).toUpperCase() || ticker,
           receiptUrl: proofReceiptUrl("price_volume", ticker),
+          endpointUsed: text(row.endpointUsed) || "/stable/quote",
+          fieldsUsed: Array.isArray(row.fieldsUsed) ? row.fieldsUsed : [],
+          proofCompleteness: text(row.proofCompleteness) || "partial",
+          missingButNonBlockingFields: Array.isArray(row.missingButNonBlockingFields) ? row.missingButNonBlockingFields : [],
         };
         extraProofs.push({
           type: "price_volume",
@@ -1166,17 +1172,15 @@ async function attachRoutedProofForSignal(
       const values = obj(row?.valuesUsed);
       const realValueCount = realFundamentalsValueCount(values);
       const realScoreCount = row ? realFundamentalsScoreCount(row) : 0;
-      const hasCleanFundamentalsProof =
-        row &&
-        row.fundamentalsProofClean === true &&
-        realValueCount >= 3 &&
-        realScoreCount >= 3;
+      const hasCleanFundamentalsProof = row && realValueCount > 0;
       if (row && hasCleanFundamentalsProof) {
         const metadata = {
           ticker,
           source: "FMP",
           receiptUrl: proofReceiptUrl("fundamentals", ticker),
           providerReference: `FMP fundamentals proof ${ticker} ${stage1DateKey()}`,
+          symbolUsed: text(row.ticker).toUpperCase() || ticker,
+          endpointUsed: Array.isArray(row.endpointsUsed) ? row.endpointsUsed : [],
           revenueGrowthScore: numberOrNull(row.revenueGrowthScore),
           marginTrendScore: numberOrNull(row.marginTrendScore),
           earningsQualityScore: numberOrNull(row.earningsQualityScore),
@@ -1192,6 +1196,8 @@ async function attachRoutedProofForSignal(
           fundamentalsProofScore: numberOrNull(row.fundamentalsProofScore),
           realValueCount,
           fundamentalsProofClean: row.fundamentalsProofClean === true,
+          proofCompleteness: text(row.proofCompleteness) || (realValueCount >= 6 ? "full" : "partial"),
+          missingButNonBlockingFields: Array.isArray(row.missingButNonBlockingFields) ? row.missingButNonBlockingFields : [],
           fundamentalsUnavailableReason:
             text(row.fmpProofUnavailableReason) || null,
         };
@@ -2879,7 +2885,16 @@ export async function POST(request: NextRequest) {
           recordCount: enrichmentSummaries.length,
         },
       );
+      let providerContractDiagnostics: JsonRecord = {};
+      try {
+        providerContractDiagnostics = (await runFmpProviderContractTest({ dryRun: true, provider: "FMP", symbols: ["NVDA", "AMD", "MSFT", "GOOGL"], confirmRun: false })) as JsonRecord;
+      } catch { providerContractDiagnostics = { ok: false, error: "provider_contract_test_failed_safe" }; }
       const summary = {
+        providerContractSummary: providerContractDiagnostics.providerContractSummary ?? null,
+        fmpEndpointAccessSummary: providerContractDiagnostics.fmpEndpointAccessSummary ?? null,
+        fmpPlanRestrictionSummary: providerContractDiagnostics.fmpPlanRestrictionSummary ?? [],
+        standaloneVsStage1MismatchSummary: providerContractDiagnostics.standaloneVsStage1MismatchSummary ?? [],
+        nextRootCauseFix: Array.isArray(providerContractDiagnostics.standaloneVsStage1MismatchSummary) && providerContractDiagnostics.standaloneVsStage1MismatchSummary.length ? "Stage 1 helper differs from standalone provider helper; inspect symbol and normalized field mapping." : "Use provider-contract-test endpoint diagnostics to fix only blocked or mismatched FMP endpoint normalization.",
         rawSignalsInspected: discoveryRows.length,
         sourcesInspected: Array.from(
           new Set([
@@ -2984,6 +2999,13 @@ export async function POST(request: NextRequest) {
             !row.promotedToRippleCandidate,
         ).length,
         proofRouterSummary: proofCompletionSummary,
+        providerContractSummary: summary.providerContractSummary,
+        fmpEndpointAccessSummary: summary.fmpEndpointAccessSummary,
+        fmpPlanRestrictionSummary: summary.fmpPlanRestrictionSummary,
+        standaloneVsStage1MismatchSummary: summary.standaloneVsStage1MismatchSummary,
+        priceVolumeFailureMatrix: topDirectCandidates.map((row) => ({ rawSignalId: row.rawSignalId, ticker: row.ticker, failures: (row.routerFailureReasons ?? []).filter((reason) => /price_volume/.test(reason)) })),
+        fundamentalsFailureMatrix: topDirectCandidates.map((row) => ({ rawSignalId: row.rawSignalId, ticker: row.ticker, failures: (row.routerFailureReasons ?? []).filter((reason) => /fundamentals/.test(reason)) })),
+        nextRootCauseFix: summary.nextRootCauseFix,
         bestWatchCandidate: greatSignalSummary.bestWatchCandidate,
         bestProofNeededCandidate: greatSignalSummary.bestProofNeededCandidate,
         bestAIReviewReadyCandidate:

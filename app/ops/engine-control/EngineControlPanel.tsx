@@ -12,7 +12,7 @@ type JsonValue =
   | { [key: string]: JsonValue };
 type JsonRecord = { [key: string]: JsonValue };
 
-type StageKey = "initial" | "refresh" | "stage1" | "stage2" | "stage3" | "r2" | "source";
+type StageKey = "initial" | "refresh" | "stage1" | "stage2" | "stage3" | "r2" | "source" | "fmp";
 
 type StageResult = {
   stage: string;
@@ -618,6 +618,14 @@ export default function EngineControlPanel() {
     () => rows.find((row) => row.stage === "Test R2 Write/Delete" || row.stage === "Check R2 health"),
     [rows],
   );
+  const latestFmpContractRow = useMemo(
+    () => rows.find((row) => row.stage === "Run FMP Provider Contract Test"),
+    [rows],
+  );
+  const fmpContractResults = useMemo(() => {
+    const json = isRecord(latestFmpContractRow?.json) ? latestFmpContractRow.json : {};
+    return Array.isArray(json.results) ? json.results.filter(isRecord) : [];
+  }, [latestFmpContractRow]);
 
   function headers() {
     return secret.trim()
@@ -717,6 +725,27 @@ export default function EngineControlPanel() {
       ...current.filter((item) => item.stage !== row.stage),
     ]);
     setMessage("Engine readiness refreshed.");
+    setBusy(null);
+  }
+
+  async function runFmpProviderContractTest() {
+    setBusy("fmp-contract");
+    try {
+      const response = await fetch("/api/internal/provider-contract-test", {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({ dryRun: true, provider: "FMP", symbols: ["NVDA", "AMD", "MSFT", "GOOGL"], confirmRun: false }),
+        cache: "no-store",
+      });
+      const json = await readResponse(response);
+      const row = summarize("Run FMP Provider Contract Test", "/api/internal/provider-contract-test", "POST", response.status, json);
+      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      setMessage("FMP provider contract test completed safely. No publish, Telegram, or OpenAI call was allowed.");
+    } catch (error) {
+      const row = summarize("Run FMP Provider Contract Test", "/api/internal/provider-contract-test", "POST", "error", { ok: false, error: error instanceof Error ? error.message : "Unknown error" });
+      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      setMessage("FMP provider contract test failed safely.");
+    }
     setBusy(null);
   }
 
@@ -856,6 +885,13 @@ export default function EngineControlPanel() {
         <button
           style={styles.button}
           disabled={busy !== null}
+          onClick={runFmpProviderContractTest}
+        >
+          Run FMP Provider Contract Test
+        </button>
+        <button
+          style={styles.button}
+          disabled={busy !== null}
           onClick={refreshSourceHealth}
         >
           Refresh Source Health
@@ -934,6 +970,37 @@ export default function EngineControlPanel() {
         <h2 style={styles.heading}>7-layer ear status</h2>
         <p style={styles.small}>Shows Tier 1/Tier 2 ears, blocked/planned ears with how to solve, and R2 raw storage status from /api/internal/ear-registry.</p>
         <pre style={styles.resultValue}>{JSON.stringify(registryPanel(registryRow), null, 2)}</pre>
+      </section>
+
+      <section style={styles.card}>
+        <h2 style={styles.heading}>FMP Provider Contract Test</h2>
+        <p style={styles.small}>Calls POST /api/internal/provider-contract-test for NVDA, AMD, MSFT, and GOOGL. It shows safe endpoint status only and never displays API keys or full provider URLs.</p>
+        <div style={styles.tableWrap}>
+          <table style={styles.table}>
+            <thead><tr>{["symbol","quote works?","quote-short works?","stock-price-change works?","historical EOD works?","income statement works?","balance sheet works?","cash flow works?","key metrics works?","ratios works?","Stage 1 attach works?","failure reason"].map((head) => <th key={head} style={styles.th}>{head}</th>)}</tr></thead>
+            <tbody>
+              {fmpContractResults.map((row, index) => {
+                const endpoints = Array.isArray(row.endpointDiagnostics) ? row.endpointDiagnostics.filter(isRecord) : [];
+                const works = (name: string) => yesNo(endpoints.some((endpoint) => endpoint.endpointName === name && endpoint.hasUsableValues === true));
+                const comparison = isRecord(row.comparison) ? row.comparison : {};
+                return <tr key={`${String(row.symbol ?? index)}-fmp-contract`}>
+                  <td style={styles.td}>{resultValue(row.symbol)}</td>
+                  <td style={styles.td}>{works("quote")}</td>
+                  <td style={styles.td}>{works("quote-short")}</td>
+                  <td style={styles.td}>{works("stock-price-change")}</td>
+                  <td style={styles.td}>{works("historical-price-eod/full")}</td>
+                  <td style={styles.td}>{works("income-statement")}</td>
+                  <td style={styles.td}>{works("balance-sheet-statement")}</td>
+                  <td style={styles.td}>{works("cash-flow-statement")}</td>
+                  <td style={styles.td}>{works("key-metrics")}</td>
+                  <td style={styles.td}>{works("ratios")}</td>
+                  <td style={styles.td}>{yesNo(comparison.stage1PriceVolumeWorks === true || comparison.stage1FundamentalsWorks === true)}</td>
+                  <td style={styles.td}>{resultValue(comparison.mismatchReason ?? endpoints.find((endpoint) => endpoint.hasUsableValues !== true)?.rejectionReason)}</td>
+                </tr>;
+              })}
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <section style={styles.card}>

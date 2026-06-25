@@ -2585,8 +2585,12 @@ export async function POST(request: NextRequest) {
             : null;
       }
       const articleRows = Object.values(articleResultsBySignal);
+      const articleMemorySetupFailure = articleRows.find((row) => row.articleMemorySetupFailed === true || row.errorCategory === "article_memory_setup_failed");
       const articleReaderFailureReasons = Array.from(new Set(articleRows.map((row) => String(row.errorCategory ?? "")).filter(Boolean)));
       const articleReaderSummary = {
+        articleReaderEnabled: !articleMemorySetupFailure,
+        articleMemorySetupFailed: Boolean(articleMemorySetupFailure),
+        errorMessageSafe: articleMemorySetupFailure ? String(articleMemorySetupFailure.errorMessageSafe ?? articleMemorySetupFailure.articleMemoryUnavailableReason ?? "article_memory_setup_failed").slice(0, 160) : null,
         maxArticleReadsPerRun,
         articlesSeenThisRun: Array.from(articleResultsByHash.keys()),
         articleReadAttemptedCount: articleRows.filter((row) => row.articleReadAttempted === true).length,

@@ -29,6 +29,7 @@ import { runBenzingaEar } from "@/lib/benzinga-ear";
 import { runOfficialAnnouncementRun } from "@/lib/official-announcements";
 import { runStoryClusterRun } from "@/lib/story-clustering";
 import { runSeriousSignalBrain } from "@/lib/serious-signal-brain";
+import { runEvidencePackBuild } from "@/lib/evidence-pack-builder";
 import type { ProofItem } from "@/lib/proof/proof-bundle-builder";
 import { articleIdentity, readArticleForMemory } from "@/lib/article-reader";
 
@@ -1850,6 +1851,7 @@ export async function POST(request: NextRequest) {
   const includeSeriousSignalBrain = bool(body.includeSeriousSignalBrain, false);
   const includeBenzingaEar = bool(body.includeBenzingaEar, false);
   const includeOfficialAnnouncements = bool(body.includeOfficialAnnouncements, false);
+  const includeEvidencePackBuilder = bool(body.includeEvidencePackBuilder, false);
   const warnings = [
     "Telegram is disabled for this founder website test; this route never sends Telegram.",
     ...(confirmSend || allowTelegram
@@ -2012,6 +2014,30 @@ export async function POST(request: NextRequest) {
           noTelegram: true,
         }))
       : null;
+
+    const evidencePackRun = includeEvidencePackBuilder
+      ? await runEvidencePackBuild({
+          dryRun: true,
+          confirmRun: false,
+          maxClusters: 50,
+          freshnessWindowHours,
+        }).catch((error: unknown) => ({
+          ok: false,
+          evidencePackBuilderSummary: {
+            ok: false,
+            safeErrorCategory: "evidence_pack_builder_stage1_failed_safely",
+            safeErrorMessage:
+              error instanceof Error ? error.message.slice(0, 160) : "Unknown error",
+          },
+          evidencePacksCreated: 0,
+          topEvidencePacks: [],
+          aiReviewReadyEvidencePacks: [],
+          missingProofRouterSummary: [],
+          noOpenAI: true,
+          noPublish: true,
+          noTelegram: true,
+        }))
+      : null;
     const genericTriage = await runGenericNewsTriage({
       maxGenericItemsToScan: Math.min(maxRawSignalsToInspect, 50),
       maxRippleCandidates: Math.min(maxDeepScans || 10, 10),
@@ -2056,6 +2082,12 @@ export async function POST(request: NextRequest) {
       includeSeriousSignalBrain,
       includeBenzingaEar,
       includeOfficialAnnouncements,
+      includeEvidencePackBuilder,
+      evidencePackBuilderSummary: evidencePackRun?.evidencePackBuilderSummary ?? evidencePackRun ?? null,
+      evidencePacksCreated: Number(evidencePackRun?.evidencePacksCreated ?? 0),
+      topEvidencePacks: Array.isArray(evidencePackRun?.topEvidencePacks) ? evidencePackRun.topEvidencePacks : [],
+      aiReviewReadyEvidencePacks: Array.isArray(evidencePackRun?.aiReviewReadyEvidencePacks) ? evidencePackRun.aiReviewReadyEvidencePacks : [],
+      missingProofRouterSummary: Array.isArray(evidencePackRun?.missingProofRouterSummary) ? evidencePackRun.missingProofRouterSummary : [],
       officialAnnouncementSummary: officialAnnouncementRun?.officialAnnouncementSummary ?? officialAnnouncementRun ?? null,
       officialSourcesAttempted: Array.isArray(officialAnnouncementRun?.officialSourcesAttempted) ? officialAnnouncementRun.officialSourcesAttempted : [],
       officialProofSignalsCreated: Number(officialAnnouncementRun?.officialProofSignalsCreated ?? 0),

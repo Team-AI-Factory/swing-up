@@ -952,6 +952,27 @@ export default function EngineControlPanel() {
     setBusy(null);
   }
 
+  async function runEvidencePackBuilder() {
+    setBusy("evidence-pack-build-run");
+    try {
+      const response = await fetch("/api/internal/evidence-pack-build-run", {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({ dryRun: true, confirmRun: false, maxClusters: 50 }),
+        cache: "no-store",
+      });
+      const json = await readResponse(response);
+      const row = summarize("Build Evidence Packs", "/api/internal/evidence-pack-build-run", "POST", response.status, json);
+      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      setMessage("Evidence pack builder ran safely: no OpenAI, publish, or Telegram calls were allowed.");
+    } catch (error) {
+      const row = summarize("Build Evidence Packs", "/api/internal/evidence-pack-build-run", "POST", "error", { ok: false, error: error instanceof Error ? error.message : "Unknown error" });
+      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      setMessage("Evidence pack builder failed safely.");
+    }
+    setBusy(null);
+  }
+
   async function runStage(stage: "stage1" | "stage2" | "stage3") {
     const labels = {
       stage1: "Stage 1 dry run",
@@ -1147,6 +1168,13 @@ export default function EngineControlPanel() {
           onClick={runSeriousSignalBrain}
         >
           Run Serious Signal Brain
+        </button>
+        <button
+          style={styles.button}
+          disabled={busy !== null}
+          onClick={runEvidencePackBuilder}
+        >
+          Build Evidence Packs
         </button>
         <button
           style={styles.button}

@@ -137,6 +137,7 @@ const runPayloads = {
     universeMode: "global",
     maxAssetsToScanNow: 50,
     maxDeepScans: 5,
+    includeOfficialAnnouncements: true,
   },
   stage2: {
     dryRun: false,
@@ -923,6 +924,34 @@ export default function EngineControlPanel() {
   }
 
 
+  async function runOfficialAnnouncements() {
+    setBusy("official-announcements");
+    try {
+      const response = await fetch("/api/internal/official-announcement-run", {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({
+          dryRun: true,
+          confirmRun: false,
+          symbols: ["NVDA", "AMD", "MSFT", "GOOGL"],
+          companyNames: ["NVIDIA", "Advanced Micro Devices", "Microsoft", "Alphabet"],
+          keywords: ["product launch", "guidance", "contract", "lawsuit", "investigation", "approval", "recall"],
+          maxItemsPerSource: 20,
+        }),
+        cache: "no-store",
+      });
+      const json = await readResponse(response);
+      const row = summarize("Run Official Announcements", "/api/internal/official-announcement-run", "POST", response.status, json);
+      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      setMessage("Official announcement dry run completed. It did not publish, send Telegram, or call OpenAI.");
+    } catch (error) {
+      const row = summarize("Run Official Announcements", "/api/internal/official-announcement-run", "POST", "error", { ok: false, error: error instanceof Error ? error.message : "Unknown error" });
+      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      setMessage("Official announcement dry run failed safely.");
+    }
+    setBusy(null);
+  }
+
   async function runStage(stage: "stage1" | "stage2" | "stage3") {
     const labels = {
       stage1: "Stage 1 dry run",
@@ -1055,6 +1084,13 @@ export default function EngineControlPanel() {
           onClick={() => runStage("stage1")}
         >
           Run Stage 1 Dry Run
+        </button>
+        <button
+          style={styles.button}
+          disabled={busy !== null}
+          onClick={runOfficialAnnouncements}
+        >
+          Run Official Announcements
         </button>
         <button
           style={styles.button}

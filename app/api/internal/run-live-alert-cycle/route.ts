@@ -25,6 +25,7 @@ import { runFmpProviderContractTest } from "@/lib/fmp-provider-contract";
 import { getLiveSourceContractSummary, buildLiveSourceSchedulerPlan } from "@/lib/live-source-contracts";
 import { runFmpProof, runPriceVolume } from "@/lib/proof-ears";
 import { runLiveEarRun } from "@/lib/live-ear-runner";
+import { runBenzingaEar } from "@/lib/benzinga-ear";
 import { runStoryClusterRun } from "@/lib/story-clustering";
 import { runSeriousSignalBrain } from "@/lib/serious-signal-brain";
 import type { ProofItem } from "@/lib/proof/proof-bundle-builder";
@@ -1846,6 +1847,7 @@ export async function POST(request: NextRequest) {
   const includeLiveEars = bool(body.includeLiveEars, false);
   const includeStoryClustering = bool(body.includeStoryClustering, false);
   const includeSeriousSignalBrain = bool(body.includeSeriousSignalBrain, false);
+  const includeBenzingaEar = bool(body.includeBenzingaEar, false);
   const warnings = [
     "Telegram is disabled for this founder website test; this route never sends Telegram.",
     ...(confirmSend || allowTelegram
@@ -1900,6 +1902,30 @@ export async function POST(request: NextRequest) {
           safeErrorCategory: "live_ear_stage1_failed_safely",
           safeErrorMessage:
             error instanceof Error ? error.message.slice(0, 160) : "Unknown error",
+          noOpenAI: true,
+          noPublish: true,
+          noTelegram: true,
+        }))
+      : null;
+    const benzingaEarSummary = includeBenzingaEar
+      ? await runBenzingaEar({
+          dryRun: true,
+          confirmRun: false,
+          symbols: ["NVDA", "AMD", "MSFT", "GOOGL"],
+          keywords: ["guidance", "earnings", "FDA", "product launch", "lawsuit", "investigation"],
+          maxItemsPerEndpoint: 20,
+        }).catch((error: unknown) => ({
+          ok: false,
+          safeErrorCategory: "benzinga_ear_stage1_failed_safely",
+          safeErrorMessage:
+            error instanceof Error ? error.message.slice(0, 160) : "Unknown error",
+          benzingaEndpointSummary: [],
+          benzingaLiveTranscriptCount: 0,
+          benzingaNewsSignalCount: 0,
+          benzingaGuidanceSignalCount: 0,
+          benzingaFdaSignalCount: 0,
+          benzingaAnalystSignalCount: 0,
+          benzingaFailures: [{ safeErrorCategory: "benzinga_ear_stage1_failed_safely" }],
           noOpenAI: true,
           noPublish: true,
           noTelegram: true,
@@ -2000,6 +2026,15 @@ export async function POST(request: NextRequest) {
       liveEarSummary,
       includeStoryClustering,
       includeSeriousSignalBrain,
+      includeBenzingaEar,
+      benzingaEarSummary,
+      benzingaEndpointSummary: benzingaEarSummary?.benzingaEndpointSummary ?? [],
+      benzingaLiveTranscriptCount: Number(benzingaEarSummary?.benzingaLiveTranscriptCount ?? 0),
+      benzingaNewsSignalCount: Number(benzingaEarSummary?.benzingaNewsSignalCount ?? 0),
+      benzingaGuidanceSignalCount: Number(benzingaEarSummary?.benzingaGuidanceSignalCount ?? 0),
+      benzingaFdaSignalCount: Number(benzingaEarSummary?.benzingaFdaSignalCount ?? 0),
+      benzingaAnalystSignalCount: Number(benzingaEarSummary?.benzingaAnalystSignalCount ?? 0),
+      benzingaFailures: Array.isArray(benzingaEarSummary?.benzingaFailures) ? benzingaEarSummary.benzingaFailures : [],
       seriousSignalBrainSummary: seriousSignalBrainRun?.seriousSignalBrainSummary ?? seriousSignalBrainRun ?? null,
       officialProofRoutingSummary: seriousSignalBrainRun?.officialProofRoutingSummary ?? null,
       rippleGraphSummary: seriousSignalBrainRun?.rippleGraphSummary ?? null,

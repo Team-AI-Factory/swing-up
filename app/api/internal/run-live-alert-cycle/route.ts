@@ -26,6 +26,7 @@ import { getLiveSourceContractSummary, buildLiveSourceSchedulerPlan } from "@/li
 import { runFmpProof, runPriceVolume } from "@/lib/proof-ears";
 import { runLiveEarRun } from "@/lib/live-ear-runner";
 import { runStoryClusterRun } from "@/lib/story-clustering";
+import { runSeriousSignalBrain } from "@/lib/serious-signal-brain";
 import type { ProofItem } from "@/lib/proof/proof-bundle-builder";
 import { articleIdentity, readArticleForMemory } from "@/lib/article-reader";
 
@@ -1844,6 +1845,7 @@ export async function POST(request: NextRequest) {
   );
   const includeLiveEars = bool(body.includeLiveEars, false);
   const includeStoryClustering = bool(body.includeStoryClustering, false);
+  const includeSeriousSignalBrain = bool(body.includeSeriousSignalBrain, false);
   const warnings = [
     "Telegram is disabled for this founder website test; this route never sends Telegram.",
     ...(confirmSend || allowTelegram
@@ -1929,6 +1931,33 @@ export async function POST(request: NextRequest) {
           noTelegram: true,
         }))
       : null;
+    const seriousSignalBrainRun = includeSeriousSignalBrain
+      ? await runSeriousSignalBrain({
+          dryRun: true,
+          confirmRun: false,
+          maxClusters: 50,
+          includeRippleGraph: true,
+          includeContradictionDetector: true,
+          freshnessWindowHours,
+        }).catch((error: unknown) => ({
+          ok: false,
+          seriousSignalBrainSummary: {
+            ok: false,
+            safeErrorCategory: "serious_signal_brain_stage1_failed_safely",
+            safeErrorMessage:
+              error instanceof Error ? error.message.slice(0, 160) : "Unknown error",
+          },
+          officialProofRoutingSummary: { ok: false },
+          rippleGraphSummary: { ok: false },
+          contradictionDetectorSummary: { ok: false },
+          seriousSignalActionQueueSummary: { ok: false },
+          topSeriousSignalActions: [],
+          nextBestProofCalls: [],
+          noOpenAI: true,
+          noPublish: true,
+          noTelegram: true,
+        }))
+      : null;
     const genericTriage = await runGenericNewsTriage({
       maxGenericItemsToScan: Math.min(maxRawSignalsToInspect, 50),
       maxRippleCandidates: Math.min(maxDeepScans || 10, 10),
@@ -1970,6 +1999,14 @@ export async function POST(request: NextRequest) {
       includeLiveEars,
       liveEarSummary,
       includeStoryClustering,
+      includeSeriousSignalBrain,
+      seriousSignalBrainSummary: seriousSignalBrainRun?.seriousSignalBrainSummary ?? seriousSignalBrainRun ?? null,
+      officialProofRoutingSummary: seriousSignalBrainRun?.officialProofRoutingSummary ?? null,
+      rippleGraphSummary: seriousSignalBrainRun?.rippleGraphSummary ?? null,
+      contradictionDetectorSummary: seriousSignalBrainRun?.contradictionDetectorSummary ?? null,
+      seriousSignalActionQueueSummary: seriousSignalBrainRun?.seriousSignalActionQueueSummary ?? null,
+      topSeriousSignalActions: Array.isArray(seriousSignalBrainRun?.topSeriousSignalActions) ? seriousSignalBrainRun.topSeriousSignalActions : [],
+      nextBestProofCalls: Array.isArray(seriousSignalBrainRun?.nextBestProofCalls) ? seriousSignalBrainRun.nextBestProofCalls : [],
       storyClusterSummary: storyClusterRun?.storyClusterSummary ?? storyClusterRun ?? null,
       clustersCreated: Number(storyClusterRun?.clustersCreated ?? 0),
       clustersUpdated: Number(storyClusterRun?.clustersUpdated ?? 0),

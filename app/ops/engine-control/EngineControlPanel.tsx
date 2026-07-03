@@ -131,6 +131,12 @@ const runPayloads = {
     maxRawSignalsToInspect: 50,
     maxFreshPullPerSource: 3,
     freshnessWindowHours: 72,
+    includeLiveEars: true,
+    includeStoryClustering: true,
+    includeSeriousSignalBrain: true,
+    universeMode: "global",
+    maxAssetsToScanNow: 50,
+    maxDeepScans: 5,
   },
   stage2: {
     dryRun: false,
@@ -854,6 +860,32 @@ export default function EngineControlPanel() {
     }
     setBusy(null);
   }
+  async function runSeriousSignalBrain() {
+    setBusy("serious-signal-brain-run");
+    try {
+      const response = await fetch("/api/internal/serious-signal-brain-run", {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({
+          dryRun: true,
+          confirmRun: false,
+          maxClusters: 50,
+          includeRippleGraph: true,
+          includeContradictionDetector: true,
+        }),
+        cache: "no-store",
+      });
+      const json = await readResponse(response);
+      const row = summarize("Run Serious Signal Brain", "/api/internal/serious-signal-brain-run", "POST", response.status, json);
+      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      setMessage("Serious Signal Brain ran safely: no OpenAI, publish, or Telegram calls were allowed.");
+    } catch (error) {
+      const row = summarize("Run Serious Signal Brain", "/api/internal/serious-signal-brain-run", "POST", "error", { ok: false, error: error instanceof Error ? error.message : "Unknown error" });
+      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      setMessage("Serious Signal Brain failed safely.");
+    }
+    setBusy(null);
+  }
 
   async function showLiveSourceSchedulerPlan() {
     setBusy("live-source-scheduler-plan");
@@ -1038,6 +1070,13 @@ export default function EngineControlPanel() {
           onClick={runStoryClustering}
         >
           Run Story Clustering
+        </button>
+        <button
+          style={styles.button}
+          disabled={busy !== null}
+          onClick={runSeriousSignalBrain}
+        >
+          Run Serious Signal Brain
         </button>
         <button
           style={styles.button}

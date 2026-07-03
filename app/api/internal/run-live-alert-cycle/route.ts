@@ -22,7 +22,10 @@ import {
 } from "@/lib/global-ear-scheduler";
 import { runGenericNewsTriage } from "@/lib/generic-news-triage";
 import { runFmpProviderContractTest } from "@/lib/fmp-provider-contract";
-import { getLiveSourceContractSummary, buildLiveSourceSchedulerPlan } from "@/lib/live-source-contracts";
+import {
+  getLiveSourceContractSummary,
+  buildLiveSourceSchedulerPlan,
+} from "@/lib/live-source-contracts";
 import { runFmpProof, runPriceVolume } from "@/lib/proof-ears";
 import { runLiveEarRun } from "@/lib/live-ear-runner";
 import { runBenzingaEar } from "@/lib/benzinga-ear";
@@ -32,6 +35,12 @@ import { runSeriousSignalBrain } from "@/lib/serious-signal-brain";
 import { runEvidencePackBuild } from "@/lib/evidence-pack-builder";
 import type { ProofItem } from "@/lib/proof/proof-bundle-builder";
 import { articleIdentity, readArticleForMemory } from "@/lib/article-reader";
+import {
+  pullPlan,
+  rows as sourceCoverageRows,
+  smartPull,
+  summary as sourceCoverageSummaryFromRows,
+} from "@/lib/source-coverage";
 
 export const dynamic = "force-dynamic";
 
@@ -1109,7 +1118,11 @@ async function attachRoutedProofForSignal(
           endpointUsed: text(row.endpointUsed) || "/stable/quote",
           fieldsUsed: Array.isArray(row.fieldsUsed) ? row.fieldsUsed : [],
           proofCompleteness: text(row.proofCompleteness) || "partial",
-          missingButNonBlockingFields: Array.isArray(row.missingButNonBlockingFields) ? row.missingButNonBlockingFields : [],
+          missingButNonBlockingFields: Array.isArray(
+            row.missingButNonBlockingFields,
+          )
+            ? row.missingButNonBlockingFields
+            : [],
         };
         extraProofs.push({
           type: "price_volume",
@@ -1189,7 +1202,9 @@ async function attachRoutedProofForSignal(
           receiptUrl: proofReceiptUrl("fundamentals", ticker),
           providerReference: `FMP fundamentals proof ${ticker} ${stage1DateKey()}`,
           symbolUsed: text(row.ticker).toUpperCase() || ticker,
-          endpointUsed: Array.isArray(row.endpointsUsed) ? row.endpointsUsed : [],
+          endpointUsed: Array.isArray(row.endpointsUsed)
+            ? row.endpointsUsed
+            : [],
           revenueGrowthScore: numberOrNull(row.revenueGrowthScore),
           marginTrendScore: numberOrNull(row.marginTrendScore),
           earningsQualityScore: numberOrNull(row.earningsQualityScore),
@@ -1205,8 +1220,14 @@ async function attachRoutedProofForSignal(
           fundamentalsProofScore: numberOrNull(row.fundamentalsProofScore),
           realValueCount,
           fundamentalsProofClean: row.fundamentalsProofClean === true,
-          proofCompleteness: text(row.proofCompleteness) || (realValueCount >= 6 ? "full" : "partial"),
-          missingButNonBlockingFields: Array.isArray(row.missingButNonBlockingFields) ? row.missingButNonBlockingFields : [],
+          proofCompleteness:
+            text(row.proofCompleteness) ||
+            (realValueCount >= 6 ? "full" : "partial"),
+          missingButNonBlockingFields: Array.isArray(
+            row.missingButNonBlockingFields,
+          )
+            ? row.missingButNonBlockingFields
+            : [],
           fundamentalsUnavailableReason:
             text(row.fmpProofUnavailableReason) || null,
         };
@@ -1736,7 +1757,9 @@ function safeLiveSourceStage1Summary() {
       liveSourceContractsLoaded: summary.contractsLoadedCount,
       liveSourceContractsEnabled: summary.enabledContractsCount,
       liveSourceContractsMissingKeys: summary.missingApiKeys,
-      liveSourceSchedulerPlanAvailable: Boolean(buildLiveSourceSchedulerPlan().ok),
+      liveSourceSchedulerPlanAvailable: Boolean(
+        buildLiveSourceSchedulerPlan().ok,
+      ),
       liveSourceNextBestAdditions: summary.liveSourceNextBestAdditions,
     };
   } catch {
@@ -1745,7 +1768,9 @@ function safeLiveSourceStage1Summary() {
       liveSourceContractsEnabled: 0,
       liveSourceContractsMissingKeys: [],
       liveSourceSchedulerPlanAvailable: false,
-      liveSourceNextBestAdditions: ["Live source contract registry failed safely; Stage 1 continued."],
+      liveSourceNextBestAdditions: [
+        "Live source contract registry failed safely; Stage 1 continued.",
+      ],
     };
   }
 }
@@ -1850,8 +1875,15 @@ export async function POST(request: NextRequest) {
   const includeStoryClustering = bool(body.includeStoryClustering, false);
   const includeSeriousSignalBrain = bool(body.includeSeriousSignalBrain, false);
   const includeBenzingaEar = bool(body.includeBenzingaEar, false);
-  const includeOfficialAnnouncements = bool(body.includeOfficialAnnouncements, false);
-  const includeEvidencePackBuilder = bool(body.includeEvidencePackBuilder, false);
+  const includeOfficialAnnouncements = bool(
+    body.includeOfficialAnnouncements,
+    false,
+  );
+  const includeEvidencePackBuilder = bool(
+    body.includeEvidencePackBuilder,
+    false,
+  );
+  const includeSmartSourcePull = bool(body.includeSmartSourcePull, false);
   const warnings = [
     "Telegram is disabled for this founder website test; this route never sends Telegram.",
     ...(confirmSend || allowTelegram
@@ -1905,7 +1937,9 @@ export async function POST(request: NextRequest) {
           ok: false,
           safeErrorCategory: "live_ear_stage1_failed_safely",
           safeErrorMessage:
-            error instanceof Error ? error.message.slice(0, 160) : "Unknown error",
+            error instanceof Error
+              ? error.message.slice(0, 160)
+              : "Unknown error",
           noOpenAI: true,
           noPublish: true,
           noTelegram: true,
@@ -1916,20 +1950,31 @@ export async function POST(request: NextRequest) {
           dryRun: true,
           confirmRun: false,
           symbols: ["NVDA", "AMD", "MSFT", "GOOGL"],
-          keywords: ["guidance", "earnings", "FDA", "product launch", "lawsuit", "investigation"],
+          keywords: [
+            "guidance",
+            "earnings",
+            "FDA",
+            "product launch",
+            "lawsuit",
+            "investigation",
+          ],
           maxItemsPerEndpoint: 20,
         }).catch((error: unknown) => ({
           ok: false,
           safeErrorCategory: "benzinga_ear_stage1_failed_safely",
           safeErrorMessage:
-            error instanceof Error ? error.message.slice(0, 160) : "Unknown error",
+            error instanceof Error
+              ? error.message.slice(0, 160)
+              : "Unknown error",
           benzingaEndpointSummary: [],
           benzingaLiveTranscriptCount: 0,
           benzingaNewsSignalCount: 0,
           benzingaGuidanceSignalCount: 0,
           benzingaFdaSignalCount: 0,
           benzingaAnalystSignalCount: 0,
-          benzingaFailures: [{ safeErrorCategory: "benzinga_ear_stage1_failed_safely" }],
+          benzingaFailures: [
+            { safeErrorCategory: "benzinga_ear_stage1_failed_safely" },
+          ],
           noOpenAI: true,
           noPublish: true,
           noTelegram: true,
@@ -1947,7 +1992,9 @@ export async function POST(request: NextRequest) {
             ok: false,
             safeErrorCategory: "story_clustering_stage1_failed_safely",
             safeErrorMessage:
-              error instanceof Error ? error.message.slice(0, 160) : "Unknown error",
+              error instanceof Error
+                ? error.message.slice(0, 160)
+                : "Unknown error",
           },
           clustersCreated: 0,
           clustersUpdated: 0,
@@ -1966,22 +2013,44 @@ export async function POST(request: NextRequest) {
           dryRun: true,
           confirmRun: false,
           symbols: ["NVDA", "AMD", "MSFT", "GOOGL"],
-          companyNames: ["NVIDIA", "Advanced Micro Devices", "Microsoft", "Alphabet"],
-          keywords: ["product launch", "guidance", "contract", "lawsuit", "investigation", "approval", "recall"],
+          companyNames: [
+            "NVIDIA",
+            "Advanced Micro Devices",
+            "Microsoft",
+            "Alphabet",
+          ],
+          keywords: [
+            "product launch",
+            "guidance",
+            "contract",
+            "lawsuit",
+            "investigation",
+            "approval",
+            "recall",
+          ],
           maxItemsPerSource: 20,
-          clusters: Array.isArray(storyClusterRun?.topStoryClusters) ? storyClusterRun.topStoryClusters : [],
+          clusters: Array.isArray(storyClusterRun?.topStoryClusters)
+            ? storyClusterRun.topStoryClusters
+            : [],
         }).catch((error: unknown) => ({
           ok: false,
           officialAnnouncementSummary: {
             ok: false,
             safeErrorCategory: "official_announcements_stage1_failed_safely",
-            safeErrorMessage: error instanceof Error ? error.message.slice(0, 160) : "Unknown error",
+            safeErrorMessage:
+              error instanceof Error
+                ? error.message.slice(0, 160)
+                : "Unknown error",
             sourceFailureNonBlocking: true,
           },
           officialSourcesAttempted: [],
           officialProofSignalsCreated: 0,
           officialProofAttachedToClusters: 0,
-          officialAnnouncementFailures: [{ safeErrorCategory: "official_announcements_stage1_failed_safely" }],
+          officialAnnouncementFailures: [
+            {
+              safeErrorCategory: "official_announcements_stage1_failed_safely",
+            },
+          ],
           noOpenAI: true,
           noPublish: true,
           noTelegram: true,
@@ -2001,7 +2070,9 @@ export async function POST(request: NextRequest) {
             ok: false,
             safeErrorCategory: "serious_signal_brain_stage1_failed_safely",
             safeErrorMessage:
-              error instanceof Error ? error.message.slice(0, 160) : "Unknown error",
+              error instanceof Error
+                ? error.message.slice(0, 160)
+                : "Unknown error",
           },
           officialProofRoutingSummary: { ok: false },
           rippleGraphSummary: { ok: false },
@@ -2027,12 +2098,56 @@ export async function POST(request: NextRequest) {
             ok: false,
             safeErrorCategory: "evidence_pack_builder_stage1_failed_safely",
             safeErrorMessage:
-              error instanceof Error ? error.message.slice(0, 160) : "Unknown error",
+              error instanceof Error
+                ? error.message.slice(0, 160)
+                : "Unknown error",
           },
           evidencePacksCreated: 0,
           topEvidencePacks: [],
           aiReviewReadyEvidencePacks: [],
           missingProofRouterSummary: [],
+          noOpenAI: true,
+          noPublish: true,
+          noTelegram: true,
+        }))
+      : null;
+    const sourceCoverageRowsForStage1 = includeSmartSourcePull
+      ? await sourceCoverageRows().catch(() => [])
+      : [];
+    const sourcePullPlanForStage1 = includeSmartSourcePull
+      ? await pullPlan().catch((error: unknown) => ({
+          ok: false,
+          safeErrorCategory: "source_pull_plan_stage1_failed_safely",
+          safeErrorMessage:
+            error instanceof Error
+              ? error.message.slice(0, 160)
+              : "Unknown error",
+        }))
+      : null;
+    const smartSourcePullRun = includeSmartSourcePull
+      ? await smartPull({
+          dryRun: true,
+          confirmRun: false,
+          mode: "balanced",
+          symbols: ["NVDA", "AMD", "MSFT", "GOOGL"],
+          keywords: [
+            "product launch",
+            "guidance",
+            "FDA approval",
+            "contract award",
+            "lawsuit",
+            "investigation",
+          ],
+          maxProviders: 10,
+          maxEndpoints: 50,
+          maxCallsTotal: 100,
+        }).catch((error: unknown) => ({
+          ok: false,
+          safeErrorCategory: "smart_source_pull_stage1_failed_safely",
+          safeErrorMessage:
+            error instanceof Error
+              ? error.message.slice(0, 160)
+              : "Unknown error",
           noOpenAI: true,
           noPublish: true,
           noTelegram: true,
@@ -2060,6 +2175,72 @@ export async function POST(request: NextRequest) {
       highestValueCallsUsed: confirmRun
         ? globalSchedulerPlan.highestValueNextCalls
         : [],
+      sourceCoverageSummary: includeSmartSourcePull
+        ? sourceCoverageSummaryFromRows(sourceCoverageRowsForStage1)
+        : null,
+      sourcePullPlanSummary: sourcePullPlanForStage1
+        ? {
+            ok: obj(sourcePullPlanForStage1).ok,
+            fastRadarPulls: Array.isArray(
+              obj(obj(sourcePullPlanForStage1).sections).fastRadarPulls,
+            )
+              ? (
+                  obj(obj(sourcePullPlanForStage1).sections)
+                    .fastRadarPulls as unknown[]
+                ).length
+              : 0,
+            officialProofPulls: Array.isArray(
+              obj(obj(sourcePullPlanForStage1).sections).officialProofPulls,
+            )
+              ? (
+                  obj(obj(sourcePullPlanForStage1).sections)
+                    .officialProofPulls as unknown[]
+                ).length
+              : 0,
+          }
+        : null,
+      smartSourcePullSummary: smartSourcePullRun,
+      endpointsAvailableNow: Number(
+        obj(smartSourcePullRun).endpointsAvailableNow ?? 0,
+      ),
+      endpointsSkippedDueToBudget: Number(
+        obj(smartSourcePullRun).endpointsSkippedDueToBudget ?? 0,
+      ),
+      endpointsSkippedDueToPlanRestriction: Number(
+        obj(smartSourcePullRun).endpointsSkippedDueToPlanRestriction ?? 0,
+      ),
+      endpointsSkippedDueToMissingKey: Number(
+        obj(smartSourcePullRun).endpointsSkippedDueToMissingKey ?? 0,
+      ),
+      rawReceiptsStoredInR2: Number(
+        obj(smartSourcePullRun).rawReceiptsStoredInR2 ?? 0,
+      ),
+      normalizedSignalsCreated: Number(
+        obj(smartSourcePullRun).normalizedSignalsCreated ?? 0,
+      ),
+      proofReceiptsCreated: Number(
+        obj(smartSourcePullRun).proofReceiptsCreated ?? 0,
+      ),
+      updateAwarePullSummary: smartSourcePullRun
+        ? {
+            callsAvoidedBecauseAlreadyCaptured:
+              obj(smartSourcePullRun).callsAvoidedBecauseAlreadyCaptured ?? 0,
+            callsAvoidedBecauseNotDueYet:
+              obj(smartSourcePullRun).callsAvoidedBecauseNotDueYet ?? 0,
+            callsAvoidedBecauseNoEventWindow:
+              obj(smartSourcePullRun).callsAvoidedBecauseNoEventWindow ?? 0,
+            estimatedQuotaSaved:
+              obj(smartSourcePullRun).estimatedQuotaSaved ?? 0,
+          }
+        : null,
+      urgentPullsNow: obj(smartSourcePullRun).urgentPullsNow ?? [],
+      slowDataSkipped: obj(smartSourcePullRun).slowDataSkipped ?? [],
+      alreadyCapturedSkipped:
+        obj(smartSourcePullRun).callsAvoidedBecauseAlreadyCaptured ?? 0,
+      notDueYetSkipped:
+        obj(smartSourcePullRun).callsAvoidedBecauseNotDueYet ?? 0,
+      quotaSavedEstimate: obj(smartSourcePullRun).estimatedQuotaSaved ?? 0,
+      nextDuePulls: obj(smartSourcePullRun).nextDuePulls ?? [],
       genericNewsScanned: genericTriage.genericItemsScannedToday,
       seriousGenericSignalsFound: genericTriage.seriousGenericSignalsFound,
       rippleCandidatesCreated: genericTriage.rippleCandidatesCreated,
@@ -2083,40 +2264,114 @@ export async function POST(request: NextRequest) {
       includeBenzingaEar,
       includeOfficialAnnouncements,
       includeEvidencePackBuilder,
-      evidencePackBuilderSummary: evidencePackRun?.evidencePackBuilderSummary ?? evidencePackRun ?? null,
+      evidencePackBuilderSummary:
+        evidencePackRun?.evidencePackBuilderSummary ?? evidencePackRun ?? null,
       evidencePacksCreated: Number(evidencePackRun?.evidencePacksCreated ?? 0),
-      topEvidencePacks: Array.isArray(evidencePackRun?.topEvidencePacks) ? evidencePackRun.topEvidencePacks : [],
-      aiReviewReadyEvidencePacks: Array.isArray(evidencePackRun?.aiReviewReadyEvidencePacks) ? evidencePackRun.aiReviewReadyEvidencePacks : [],
-      missingProofRouterSummary: Array.isArray(evidencePackRun?.missingProofRouterSummary) ? evidencePackRun.missingProofRouterSummary : [],
-      officialAnnouncementSummary: officialAnnouncementRun?.officialAnnouncementSummary ?? officialAnnouncementRun ?? null,
-      officialSourcesAttempted: Array.isArray(officialAnnouncementRun?.officialSourcesAttempted) ? officialAnnouncementRun.officialSourcesAttempted : [],
-      officialProofSignalsCreated: Number(officialAnnouncementRun?.officialProofSignalsCreated ?? 0),
-      officialProofAttachedToClusters: Number(officialAnnouncementRun?.officialProofAttachedToClusters ?? 0),
-      officialAnnouncementFailures: Array.isArray(officialAnnouncementRun?.officialAnnouncementFailures) ? officialAnnouncementRun.officialAnnouncementFailures : [],
-      officialAnnouncementSignals: Array.isArray((officialAnnouncementRun as JsonRecord | null)?.rawSignals) ? ((officialAnnouncementRun as JsonRecord).rawSignals as unknown[]).slice(0, 20) : [],
+      topEvidencePacks: Array.isArray(evidencePackRun?.topEvidencePacks)
+        ? evidencePackRun.topEvidencePacks
+        : [],
+      aiReviewReadyEvidencePacks: Array.isArray(
+        evidencePackRun?.aiReviewReadyEvidencePacks,
+      )
+        ? evidencePackRun.aiReviewReadyEvidencePacks
+        : [],
+      missingProofRouterSummary: Array.isArray(
+        evidencePackRun?.missingProofRouterSummary,
+      )
+        ? evidencePackRun.missingProofRouterSummary
+        : [],
+      officialAnnouncementSummary:
+        officialAnnouncementRun?.officialAnnouncementSummary ??
+        officialAnnouncementRun ??
+        null,
+      officialSourcesAttempted: Array.isArray(
+        officialAnnouncementRun?.officialSourcesAttempted,
+      )
+        ? officialAnnouncementRun.officialSourcesAttempted
+        : [],
+      officialProofSignalsCreated: Number(
+        officialAnnouncementRun?.officialProofSignalsCreated ?? 0,
+      ),
+      officialProofAttachedToClusters: Number(
+        officialAnnouncementRun?.officialProofAttachedToClusters ?? 0,
+      ),
+      officialAnnouncementFailures: Array.isArray(
+        officialAnnouncementRun?.officialAnnouncementFailures,
+      )
+        ? officialAnnouncementRun.officialAnnouncementFailures
+        : [],
+      officialAnnouncementSignals: Array.isArray(
+        (officialAnnouncementRun as JsonRecord | null)?.rawSignals,
+      )
+        ? (
+            (officialAnnouncementRun as JsonRecord).rawSignals as unknown[]
+          ).slice(0, 20)
+        : [],
       benzingaEarSummary,
-      benzingaEndpointSummary: benzingaEarSummary?.benzingaEndpointSummary ?? [],
-      benzingaLiveTranscriptCount: Number(benzingaEarSummary?.benzingaLiveTranscriptCount ?? 0),
-      benzingaNewsSignalCount: Number(benzingaEarSummary?.benzingaNewsSignalCount ?? 0),
-      benzingaGuidanceSignalCount: Number(benzingaEarSummary?.benzingaGuidanceSignalCount ?? 0),
-      benzingaFdaSignalCount: Number(benzingaEarSummary?.benzingaFdaSignalCount ?? 0),
-      benzingaAnalystSignalCount: Number(benzingaEarSummary?.benzingaAnalystSignalCount ?? 0),
-      benzingaFailures: Array.isArray(benzingaEarSummary?.benzingaFailures) ? benzingaEarSummary.benzingaFailures : [],
-      seriousSignalBrainSummary: seriousSignalBrainRun?.seriousSignalBrainSummary ?? seriousSignalBrainRun ?? null,
-      officialProofRoutingSummary: seriousSignalBrainRun?.officialProofRoutingSummary ?? null,
+      benzingaEndpointSummary:
+        benzingaEarSummary?.benzingaEndpointSummary ?? [],
+      benzingaLiveTranscriptCount: Number(
+        benzingaEarSummary?.benzingaLiveTranscriptCount ?? 0,
+      ),
+      benzingaNewsSignalCount: Number(
+        benzingaEarSummary?.benzingaNewsSignalCount ?? 0,
+      ),
+      benzingaGuidanceSignalCount: Number(
+        benzingaEarSummary?.benzingaGuidanceSignalCount ?? 0,
+      ),
+      benzingaFdaSignalCount: Number(
+        benzingaEarSummary?.benzingaFdaSignalCount ?? 0,
+      ),
+      benzingaAnalystSignalCount: Number(
+        benzingaEarSummary?.benzingaAnalystSignalCount ?? 0,
+      ),
+      benzingaFailures: Array.isArray(benzingaEarSummary?.benzingaFailures)
+        ? benzingaEarSummary.benzingaFailures
+        : [],
+      seriousSignalBrainSummary:
+        seriousSignalBrainRun?.seriousSignalBrainSummary ??
+        seriousSignalBrainRun ??
+        null,
+      officialProofRoutingSummary:
+        seriousSignalBrainRun?.officialProofRoutingSummary ?? null,
       rippleGraphSummary: seriousSignalBrainRun?.rippleGraphSummary ?? null,
-      contradictionDetectorSummary: seriousSignalBrainRun?.contradictionDetectorSummary ?? null,
-      seriousSignalActionQueueSummary: seriousSignalBrainRun?.seriousSignalActionQueueSummary ?? null,
-      topSeriousSignalActions: Array.isArray(seriousSignalBrainRun?.topSeriousSignalActions) ? seriousSignalBrainRun.topSeriousSignalActions : [],
-      nextBestProofCalls: Array.isArray(seriousSignalBrainRun?.nextBestProofCalls) ? seriousSignalBrainRun.nextBestProofCalls : [],
-      storyClusterSummary: storyClusterRun?.storyClusterSummary ?? storyClusterRun ?? null,
+      contradictionDetectorSummary:
+        seriousSignalBrainRun?.contradictionDetectorSummary ?? null,
+      seriousSignalActionQueueSummary:
+        seriousSignalBrainRun?.seriousSignalActionQueueSummary ?? null,
+      topSeriousSignalActions: Array.isArray(
+        seriousSignalBrainRun?.topSeriousSignalActions,
+      )
+        ? seriousSignalBrainRun.topSeriousSignalActions
+        : [],
+      nextBestProofCalls: Array.isArray(
+        seriousSignalBrainRun?.nextBestProofCalls,
+      )
+        ? seriousSignalBrainRun.nextBestProofCalls
+        : [],
+      storyClusterSummary:
+        storyClusterRun?.storyClusterSummary ?? storyClusterRun ?? null,
       clustersCreated: Number(storyClusterRun?.clustersCreated ?? 0),
       clustersUpdated: Number(storyClusterRun?.clustersUpdated ?? 0),
-      topStoryClusters: Array.isArray(storyClusterRun?.topStoryClusters) ? storyClusterRun.topStoryClusters : [],
-      multiSourceConfirmedClusters: Array.isArray(storyClusterRun?.multiSourceConfirmedClusters) ? storyClusterRun.multiSourceConfirmedClusters : [],
-      officialConfirmedClusters: Array.isArray(storyClusterRun?.officialConfirmedClusters) ? storyClusterRun.officialConfirmedClusters : [],
-      callsSavedByStoryClustering: Number(storyClusterRun?.callsSavedByStoryClustering ?? 0),
-      clusterBasedCandidatesCreated: Number(storyClusterRun?.clusterBasedCandidatesCreated ?? 0),
+      topStoryClusters: Array.isArray(storyClusterRun?.topStoryClusters)
+        ? storyClusterRun.topStoryClusters
+        : [],
+      multiSourceConfirmedClusters: Array.isArray(
+        storyClusterRun?.multiSourceConfirmedClusters,
+      )
+        ? storyClusterRun.multiSourceConfirmedClusters
+        : [],
+      officialConfirmedClusters: Array.isArray(
+        storyClusterRun?.officialConfirmedClusters,
+      )
+        ? storyClusterRun.officialConfirmedClusters
+        : [],
+      callsSavedByStoryClustering: Number(
+        storyClusterRun?.callsSavedByStoryClustering ?? 0,
+      ),
+      clusterBasedCandidatesCreated: Number(
+        storyClusterRun?.clusterBasedCandidatesCreated ?? 0,
+      ),
       seriousSignalsFound: genericTriage.seriousGenericSignalsFound,
       genericRippleCandidates: Array.isArray(genericTriage.classifications)
         ? (genericTriage.classifications
@@ -2548,21 +2803,58 @@ export async function POST(request: NextRequest) {
       const enrichmentSummaries = [] as JsonRecord[];
       const articleResultsBySignal: Record<string, JsonRecord> = {};
       const articleResultsByHash = new Map<string, JsonRecord>();
-      const maxArticleReadsPerRun = Math.max(0, Math.min(Number(obj(body).maxArticleReadsPerRun ?? 5) || 5, 10));
+      const maxArticleReadsPerRun = Math.max(
+        0,
+        Math.min(Number(obj(body).maxArticleReadsPerRun ?? 5) || 5, 10),
+      );
       let articleReadBudgetUsed = 0;
       for (const signal of rawSignals) {
-        const articleInput = { articleUrl: signal.sourceUrl, title: signal.title, snippet: signal.summary, source: signal.source, ticker: signal.ticker, receivedAt: signal.receivedAt, confirmRun, dryRun, duplicateArticleSourceId: signal.id };
+        const articleInput = {
+          articleUrl: signal.sourceUrl,
+          title: signal.title,
+          snippet: signal.summary,
+          source: signal.source,
+          ticker: signal.ticker,
+          receivedAt: signal.receivedAt,
+          confirmRun,
+          dryRun,
+          duplicateArticleSourceId: signal.id,
+        };
         const identity = articleIdentity(articleInput);
         const hash = identity.articleUrlHash;
         let articleMemory: JsonRecord;
         if (hash && articleResultsByHash.has(hash)) {
-          articleMemory = { ...articleResultsByHash.get(hash)!, duplicateArticleInRun: true, duplicateArticleSourceId: signal.id, duplicateArticleReuseReason: "same articleUrlHash already processed in this Stage 1 run", articleReadAttempted: false };
+          articleMemory = {
+            ...articleResultsByHash.get(hash)!,
+            duplicateArticleInRun: true,
+            duplicateArticleSourceId: signal.id,
+            duplicateArticleReuseReason:
+              "same articleUrlHash already processed in this Stage 1 run",
+            articleReadAttempted: false,
+          };
         } else if (articleReadBudgetUsed >= maxArticleReadsPerRun) {
-          articleMemory = { ...identity, hasArticleUrl: Boolean(identity.articleUrl), articleReadAttempted: false, articleTextAvailable: false, articleSummaryAvailable: false, articleInputMode: "title_snippet_only", articleMemoryUsed: false, articleMemoryAvailable: false, articleAlreadySeen: false, articleMemoryProofUsed: false, articleMemoryRejectedReason: "maxArticleReadsPerRun exceeded", errorCategory: "dry_run_budget_exceeded", errorMessageSafe: "maxArticleReadsPerRun exceeded" };
+          articleMemory = {
+            ...identity,
+            hasArticleUrl: Boolean(identity.articleUrl),
+            articleReadAttempted: false,
+            articleTextAvailable: false,
+            articleSummaryAvailable: false,
+            articleInputMode: "title_snippet_only",
+            articleMemoryUsed: false,
+            articleMemoryAvailable: false,
+            articleAlreadySeen: false,
+            articleMemoryProofUsed: false,
+            articleMemoryRejectedReason: "maxArticleReadsPerRun exceeded",
+            errorCategory: "dry_run_budget_exceeded",
+            errorMessageSafe: "maxArticleReadsPerRun exceeded",
+          };
           if (hash) articleResultsByHash.set(hash, articleMemory);
         } else {
-          articleMemory = await readArticleForMemory(articleInput) as JsonRecord;
-          if (articleMemory.articleReadAttempted === true) articleReadBudgetUsed += 1;
+          articleMemory = (await readArticleForMemory(
+            articleInput,
+          )) as JsonRecord;
+          if (articleMemory.articleReadAttempted === true)
+            articleReadBudgetUsed += 1;
           if (hash) articleResultsByHash.set(hash, articleMemory);
         }
         articleResultsBySignal[signal.id] = articleMemory;
@@ -2791,10 +3083,12 @@ export async function POST(request: NextRequest) {
           articleSummaryAvailable: articleMemory.articleSummaryAvailable,
           articleMemoryProofUsed: articleMemory.articleMemoryProofUsed,
           articleMemoryProofReason: articleMemory.articleMemoryProofReason,
-          articleMemoryRejectedReason: articleMemory.articleMemoryRejectedReason,
+          articleMemoryRejectedReason:
+            articleMemory.articleMemoryRejectedReason,
           duplicateArticleInRun: articleMemory.duplicateArticleInRun,
           duplicateArticleSourceId: articleMemory.duplicateArticleSourceId,
-          duplicateArticleReuseReason: articleMemory.duplicateArticleReuseReason,
+          duplicateArticleReuseReason:
+            articleMemory.duplicateArticleReuseReason,
         });
       }
       for (const row of discoveryRows) {
@@ -2825,29 +3119,81 @@ export async function POST(request: NextRequest) {
             : null;
       }
       const articleRows = Object.values(articleResultsBySignal);
-      const articleMemorySetupFailure = articleRows.find((row) => row.articleMemorySetupFailed === true || row.errorCategory === "article_memory_setup_failed");
-      const articleReaderFailureReasons = Array.from(new Set(articleRows.map((row) => String(row.errorCategory ?? "")).filter(Boolean)));
+      const articleMemorySetupFailure = articleRows.find(
+        (row) =>
+          row.articleMemorySetupFailed === true ||
+          row.errorCategory === "article_memory_setup_failed",
+      );
+      const articleReaderFailureReasons = Array.from(
+        new Set(
+          articleRows
+            .map((row) => String(row.errorCategory ?? ""))
+            .filter(Boolean),
+        ),
+      );
       const articleReaderSummary = {
         articleReaderEnabled: !articleMemorySetupFailure,
         articleMemorySetupFailed: Boolean(articleMemorySetupFailure),
-        errorMessageSafe: articleMemorySetupFailure ? String(articleMemorySetupFailure.errorMessageSafe ?? articleMemorySetupFailure.articleMemoryUnavailableReason ?? "article_memory_setup_failed").slice(0, 160) : null,
+        errorMessageSafe: articleMemorySetupFailure
+          ? String(
+              articleMemorySetupFailure.errorMessageSafe ??
+                articleMemorySetupFailure.articleMemoryUnavailableReason ??
+                "article_memory_setup_failed",
+            ).slice(0, 160)
+          : null,
         maxArticleReadsPerRun,
         articlesSeenThisRun: Array.from(articleResultsByHash.keys()),
-        articleReadAttemptedCount: articleRows.filter((row) => row.articleReadAttempted === true).length,
-        articleReadSuccessCount: articleRows.filter((row) => row.articleReadAttempted === true && row.articleTextAvailable === true).length,
-        articleReadFailedCount: articleRows.filter((row) => row.articleReadAttempted === true && row.articleTextAvailable !== true).length,
-        articleMemoryReusedCount: articleRows.filter((row) => row.articleMemoryUsed === true).length,
-        articleDuplicateSkippedCount: articleRows.filter((row) => row.duplicateArticleInRun === true).length,
-        articleTitleSnippetOnlyCount: articleRows.filter((row) => row.articleInputMode === "title_snippet_only" || row.articleInputMode === "memory_title_snippet_only").length,
-        articleFullTextAvailableCount: articleRows.filter((row) => row.articleTextAvailable === true).length,
-        articleMemoryProofUsedCount: articleRows.filter((row) => row.articleMemoryProofUsed === true).length,
+        articleReadAttemptedCount: articleRows.filter(
+          (row) => row.articleReadAttempted === true,
+        ).length,
+        articleReadSuccessCount: articleRows.filter(
+          (row) =>
+            row.articleReadAttempted === true &&
+            row.articleTextAvailable === true,
+        ).length,
+        articleReadFailedCount: articleRows.filter(
+          (row) =>
+            row.articleReadAttempted === true &&
+            row.articleTextAvailable !== true,
+        ).length,
+        articleMemoryReusedCount: articleRows.filter(
+          (row) => row.articleMemoryUsed === true,
+        ).length,
+        articleDuplicateSkippedCount: articleRows.filter(
+          (row) => row.duplicateArticleInRun === true,
+        ).length,
+        articleTitleSnippetOnlyCount: articleRows.filter(
+          (row) =>
+            row.articleInputMode === "title_snippet_only" ||
+            row.articleInputMode === "memory_title_snippet_only",
+        ).length,
+        articleFullTextAvailableCount: articleRows.filter(
+          (row) => row.articleTextAvailable === true,
+        ).length,
+        articleMemoryProofUsedCount: articleRows.filter(
+          (row) => row.articleMemoryProofUsed === true,
+        ).length,
         articleReaderFailureReasons,
-        articleReaderExamples: articleRows.slice(0, 5).map((row) => ({ articleUrlHash: row.articleUrlHash, articleInputMode: row.articleInputMode, articleReadAttempted: row.articleReadAttempted, articleMemoryUsed: row.articleMemoryUsed, articleSummary: String(row.articleSummary ?? row.reusedArticleSummary ?? "").slice(0, 240), errorCategory: row.errorCategory ?? null })),
+        articleReaderExamples: articleRows
+          .slice(0, 5)
+          .map((row) => ({
+            articleUrlHash: row.articleUrlHash,
+            articleInputMode: row.articleInputMode,
+            articleReadAttempted: row.articleReadAttempted,
+            articleMemoryUsed: row.articleMemoryUsed,
+            articleSummary: String(
+              row.articleSummary ?? row.reusedArticleSummary ?? "",
+            ).slice(0, 240),
+            errorCategory: row.errorCategory ?? null,
+          })),
         openAiCalled: false,
         published: false,
         sentToTelegram: false,
       };
-      Object.assign(output, articleReaderSummary, { articleReaderSummary, articlesSeenThisRun: articleReaderSummary.articlesSeenThisRun });
+      Object.assign(output, articleReaderSummary, {
+        articleReaderSummary,
+        articlesSeenThisRun: articleReaderSummary.articlesSeenThisRun,
+      });
       const rankedCandidates = sortDiscoveryRows(discoveryRows);
       const topDirectCandidates = rankedCandidates
         .filter((row) => row.directTickerMatch === true)
@@ -3199,14 +3545,34 @@ export async function POST(request: NextRequest) {
       );
       let providerContractDiagnostics: JsonRecord = {};
       try {
-        providerContractDiagnostics = (await runFmpProviderContractTest({ dryRun: true, provider: "FMP", symbols: ["NVDA", "AMD", "MSFT", "GOOGL"], confirmRun: false })) as JsonRecord;
-      } catch { providerContractDiagnostics = { ok: false, error: "provider_contract_test_failed_safe" }; }
+        providerContractDiagnostics = (await runFmpProviderContractTest({
+          dryRun: true,
+          provider: "FMP",
+          symbols: ["NVDA", "AMD", "MSFT", "GOOGL"],
+          confirmRun: false,
+        })) as JsonRecord;
+      } catch {
+        providerContractDiagnostics = {
+          ok: false,
+          error: "provider_contract_test_failed_safe",
+        };
+      }
       const summary = {
-        providerContractSummary: providerContractDiagnostics.providerContractSummary ?? null,
-        fmpEndpointAccessSummary: providerContractDiagnostics.fmpEndpointAccessSummary ?? null,
-        fmpPlanRestrictionSummary: providerContractDiagnostics.fmpPlanRestrictionSummary ?? [],
-        standaloneVsStage1MismatchSummary: providerContractDiagnostics.standaloneVsStage1MismatchSummary ?? [],
-        nextRootCauseFix: Array.isArray(providerContractDiagnostics.standaloneVsStage1MismatchSummary) && providerContractDiagnostics.standaloneVsStage1MismatchSummary.length ? "Stage 1 helper differs from standalone provider helper; inspect symbol and normalized field mapping." : "Use provider-contract-test endpoint diagnostics to fix only blocked or mismatched FMP endpoint normalization.",
+        providerContractSummary:
+          providerContractDiagnostics.providerContractSummary ?? null,
+        fmpEndpointAccessSummary:
+          providerContractDiagnostics.fmpEndpointAccessSummary ?? null,
+        fmpPlanRestrictionSummary:
+          providerContractDiagnostics.fmpPlanRestrictionSummary ?? [],
+        standaloneVsStage1MismatchSummary:
+          providerContractDiagnostics.standaloneVsStage1MismatchSummary ?? [],
+        nextRootCauseFix:
+          Array.isArray(
+            providerContractDiagnostics.standaloneVsStage1MismatchSummary,
+          ) &&
+          providerContractDiagnostics.standaloneVsStage1MismatchSummary.length
+            ? "Stage 1 helper differs from standalone provider helper; inspect symbol and normalized field mapping."
+            : "Use provider-contract-test endpoint diagnostics to fix only blocked or mismatched FMP endpoint normalization.",
         rawSignalsInspected: discoveryRows.length,
         sourcesInspected: Array.from(
           new Set([
@@ -3314,9 +3680,22 @@ export async function POST(request: NextRequest) {
         providerContractSummary: summary.providerContractSummary,
         fmpEndpointAccessSummary: summary.fmpEndpointAccessSummary,
         fmpPlanRestrictionSummary: summary.fmpPlanRestrictionSummary,
-        standaloneVsStage1MismatchSummary: summary.standaloneVsStage1MismatchSummary,
-        priceVolumeFailureMatrix: topDirectCandidates.map((row) => ({ rawSignalId: row.rawSignalId, ticker: row.ticker, failures: (row.routerFailureReasons ?? []).filter((reason) => /price_volume/.test(reason)) })),
-        fundamentalsFailureMatrix: topDirectCandidates.map((row) => ({ rawSignalId: row.rawSignalId, ticker: row.ticker, failures: (row.routerFailureReasons ?? []).filter((reason) => /fundamentals/.test(reason)) })),
+        standaloneVsStage1MismatchSummary:
+          summary.standaloneVsStage1MismatchSummary,
+        priceVolumeFailureMatrix: topDirectCandidates.map((row) => ({
+          rawSignalId: row.rawSignalId,
+          ticker: row.ticker,
+          failures: (row.routerFailureReasons ?? []).filter((reason) =>
+            /price_volume/.test(reason),
+          ),
+        })),
+        fundamentalsFailureMatrix: topDirectCandidates.map((row) => ({
+          rawSignalId: row.rawSignalId,
+          ticker: row.ticker,
+          failures: (row.routerFailureReasons ?? []).filter((reason) =>
+            /fundamentals/.test(reason),
+          ),
+        })),
         nextRootCauseFix: summary.nextRootCauseFix,
         bestWatchCandidate: greatSignalSummary.bestWatchCandidate,
         bestProofNeededCandidate: greatSignalSummary.bestProofNeededCandidate,

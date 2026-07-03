@@ -12,7 +12,17 @@ type JsonValue =
   | { [key: string]: JsonValue };
 type JsonRecord = { [key: string]: JsonValue };
 
-type StageKey = "initial" | "refresh" | "stage1" | "stage2" | "stage3" | "r2" | "source" | "fmp" | "article" | "liveSource";
+type StageKey =
+  | "initial"
+  | "refresh"
+  | "stage1"
+  | "stage2"
+  | "stage3"
+  | "r2"
+  | "source"
+  | "fmp"
+  | "article"
+  | "liveSource";
 
 type StageResult = {
   stage: string;
@@ -138,6 +148,7 @@ const runPayloads = {
     maxAssetsToScanNow: 50,
     maxDeepScans: 5,
     includeOfficialAnnouncements: true,
+    includeSmartSourcePull: true,
   },
   stage2: {
     dryRun: false,
@@ -229,9 +240,40 @@ function catalystSummary(json: JsonValue | null) {
     summary && Array.isArray(summary.failedCatalystProviders)
       ? summary.failedCatalystProviders.map(String)
       : [];
-  const diagnostics = summary && Array.isArray(summary.providerDiagnostics) ? summary.providerDiagnostics.map((item) => isRecord(item) ? `${item.source}:${item.status}:${item.sourceHealthStatus}:${Array.isArray(item.errors) ? item.errors.slice(0, 2).join(",") : ""}` : String(item)).join(" | ") || "—" : "—";
-  const impacts = summary && Array.isArray(summary.topCatalystCandidates) ? summary.topCatalystCandidates.map((item) => isRecord(item) && isRecord(item.catalystImpact) ? String(item.catalystImpact.catalystImpactScore ?? item.catalystImpact.promotionScore ?? "—") : "—").join(" | ") : "—";
-  const specificity = summary && Array.isArray(summary.topCatalystCandidates) ? summary.topCatalystCandidates.map((item) => isRecord(item) && isRecord(item.catalystImpact) ? String(item.catalystImpact.stockSpecificityScore ?? "—") : "—").join(" | ") : "—";
+  const diagnostics =
+    summary && Array.isArray(summary.providerDiagnostics)
+      ? summary.providerDiagnostics
+          .map((item) =>
+            isRecord(item)
+              ? `${item.source}:${item.status}:${item.sourceHealthStatus}:${Array.isArray(item.errors) ? item.errors.slice(0, 2).join(",") : ""}`
+              : String(item),
+          )
+          .join(" | ") || "—"
+      : "—";
+  const impacts =
+    summary && Array.isArray(summary.topCatalystCandidates)
+      ? summary.topCatalystCandidates
+          .map((item) =>
+            isRecord(item) && isRecord(item.catalystImpact)
+              ? String(
+                  item.catalystImpact.catalystImpactScore ??
+                    item.catalystImpact.promotionScore ??
+                    "—",
+                )
+              : "—",
+          )
+          .join(" | ")
+      : "—";
+  const specificity =
+    summary && Array.isArray(summary.topCatalystCandidates)
+      ? summary.topCatalystCandidates
+          .map((item) =>
+            isRecord(item) && isRecord(item.catalystImpact)
+              ? String(item.catalystImpact.stockSpecificityScore ?? "—")
+              : "—",
+          )
+          .join(" | ")
+      : "—";
   const nextAction =
     findString(json, ["nextRecommendedAction", "nextAction"]) ??
     "Run Stage 1 first.";
@@ -293,11 +335,15 @@ function proofEnrichmentSummary(json: JsonValue | null) {
       : "—",
     accepted:
       summary && Array.isArray(summary.acceptedProofItems)
-        ? summary.acceptedProofItems.map((item) => JSON.stringify(item)).join(" | ") || "—"
+        ? summary.acceptedProofItems
+            .map((item) => JSON.stringify(item))
+            .join(" | ") || "—"
         : "—",
     rejected:
       summary && Array.isArray(summary.rejectedProofItems)
-        ? summary.rejectedProofItems.map((item) => JSON.stringify(item)).join(" | ") || "—"
+        ? summary.rejectedProofItems
+            .map((item) => JSON.stringify(item))
+            .join(" | ") || "—"
         : "—",
     rejectedReasons:
       summary && Array.isArray(summary.rejectedProofReasons)
@@ -324,11 +370,29 @@ function discoverySummary(json: JsonValue | null) {
       isRecord(item) &&
       item.rawSignalId === (isRecord(json) ? json.selectedRawSignalId : null),
   );
-  const bestDirect = summary && isRecord(summary.bestDirectTickerCandidate) ? summary.bestDirectTickerCandidate : null;
-  const proofSummary = isRecord(json) && isRecord(json.proofEnrichmentSummary) ? json.proofEnrichmentSummary : null;
-  const proofCompletion = summary && isRecord(summary.proofCompletionSummary) ? summary.proofCompletionSummary : proofSummary && isRecord(proofSummary.proofCompletionSummary) ? proofSummary.proofCompletionSummary : null;
-  const catalyst = isRecord(json) && isRecord(json.catalystSummary) ? json.catalystSummary : null;
-  const fmpProvider403 = catalyst?.fmpProvider403 === true || /provider_403|plan_key_blocked|check fmp key/i.test(JSON.stringify(catalyst ?? ""));
+  const bestDirect =
+    summary && isRecord(summary.bestDirectTickerCandidate)
+      ? summary.bestDirectTickerCandidate
+      : null;
+  const proofSummary =
+    isRecord(json) && isRecord(json.proofEnrichmentSummary)
+      ? json.proofEnrichmentSummary
+      : null;
+  const proofCompletion =
+    summary && isRecord(summary.proofCompletionSummary)
+      ? summary.proofCompletionSummary
+      : proofSummary && isRecord(proofSummary.proofCompletionSummary)
+        ? proofSummary.proofCompletionSummary
+        : null;
+  const catalyst =
+    isRecord(json) && isRecord(json.catalystSummary)
+      ? json.catalystSummary
+      : null;
+  const fmpProvider403 =
+    catalyst?.fmpProvider403 === true ||
+    /provider_403|plan_key_blocked|check fmp key/i.test(
+      JSON.stringify(catalyst ?? ""),
+    );
   const selectedReasons =
     isRecord(selected) && Array.isArray(selected.blockedReasons)
       ? selected.blockedReasons.map(String).join(" | ")
@@ -337,8 +401,13 @@ function discoverySummary(json: JsonValue | null) {
     summary && typeof summary.passCount === "number" ? summary.passCount : 0;
   const publishable = isRecord(json) && json.publishable === true;
   const approvedForAiReview = isRecord(json) && json.stage2Allowed === true;
-  const proofClean = proofSummary && typeof proofSummary.proofMatchingClean === "boolean" ? proofSummary.proofMatchingClean : false;
-  const hasUnsafeMismatch = ranked.some((item) => isRecord(item) && item.unsafeProofMismatchWarning === true);
+  const proofClean =
+    proofSummary && typeof proofSummary.proofMatchingClean === "boolean"
+      ? proofSummary.proofMatchingClean
+      : false;
+  const hasUnsafeMismatch = ranked.some(
+    (item) => isRecord(item) && item.unsafeProofMismatchWarning === true,
+  );
   const stage2Allowed =
     isRecord(json) && typeof json.stage2Allowed === "boolean"
       ? json.stage2Allowed &&
@@ -359,10 +428,17 @@ function discoverySummary(json: JsonValue | null) {
         ? summary.recommendedNextSource
         : "—",
     bestDirectTickerCandidate: bestDirect ? JSON.stringify(bestDirect) : "—",
-    proofCompletionSummary: proofCompletion ? JSON.stringify(proofCompletion) : "—",
-    fmpProvider403Note: fmpProvider403 ? "FMP plan/key blocked — Check FMP key, account activation, or plan access." : "—",
+    proofCompletionSummary: proofCompletion
+      ? JSON.stringify(proofCompletion)
+      : "—",
+    fmpProvider403Note: fmpProvider403
+      ? "FMP plan/key blocked — Check FMP key, account activation, or plan access."
+      : "—",
     stage2Allowed,
-    storageMode: isRecord(json) && typeof json.storageMode === "string" ? json.storageMode : "—",
+    storageMode:
+      isRecord(json) && typeof json.storageMode === "string"
+        ? json.storageMode
+        : "—",
   };
 }
 
@@ -476,11 +552,29 @@ function resultValue(value: JsonValue | undefined): string {
 
 function registryPanel(row: StageResult | undefined) {
   const json = row?.json;
-  const summary = isRecord(json) && isRecord(json.summary) ? json.summary : null;
-  const rawWarehouse = isRecord(json) && isRecord(json.rawWarehouse) ? json.rawWarehouse : null;
+  const summary =
+    isRecord(json) && isRecord(json.summary) ? json.summary : null;
+  const rawWarehouse =
+    isRecord(json) && isRecord(json.rawWarehouse) ? json.rawWarehouse : null;
   const ears = isRecord(json) && Array.isArray(json.ears) ? json.ears : [];
-  const blocked = ears.filter((ear) => isRecord(ear) && (ear.status === "blocked" || ear.status === "planned" || ear.status === "not_configured"));
-  return { summary, rawWarehouse, tier1: ears.filter((ear) => isRecord(ear) && ear.tier === "Tier 1").length, tier2: ears.filter((ear) => isRecord(ear) && ear.tier === "Tier 2").length, blockedPlanned: blocked.map((ear) => isRecord(ear) ? `${ear.earName}: ${ear.status} — ${ear.howToSolve ?? ear.blocker ?? "review"}` : String(ear)) };
+  const blocked = ears.filter(
+    (ear) =>
+      isRecord(ear) &&
+      (ear.status === "blocked" ||
+        ear.status === "planned" ||
+        ear.status === "not_configured"),
+  );
+  return {
+    summary,
+    rawWarehouse,
+    tier1: ears.filter((ear) => isRecord(ear) && ear.tier === "Tier 1").length,
+    tier2: ears.filter((ear) => isRecord(ear) && ear.tier === "Tier 2").length,
+    blockedPlanned: blocked.map((ear) =>
+      isRecord(ear)
+        ? `${ear.earName}: ${ear.status} — ${ear.howToSolve ?? ear.blocker ?? "review"}`
+        : String(ear),
+    ),
+  };
 }
 
 function stage1ResultPanel(row: StageResult | undefined) {
@@ -494,7 +588,9 @@ function stage1ResultPanel(row: StageResult | undefined) {
       ? json.proofEnrichmentSummary
       : null;
   const catalyst =
-    isRecord(json) && isRecord(json.catalystSummary) ? json.catalystSummary : null;
+    isRecord(json) && isRecord(json.catalystSummary)
+      ? json.catalystSummary
+      : null;
   const ranked =
     discovery && Array.isArray(discovery.rankedCandidates)
       ? discovery.rankedCandidates
@@ -502,12 +598,13 @@ function stage1ResultPanel(row: StageResult | undefined) {
   const bestCandidate =
     discovery && discovery.bestDirectTickerCandidate
       ? discovery.bestDirectTickerCandidate
-      : ranked.find((item) => isRecord(item) && item.eligibleForBest === true) ??
-        null;
+      : (ranked.find(
+          (item) => isRecord(item) && item.eligibleForBest === true,
+        ) ?? null);
   const stage2Unlocked =
     isRecord(json) && typeof json.stage2Allowed === "boolean"
       ? json.stage2Allowed
-      : row?.discovery.stage2Allowed ?? null;
+      : (row?.discovery.stage2Allowed ?? null);
 
   return [
     { label: "ok", value: isRecord(json) ? json.ok : undefined },
@@ -525,11 +622,26 @@ function stage1ResultPanel(row: StageResult | undefined) {
         catalyst?.attemptedProviders ??
         catalyst?.configuredProviders,
     },
-    { label: "rawWarehouseAvailable", value: isRecord(json) ? json.rawWarehouseAvailable : undefined },
-    { label: "rawWarehouseWriteUnavailable", value: isRecord(json) ? json.rawWarehouseWriteUnavailable : undefined },
-    { label: "rawDataStored", value: isRecord(json) ? json.rawDataStored : undefined },
-    { label: "storageMode", value: isRecord(json) ? json.storageMode : row?.discovery.storageMode },
-    { label: "reasonStorageFallback", value: isRecord(json) ? json.reasonStorageFallback : undefined },
+    {
+      label: "rawWarehouseAvailable",
+      value: isRecord(json) ? json.rawWarehouseAvailable : undefined,
+    },
+    {
+      label: "rawWarehouseWriteUnavailable",
+      value: isRecord(json) ? json.rawWarehouseWriteUnavailable : undefined,
+    },
+    {
+      label: "rawDataStored",
+      value: isRecord(json) ? json.rawDataStored : undefined,
+    },
+    {
+      label: "storageMode",
+      value: isRecord(json) ? json.storageMode : row?.discovery.storageMode,
+    },
+    {
+      label: "reasonStorageFallback",
+      value: isRecord(json) ? json.reasonStorageFallback : undefined,
+    },
     {
       label: "rawSignalsFound",
       value:
@@ -537,7 +649,10 @@ function stage1ResultPanel(row: StageResult | undefined) {
         catalyst?.catalystSignalsFound ??
         (row?.signalFound === true ? 1 : row?.signalFound === false ? 0 : null),
     },
-    { label: "catalystSignalsFound", value: catalyst?.catalystSignalsFound ?? discovery?.catalystSignalsFound },
+    {
+      label: "catalystSignalsFound",
+      value: catalyst?.catalystSignalsFound ?? discovery?.catalystSignalsFound,
+    },
     { label: "catalystSignalsSaved", value: catalyst?.catalystSignalsSaved },
     { label: "candidatesInspected", value: discovery?.rawSignalsInspected },
     { label: "candidatesPassed", value: discovery?.passCount },
@@ -549,11 +664,25 @@ function stage1ResultPanel(row: StageResult | undefined) {
         proof?.enrichmentBlockedReasons ??
         row?.blockers,
     },
-    { label: "articleReaderSummary", value: isRecord(json) ? json.articleReaderSummary : undefined },
-    { label: "articleMemoryReusedCount", value: isRecord(json) ? json.articleMemoryReusedCount : undefined },
-    { label: "articleReadAttemptedCount", value: isRecord(json) ? json.articleReadAttemptedCount : undefined },
+    {
+      label: "articleReaderSummary",
+      value: isRecord(json) ? json.articleReaderSummary : undefined,
+    },
+    {
+      label: "articleMemoryReusedCount",
+      value: isRecord(json) ? json.articleMemoryReusedCount : undefined,
+    },
+    {
+      label: "articleReadAttemptedCount",
+      value: isRecord(json) ? json.articleReadAttemptedCount : undefined,
+    },
     { label: "proofMatchingClean", value: proof?.proofMatchingClean },
-    { label: "cleanAcceptedProofCount", value: Array.isArray(proof?.acceptedProofItems) ? proof?.acceptedProofItems.length : 0 },
+    {
+      label: "cleanAcceptedProofCount",
+      value: Array.isArray(proof?.acceptedProofItems)
+        ? proof?.acceptedProofItems.length
+        : 0,
+    },
     { label: "proofAccepted", value: proof?.acceptedProofItems },
     { label: "proofRejected", value: proof?.rejectedProofItems },
     {
@@ -571,17 +700,29 @@ function stage1ResultPanel(row: StageResult | undefined) {
       value:
         findBoolean(json ?? null, ["sentToTelegram", "telegramSent"]) ?? false,
     },
-    { label: "bestEarlySignalCandidate", value: discovery?.sevenLayerEvidenceModel ?? null },
-    { label: "stage2Unlocked", value: isRecord(json) && typeof json.stage2Unlocked === "boolean" ? json.stage2Unlocked : stage2Unlocked },
+    {
+      label: "bestEarlySignalCandidate",
+      value: discovery?.sevenLayerEvidenceModel ?? null,
+    },
+    {
+      label: "stage2Unlocked",
+      value:
+        isRecord(json) && typeof json.stage2Unlocked === "boolean"
+          ? json.stage2Unlocked
+          : stage2Unlocked,
+    },
     {
       label: "reasonStage2Locked",
       value:
         stage2Unlocked === true
           ? "—"
-          : row?.nextAction ??
-            "Stage 1 has not found a candidate strong enough for Stage 2.",
+          : (row?.nextAction ??
+            "Stage 1 has not found a candidate strong enough for Stage 2."),
     },
-    { label: "finalRecommendation", value: isRecord(json) ? json.finalRecommendation : undefined },
+    {
+      label: "finalRecommendation",
+      value: isRecord(json) ? json.finalRecommendation : undefined,
+    },
   ];
 }
 
@@ -625,7 +766,12 @@ export default function EngineControlPanel() {
     [rows],
   );
   const latestR2Row = useMemo(
-    () => rows.find((row) => row.stage === "Test R2 Write/Delete" || row.stage === "Check R2 health"),
+    () =>
+      rows.find(
+        (row) =>
+          row.stage === "Test R2 Write/Delete" ||
+          row.stage === "Check R2 health",
+      ),
     [rows],
   );
   const latestFmpContractRow = useMemo(
@@ -633,7 +779,9 @@ export default function EngineControlPanel() {
     [rows],
   );
   const fmpContractResults = useMemo(() => {
-    const json = isRecord(latestFmpContractRow?.json) ? latestFmpContractRow.json : {};
+    const json = isRecord(latestFmpContractRow?.json)
+      ? latestFmpContractRow.json
+      : {};
     return Array.isArray(json.results) ? json.results.filter(isRecord) : [];
   }, [latestFmpContractRow]);
 
@@ -715,10 +863,26 @@ export default function EngineControlPanel() {
         row,
         ...current.filter((item) => item.stage !== row.stage),
       ]);
-      setMessage(confirmWrite ? "R2 write/delete health test completed." : "R2 read-only health refreshed.");
+      setMessage(
+        confirmWrite
+          ? "R2 write/delete health test completed."
+          : "R2 read-only health refreshed.",
+      );
     } catch (error) {
-      const row = summarize(confirmWrite ? "Test R2 Write/Delete" : "Check R2 health", "/api/internal/r2-health", confirmWrite ? "POST" : "GET", "error", { ok: false, error: error instanceof Error ? error.message : "Unknown error" });
-      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      const row = summarize(
+        confirmWrite ? "Test R2 Write/Delete" : "Check R2 health",
+        "/api/internal/r2-health",
+        confirmWrite ? "POST" : "GET",
+        "error",
+        {
+          ok: false,
+          error: error instanceof Error ? error.message : "Unknown error",
+        },
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
       setMessage("R2 health request failed.");
     }
     setBusy(null);
@@ -744,16 +908,43 @@ export default function EngineControlPanel() {
       const response = await fetch("/api/internal/article-reader-test", {
         method: "POST",
         headers: headers(),
-        body: JSON.stringify({ dryRun: true, maxArticles: 5, confirmRun: false }),
+        body: JSON.stringify({
+          dryRun: true,
+          maxArticles: 5,
+          confirmRun: false,
+        }),
         cache: "no-store",
       });
       const json = await readResponse(response);
-      const row = summarize("Test Article Reader", "/api/internal/article-reader-test", "POST", response.status, json);
-      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
-      setMessage("Article reader test completed. No OpenAI, publish, or Telegram permission was allowed.");
+      const row = summarize(
+        "Test Article Reader",
+        "/api/internal/article-reader-test",
+        "POST",
+        response.status,
+        json,
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
+      setMessage(
+        "Article reader test completed. No OpenAI, publish, or Telegram permission was allowed.",
+      );
     } catch (error) {
-      const row = summarize("Test Article Reader", "/api/internal/article-reader-test", "POST", "error", { ok: false, error: error instanceof Error ? error.message : "Unknown error" });
-      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      const row = summarize(
+        "Test Article Reader",
+        "/api/internal/article-reader-test",
+        "POST",
+        "error",
+        {
+          ok: false,
+          error: error instanceof Error ? error.message : "Unknown error",
+        },
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
       setMessage("Article reader test failed safely.");
     }
     setBusy(null);
@@ -765,16 +956,44 @@ export default function EngineControlPanel() {
       const response = await fetch("/api/internal/provider-contract-test", {
         method: "POST",
         headers: headers(),
-        body: JSON.stringify({ dryRun: true, provider: "FMP", symbols: ["NVDA", "AMD", "MSFT", "GOOGL"], confirmRun: false }),
+        body: JSON.stringify({
+          dryRun: true,
+          provider: "FMP",
+          symbols: ["NVDA", "AMD", "MSFT", "GOOGL"],
+          confirmRun: false,
+        }),
         cache: "no-store",
       });
       const json = await readResponse(response);
-      const row = summarize("Run FMP Provider Contract Test", "/api/internal/provider-contract-test", "POST", response.status, json);
-      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
-      setMessage("FMP provider contract test completed safely. No publish, Telegram, or OpenAI call was allowed.");
+      const row = summarize(
+        "Run FMP Provider Contract Test",
+        "/api/internal/provider-contract-test",
+        "POST",
+        response.status,
+        json,
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
+      setMessage(
+        "FMP provider contract test completed safely. No publish, Telegram, or OpenAI call was allowed.",
+      );
     } catch (error) {
-      const row = summarize("Run FMP Provider Contract Test", "/api/internal/provider-contract-test", "POST", "error", { ok: false, error: error instanceof Error ? error.message : "Unknown error" });
-      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      const row = summarize(
+        "Run FMP Provider Contract Test",
+        "/api/internal/provider-contract-test",
+        "POST",
+        "error",
+        {
+          ok: false,
+          error: error instanceof Error ? error.message : "Unknown error",
+        },
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
       setMessage("FMP provider contract test failed safely.");
     }
     setBusy(null);
@@ -791,17 +1010,47 @@ export default function EngineControlPanel() {
           confirmRun: false,
           maxSources: 20,
           symbols: ["NVDA", "AMD", "MSFT", "GOOGL"],
-          keywords: ["product launch", "guidance", "FDA approval", "contract award", "lawsuit", "investigation"],
+          keywords: [
+            "product launch",
+            "guidance",
+            "FDA approval",
+            "contract award",
+            "lawsuit",
+            "investigation",
+          ],
         }),
         cache: "no-store",
       });
       const json = await readResponse(response);
-      const row = summarize("Test Live Source Contracts", "/api/internal/live-source-contract-test", "POST", response.status, json);
-      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
-      setMessage("Live source contracts tested in dry-run mode. No OpenAI, publish, Telegram, social scraping, or unconfirmed source calls were allowed.");
+      const row = summarize(
+        "Test Live Source Contracts",
+        "/api/internal/live-source-contract-test",
+        "POST",
+        response.status,
+        json,
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
+      setMessage(
+        "Live source contracts tested in dry-run mode. No OpenAI, publish, Telegram, social scraping, or unconfirmed source calls were allowed.",
+      );
     } catch (error) {
-      const row = summarize("Test Live Source Contracts", "/api/internal/live-source-contract-test", "POST", "error", { ok: false, error: error instanceof Error ? error.message : "Unknown error" });
-      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      const row = summarize(
+        "Test Live Source Contracts",
+        "/api/internal/live-source-contract-test",
+        "POST",
+        "error",
+        {
+          ok: false,
+          error: error instanceof Error ? error.message : "Unknown error",
+        },
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
       setMessage("Live source contract test failed safely.");
     }
     setBusy(null);
@@ -819,22 +1068,53 @@ export default function EngineControlPanel() {
           maxItemsPerSource: 20,
           priorityMode: "balanced",
           symbols: ["NVDA", "AMD", "MSFT", "GOOGL"],
-          keywords: ["product launch", "guidance", "FDA approval", "contract award", "lawsuit", "investigation", "revenue", "partnership"],
+          keywords: [
+            "product launch",
+            "guidance",
+            "FDA approval",
+            "contract award",
+            "lawsuit",
+            "investigation",
+            "revenue",
+            "partnership",
+          ],
         }),
         cache: "no-store",
       });
       const json = await readResponse(response);
-      const row = summarize("Run Live Ears v1", "/api/internal/live-ear-run", "POST", response.status, json);
-      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
-      setMessage("Live Ears v1 ran safely: no OpenAI, publish, Telegram, or social chatter calls.");
+      const row = summarize(
+        "Run Live Ears v1",
+        "/api/internal/live-ear-run",
+        "POST",
+        response.status,
+        json,
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
+      setMessage(
+        "Live Ears v1 ran safely: no OpenAI, publish, Telegram, or social chatter calls.",
+      );
     } catch (error) {
-      const row = summarize("Run Live Ears v1", "/api/internal/live-ear-run", "POST", "error", { ok: false, error: error instanceof Error ? error.message : "Unknown error" });
-      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      const row = summarize(
+        "Run Live Ears v1",
+        "/api/internal/live-ear-run",
+        "POST",
+        "error",
+        {
+          ok: false,
+          error: error instanceof Error ? error.message : "Unknown error",
+        },
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
       setMessage("Live Ears v1 failed safely.");
     }
     setBusy(null);
   }
-
 
   async function runBenzingaEar() {
     setBusy("benzinga-ear-run");
@@ -846,18 +1126,48 @@ export default function EngineControlPanel() {
           dryRun: true,
           confirmRun: false,
           symbols: ["NVDA", "AMD", "MSFT", "GOOGL"],
-          keywords: ["guidance", "earnings", "FDA", "product launch", "lawsuit", "investigation"],
+          keywords: [
+            "guidance",
+            "earnings",
+            "FDA",
+            "product launch",
+            "lawsuit",
+            "investigation",
+          ],
           maxItemsPerEndpoint: 20,
         }),
         cache: "no-store",
       });
       const json = await readResponse(response);
-      const row = summarize("Run Benzinga Ear", "/api/internal/benzinga-ear-run", "POST", response.status, json);
-      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
-      setMessage("Benzinga Ear ran safely: no OpenAI, publish, or Telegram calls were allowed.");
+      const row = summarize(
+        "Run Benzinga Ear",
+        "/api/internal/benzinga-ear-run",
+        "POST",
+        response.status,
+        json,
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
+      setMessage(
+        "Benzinga Ear ran safely: no OpenAI, publish, or Telegram calls were allowed.",
+      );
     } catch (error) {
-      const row = summarize("Run Benzinga Ear", "/api/internal/benzinga-ear-run", "POST", "error", { ok: false, error: error instanceof Error ? error.message : "Unknown error" });
-      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      const row = summarize(
+        "Run Benzinga Ear",
+        "/api/internal/benzinga-ear-run",
+        "POST",
+        "error",
+        {
+          ok: false,
+          error: error instanceof Error ? error.message : "Unknown error",
+        },
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
       setMessage("Benzinga Ear failed safely.");
     }
     setBusy(null);
@@ -878,12 +1188,35 @@ export default function EngineControlPanel() {
         cache: "no-store",
       });
       const json = await readResponse(response);
-      const row = summarize("Run Story Clustering", "/api/internal/story-cluster-run", "POST", response.status, json);
-      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
-      setMessage("Story clustering ran safely: no OpenAI, publish, or Telegram calls were allowed.");
+      const row = summarize(
+        "Run Story Clustering",
+        "/api/internal/story-cluster-run",
+        "POST",
+        response.status,
+        json,
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
+      setMessage(
+        "Story clustering ran safely: no OpenAI, publish, or Telegram calls were allowed.",
+      );
     } catch (error) {
-      const row = summarize("Run Story Clustering", "/api/internal/story-cluster-run", "POST", "error", { ok: false, error: error instanceof Error ? error.message : "Unknown error" });
-      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      const row = summarize(
+        "Run Story Clustering",
+        "/api/internal/story-cluster-run",
+        "POST",
+        "error",
+        {
+          ok: false,
+          error: error instanceof Error ? error.message : "Unknown error",
+        },
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
       setMessage("Story clustering failed safely.");
     }
     setBusy(null);
@@ -904,12 +1237,35 @@ export default function EngineControlPanel() {
         cache: "no-store",
       });
       const json = await readResponse(response);
-      const row = summarize("Run Serious Signal Brain", "/api/internal/serious-signal-brain-run", "POST", response.status, json);
-      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
-      setMessage("Serious Signal Brain ran safely: no OpenAI, publish, or Telegram calls were allowed.");
+      const row = summarize(
+        "Run Serious Signal Brain",
+        "/api/internal/serious-signal-brain-run",
+        "POST",
+        response.status,
+        json,
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
+      setMessage(
+        "Serious Signal Brain ran safely: no OpenAI, publish, or Telegram calls were allowed.",
+      );
     } catch (error) {
-      const row = summarize("Run Serious Signal Brain", "/api/internal/serious-signal-brain-run", "POST", "error", { ok: false, error: error instanceof Error ? error.message : "Unknown error" });
-      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      const row = summarize(
+        "Run Serious Signal Brain",
+        "/api/internal/serious-signal-brain-run",
+        "POST",
+        "error",
+        {
+          ok: false,
+          error: error instanceof Error ? error.message : "Unknown error",
+        },
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
       setMessage("Serious Signal Brain failed safely.");
     }
     setBusy(null);
@@ -917,12 +1273,19 @@ export default function EngineControlPanel() {
 
   async function showLiveSourceSchedulerPlan() {
     setBusy("live-source-scheduler-plan");
-    const row = await callGet("Show Live Source Scheduler Plan", "/api/internal/live-source-scheduler-plan");
-    setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
-    setMessage("Live source scheduler plan loaded. This is a plan only; no automatic pulling started.");
+    const row = await callGet(
+      "Show Live Source Scheduler Plan",
+      "/api/internal/live-source-scheduler-plan",
+    );
+    setRows((current) => [
+      row,
+      ...current.filter((item) => item.stage !== row.stage),
+    ]);
+    setMessage(
+      "Live source scheduler plan loaded. This is a plan only; no automatic pulling started.",
+    );
     setBusy(null);
   }
-
 
   async function runOfficialAnnouncements() {
     setBusy("official-announcements");
@@ -934,19 +1297,55 @@ export default function EngineControlPanel() {
           dryRun: true,
           confirmRun: false,
           symbols: ["NVDA", "AMD", "MSFT", "GOOGL"],
-          companyNames: ["NVIDIA", "Advanced Micro Devices", "Microsoft", "Alphabet"],
-          keywords: ["product launch", "guidance", "contract", "lawsuit", "investigation", "approval", "recall"],
+          companyNames: [
+            "NVIDIA",
+            "Advanced Micro Devices",
+            "Microsoft",
+            "Alphabet",
+          ],
+          keywords: [
+            "product launch",
+            "guidance",
+            "contract",
+            "lawsuit",
+            "investigation",
+            "approval",
+            "recall",
+          ],
           maxItemsPerSource: 20,
         }),
         cache: "no-store",
       });
       const json = await readResponse(response);
-      const row = summarize("Run Official Announcements", "/api/internal/official-announcement-run", "POST", response.status, json);
-      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
-      setMessage("Official announcement dry run completed. It did not publish, send Telegram, or call OpenAI.");
+      const row = summarize(
+        "Run Official Announcements",
+        "/api/internal/official-announcement-run",
+        "POST",
+        response.status,
+        json,
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
+      setMessage(
+        "Official announcement dry run completed. It did not publish, send Telegram, or call OpenAI.",
+      );
     } catch (error) {
-      const row = summarize("Run Official Announcements", "/api/internal/official-announcement-run", "POST", "error", { ok: false, error: error instanceof Error ? error.message : "Unknown error" });
-      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      const row = summarize(
+        "Run Official Announcements",
+        "/api/internal/official-announcement-run",
+        "POST",
+        "error",
+        {
+          ok: false,
+          error: error instanceof Error ? error.message : "Unknown error",
+        },
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
       setMessage("Official announcement dry run failed safely.");
     }
     setBusy(null);
@@ -958,17 +1357,207 @@ export default function EngineControlPanel() {
       const response = await fetch("/api/internal/evidence-pack-build-run", {
         method: "POST",
         headers: headers(),
-        body: JSON.stringify({ dryRun: true, confirmRun: false, maxClusters: 50 }),
+        body: JSON.stringify({
+          dryRun: true,
+          confirmRun: false,
+          maxClusters: 50,
+        }),
         cache: "no-store",
       });
       const json = await readResponse(response);
-      const row = summarize("Build Evidence Packs", "/api/internal/evidence-pack-build-run", "POST", response.status, json);
-      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
-      setMessage("Evidence pack builder ran safely: no OpenAI, publish, or Telegram calls were allowed.");
+      const row = summarize(
+        "Build Evidence Packs",
+        "/api/internal/evidence-pack-build-run",
+        "POST",
+        response.status,
+        json,
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
+      setMessage(
+        "Evidence pack builder ran safely: no OpenAI, publish, or Telegram calls were allowed.",
+      );
     } catch (error) {
-      const row = summarize("Build Evidence Packs", "/api/internal/evidence-pack-build-run", "POST", "error", { ok: false, error: error instanceof Error ? error.message : "Unknown error" });
-      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      const row = summarize(
+        "Build Evidence Packs",
+        "/api/internal/evidence-pack-build-run",
+        "POST",
+        "error",
+        {
+          ok: false,
+          error: error instanceof Error ? error.message : "Unknown error",
+        },
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
       setMessage("Evidence pack builder failed safely.");
+    }
+    setBusy(null);
+  }
+
+  async function testSourceCoverage() {
+    setBusy("source-coverage-test");
+    try {
+      const response = await fetch("/api/internal/source-coverage-test", {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({
+          dryRun: true,
+          confirmRun: false,
+          providers: [
+            "FMP",
+            "Marketaux",
+            "Benzinga",
+            "SEC",
+            "Fed",
+            "FederalRegister",
+            "openFDA",
+            "USAspending",
+            "SAM",
+          ],
+          symbols: ["NVDA", "AMD", "MSFT", "GOOGL"],
+          keywords: [
+            "product launch",
+            "guidance",
+            "FDA approval",
+            "contract award",
+            "lawsuit",
+            "investigation",
+          ],
+          maxEndpointsPerProvider: 30,
+          maxItemsPerEndpoint: 5,
+        }),
+        cache: "no-store",
+      });
+      const json = await readResponse(response);
+      const row = summarize(
+        "Test Source Coverage",
+        "/api/internal/source-coverage-test",
+        "POST",
+        response.status,
+        json,
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
+      setMessage(
+        "Source coverage test completed safely. No publish, Telegram, or OpenAI calls were allowed.",
+      );
+    } catch (error) {
+      const row = summarize(
+        "Test Source Coverage",
+        "/api/internal/source-coverage-test",
+        "POST",
+        "error",
+        {
+          ok: false,
+          error: error instanceof Error ? error.message : "Unknown error",
+        },
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
+    }
+    setBusy(null);
+  }
+
+  async function showSourcePullPlan() {
+    setBusy("source-pull-plan");
+    try {
+      const response = await fetch("/api/internal/source-pull-plan", {
+        cache: "no-store",
+      });
+      const json = await readResponse(response);
+      const row = summarize(
+        "Show Source Pull Plan",
+        "/api/internal/source-pull-plan",
+        "GET",
+        response.status,
+        json,
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
+      setMessage("Source pull plan loaded.");
+    } catch (error) {
+      const row = summarize(
+        "Show Source Pull Plan",
+        "/api/internal/source-pull-plan",
+        "GET",
+        "error",
+        {
+          ok: false,
+          error: error instanceof Error ? error.message : "Unknown error",
+        },
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
+    }
+    setBusy(null);
+  }
+
+  async function runSmartSourcePull() {
+    setBusy("smart-source-pull-run");
+    try {
+      const response = await fetch("/api/internal/smart-source-pull-run", {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({
+          dryRun: true,
+          confirmRun: false,
+          mode: "balanced",
+          symbols: ["NVDA", "AMD", "MSFT", "GOOGL"],
+          keywords: [
+            "product launch",
+            "guidance",
+            "FDA approval",
+            "contract award",
+            "lawsuit",
+            "investigation",
+          ],
+          maxProviders: 10,
+          maxEndpoints: 50,
+          maxCallsTotal: 100,
+        }),
+        cache: "no-store",
+      });
+      const json = await readResponse(response);
+      const row = summarize(
+        "Run Smart Source Pull",
+        "/api/internal/smart-source-pull-run",
+        "POST",
+        response.status,
+        json,
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
+      setMessage("Smart source pull dry run completed safely.");
+    } catch (error) {
+      const row = summarize(
+        "Run Smart Source Pull",
+        "/api/internal/smart-source-pull-run",
+        "POST",
+        "error",
+        {
+          ok: false,
+          error: error instanceof Error ? error.message : "Unknown error",
+        },
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
     }
     setBusy(null);
   }
@@ -1109,6 +1698,27 @@ export default function EngineControlPanel() {
         <button
           style={styles.button}
           disabled={busy !== null}
+          onClick={testSourceCoverage}
+        >
+          Test Source Coverage
+        </button>
+        <button
+          style={styles.button}
+          disabled={busy !== null}
+          onClick={showSourcePullPlan}
+        >
+          Show Source Pull Plan
+        </button>
+        <button
+          style={styles.button}
+          disabled={busy !== null}
+          onClick={runSmartSourcePull}
+        >
+          Run Smart Source Pull
+        </button>
+        <button
+          style={styles.button}
+          disabled={busy !== null}
           onClick={runOfficialAnnouncements}
         >
           Run Official Announcements
@@ -1227,26 +1837,33 @@ export default function EngineControlPanel() {
         </button>
       </section>
 
-
       {busy === "r2-write" ? (
         <section style={styles.card}>
           <h2 style={styles.heading}>R2 Write/Delete Test</h2>
-          <p style={styles.small}>Testing R2 write/delete… this may take a few seconds.</p>
+          <p style={styles.small}>
+            Testing R2 write/delete… this may take a few seconds.
+          </p>
         </section>
       ) : null}
 
       <section style={styles.card}>
         <h2 style={styles.heading}>R2 Write/Delete result</h2>
         <p style={styles.small}>
-          The button calls POST /api/internal/r2-health with {`{"confirmWrite":true}`}.
-          This panel only shows safe health fields and never displays access keys, secret keys, tokens, or unredacted environment values.
+          The button calls POST /api/internal/r2-health with{" "}
+          {`{"confirmWrite":true}`}. This panel only shows safe health fields
+          and never displays access keys, secret keys, tokens, or unredacted
+          environment values.
         </p>
         <div style={styles.resultGrid}>
           {r2ResultFields.map((field) => (
             <div key={field} style={styles.resultItem}>
               <strong>{field}</strong>
               <pre style={styles.resultValue}>
-                {resultValue(isRecord(latestR2Row?.json) ? latestR2Row.json[field] : undefined)}
+                {resultValue(
+                  isRecord(latestR2Row?.json)
+                    ? latestR2Row.json[field]
+                    : undefined,
+                )}
               </pre>
             </div>
           ))}
@@ -1255,35 +1872,94 @@ export default function EngineControlPanel() {
 
       <section style={styles.card}>
         <h2 style={styles.heading}>7-layer ear status</h2>
-        <p style={styles.small}>Shows Tier 1/Tier 2 ears, blocked/planned ears with how to solve, and R2 raw storage status from /api/internal/ear-registry.</p>
-        <pre style={styles.resultValue}>{JSON.stringify(registryPanel(registryRow), null, 2)}</pre>
+        <p style={styles.small}>
+          Shows Tier 1/Tier 2 ears, blocked/planned ears with how to solve, and
+          R2 raw storage status from /api/internal/ear-registry.
+        </p>
+        <pre style={styles.resultValue}>
+          {JSON.stringify(registryPanel(registryRow), null, 2)}
+        </pre>
       </section>
 
       <section style={styles.card}>
         <h2 style={styles.heading}>FMP Provider Contract Test</h2>
-        <p style={styles.small}>Calls POST /api/internal/provider-contract-test for NVDA, AMD, MSFT, and GOOGL. It shows safe endpoint status only and never displays API keys or full provider URLs.</p>
+        <p style={styles.small}>
+          Calls POST /api/internal/provider-contract-test for NVDA, AMD, MSFT,
+          and GOOGL. It shows safe endpoint status only and never displays API
+          keys or full provider URLs.
+        </p>
         <div style={styles.tableWrap}>
           <table style={styles.table}>
-            <thead><tr>{["symbol","quote works?","quote-short works?","stock-price-change works?","historical EOD works?","income statement works?","balance sheet works?","cash flow works?","key metrics works?","ratios works?","Stage 1 attach works?","failure reason"].map((head) => <th key={head} style={styles.th}>{head}</th>)}</tr></thead>
+            <thead>
+              <tr>
+                {[
+                  "symbol",
+                  "quote works?",
+                  "quote-short works?",
+                  "stock-price-change works?",
+                  "historical EOD works?",
+                  "income statement works?",
+                  "balance sheet works?",
+                  "cash flow works?",
+                  "key metrics works?",
+                  "ratios works?",
+                  "Stage 1 attach works?",
+                  "failure reason",
+                ].map((head) => (
+                  <th key={head} style={styles.th}>
+                    {head}
+                  </th>
+                ))}
+              </tr>
+            </thead>
             <tbody>
               {fmpContractResults.map((row, index) => {
-                const endpoints = Array.isArray(row.endpointDiagnostics) ? row.endpointDiagnostics.filter(isRecord) : [];
-                const works = (name: string) => yesNo(endpoints.some((endpoint) => endpoint.endpointName === name && endpoint.hasUsableValues === true));
-                const comparison = isRecord(row.comparison) ? row.comparison : {};
-                return <tr key={`${String(row.symbol ?? index)}-fmp-contract`}>
-                  <td style={styles.td}>{resultValue(row.symbol)}</td>
-                  <td style={styles.td}>{works("quote")}</td>
-                  <td style={styles.td}>{works("quote-short")}</td>
-                  <td style={styles.td}>{works("stock-price-change")}</td>
-                  <td style={styles.td}>{works("historical-price-eod/full")}</td>
-                  <td style={styles.td}>{works("income-statement")}</td>
-                  <td style={styles.td}>{works("balance-sheet-statement")}</td>
-                  <td style={styles.td}>{works("cash-flow-statement")}</td>
-                  <td style={styles.td}>{works("key-metrics")}</td>
-                  <td style={styles.td}>{works("ratios")}</td>
-                  <td style={styles.td}>{yesNo(comparison.stage1PriceVolumeWorks === true || comparison.stage1FundamentalsWorks === true)}</td>
-                  <td style={styles.td}>{resultValue(comparison.mismatchReason ?? endpoints.find((endpoint) => endpoint.hasUsableValues !== true)?.rejectionReason)}</td>
-                </tr>;
+                const endpoints = Array.isArray(row.endpointDiagnostics)
+                  ? row.endpointDiagnostics.filter(isRecord)
+                  : [];
+                const works = (name: string) =>
+                  yesNo(
+                    endpoints.some(
+                      (endpoint) =>
+                        endpoint.endpointName === name &&
+                        endpoint.hasUsableValues === true,
+                    ),
+                  );
+                const comparison = isRecord(row.comparison)
+                  ? row.comparison
+                  : {};
+                return (
+                  <tr key={`${String(row.symbol ?? index)}-fmp-contract`}>
+                    <td style={styles.td}>{resultValue(row.symbol)}</td>
+                    <td style={styles.td}>{works("quote")}</td>
+                    <td style={styles.td}>{works("quote-short")}</td>
+                    <td style={styles.td}>{works("stock-price-change")}</td>
+                    <td style={styles.td}>
+                      {works("historical-price-eod/full")}
+                    </td>
+                    <td style={styles.td}>{works("income-statement")}</td>
+                    <td style={styles.td}>
+                      {works("balance-sheet-statement")}
+                    </td>
+                    <td style={styles.td}>{works("cash-flow-statement")}</td>
+                    <td style={styles.td}>{works("key-metrics")}</td>
+                    <td style={styles.td}>{works("ratios")}</td>
+                    <td style={styles.td}>
+                      {yesNo(
+                        comparison.stage1PriceVolumeWorks === true ||
+                          comparison.stage1FundamentalsWorks === true,
+                      )}
+                    </td>
+                    <td style={styles.td}>
+                      {resultValue(
+                        comparison.mismatchReason ??
+                          endpoints.find(
+                            (endpoint) => endpoint.hasUsableValues !== true,
+                          )?.rejectionReason,
+                      )}
+                    </td>
+                  </tr>
+                );
               })}
             </tbody>
           </table>
@@ -1293,9 +1969,9 @@ export default function EngineControlPanel() {
       <section style={styles.card}>
         <h2 style={styles.heading}>Stage 1 Dry Run result</h2>
         <p style={styles.small}>
-          Click the visible Stage 1 Dry Run button above to POST the safe dry-run
-          payload. This panel stays explicit about publish, Telegram, and AI
-          committee status.
+          Click the visible Stage 1 Dry Run button above to POST the safe
+          dry-run payload. This panel stays explicit about publish, Telegram,
+          and AI committee status.
         </p>
         <div style={styles.resultGrid}>
           {stage1ResultPanel(latestStage1Row).map((item) => (
@@ -1378,9 +2054,13 @@ export default function EngineControlPanel() {
                   <td style={styles.td}>{row.catalyst.diagnostics}</td>
                   <td style={styles.td}>{row.catalyst.impact}</td>
                   <td style={styles.td}>{row.catalyst.specificity}</td>
-                  <td style={styles.td}>{row.discovery.bestDirectTickerCandidate}</td>
+                  <td style={styles.td}>
+                    {row.discovery.bestDirectTickerCandidate}
+                  </td>
                   <td style={styles.td}>{row.discovery.selectedFailed}</td>
-                  <td style={styles.td}>{row.discovery.proofCompletionSummary}</td>
+                  <td style={styles.td}>
+                    {row.discovery.proofCompletionSummary}
+                  </td>
                   <td style={styles.td}>{row.discovery.fmpProvider403Note}</td>
                   <td style={styles.td}>{row.discovery.nextSource}</td>
                   <td style={styles.td}>
@@ -1389,7 +2069,9 @@ export default function EngineControlPanel() {
                   <td style={styles.td}>{row.proofEnrichment.added}</td>
                   <td style={styles.td}>{row.proofEnrichment.accepted}</td>
                   <td style={styles.td}>{row.proofEnrichment.rejected}</td>
-                  <td style={styles.td}>{row.proofEnrichment.rejectedReasons}</td>
+                  <td style={styles.td}>
+                    {row.proofEnrichment.rejectedReasons}
+                  </td>
                   <td style={styles.td}>{row.proofEnrichment.matchScore}</td>
                   <td style={styles.td}>{row.proofEnrichment.urls}</td>
                   <td style={styles.td}>{row.proofEnrichment.missing}</td>

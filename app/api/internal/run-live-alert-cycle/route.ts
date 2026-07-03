@@ -26,6 +26,7 @@ import { getLiveSourceContractSummary, buildLiveSourceSchedulerPlan } from "@/li
 import { runFmpProof, runPriceVolume } from "@/lib/proof-ears";
 import { runLiveEarRun } from "@/lib/live-ear-runner";
 import { runBenzingaEar } from "@/lib/benzinga-ear";
+import { runOfficialAnnouncementRun } from "@/lib/official-announcements";
 import { runStoryClusterRun } from "@/lib/story-clustering";
 import { runSeriousSignalBrain } from "@/lib/serious-signal-brain";
 import type { ProofItem } from "@/lib/proof/proof-bundle-builder";
@@ -1848,6 +1849,7 @@ export async function POST(request: NextRequest) {
   const includeStoryClustering = bool(body.includeStoryClustering, false);
   const includeSeriousSignalBrain = bool(body.includeSeriousSignalBrain, false);
   const includeBenzingaEar = bool(body.includeBenzingaEar, false);
+  const includeOfficialAnnouncements = bool(body.includeOfficialAnnouncements, false);
   const warnings = [
     "Telegram is disabled for this founder website test; this route never sends Telegram.",
     ...(confirmSend || allowTelegram
@@ -1957,6 +1959,32 @@ export async function POST(request: NextRequest) {
           noTelegram: true,
         }))
       : null;
+    const officialAnnouncementRun = includeOfficialAnnouncements
+      ? await runOfficialAnnouncementRun({
+          dryRun: true,
+          confirmRun: false,
+          symbols: ["NVDA", "AMD", "MSFT", "GOOGL"],
+          companyNames: ["NVIDIA", "Advanced Micro Devices", "Microsoft", "Alphabet"],
+          keywords: ["product launch", "guidance", "contract", "lawsuit", "investigation", "approval", "recall"],
+          maxItemsPerSource: 20,
+          clusters: Array.isArray(storyClusterRun?.topStoryClusters) ? storyClusterRun.topStoryClusters : [],
+        }).catch((error: unknown) => ({
+          ok: false,
+          officialAnnouncementSummary: {
+            ok: false,
+            safeErrorCategory: "official_announcements_stage1_failed_safely",
+            safeErrorMessage: error instanceof Error ? error.message.slice(0, 160) : "Unknown error",
+            sourceFailureNonBlocking: true,
+          },
+          officialSourcesAttempted: [],
+          officialProofSignalsCreated: 0,
+          officialProofAttachedToClusters: 0,
+          officialAnnouncementFailures: [{ safeErrorCategory: "official_announcements_stage1_failed_safely" }],
+          noOpenAI: true,
+          noPublish: true,
+          noTelegram: true,
+        }))
+      : null;
     const seriousSignalBrainRun = includeSeriousSignalBrain
       ? await runSeriousSignalBrain({
           dryRun: true,
@@ -2027,6 +2055,13 @@ export async function POST(request: NextRequest) {
       includeStoryClustering,
       includeSeriousSignalBrain,
       includeBenzingaEar,
+      includeOfficialAnnouncements,
+      officialAnnouncementSummary: officialAnnouncementRun?.officialAnnouncementSummary ?? officialAnnouncementRun ?? null,
+      officialSourcesAttempted: Array.isArray(officialAnnouncementRun?.officialSourcesAttempted) ? officialAnnouncementRun.officialSourcesAttempted : [],
+      officialProofSignalsCreated: Number(officialAnnouncementRun?.officialProofSignalsCreated ?? 0),
+      officialProofAttachedToClusters: Number(officialAnnouncementRun?.officialProofAttachedToClusters ?? 0),
+      officialAnnouncementFailures: Array.isArray(officialAnnouncementRun?.officialAnnouncementFailures) ? officialAnnouncementRun.officialAnnouncementFailures : [],
+      officialAnnouncementSignals: Array.isArray((officialAnnouncementRun as JsonRecord | null)?.rawSignals) ? ((officialAnnouncementRun as JsonRecord).rawSignals as unknown[]).slice(0, 20) : [],
       benzingaEarSummary,
       benzingaEndpointSummary: benzingaEarSummary?.benzingaEndpointSummary ?? [],
       benzingaLiveTranscriptCount: Number(benzingaEarSummary?.benzingaLiveTranscriptCount ?? 0),

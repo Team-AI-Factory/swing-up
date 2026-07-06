@@ -42,6 +42,7 @@ import {
   summary as sourceCoverageSummaryFromRows,
 } from "@/lib/source-coverage";
 import { runAutonomousSourceEngine } from "@/lib/autonomous-source-engine";
+import { runLiveEventCalendar, buildListenHarderPlan } from "@/lib/live-event-calendar";
 
 export const dynamic = "force-dynamic";
 
@@ -1886,6 +1887,7 @@ export async function POST(request: NextRequest) {
   );
   const includeSmartSourcePull = bool(body.includeSmartSourcePull, false);
   const includeAutonomousSourceEngine = bool(body.includeAutonomousSourceEngine, false);
+  const includeLiveEventCalendar = bool(body.includeLiveEventCalendar, false);
   const warnings = [
     "Telegram is disabled for this founder website test; this route never sends Telegram.",
     ...(confirmSend || allowTelegram
@@ -1917,6 +1919,12 @@ export async function POST(request: NextRequest) {
       confirmRun,
       r2RawStorageReady: r2WriteAvailable,
     });
+    const liveEventCalendarRun = includeLiveEventCalendar
+      ? await runLiveEventCalendar({ dryRun:true, confirmRun:false, symbols:["NVDA","AMD","MSFT","GOOGL"], lookAheadHours:72, lookBackHours:24, maxEvents:100 }).catch((error:unknown)=>({ok:false,safeErrorCategory:"live_event_calendar_stage1_failed_safely",safeErrorMessage:error instanceof Error?error.message.slice(0,160):"Unknown error",liveRoomsActiveNow:[],liveRoomsUpcoming24h:[],recentlyFinishedEvents:[],eventsCreatedOrUpdated:0,noOpenAI:true,noPublish:true,noTelegram:true}))
+      : null;
+    const listenHarderPlan = includeLiveEventCalendar
+      ? await buildListenHarderPlan({dryRun:true}).catch((error:unknown)=>({ok:false,safeErrorCategory:"listen_harder_plan_stage1_failed_safely",safeErrorMessage:error instanceof Error?error.message.slice(0,160):"Unknown error",liveRoomsActiveNow:[],liveRoomsUpcoming24h:[],eventDrivenProofActionsCreated:0,noOpenAI:true,noPublish:true,noTelegram:true}))
+      : null;
     const liveEarSummary = includeLiveEars
       ? await runLiveEarRun({
           dryRun: true,
@@ -2231,6 +2239,16 @@ export async function POST(request: NextRequest) {
         : null,
       smartSourcePullSummary: smartSourcePullRun,
       includeAutonomousSourceEngine,
+      includeLiveEventCalendar,
+      liveEventCalendarSummary: liveEventCalendarRun ? { ok:(liveEventCalendarRun as JsonRecord).ok, eventsCreatedOrUpdated:(liveEventCalendarRun as JsonRecord).eventsCreatedOrUpdated, activeEvents:Array.isArray((liveEventCalendarRun as JsonRecord).activeEvents)?((liveEventCalendarRun as JsonRecord).activeEvents as unknown[]).length:0, upcomingEvents:Array.isArray((liveEventCalendarRun as JsonRecord).upcomingEvents)?((liveEventCalendarRun as JsonRecord).upcomingEvents as unknown[]).length:0, recentlyFinishedEvents:Array.isArray((liveEventCalendarRun as JsonRecord).recentlyFinishedEvents)?((liveEventCalendarRun as JsonRecord).recentlyFinishedEvents as unknown[]).length:0, safeErrorCategory:(liveEventCalendarRun as JsonRecord).safeErrorCategory } : null,
+      liveRoomsActiveNow: (listenHarderPlan as JsonRecord | null)?.liveRoomsActiveNow ?? (liveEventCalendarRun as JsonRecord | null)?.liveRoomsActiveNow ?? [],
+      liveRoomsUpcoming24h: (listenHarderPlan as JsonRecord | null)?.liveRoomsUpcoming24h ?? (liveEventCalendarRun as JsonRecord | null)?.liveRoomsUpcoming24h ?? [],
+      listenHarderPlan,
+      listenHarderCallsUsed: (autonomousSourceEngineRun as JsonRecord | null)?.listenHarderCallsUsed ?? 0,
+      listenHarderCallsSkipped: (autonomousSourceEngineRun as JsonRecord | null)?.listenHarderCallsSkipped ?? 0,
+      listenHarderBatchesCreated: (listenHarderPlan as JsonRecord | null)?.batchingPlan && typeof (listenHarderPlan as JsonRecord).batchingPlan === "object" && !Array.isArray((listenHarderPlan as JsonRecord).batchingPlan) ? ((listenHarderPlan as JsonRecord).batchingPlan as JsonRecord).batchesCreated : 0,
+      quotaReserveProtected: (listenHarderPlan as JsonRecord | null)?.quotaReserveProtected ?? (autonomousSourceEngineRun as JsonRecord | null)?.quotaReserveProtected ?? true,
+      eventDrivenProofActionsCreated: (listenHarderPlan as JsonRecord | null)?.eventDrivenProofActionsCreated ?? 0,
       autonomousSourceEngineSummary: autonomousSourceEngineRun,
       autonomousCoverageSummary:
         (autonomousSourceEngineRun as JsonRecord | null)?.autonomousCoverageSummary ??

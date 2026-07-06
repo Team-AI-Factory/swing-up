@@ -41,6 +41,7 @@ import {
   smartPull,
   summary as sourceCoverageSummaryFromRows,
 } from "@/lib/source-coverage";
+import { runAutonomousSourceEngine } from "@/lib/autonomous-source-engine";
 
 export const dynamic = "force-dynamic";
 
@@ -1884,6 +1885,7 @@ export async function POST(request: NextRequest) {
     false,
   );
   const includeSmartSourcePull = bool(body.includeSmartSourcePull, false);
+  const includeAutonomousSourceEngine = bool(body.includeAutonomousSourceEngine, false);
   const warnings = [
     "Telegram is disabled for this founder website test; this route never sends Telegram.",
     ...(confirmSend || allowTelegram
@@ -2111,6 +2113,34 @@ export async function POST(request: NextRequest) {
           noTelegram: true,
         }))
       : null;
+    const autonomousSourceEngineRun = includeAutonomousSourceEngine
+      ? await runAutonomousSourceEngine({
+          dryRun: true,
+          confirmRun: false,
+          mode: "balanced",
+          maxCallsTotal: 150,
+          maxProviders: 10,
+          maxEndpoints: 80,
+          maxAssetsPerCycle: 500,
+          universeMode,
+          includeStocks: true,
+          includeETFs: true,
+          includeCrypto: true,
+          includeFX: true,
+          includeCommodities: true,
+          includeMacro: true,
+        }).catch((error: unknown) => ({
+          ok: false,
+          safeErrorCategory: "autonomous_source_engine_stage1_failed_safely",
+          safeErrorMessage:
+            error instanceof Error
+              ? error.message.slice(0, 160)
+              : "Unknown error",
+          noOpenAI: true,
+          noPublish: true,
+          noTelegram: true,
+        }))
+      : null;
     const sourceCoverageRowsForStage1 = includeSmartSourcePull
       ? await sourceCoverageRows().catch(() => [])
       : [];
@@ -2200,6 +2230,24 @@ export async function POST(request: NextRequest) {
           }
         : null,
       smartSourcePullSummary: smartSourcePullRun,
+      includeAutonomousSourceEngine,
+      autonomousSourceEngineSummary: autonomousSourceEngineRun,
+      autonomousCoverageSummary:
+        (autonomousSourceEngineRun as JsonRecord | null)?.autonomousCoverageSummary ??
+        null,
+      autonomousQuotaSummary:
+        (autonomousSourceEngineRun as JsonRecord | null)?.autonomousQuotaSummary ??
+        null,
+      autonomousUniverseSummary:
+        (autonomousSourceEngineRun as JsonRecord | null)?.autonomousUniverseSummary ??
+        null,
+      autonomousOpportunitiesFound:
+        (autonomousSourceEngineRun as JsonRecord | null)?.topOpportunitiesFound ??
+        [],
+      autonomousThreatsFound:
+        (autonomousSourceEngineRun as JsonRecord | null)?.topThreatsFound ?? [],
+      autonomousNextDuePulls:
+        (autonomousSourceEngineRun as JsonRecord | null)?.nextDuePulls ?? [],
       endpointsAvailableNow: Number(
         obj(smartSourcePullRun).endpointsAvailableNow ?? 0,
       ),

@@ -1562,6 +1562,57 @@ export default function EngineControlPanel() {
     setBusy(null);
   }
 
+
+  async function showAutonomousSourceEngineStatus() {
+    setBusy("autonomous-source-engine-status");
+    try {
+      const response = await fetch("/api/internal/autonomous-source-engine-status", { cache: "no-store" });
+      const json = await readResponse(response);
+      const row = summarize("Autonomous Source Engine Status", "/api/internal/autonomous-source-engine-status", "GET", response.status, json);
+      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      setMessage("Autonomous source engine status loaded.");
+    } catch (error) {
+      const row = summarize("Autonomous Source Engine Status", "/api/internal/autonomous-source-engine-status", "GET", "error", { ok: false, error: error instanceof Error ? error.message : "Unknown error" });
+      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+    }
+    setBusy(null);
+  }
+
+  async function runAutonomousSourceEngine() {
+    setBusy("autonomous-source-engine-run");
+    try {
+      const response = await fetch("/api/internal/autonomous-source-engine-run", {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({
+          dryRun: true,
+          confirmRun: false,
+          mode: "balanced",
+          maxCallsTotal: 150,
+          maxProviders: 10,
+          maxEndpoints: 80,
+          maxAssetsPerCycle: 500,
+          universeMode: "global",
+          includeStocks: true,
+          includeETFs: true,
+          includeCrypto: true,
+          includeFX: true,
+          includeCommodities: true,
+          includeMacro: true,
+        }),
+        cache: "no-store",
+      });
+      const json = await readResponse(response);
+      const row = summarize("Run Autonomous Source Engine", "/api/internal/autonomous-source-engine-run", "POST", response.status, json);
+      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      setMessage("Autonomous source engine dry run completed safely.");
+    } catch (error) {
+      const row = summarize("Run Autonomous Source Engine", "/api/internal/autonomous-source-engine-run", "POST", "error", { ok: false, error: error instanceof Error ? error.message : "Unknown error" });
+      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+    }
+    setBusy(null);
+  }
+
   async function runStage(stage: "stage1" | "stage2" | "stage3") {
     const labels = {
       stage1: "Stage 1 dry run",
@@ -1715,6 +1766,20 @@ export default function EngineControlPanel() {
           onClick={runSmartSourcePull}
         >
           Run Smart Source Pull
+        </button>
+        <button
+          style={styles.button}
+          disabled={busy !== null}
+          onClick={showAutonomousSourceEngineStatus}
+        >
+          Autonomous Source Engine Status
+        </button>
+        <button
+          style={styles.button}
+          disabled={busy !== null}
+          onClick={runAutonomousSourceEngine}
+        >
+          Run Autonomous Source Engine
         </button>
         <button
           style={styles.button}

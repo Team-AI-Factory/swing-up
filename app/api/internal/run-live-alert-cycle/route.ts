@@ -2238,6 +2238,22 @@ export async function POST(request: NextRequest) {
       autonomousQuotaSummary:
         (autonomousSourceEngineRun as JsonRecord | null)?.autonomousQuotaSummary ??
         null,
+      providerQuotaSummary:
+        (autonomousSourceEngineRun as JsonRecord | null)?.providerQuotaSummary ??
+        null,
+      smartBatchSummary:
+        (autonomousSourceEngineRun as JsonRecord | null)?.smartBatchSummary ??
+        null,
+      dynamicCadenceSummary:
+        (autonomousSourceEngineRun as JsonRecord | null)?.dynamicCadenceSummary ??
+        null,
+      quotaReserveSummary:
+        (autonomousSourceEngineRun as JsonRecord | null)?.quotaReserveSummary ??
+        null,
+      individualRequestsAvoided:
+        (autonomousSourceEngineRun as JsonRecord | null)?.individualRequestsAvoided ?? 0,
+      estimatedQuotaSavedByBatching:
+        (autonomousSourceEngineRun as JsonRecord | null)?.estimatedQuotaSavedByBatching ?? 0,
       autonomousUniverseSummary:
         (autonomousSourceEngineRun as JsonRecord | null)?.autonomousUniverseSummary ??
         null,

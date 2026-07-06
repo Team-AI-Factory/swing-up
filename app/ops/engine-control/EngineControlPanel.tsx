@@ -1577,6 +1577,21 @@ export default function EngineControlPanel() {
     }
     setBusy(null);
   }
+  async function showQuotaBatchingStatus() {
+    setBusy("source-quota-and-batching-status");
+    try {
+      const response = await fetch("/api/internal/source-quota-and-batching-status", { cache: "no-store" });
+      const json = await readResponse(response);
+      const row = summarize("Quota + Batching Status", "/api/internal/source-quota-and-batching-status", "GET", response.status, json);
+      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      setMessage("Quota and batching status loaded.");
+    } catch (error) {
+      const row = summarize("Quota + Batching Status", "/api/internal/source-quota-and-batching-status", "GET", "error", { ok: false, error: error instanceof Error ? error.message : "Unknown error" });
+      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+    }
+    setBusy(null);
+  }
+
 
   async function runAutonomousSourceEngine() {
     setBusy("autonomous-source-engine-run");
@@ -1773,6 +1788,13 @@ export default function EngineControlPanel() {
           onClick={showAutonomousSourceEngineStatus}
         >
           Autonomous Source Engine Status
+        </button>
+        <button
+          style={styles.button}
+          disabled={busy !== null}
+          onClick={showQuotaBatchingStatus}
+        >
+          Show Quota + Batching Status
         </button>
         <button
           style={styles.button}

@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import { prisma } from "@/lib/db/client";
 import { getR2OperationalStatus, saveJsonToR2 } from "@/lib/r2-warehouse";
 import { redactSecrets } from "@/lib/redact-secrets";
+import { adjustCadence, buildSmartRequestBatches, getProviderQuotaSummary } from "@/lib/source-quota-batching";
 
 export type AccessStatus =
   | "available"
@@ -636,12 +637,15 @@ export function summary(rs: any[]) {
 }
 export async function pullPlan() {
   const rs = await rows();
+  const providerQuotaSummary = await getProviderQuotaSummary();
   const plan = rs.map((r: any) => {
     const enabled =
       r.enabled_by_default &&
       r.access_status !== "disabled_placeholder" &&
       r.access_status !== "missing_key" &&
       r.access_status !== "plan_restricted";
+    const quota = providerQuotaSummary.find((q:any)=>new RegExp(q.provider,"i").test(String(r.provider))) || providerQuotaSummary.find((q:any)=>q.provider==="FreeOfficial");
+    const cadence = adjustCadence(Number(r.recommended_interval_seconds||900), quota||{}, {urgent:Number(r.priority||0)>=90});
     return {
       provider: r.provider,
       endpoint_group: r.endpoint_group,
@@ -664,10 +668,24 @@ export async function pullPlan() {
       next_best_use: r.pull_mode,
       update_cadence_type: r.update_cadence_type,
       natural_update_frequency: r.natural_update_frequency,
+      quotaStatus: quota?.quotaStatus ?? "unknown",
+      dailyLimit: quota?.dailyLimit ?? null,
+      usedToday: quota?.usedToday ?? 0,
+      remainingToday: quota?.remainingToday ?? null,
+      reserveRemaining: quota?.reserveRemaining ?? null,
+      batchingSupported: quota?.batchingSupported ?? Boolean(r.bulk_supported),
+      recommendedBatchSize: quota?.recommendedBatchSize ?? (r.bulk_supported ? 25 : 1),
+      batchingStrategy: quota?.batchingStrategy ?? "conservative single endpoint use",
+      adjustedCadenceSeconds: cadence.adjustedCadenceSeconds,
+      quotaRisk: quota?.quotaRisk ?? "unknown",
+      nextBestBatch: r.symbol_supported ? "symbol_batch" : r.keyword_supported ? "keyword_basket" : r.bulk_supported ? "bulk_or_sector_basket" : "single_safe_call",
     };
   });
+  const batchPlan = buildSmartRequestBatches(plan.filter((p:any)=>p.enabled_now).map((p:any)=>({provider:p.provider, symbol:p.symbol || "NVDA", endpoint_name:p.endpoint_name})), providerQuotaSummary);
   return {
     ok: true,
+    providerQuotaSummary,
+    smartBatchSummary: batchPlan,
     sections: {
       fastRadarPulls: plan.filter((p) => p.pull_mode === "broad_latest"),
       officialProofPulls: plan.filter((p) =>

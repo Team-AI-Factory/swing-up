@@ -22,7 +22,8 @@ type StageKey =
   | "source"
   | "fmp"
   | "article"
-  | "liveSource";
+  | "liveSource"
+  | "liveEvent";
 
 type StageResult = {
   stage: string;
@@ -149,6 +150,9 @@ const runPayloads = {
     maxDeepScans: 5,
     includeOfficialAnnouncements: true,
     includeSmartSourcePull: true,
+    includeLiveEventCalendar: true,
+    includeAutonomousSourceEngine: true,
+    includeEvidencePackBuilder: true,
   },
   stage2: {
     dryRun: false,
@@ -1592,6 +1596,29 @@ export default function EngineControlPanel() {
     setBusy(null);
   }
 
+  async function runLiveEventCalendar() {
+    setBusy("live-event-calendar-run");
+    try {
+      const response = await fetch("/api/internal/live-event-calendar-run", { method: "POST", headers: headers(), body: JSON.stringify({ dryRun: true, confirmRun: false, symbols: ["NVDA", "AMD", "MSFT", "GOOGL"], lookAheadHours: 72, lookBackHours: 24, maxEvents: 100 }), cache: "no-store" });
+      const json = await readResponse(response);
+      const row = summarize("Run Live Event Calendar", "/api/internal/live-event-calendar-run", "POST", response.status, json);
+      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      setMessage("Live event calendar dry run completed safely. No OpenAI, publish, or Telegram calls were allowed.");
+    } catch (error) {
+      const row = summarize("Run Live Event Calendar", "/api/internal/live-event-calendar-run", "POST", "error", { ok: false, error: error instanceof Error ? error.message : "Unknown error" });
+      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      setMessage("Live event calendar failed safely.");
+    }
+    setBusy(null);
+  }
+
+  async function showListenHarderPlan() {
+    setBusy("listen-harder-plan");
+    const row = await callGet("Show Listen-Harder Plan", "/api/internal/listen-harder-plan");
+    setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+    setMessage("Listen-harder plan loaded. This is focused on related events only.");
+    setBusy(null);
+  }
 
   async function runAutonomousSourceEngine() {
     setBusy("autonomous-source-engine-run");
@@ -1795,6 +1822,21 @@ export default function EngineControlPanel() {
           onClick={showQuotaBatchingStatus}
         >
           Show Quota + Batching Status
+        </button>
+
+        <button
+          style={styles.button}
+          disabled={busy !== null}
+          onClick={runLiveEventCalendar}
+        >
+          Run Live Event Calendar
+        </button>
+        <button
+          style={styles.button}
+          disabled={busy !== null}
+          onClick={showListenHarderPlan}
+        >
+          Show Listen-Harder Plan
         </button>
         <button
           style={styles.button}

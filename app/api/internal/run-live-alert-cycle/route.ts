@@ -13,6 +13,7 @@ import { POST as publishApprovedAlertPOST } from "@/app/api/internal/publish-app
 import { runSources } from "@/lib/ops/source-runner";
 import { enrichProofForRawSignal } from "@/lib/proof-enrichment";
 import { getR2OperationalStatus, saveJsonToR2 } from "@/lib/r2-warehouse";
+import { runFreeProofRecovery } from "@/lib/free-proof-recovery";
 import { earRegistrySummary } from "@/lib/ear-registry";
 import { scoreSevenLayerEvidence } from "@/lib/catalyst-impact-scoring";
 import { withRedactionMetadata } from "@/lib/redact-secrets";
@@ -1888,6 +1889,7 @@ export async function POST(request: NextRequest) {
   const includeSmartSourcePull = bool(body.includeSmartSourcePull, false);
   const includeAutonomousSourceEngine = bool(body.includeAutonomousSourceEngine, false);
   const includeLiveEventCalendar = bool(body.includeLiveEventCalendar, false);
+  const includeFreeProofRecovery = bool(body.includeFreeProofRecovery, false);
   const warnings = [
     "Telegram is disabled for this founder website test; this route never sends Telegram.",
     ...(confirmSend || allowTelegram
@@ -1904,6 +1906,7 @@ export async function POST(request: NextRequest) {
     ]);
     const r2WriteAvailable = r2Health.writeAvailable;
     const storageMode = r2Health.storageMode;
+    const r2TruthSummary = { configured: r2Health.configured, connected: r2Health.connected, bucket: r2Health.rawHealth.bucket, canRead: r2Health.canRead, canWrite: r2Health.canWrite, canDelete: r2Health.canDelete, lastConfirmedReadAt: r2Health.rawHealth.canRead ? r2Health.rawHealth.lastChecked : null, lastConfirmedWriteAt: r2Health.lastConfirmedWriteAt, lastConfirmedDeleteAt: r2Health.lastConfirmedDeleteAt, sourceOfTruth: r2Health.sourceOfTruth, storageMode: r2Health.storageMode, writeAwsStatusCode: r2Health.rawHealth.writeAwsStatusCode, deleteAwsStatusCode: r2Health.rawHealth.deleteAwsStatusCode, accessKeyIdFingerprint: r2Health.rawHealth.accessKeyIdFingerprint, endpointHost: r2Health.rawHealth.endpointHost, forcePathStyleUsed: r2Health.rawHealth.forcePathStyleUsed, regionUsed: r2Health.rawHealth.regionUsed, errorCategory: r2Health.rawHealth.errorCategory, errorMessageSafe: r2Health.rawHealth.errorMessageSafe, nextAction: r2Health.rawHealth.nextAction, secretsRedacted: true };
     const reasonStorageFallback = r2WriteAvailable
       ? null
       : r2Health.configured
@@ -2514,6 +2517,7 @@ export async function POST(request: NextRequest) {
         "at least 2 clean proof types beyond raw source",
         "clean direct ticker/company/topic match",
       ],
+      r2TruthSummary,
       rawWarehouseAvailable: r2Health.connected || r2Health.canRead,
       rawWarehouseWriteUnavailable: !r2WriteAvailable,
       rawDataStored: false,
@@ -2543,6 +2547,36 @@ export async function POST(request: NextRequest) {
         nextAction: r2Health.rawHealth.nextAction,
       },
     };
+    if (includeFreeProofRecovery && !("freeProofRecoverySummary" in output)) {
+      const earlyFreeProofRecovery = await runFreeProofRecovery({
+        dryRun: true,
+        confirmRun: false,
+        maxCandidates: 20,
+        includeR2TruthCheck: true,
+        includeFundamentalsFallback: true,
+        includeOfficialProof: true,
+        includeHistoricalMemory: true,
+        includeRiskDetector: true,
+        includeImprovedPriceVolume: true,
+      }).catch((error: unknown) => ({
+        ok: false,
+        safeErrorCategory: "free_proof_recovery_stage1_failed_safely",
+        safeErrorMessage: error instanceof Error ? error.message.slice(0, 160) : "Unknown error",
+        noOpenAI: true,
+        noPublish: true,
+        noTelegram: true,
+        secretsRedacted: true,
+      }));
+      Object.assign(output, {
+        freeProofRecoverySummary: earlyFreeProofRecovery,
+        fundamentalsFallbackSummary: { addedCount: (earlyFreeProofRecovery as JsonRecord).fundamentalsProofAddedCount ?? 0 },
+        officialProofRecoverySummary: { addedCount: (earlyFreeProofRecovery as JsonRecord).officialProofAddedCount ?? 0 },
+        externalHistoricalMemorySummary: { addedCount: (earlyFreeProofRecovery as JsonRecord).historicalMemoryAddedCount ?? 0 },
+        riskDetectorSummary: { addedCount: (earlyFreeProofRecovery as JsonRecord).riskProofAddedCount ?? 0 },
+        improvedPriceVolumeSummary: { addedCount: (earlyFreeProofRecovery as JsonRecord).improvedPriceVolumeAddedCount ?? 0 },
+      });
+    }
+
     if (!confirmRun && !dryRun) {
       return redactedJson({
         ...output,
@@ -3421,6 +3455,11 @@ export async function POST(request: NextRequest) {
         bestAIReviewEligibleCandidate:
           rankedCandidates.find((row) => row.aiReviewEligible) ?? null,
       };
+
+      const freeProofRecovery = includeFreeProofRecovery
+        ? await runFreeProofRecovery({ dryRun: true, confirmRun: false, maxCandidates: 20, includeR2TruthCheck: true, includeFundamentalsFallback: true, includeOfficialProof: true, includeHistoricalMemory: true, includeRiskDetector: true, includeImprovedPriceVolume: true, candidates: rankedCandidates.slice(0, 20) }).catch((error: unknown) => ({ ok: false, safeErrorCategory: "free_proof_recovery_stage1_failed_safely", safeErrorMessage: error instanceof Error ? error.message.slice(0, 160) : "Unknown error", noOpenAI: true, noPublish: true, noTelegram: true, secretsRedacted: true }))
+        : { ok: true, skipped: true, reason: "includeFreeProofRecovery was false", noOpenAI: true, noPublish: true, noTelegram: true, secretsRedacted: true };
+      const freeProofTop = Array.isArray((freeProofRecovery as JsonRecord).topRecoveredCandidates) ? ((freeProofRecovery as JsonRecord).topRecoveredCandidates as JsonRecord[]) : [];
       const proofCompletionSummary = {
         attemptedCandidates: topDirectCandidates.map((row) => row.rawSignalId),
         priceVolumeAttempted: topDirectCandidates
@@ -3704,6 +3743,13 @@ export async function POST(request: NextRequest) {
             }
           : null,
         proofCompletionSummary,
+        freeProofRecoverySummary: freeProofRecovery,
+        fundamentalsFallbackSummary: { addedCount: (freeProofRecovery as JsonRecord).fundamentalsProofAddedCount ?? 0 },
+        officialProofRecoverySummary: { addedCount: (freeProofRecovery as JsonRecord).officialProofAddedCount ?? 0 },
+        externalHistoricalMemorySummary: { addedCount: (freeProofRecovery as JsonRecord).historicalMemoryAddedCount ?? 0 },
+        riskDetectorSummary: { addedCount: (freeProofRecovery as JsonRecord).riskProofAddedCount ?? 0 },
+        improvedPriceVolumeSummary: { addedCount: (freeProofRecovery as JsonRecord).improvedPriceVolumeAddedCount ?? 0 },
+        recoveredCandidateProofDeltas: freeProofTop.map((r) => ({ beforeProofTypes: r.beforeProofTypes, afterProofTypes: r.afterProofTypes, proofAddedByFreeRecovery: r.proofAddedByFreeRecovery, stillMissingProof: r.stillMissingProof, nextBestProofToFetch: r.nextBestProofToFetch, stageBeforeFreeRecovery: r.stageBeforeFreeRecovery, stageAfterFreeRecovery: r.stageAfterFreeRecovery })),
         greatSignalSummary,
         rankedCandidates,
         blockedReasonsBySignal,
@@ -3759,6 +3805,12 @@ export async function POST(request: NextRequest) {
             !row.promotedToRippleCandidate,
         ).length,
         proofRouterSummary: proofCompletionSummary,
+        freeProofRecoverySummary: freeProofRecovery,
+        fundamentalsFallbackSummary: { addedCount: (freeProofRecovery as JsonRecord).fundamentalsProofAddedCount ?? 0 },
+        officialProofRecoverySummary: { addedCount: (freeProofRecovery as JsonRecord).officialProofAddedCount ?? 0 },
+        externalHistoricalMemorySummary: { addedCount: (freeProofRecovery as JsonRecord).historicalMemoryAddedCount ?? 0 },
+        riskDetectorSummary: { addedCount: (freeProofRecovery as JsonRecord).riskProofAddedCount ?? 0 },
+        improvedPriceVolumeSummary: { addedCount: (freeProofRecovery as JsonRecord).improvedPriceVolumeAddedCount ?? 0 },
         providerContractSummary: summary.providerContractSummary,
         fmpEndpointAccessSummary: summary.fmpEndpointAccessSummary,
         fmpPlanRestrictionSummary: summary.fmpPlanRestrictionSummary,

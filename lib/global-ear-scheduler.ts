@@ -43,5 +43,5 @@ export function buildGlobalSchedulerPlan(input: { maxAssetsToPlan?: number; maxA
 
 export async function getSchedulerStatus() {
   const r2 = await checkR2Health(false);
-  return { ok: true, universeMode: "global", everyTickerWatched: true, everyRelevantSourceConsidered: true, r2RawStorageReady: r2.canWrite && r2.canDelete, sourceCount: SOURCE_RELEVANCE_MAP.length, metricCount: MEANINGFUL_METRIC_REGISTRY.length, planDefaults: buildGlobalSchedulerPlan({ r2RawStorageReady: r2.canWrite && r2.canDelete }) };
+  return { ok: true, universeMode: "global", everyTickerWatched: true, everyRelevantSourceConsidered: true, r2RawStorageReady: r2.canWrite === true && r2.canDelete === true, sourceCount: SOURCE_RELEVANCE_MAP.length, metricCount: MEANINGFUL_METRIC_REGISTRY.length, planDefaults: buildGlobalSchedulerPlan({ r2RawStorageReady: r2.canWrite === true && r2.canDelete === true }) };
 }

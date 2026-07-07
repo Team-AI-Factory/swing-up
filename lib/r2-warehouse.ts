@@ -2,14 +2,14 @@ import crypto from "node:crypto";
 import { prisma } from "@/lib/db/client";
 import { redactSecrets } from "@/lib/redact-secrets";
 
-export type R2SourceOfTruth = "recent_write_test" | "runtime_write_check" | "read_only_get_check" | "route_did_not_receive_confirmWrite";
+export type R2SourceOfTruth = "recent_write_test" | "runtime_write_check" | "read_only_get_check" | "route_did_not_receive_confirmWrite" | "write_delete_not_checked_recently";
 
 export type R2OperationalStatus = {
   configured: boolean;
   connected: boolean;
   canRead: boolean;
-  canWrite: boolean;
-  canDelete: boolean;
+  canWrite: boolean | null;
+  canDelete: boolean | null;
   writeAvailable: boolean;
   storageMode: "r2_raw_storage" | "postgresql_summary_only";
   lastConfirmedWriteAt: string | null;
@@ -19,7 +19,7 @@ export type R2OperationalStatus = {
 };
 
 type RecentR2WriteTest = { writeAt: string; deleteAt: string; regionUsed: string | null; testObjectKey: string | null };
-const R2_WRITE_TEST_FRESH_MS = 24 * 60 * 60 * 1000;
+function r2RecentMs() { const hours = Number(process.env.R2_HEALTH_RECENT_HOURS ?? 24); return (Number.isFinite(hours) && hours > 0 ? hours : 24) * 60 * 60 * 1000; }
 const globalR2State = globalThis as typeof globalThis & { __swingUpRecentR2WriteTest?: RecentR2WriteTest };
 
 export type R2Health = {
@@ -28,8 +28,8 @@ export type R2Health = {
   bucket: string | null;
   endpointHost: string | null;
   canRead: boolean;
-  canWrite: boolean;
-  canDelete: boolean;
+  canWrite: boolean | null;
+  canDelete: boolean | null;
   storageMode: "r2_raw_storage" | "postgresql_summary_only";
   lastConfirmedWriteAt: string | null;
   lastConfirmedDeleteAt: string | null;
@@ -146,7 +146,7 @@ function recentR2WriteTest() {
   const writeMs = Date.parse(recent.writeAt);
   const deleteMs = Date.parse(recent.deleteAt);
   if (!Number.isFinite(writeMs) || !Number.isFinite(deleteMs)) return null;
-  const fresh = Date.now() - Math.min(writeMs, deleteMs) <= R2_WRITE_TEST_FRESH_MS;
+  const fresh = Date.now() - Math.min(writeMs, deleteMs) <= r2RecentMs();
   return fresh ? recent : null;
 }
 
@@ -678,18 +678,25 @@ export async function getR2OperationalStatus(options: { allowRuntimeWriteCheck?:
     };
   }
   const rawHealth = await checkR2Health(options.allowRuntimeWriteCheck === true);
-  const writeAvailable = rawHealth.canWrite && rawHealth.canDelete;
+  if (options.allowRuntimeWriteCheck !== true && rawHealth.sourceOfTruth === "read_only_get_check") {
+    rawHealth.canWrite = null;
+    rawHealth.canDelete = null;
+    rawHealth.sourceOfTruth = "write_delete_not_checked_recently";
+    rawHealth.nextAction = rawHealth.nextAction ?? "Run R2 write/delete test";
+    rawHealth.message = "Read-only R2 check did not test write/delete; it must not overwrite a recent successful write/delete confirmation.";
+  }
+  const writeAvailable = rawHealth.canWrite === true && rawHealth.canDelete === true;
   return {
     configured: rawHealth.configured,
     connected: rawHealth.connected || rawHealth.canRead,
     canRead: rawHealth.canRead,
-    canWrite: writeAvailable,
-    canDelete: writeAvailable,
+    canWrite: rawHealth.canWrite,
+    canDelete: rawHealth.canDelete,
     writeAvailable,
     storageMode: writeAvailable ? "r2_raw_storage" : "postgresql_summary_only",
     lastConfirmedWriteAt: writeAvailable ? rawHealth.lastChecked : null,
     lastConfirmedDeleteAt: writeAvailable ? rawHealth.lastChecked : null,
-    sourceOfTruth: options.allowRuntimeWriteCheck === true ? "runtime_write_check" : "read_only_get_check",
+    sourceOfTruth: rawHealth.sourceOfTruth,
     rawHealth,
   };
 }

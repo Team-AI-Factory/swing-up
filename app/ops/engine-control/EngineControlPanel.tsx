@@ -23,7 +23,8 @@ type StageKey =
   | "fmp"
   | "article"
   | "liveSource"
-  | "liveEvent";
+  | "liveEvent"
+  | "freeProof";
 
 type StageResult = {
   stage: string;
@@ -812,6 +813,24 @@ export default function EngineControlPanel() {
     }
   }
 
+  async function callPost(label: string, route: string, payload: JsonRecord) {
+    try {
+      const response = await fetch(route, {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify(payload),
+        cache: "no-store",
+      });
+      const json = await readResponse(response);
+      return summarize(label, route, "POST", response.status, json);
+    } catch (error) {
+      return summarize(label, route, "POST", "error", {
+        ok: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+  }
+
   async function loadStartup() {
     setBusy("startup");
     setMessage("Checking live app routes from this browser session…");
@@ -889,6 +908,33 @@ export default function EngineControlPanel() {
       ]);
       setMessage("R2 health request failed.");
     }
+    setBusy(null);
+  }
+
+
+  async function runFreeProofRecovery() {
+    setBusy("freeProof");
+    setMessage("Running R2 truth check plus free proof recovery in dry-run mode…");
+    const row = await callPost(
+      "Run R2 + Free Proof Recovery",
+      "/api/internal/free-proof-recovery-run",
+      {
+        dryRun: true,
+        confirmRun: false,
+        maxCandidates: 20,
+        includeR2TruthCheck: true,
+        includeFundamentalsFallback: true,
+        includeOfficialProof: true,
+        includeHistoricalMemory: true,
+        includeRiskDetector: true,
+        includeImprovedPriceVolume: true,
+      },
+    );
+    setRows((current) => [
+      row,
+      ...current.filter((item) => item.stage !== row.stage),
+    ]);
+    setMessage("Free proof recovery dry-run completed. No OpenAI, publish, or Telegram calls were made.");
     setBusy(null);
   }
 
@@ -1914,6 +1960,14 @@ export default function EngineControlPanel() {
           onClick={runEvidencePackBuilder}
         >
           Build Evidence Packs
+        </button>
+
+        <button
+          style={styles.button}
+          disabled={busy !== null}
+          onClick={runFreeProofRecovery}
+        >
+          Run R2 + Free Proof Recovery
         </button>
         <button
           style={styles.button}

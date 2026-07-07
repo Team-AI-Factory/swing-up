@@ -10,6 +10,6 @@ function bool(value: unknown, fallback: boolean) { return typeof value === "bool
 export async function POST(request: NextRequest) {
   const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
   const r2 = await checkR2Health(false);
-  const plan = buildGlobalSchedulerPlan({ dryRun: bool(body.dryRun, true), universeMode: String(body.universeMode ?? "global"), maxAssetsToPlan: int(body.maxAssetsToPlan, 1000), maxAssetsToScanNow: int(body.maxAssetsToScanNow, 50), maxDeepScans: int(body.maxDeepScans, 5), respectProviderLimits: bool(body.respectProviderLimits, true), confirmRun: bool(body.confirmRun, false), r2RawStorageReady: r2.canWrite && r2.canDelete });
+  const plan = buildGlobalSchedulerPlan({ dryRun: bool(body.dryRun, true), universeMode: String(body.universeMode ?? "global"), maxAssetsToPlan: int(body.maxAssetsToPlan, 1000), maxAssetsToScanNow: int(body.maxAssetsToScanNow, 50), maxDeepScans: int(body.maxDeepScans, 5), respectProviderLimits: bool(body.respectProviderLimits, true), confirmRun: bool(body.confirmRun, false), r2RawStorageReady: r2.canWrite === true && r2.canDelete === true });
   return NextResponse.json({ ok: true, dryRun: bool(body.dryRun, true), universeMode: String(body.universeMode ?? "global"), ...plan });
 }

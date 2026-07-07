@@ -154,6 +154,13 @@ const runPayloads = {
     includeLiveEventCalendar: true,
     includeAutonomousSourceEngine: true,
     includeEvidencePackBuilder: true,
+    includeFreeProofRecovery: true,
+    includeR2TruthCheck: true,
+    includeFundamentalsFallback: true,
+    includeOfficialProof: true,
+    includeHistoricalMemory: true,
+    includeRiskDetector: true,
+    includeImprovedPriceVolume: true,
   },
   stage2: {
     dryRun: false,

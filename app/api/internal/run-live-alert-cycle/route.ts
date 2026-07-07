@@ -1889,7 +1889,7 @@ export async function POST(request: NextRequest) {
   const includeSmartSourcePull = bool(body.includeSmartSourcePull, false);
   const includeAutonomousSourceEngine = bool(body.includeAutonomousSourceEngine, false);
   const includeLiveEventCalendar = bool(body.includeLiveEventCalendar, false);
-  const includeFreeProofRecovery = bool(body.includeFreeProofRecovery, false);
+  const includeFreeProofRecovery = bool(body.includeFreeProofRecovery, dryRun && !confirmRun);
   const warnings = [
     "Telegram is disabled for this founder website test; this route never sends Telegram.",
     ...(confirmSend || allowTelegram
@@ -3460,6 +3460,29 @@ export async function POST(request: NextRequest) {
         ? await runFreeProofRecovery({ dryRun: true, confirmRun: false, maxCandidates: 20, includeR2TruthCheck: true, includeFundamentalsFallback: true, includeOfficialProof: true, includeHistoricalMemory: true, includeRiskDetector: true, includeImprovedPriceVolume: true, candidates: rankedCandidates.slice(0, 20) }).catch((error: unknown) => ({ ok: false, safeErrorCategory: "free_proof_recovery_stage1_failed_safely", safeErrorMessage: error instanceof Error ? error.message.slice(0, 160) : "Unknown error", noOpenAI: true, noPublish: true, noTelegram: true, secretsRedacted: true }))
         : { ok: true, skipped: true, reason: "includeFreeProofRecovery was false", noOpenAI: true, noPublish: true, noTelegram: true, secretsRedacted: true };
       const freeProofTop = Array.isArray((freeProofRecovery as JsonRecord).topRecoveredCandidates) ? ((freeProofRecovery as JsonRecord).topRecoveredCandidates as JsonRecord[]) : [];
+      const recoveredCandidateProofDeltas = freeProofTop.map((r) => ({ beforeProofTypes: r.beforeProofTypes, afterProofTypes: r.afterProofTypes, proofAddedByFreeRecovery: r.proofAddedByFreeRecovery, stillMissingProof: r.stillMissingProof, nextBestProofToFetch: r.nextBestProofToFetch, stageBeforeFreeRecovery: r.stageBeforeFreeRecovery, stageAfterFreeRecovery: r.stageAfterFreeRecovery }));
+      for (const recovered of freeProofTop) {
+        const candidate = (recovered.candidate ?? {}) as JsonRecord;
+        const id = String(candidate.rawSignalId ?? "");
+        const target = rankedCandidates.find((row) => row.rawSignalId === id || (row.ticker && row.ticker === candidate.ticker));
+        if (!target) continue;
+        const added = Array.isArray(recovered.proofAddedByFreeRecovery) ? recovered.proofAddedByFreeRecovery.map(String) : [];
+        for (const type of added) {
+          target.proofAttachedByType[type] = (target.proofAttachedByType[type] ?? 0) + 1;
+          if (!target.proofAddedTypes.includes(type)) target.proofAddedTypes.push(type);
+          if (!target.uniqueProofTypesClean.includes(type)) target.uniqueProofTypesClean.push(type);
+        }
+        target.missingRequiredProof = target.missingRequiredProof.filter((type) => !added.includes(type));
+        target.stillMissingProof = Array.isArray(recovered.stillMissingProof) ? recovered.stillMissingProof.map(String) : target.stillMissingProof;
+        target.proofStillMissingAfterRouter = target.stillMissingProof;
+        target.nextBestProofToFetch = String(recovered.nextBestProofToFetch ?? target.nextBestProofToFetch);
+        target.nextBestProofToFetchAfterRouter = target.nextBestProofToFetch;
+        target.proofDiversityClean = new Set(target.uniqueProofTypesClean.filter((type) => type !== "raw_signal_source" && type !== "source_health")).size;
+        (target as JsonRecord).sevenLayerEvidence = { ...(target.sevenLayerEvidence as unknown as JsonRecord), proofTypesAfterFreeRecovery: target.proofAddedTypes, freeRecoveryAttached: added.length > 0, layersMissing: target.stillMissingProof };
+        target.greatSignalScorecard = { ...target.greatSignalScorecard, proofAttachedByType: target.proofAttachedByType, uniqueProofTypesClean: target.uniqueProofTypesClean, missingRequiredProof: target.missingRequiredProof, proofStillMissingAfterRouter: target.proofStillMissingAfterRouter, nextBestProofToFetch: target.nextBestProofToFetch };
+        (target as JsonRecord).stageAfterFreeRecovery = recovered.stageAfterFreeRecovery;
+        (target as JsonRecord).freeRecoveryProof = { fundamentals: recovered.fundamentals, official: recovered.official, historical: recovered.historical, risk: recovered.risk, priceVolume: recovered.priceVolume };
+      }
       const proofCompletionSummary = {
         attemptedCandidates: topDirectCandidates.map((row) => row.rawSignalId),
         priceVolumeAttempted: topDirectCandidates
@@ -3749,7 +3772,7 @@ export async function POST(request: NextRequest) {
         externalHistoricalMemorySummary: { addedCount: (freeProofRecovery as JsonRecord).historicalMemoryAddedCount ?? 0 },
         riskDetectorSummary: { addedCount: (freeProofRecovery as JsonRecord).riskProofAddedCount ?? 0 },
         improvedPriceVolumeSummary: { addedCount: (freeProofRecovery as JsonRecord).improvedPriceVolumeAddedCount ?? 0 },
-        recoveredCandidateProofDeltas: freeProofTop.map((r) => ({ beforeProofTypes: r.beforeProofTypes, afterProofTypes: r.afterProofTypes, proofAddedByFreeRecovery: r.proofAddedByFreeRecovery, stillMissingProof: r.stillMissingProof, nextBestProofToFetch: r.nextBestProofToFetch, stageBeforeFreeRecovery: r.stageBeforeFreeRecovery, stageAfterFreeRecovery: r.stageAfterFreeRecovery })),
+        recoveredCandidateProofDeltas,
         greatSignalSummary,
         rankedCandidates,
         blockedReasonsBySignal,
@@ -3811,6 +3834,8 @@ export async function POST(request: NextRequest) {
         externalHistoricalMemorySummary: { addedCount: (freeProofRecovery as JsonRecord).historicalMemoryAddedCount ?? 0 },
         riskDetectorSummary: { addedCount: (freeProofRecovery as JsonRecord).riskProofAddedCount ?? 0 },
         improvedPriceVolumeSummary: { addedCount: (freeProofRecovery as JsonRecord).improvedPriceVolumeAddedCount ?? 0 },
+        recoveredCandidateProofDeltas,
+        candidatesMovedForwardCount: (freeProofRecovery as JsonRecord).candidatesMovedForwardCount ?? 0,
         providerContractSummary: summary.providerContractSummary,
         fmpEndpointAccessSummary: summary.fmpEndpointAccessSummary,
         fmpPlanRestrictionSummary: summary.fmpPlanRestrictionSummary,

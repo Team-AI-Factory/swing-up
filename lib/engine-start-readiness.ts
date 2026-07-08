@@ -6,6 +6,7 @@ import { getAiCommitteeProviderStatus } from "@/lib/ai-committee/provider";
 import { AI_COMMITTEE_AGENTS } from "@/lib/ai-committee/agents";
 import { getSourceHealth } from "@/lib/source-health";
 import { aliasesForSource, normalizeSourceName } from "@/lib/source-aliases";
+import { getR2OperationalStatus } from "@/lib/r2-warehouse";
 
 export type SourceTruthStatus = "connected" | "degraded" | "not_configured" | "stubbed" | "failed" | "disabled" | "broken_route" | "not_wired";
 
@@ -112,6 +113,8 @@ export async function getEngineStartReadiness() {
     tableAvailable("users"), tableAvailable("raw_signals"), tableAvailable("source_health"), tableAvailable("source_runs"), tableAvailable("alerts"), tableAvailable("public_ledger"), tableAvailable("ai_committee_runs"), getSourceCoverage(),
   ]);
   const aiCommitteeStatus = getAiCommitteeReadiness();
+  const r2 = await getR2OperationalStatus({ allowRuntimeWriteCheck: false });
+  const r2Healthy = r2.canRead === true && r2.canWrite === true && r2.canDelete === true && r2.storageMode === "r2_raw_storage" && r2.sourceOfTruth === "recent_write_test";
   const candidateFactoryStatus = routeStatus(["app/api/internal/candidate-factory-run/route.ts", "lib/raw-signal-quality-gate.ts", "lib/proof/proof-bundle-builder.ts", "lib/scoring-engine.ts"]);
   const evidencePackStatus = routeStatus(["app/api/ai-committee/evidence-pack-preview/route.ts", "lib/ai-committee/evidence-pack.ts"]);
   const approvalGateStatus = routeStatus(["app/api/internal/approval-gate/route.ts", "lib/approval-gate/approval-gate.ts"]);
@@ -147,6 +150,15 @@ export async function getEngineStartReadiness() {
     readyForFirstPublicAlert: coreOk,
     readyForContinuousRunning: coreOk && degradedSources.length === 0,
     database: { connected: databaseConnection, rawSignalsTable, sourceHealthTable, sourceRunHistoryTable },
+    rawWarehouse: {
+      storageMode: r2.storageMode,
+      rawWarehouseAvailable: r2.writeAvailable,
+      rawWarehouseWriteUnavailable: r2Healthy ? false : !r2.writeAvailable,
+      sourceOfTruth: r2.sourceOfTruth,
+      suspectedCause: r2Healthy ? null : r2.rawHealth.suspectedCause,
+      nextAction: r2Healthy ? "R2 is healthy" : r2.rawHealth.nextAction,
+      secretsRedacted: true,
+    },
     sourceCoverage,
     requiredSourcesPassed: sourceCoverage.filter((source) => source.required && !source.blocker).map((source) => source.source),
     requiredSourcesFailed,

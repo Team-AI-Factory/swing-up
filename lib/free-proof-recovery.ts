@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { prisma } from "@/lib/db/client";
 import { getR2OperationalStatus } from "@/lib/r2-warehouse";
 import { redactSecrets } from "@/lib/redact-secrets";
+import { getPriceVolumeProofForTicker } from "@/lib/price-volume-proof";
 
 type Json = Record<string, unknown>;
 type Candidate = { rawSignalId?: string; ticker: string; title?: string; sourceUrl?: string; stage?: string; proofTypes?: string[]; missingProof?: string[]; signalType?: string; summary?: string };
@@ -27,77 +28,24 @@ export async function recoverOfficialProof(t: string, signalType?: string) { con
 export async function recoverHistoricalMemory(c: Candidate) { const symbol=ticker(c.ticker); try{ const [events, raws, snaps]=process.env.DATABASE_URL?await Promise.all([prisma.historicalEvent.findMany({where:{ticker:symbol},take:5,orderBy:{eventDate:"desc"}}).catch(()=>[]),prisma.rawSignal.findMany({where:{ticker:symbol},take:10,orderBy:{receivedAt:"desc"}}).catch(()=>[]),prisma.priceSnapshot.findMany({where:{ticker:symbol},take:5,orderBy:{capturedAt:"desc"}}).catch(()=>[])]):[[],[],[]]; const similarStory=raws.some(r=>r.sourceUrl&&c.sourceUrl&&r.sourceUrl===c.sourceUrl)||raws.some(r=>r.title&&c.title&&crypto.createHash("sha1").update(r.title.toLowerCase()).digest("hex")===crypto.createHash("sha1").update(c.title.toLowerCase()).digest("hex")); const priorOutcomeReceipt=events.find(e=>Boolean(e.sourceUrl))?.sourceUrl??null; const priorPriceReactionAvailable=Boolean(events.some(e=>e.priceAfter1d||e.priceAfter7d)&&priorOutcomeReceipt)||snaps.length>1; const sameSourceOnlyRejected=Boolean(similarStory && events.length===0 && raws.length>0 && raws.every(r=>!r.sourceUrl || r.sourceUrl===c.sourceUrl)); const score=Math.min(90,events.length*20+raws.length*3+snaps.length*5); const historicalMemoryClean=Boolean(!sameSourceOnlyRejected && priorPriceReactionAvailable && score>=40); const available=historicalMemoryClean; return {historicalMemoryAvailable:available,historicalMemoryClean,historicalMemoryWeakReason:historicalMemoryClean?null:(!priorPriceReactionAvailable?"prior_price_reaction_needs_receipt_or_stored_outcome_reference":sameSourceOnlyRejected?"same_article_or_source_only_is_weak_context":score<40?"historical_confidence_below_40":"historical_memory_is_context_only"),priorOutcomeReceipt,sameSourceOnlyRejected,historicalMemorySourcesUsed:[events.length?"stored_historical_events":null,raws.length?"stored_raw_signals_or_article_hashes":null,snaps.length?"stored_price_snapshots":null].filter(Boolean),similarStorySeenBefore:similarStory,similarFilingSeenBefore:events.some(e=>/filing|sec|8-k|10-q|10-k/i.test(`${e.eventType} ${e.title??""}`)),priorPriceReactionAvailable,priorPatternType:events[0]?.eventType??null,historicalConfidenceScore:score,historicalMemoryReceiptRefs:[...events.map(e=>e.sourceUrl).filter(Boolean),...raws.map(r=>r.sourceUrl).filter(Boolean)].slice(0,5),historicalMemoryMissingReason:available?null:"no_clean_historical_memory_found"}; }catch(e){ return {historicalMemoryAvailable:false,historicalMemoryClean:false,historicalMemoryWeakReason:e instanceof Error?e.message.slice(0,80):"historical_memory_failed_safe",priorOutcomeReceipt:null,sameSourceOnlyRejected:false,historicalMemorySourcesUsed:[],similarStorySeenBefore:false,similarFilingSeenBefore:false,priorPriceReactionAvailable:false,priorPatternType:null,historicalConfidenceScore:0,historicalMemoryReceiptRefs:[],historicalMemoryMissingReason:e instanceof Error?e.message.slice(0,80):"historical_memory_failed_safe"}; }}
 export async function recoverRiskProof(c: Candidate) { const text=`${c.title??""} ${c.summary??""}`.toLowerCase(); const hit=RISK.find(k=>text.includes(k)); if(hit) return {riskProofAvailable:true,riskProofType:"article_keyword",riskProofSource:c.sourceUrl?"existing_article":"existing_signal",riskProofUrl:c.sourceUrl??null,riskSeverity:["bankruptcy","fraud","default","subpoena","warning letter"].includes(hit)?"high":"medium",riskReason:`Matched risk keyword: ${hit}`,riskMissingReason:null}; const off=await recoverOfficialProof(c.ticker, c.signalType) as Json; if(String(off.formType).match(/S-1|S-3|424B/)) return {riskProofAvailable:true,riskProofType:"dilution_or_offering_filing",riskProofSource:"SEC",riskProofUrl:off.officialProofUrl,riskSeverity:"medium",riskReason:`Recent ${String(off.formType)} can indicate offering/dilution risk`,riskMissingReason:null}; return {riskProofAvailable:false,riskProofType:null,riskProofSource:null,riskProofUrl:null,riskSeverity:"none",riskReason:null,riskMissingReason:"no_risk_keyword_or_relevant_free_official_risk_source_found"}; }
 export async function recoverPriceVolume(t: string) {
-  const symbol = ticker(t);
-  const debug: Json = {
-    attemptedStoredSnapshot: false,
-    storedSnapshotFound: false,
-    attemptedAlphaVantage: false,
-    alphaVantageStatus: "not_attempted",
-    attemptedFmp: false,
-    fmpStatus: "not_attempted",
-    attemptedFreeAdapter: false,
-    freeAdapterStatus: "not_configured",
-    finalUnavailableReason: null,
-    paidApiRequired: false,
-    canFixWithoutPaidApi: true,
+  const proof = await getPriceVolumeProofForTicker(t, { storeRaw: true }).catch((error) => ({
+    ticker: ticker(t), priceVolumeProofAvailable: false, cleanPriceVolumeProof: false, latestPrice: null, latestPriceSource: null, latestPriceReceiptUrl: null, volume: null, volumeSource: null, averageVolume: null, volumeRatio: null, priceChange1d: null, priceChange5d: null, priceChange20d: null, relativeToSectorOrETF: null, marketReactionStatus: "unavailable", earlySignalPossible: true, proofCompleteness: "unavailable", sourceUsed: null, attemptedSources: [], failedSources: [{ source: "price_volume_router", reason: error instanceof Error ? error.message.slice(0, 80) : "failed_safe" }], unavailableReason: "price_volume_router_failed_safe", paidApiRequired: false, canFixWithoutPaidApi: true,
+  }));
+  return {
+    ...proof,
+    priceVolumeUnavailableReason: proof.unavailableReason,
+    priceVolumeRecoveryDebug: {
+      sourceUsed: proof.sourceUsed,
+      attemptedSources: proof.attemptedSources,
+      failedSources: proof.failedSources,
+      finalUnavailableReason: proof.unavailableReason,
+      paidApiRequired: proof.paidApiRequired,
+      canFixWithoutPaidApi: proof.canFixWithoutPaidApi,
+    },
+    missingButNonBlockingFields: [!proof.averageVolume ? "averageVolume" : null, !proof.priceChange1d ? "priceChange1d" : null, !proof.priceChange5d ? "priceChange5d" : null, !proof.priceChange20d ? "priceChange20d" : null, proof.unavailableReason].filter(Boolean),
   };
-  const base: Json = { latestPrice:null, latestPriceSource:null, volume:null, volumeSource:null, averageVolume:null, volumeRatio:null, priceChange1d:null, priceChange5d:null, priceChange20d:null, relativeToSectorOrETF:null, marketReactionStatus:"unknown", earlySignalPossible:true, proofCompleteness:"unavailable", priceVolumeUnavailableReason:null, priceVolumeRecoveryDebug: debug, missingButNonBlockingFields:[] };
-  try {
-    debug.attemptedStoredSnapshot = true;
-    const snaps = process.env.DATABASE_URL ? await prisma.priceSnapshot.findMany({ where:{ ticker:symbol }, take:25, orderBy:{ capturedAt:"desc" } }).catch(()=>[]) : [];
-    debug.storedSnapshotFound = snaps.length > 0;
-    let latest = snaps[0]?.price ? Number(snaps[0].price) : null;
-    let latestPriceSource = latest ? "stored_price_snapshot" : null;
-    let volume: number | null = null;
-    let volumeSource: string | null = null;
-    let avg: number | null = null;
-    let change1d: number | null = null;
-    let receipt: string | null = latestPriceSource;
-    if (!latest && process.env.ALPHA_VANTAGE_API_KEY) {
-      debug.attemptedAlphaVantage = true;
-      debug.alphaVantageStatus = "attempted";
-      const av = await fetchJson(`https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${encodeURIComponent(symbol)}&apikey=${process.env.ALPHA_VANTAGE_API_KEY}`).catch(()=>null) as Json | null;
-      const q = (av?.["Global Quote"] ?? {}) as Json;
-      if (ticker(q["01. symbol"]) === symbol) {
-        latest = num(q["05. price"]);
-        volume = num(q["06. volume"]);
-        change1d = num(String(q["10. change percent"] ?? "").replace("%", ""));
-        latestPriceSource = latest ? "Alpha Vantage GLOBAL_QUOTE" : null;
-        volumeSource = volume ? "Alpha Vantage GLOBAL_QUOTE" : null;
-        receipt = latestPriceSource;
-      }
-      debug.alphaVantageStatus = latest ? "price_found" : "no_price_returned";
-    }
-    if (!latest && process.env.FMP_API_KEY) {
-      debug.attemptedFmp = true;
-      debug.fmpStatus = "attempted";
-      const arr = await fetchJson(`https://financialmodelingprep.com/api/v3/quote/${symbol}?apikey=${process.env.FMP_API_KEY}`).catch(()=>null) as unknown;
-      const q = Array.isArray(arr) ? arr[0] as Json : null;
-      if (ticker(q?.symbol) === symbol) {
-        latest = num(q?.price);
-        volume = num(q?.volume);
-        avg = num(q?.avgVolume);
-        change1d = num(q?.changesPercentage);
-        latestPriceSource = latest ? "FMP quote" : null;
-        volumeSource = volume ? "FMP quote" : null;
-        receipt = latestPriceSource;
-      }
-      debug.fmpStatus = latest ? "price_found" : "no_price_returned";
-    }
-    if (latest && snaps.length > 1) {
-      const prev = snaps[1]?.price ? Number(snaps[1].price) : null;
-      if (prev) change1d = change1d ?? Number((((latest - prev) / prev) * 100).toFixed(2));
-    }
-    const clean = Boolean(latest && receipt && (volume !== null || change1d !== null));
-    debug.finalUnavailableReason = latest ? null : "no_stored_snapshot_alpha_vantage_fmp_or_free_adapter_price_available";
-    debug.paidApiRequired = !latest && !process.env.FMP_API_KEY && !process.env.ALPHA_VANTAGE_API_KEY;
-    debug.canFixWithoutPaidApi = !debug.paidApiRequired;
-    return { ...base, latestPrice:latest, latestPriceSource, volume, volumeSource, averageVolume:avg, volumeRatio:volume&&avg?Number((volume/avg).toFixed(2)):null, priceChange1d:change1d, marketReactionStatus:clean?"clean_price_volume_proof_available":latest?"partial_latest_price_only":"unavailable", proofCompleteness:clean?"clean":latest?"partial_latest_price_only":"unavailable", priceVolumeUnavailableReason:latest?null:String(debug.finalUnavailableReason), priceVolumeRecoveryDebug:debug, missingButNonBlockingFields:[!avg?"averageVolume":null,!change1d?"priceChange1d":null,"priceChange5d","priceChange20d","relativeToSectorOrETF"].filter(Boolean) };
-  } catch(e) {
-    debug.finalUnavailableReason = e instanceof Error ? e.message.slice(0,80) : "price_volume_failed_safe";
-    return { ...base, proofCompleteness:"unavailable", priceVolumeUnavailableReason:String(debug.finalUnavailableReason), priceVolumeRecoveryDebug:debug, missingButNonBlockingFields:[String(debug.finalUnavailableReason)] };
-  }
 }
+
 async function candidates(max: number, provided?: unknown): Promise<Candidate[]> { if(Array.isArray(provided)) return provided.map(x=>x as Json).map(x=>({rawSignalId:String(x.rawSignalId??x.id??""),ticker:ticker(x.ticker),title:String(x.title??""),sourceUrl:String(x.sourceUrl??""),stage:String(x.stage??x.pipelineStage??"proof_needed"),proofTypes:Array.isArray(x.proofTypes)?x.proofTypes.map(String):[],missingProof:Array.isArray(x.missingProof)?x.missingProof.map(String):[],signalType:String(x.signalType??""),summary:String(x.summary??"")})).filter(c=>c.ticker).slice(0,max); if(!process.env.DATABASE_URL) return []; const rows=await prisma.rawSignal.findMany({where:{ticker:{not:null}},take:max,orderBy:{receivedAt:"desc"}}).catch(()=>[]); return rows.map(r=>({rawSignalId:r.id,ticker:ticker(r.ticker),title:r.title,sourceUrl:r.sourceUrl??undefined,stage:"proof_needed",proofTypes:[],missingProof:["fundamentals","official_proof","historical_memory","risk","price_volume"],signalType:r.signalType,summary:r.summary})).filter(c=>c.ticker); }
 
 function asJson(value: unknown): Json { return value && typeof value === "object" && !Array.isArray(value) ? value as Json : {}; }

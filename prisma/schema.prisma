@@ -473,3 +473,34 @@ model RawDataObject {
   @@index([contentHash])
   @@map("raw_data_objects")
 }
+
+model MarketPriceSnapshot {
+  id                    String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ticker                String
+  provider              String
+  sourceUrl             String?  @map("source_url")
+  latestPrice           Decimal? @map("latest_price") @db.Decimal(20, 6)
+  currency              String?
+  volume                Decimal? @db.Decimal(24, 4)
+  averageVolume         Decimal? @map("average_volume") @db.Decimal(24, 4)
+  priceChange1d         Decimal? @map("price_change_1d") @db.Decimal(14, 6)
+  priceChange5d         Decimal? @map("price_change_5d") @db.Decimal(14, 6)
+  priceChange20d        Decimal? @map("price_change_20d") @db.Decimal(14, 6)
+  previousClose         Decimal? @map("previous_close") @db.Decimal(20, 6)
+  open                  Decimal? @db.Decimal(20, 6)
+  high                  Decimal? @db.Decimal(20, 6)
+  low                   Decimal? @db.Decimal(20, 6)
+  timestampFromProvider DateTime @map("timestamp_from_provider") @db.Timestamptz(6)
+  capturedAt            DateTime @default(now()) @map("captured_at") @db.Timestamptz(6)
+  marketSession         String?  @map("market_session")
+  rawStoredInR2         Boolean  @default(false) @map("raw_stored_in_r2")
+  r2ObjectKey           String?  @map("r2_object_key")
+  dataQuality           String   @default("partial") @map("data_quality")
+  unavailableReason     String?  @map("unavailable_reason")
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([ticker, provider, timestampFromProvider])
+  @@index([ticker, capturedAt(sort: Desc)])
+  @@index([ticker, dataQuality, capturedAt(sort: Desc)])
+  @@map("market_price_snapshots")
+}

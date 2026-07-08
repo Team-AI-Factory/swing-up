@@ -77,7 +77,7 @@ type StageResult = {
     matchScore: string;
   };
   r2: { storageMode: string; rawWarehouseAvailable: string; rawDataStored: string; sourceOfTruth: string; nextAction: string; };
-  freeProof: { freeProofRecoverySkipped: string; candidatesInspected: string; fundamentalsProofAddedCount: string; officialProofAddedCount: string; historicalMemoryAddedCount: string; riskProofAddedCount: string; improvedPriceVolumeAddedCount: string; candidatesMovedForwardCount: string; candidatesStillBlockedCount: string; stillMissingProofSummary: string; stageSkipped: string; fundamentalsAddedCount: string; officialAddedCount: string; historicalAddedCount: string; riskAddedCount: string; improvedPriceVolumeAddedCountStage1: string; recoveredCandidateProofDeltasCount: string; aiReviewReadyCount: string; publishReadyCount: string; };
+  freeProof: { freeProofRecoverySkipped: string; candidatesInspected: string; fundamentalsProofAddedCount: string; officialProofAddedCount: string; historicalMemoryAddedCount: string; riskProofAddedCount: string; improvedPriceVolumeAddedCount: string; candidatesMovedForwardCount: string; candidatesStillBlockedCount: string; stillMissingProofSummary: string; stageSkipped: string; fundamentalsAddedCount: string; officialAddedCount: string; historicalAddedCount: string; riskAddedCount: string; improvedPriceVolumeAddedCountStage1: string; recoveredCandidateProofDeltasCount: string; aiReviewReadyCount: string; publishReadyCount: string; tickersChecked: string; snapshotsCreated: string; priceVolumeProofAddedCount: string; cleanPriceVolumeProofCount: string; partialPriceVolumeProofCount: string; unavailableCount: string; unavailableReasons: string; sourceUsed: string; r2StorageSummary: string; };
   json: JsonValue | null;
 };
 
@@ -501,6 +501,15 @@ function freeProofRunSummary(json: JsonValue | null) {
     recoveredCandidateProofDeltasCount: Array.isArray(valueAt(json, ["recoveredCandidateProofDeltas"])) ? String((valueAt(json, ["recoveredCandidateProofDeltas"]) as JsonValue[]).length) : "—",
     aiReviewReadyCount: displayFirst(json, [["aiReviewReadyCount"]]),
     publishReadyCount: displayFirst(json, [["publishReadyCount"], ["pipelineStageCounts", "publish_ready"]]),
+    tickersChecked: displayFirst(json, [["tickersChecked"]]),
+    snapshotsCreated: displayFirst(json, [["snapshotsCreated"]]),
+    priceVolumeProofAddedCount: displayFirst(json, [["priceVolumeProofAddedCount"]]),
+    cleanPriceVolumeProofCount: displayFirst(json, [["cleanPriceVolumeProofCount"]]),
+    partialPriceVolumeProofCount: displayFirst(json, [["partialPriceVolumeProofCount"]]),
+    unavailableCount: displayFirst(json, [["unavailableCount"]]),
+    unavailableReasons: displayFirst(json, [["unavailableReasons"]]),
+    sourceUsed: displayFirst(json, [["sourceUsed"], ["providerResults"]]),
+    r2StorageSummary: displayFirst(json, [["r2StorageSummary"]]),
   };
 }
 
@@ -1050,6 +1059,21 @@ export default function EngineControlPanel() {
       ...current.filter((item) => item.stage !== row.stage),
     ]);
     setMessage("Free proof recovery dry-run completed. No OpenAI, publish, or Telegram calls were made.");
+    setBusy(null);
+  }
+  async function runMarketSnapshotEar() {
+    setBusy("market-snapshot-ear");
+    const row = await callPost("Run Market Snapshot Ear", "/api/internal/market-snapshot-ear-run", { dryRun: true, confirmRun: false, maxTickers: 20, storeRaw: true });
+    setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+    setMessage("Market Snapshot Ear completed. No OpenAI, publish, or Telegram calls were made.");
+    setBusy(null);
+  }
+
+  async function runPriceVolumeProofRecovery() {
+    setBusy("price-volume-proof");
+    const row = await callPost("Run Price/Volume Proof Recovery", "/api/internal/price-volume-proof-run", { dryRun: true, confirmRun: false, maxCandidates: 20 });
+    setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+    setMessage("Price/volume proof recovery completed. No OpenAI, publish, or Telegram calls were made.");
     setBusy(null);
   }
 
@@ -2008,6 +2032,20 @@ export default function EngineControlPanel() {
         <button
           style={styles.button}
           disabled={busy !== null}
+          onClick={runMarketSnapshotEar}
+        >
+          Run Market Snapshot Ear
+        </button>
+        <button
+          style={styles.button}
+          disabled={busy !== null}
+          onClick={runPriceVolumeProofRecovery}
+        >
+          Run Price/Volume Proof Recovery
+        </button>
+        <button
+          style={styles.button}
+          disabled={busy !== null}
           onClick={testSourceCoverage}
         >
           Test Source Coverage
@@ -2385,6 +2423,15 @@ export default function EngineControlPanel() {
                   "recoveredCandidateProofDeltas count",
                   "aiReviewReadyCount",
                   "publishReadyCount",
+                  "tickersChecked",
+                  "snapshotsCreated",
+                  "priceVolumeProofAddedCount",
+                  "cleanPriceVolumeProofCount",
+                  "partialPriceVolumeProofCount",
+                  "unavailableCount",
+                  "unavailableReasons",
+                  "sourceUsed",
+                  "r2StorageSummary",
                   "catalyst configured",
                   "catalyst attempted",
                   "catalyst found",
@@ -2462,6 +2509,15 @@ export default function EngineControlPanel() {
                   <td style={styles.td}>{row.freeProof.recoveredCandidateProofDeltasCount}</td>
                   <td style={styles.td}>{row.freeProof.aiReviewReadyCount}</td>
                   <td style={styles.td}>{row.freeProof.publishReadyCount}</td>
+                  <td style={styles.td}>{row.freeProof.tickersChecked}</td>
+                  <td style={styles.td}>{row.freeProof.snapshotsCreated}</td>
+                  <td style={styles.td}>{row.freeProof.priceVolumeProofAddedCount}</td>
+                  <td style={styles.td}>{row.freeProof.cleanPriceVolumeProofCount}</td>
+                  <td style={styles.td}>{row.freeProof.partialPriceVolumeProofCount}</td>
+                  <td style={styles.td}>{row.freeProof.unavailableCount}</td>
+                  <td style={styles.td}>{row.freeProof.unavailableReasons}</td>
+                  <td style={styles.td}>{row.freeProof.sourceUsed}</td>
+                  <td style={styles.td}>{row.freeProof.r2StorageSummary}</td>
                   <td style={styles.td}>{row.catalyst.configured}</td>
                   <td style={styles.td}>{row.catalyst.attempted}</td>
                   <td style={styles.td}>{row.catalyst.found}</td>

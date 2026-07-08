@@ -66,7 +66,7 @@ type StageResult = {
   };
   proofEnrichment: {
     attempted: boolean | null;
-    added: number;
+    added: number | string;
     receipts: string;
     urls: string;
     missing: string;
@@ -76,6 +76,8 @@ type StageResult = {
     rejectedReasons: string;
     matchScore: string;
   };
+  r2: { storageMode: string; rawWarehouseAvailable: string; rawDataStored: string; sourceOfTruth: string; nextAction: string; };
+  freeProof: { freeProofRecoverySkipped: string; candidatesInspected: string; fundamentalsProofAddedCount: string; officialProofAddedCount: string; historicalMemoryAddedCount: string; riskProofAddedCount: string; improvedPriceVolumeAddedCount: string; candidatesMovedForwardCount: string; candidatesStillBlockedCount: string; stillMissingProofSummary: string; stageSkipped: string; fundamentalsAddedCount: string; officialAddedCount: string; historicalAddedCount: string; riskAddedCount: string; improvedPriceVolumeAddedCountStage1: string; recoveredCandidateProofDeltasCount: string; aiReviewReadyCount: string; publishReadyCount: string; };
   json: JsonValue | null;
 };
 
@@ -197,6 +199,31 @@ function findString(value: JsonValue | null, names: string[]): string | null {
   return null;
 }
 
+
+function valueAt(value: JsonValue | null | undefined, path: string[]): JsonValue | undefined {
+  let current: JsonValue | undefined | null = value;
+  for (const part of path) {
+    if (!isRecord(current)) return undefined;
+    current = current[part];
+  }
+  return current === null ? null : current;
+}
+
+function displayField(value: JsonValue | undefined): string {
+  if (value === undefined || value === null || value === "") return "—";
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (typeof value === "string") return value;
+  return JSON.stringify(value);
+}
+
+function displayFirst(json: JsonValue | null, paths: string[][]): string {
+  for (const path of paths) {
+    const value = valueAt(json, path);
+    if (value !== undefined && value !== null && value !== "") return displayField(value);
+  }
+  return "—";
+}
+
 function catalystSummary(json: JsonValue | null) {
   const summary =
     isRecord(json) && isRecord(json.catalystSummary)
@@ -314,7 +341,7 @@ function proofEnrichmentSummary(json: JsonValue | null) {
     added:
       summary && typeof summary.proofAddedCount === "number"
         ? summary.proofAddedCount
-        : 0,
+        : "—",
     receipts:
       summary && Array.isArray(summary.receiptsAdded)
         ? summary.receiptsAdded.map(String).join(" | ") || "—"
@@ -443,6 +470,40 @@ function discoverySummary(json: JsonValue | null) {
   };
 }
 
+function r2RunSummary(json: JsonValue | null) {
+  return {
+    storageMode: displayFirst(json, [["storageMode"], ["r2TruthSummary", "storageMode"], ["rawWarehouse", "storageMode"]]),
+    rawWarehouseAvailable: displayFirst(json, [["rawWarehouseAvailable"], ["rawWarehouse", "r2WriteAvailable"]]),
+    rawDataStored: displayFirst(json, [["rawDataStored"]]),
+    sourceOfTruth: displayFirst(json, [["sourceOfTruth"], ["r2TruthSummary", "sourceOfTruth"], ["rawWarehouse", "sourceOfTruth"], ["stage1StorageDecision", "sourceOfTruth"]]),
+    nextAction: displayFirst(json, [["nextAction"], ["r2TruthSummary", "nextAction"], ["rawWarehouse", "nextAction"], ["stage1StorageDecision", "nextAction"]]),
+  };
+}
+
+function freeProofRunSummary(json: JsonValue | null) {
+  return {
+    freeProofRecoverySkipped: displayFirst(json, [["freeProofRecoverySkipped"], ["freeProofRecoverySummary", "skipped"]]),
+    candidatesInspected: displayFirst(json, [["candidatesInspected"], ["freeProofRecoverySummary", "candidatesInspected"]]),
+    fundamentalsProofAddedCount: displayFirst(json, [["fundamentalsProofAddedCount"], ["freeProofRecoverySummary", "fundamentalsProofAddedCount"]]),
+    officialProofAddedCount: displayFirst(json, [["officialProofAddedCount"], ["freeProofRecoverySummary", "officialProofAddedCount"]]),
+    historicalMemoryAddedCount: displayFirst(json, [["historicalMemoryAddedCount"], ["freeProofRecoverySummary", "historicalMemoryAddedCount"]]),
+    riskProofAddedCount: displayFirst(json, [["riskProofAddedCount"], ["freeProofRecoverySummary", "riskProofAddedCount"]]),
+    improvedPriceVolumeAddedCount: displayFirst(json, [["improvedPriceVolumeAddedCount"], ["freeProofRecoverySummary", "improvedPriceVolumeAddedCount"]]),
+    candidatesMovedForwardCount: displayFirst(json, [["candidatesMovedForwardCount"], ["freeProofRecoverySummary", "candidatesMovedForwardCount"]]),
+    candidatesStillBlockedCount: displayFirst(json, [["candidatesStillBlockedCount"], ["freeProofRecoverySummary", "candidatesStillBlockedCount"]]),
+    stillMissingProofSummary: displayFirst(json, [["stillMissingProofSummary"], ["freeProofRecoverySummary", "stillMissingProofSummary"]]),
+    stageSkipped: displayFirst(json, [["freeProofRecoverySummary", "skipped"]]),
+    fundamentalsAddedCount: displayFirst(json, [["fundamentalsFallbackSummary", "addedCount"]]),
+    officialAddedCount: displayFirst(json, [["officialProofRecoverySummary", "addedCount"]]),
+    historicalAddedCount: displayFirst(json, [["externalHistoricalMemorySummary", "addedCount"]]),
+    riskAddedCount: displayFirst(json, [["riskDetectorSummary", "addedCount"]]),
+    improvedPriceVolumeAddedCountStage1: displayFirst(json, [["improvedPriceVolumeSummary", "addedCount"]]),
+    recoveredCandidateProofDeltasCount: Array.isArray(valueAt(json, ["recoveredCandidateProofDeltas"])) ? String((valueAt(json, ["recoveredCandidateProofDeltas"]) as JsonValue[]).length) : "—",
+    aiReviewReadyCount: displayFirst(json, [["aiReviewReadyCount"]]),
+    publishReadyCount: displayFirst(json, [["publishReadyCount"], ["pipelineStageCounts", "publish_ready"]]),
+  };
+}
+
 function summarize(
   stage: string,
   route: string,
@@ -525,6 +586,8 @@ function summarize(
     discovery: discoverySummary(json),
     proofEnrichment: proofEnrichmentSummary(json),
     catalyst: catalystSummary(json),
+    r2: r2RunSummary(json),
+    freeProof: freeProofRunSummary(json),
     json,
   };
 }
@@ -532,12 +595,18 @@ function summarize(
 async function readResponse(response: Response): Promise<JsonValue> {
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.includes("application/json")) {
+    const url = new URL(response.url || "http://local/");
+    if (["/alerts", "/ledger"].includes(url.pathname) && response.ok) {
+      return { ok: true, route: url.pathname, routeType: "page", loaded: true, status: "page_ok", message: "Page route loaded successfully.", secretsRedacted: true };
+    }
     return {
       ok: false,
-      stage: "stage1_button_failed",
+      route: url.pathname,
+      status: "unexpected_non_json",
+      summary: "Route returned non-JSON content and loaded without crashing.",
       errorCategory: "non_json_response",
       contentType,
-      errorMessageSafe: "Stage 1 route returned non-JSON content.",
+      secretsRedacted: true,
     };
   }
 
@@ -864,6 +933,17 @@ export default function EngineControlPanel() {
     setMessage(
       "Startup status loaded. Missing optional routes are reported without crashing.",
     );
+    setBusy(null);
+  }
+
+  async function checkAdminRouteContracts() {
+    setBusy("admin-contract-check");
+    const row = await callGet("Check Admin Route Contracts", "/api/internal/admin-route-contract-check");
+    setRows((current) => [
+      row,
+      ...current.filter((item) => item.stage !== row.stage),
+    ]);
+    setMessage("Admin route contract check completed.");
     setBusy(null);
   }
 
@@ -1936,6 +2016,13 @@ export default function EngineControlPanel() {
         >
           Show Quota + Batching Status
         </button>
+        <button
+          style={styles.button}
+          disabled={busy !== null}
+          onClick={checkAdminRouteContracts}
+        >
+          Check Admin Route Contracts
+        </button>
 
         <button
           style={styles.button}
@@ -2250,6 +2337,30 @@ export default function EngineControlPanel() {
                   "error message",
                   "signal found",
                   "signals inspected",
+                  "storageMode",
+                  "rawWarehouseAvailable",
+                  "rawDataStored",
+                  "sourceOfTruth",
+                  "R2 nextAction",
+                  "freeProofRecoverySkipped",
+                  "candidatesInspected",
+                  "fundamentalsProofAddedCount",
+                  "officialProofAddedCount",
+                  "historicalMemoryAddedCount",
+                  "riskProofAddedCount",
+                  "improvedPriceVolumeAddedCount",
+                  "candidatesMovedForwardCount",
+                  "candidatesStillBlockedCount",
+                  "stillMissingProofSummary",
+                  "Stage1 freeProof skipped",
+                  "Stage1 fundamentals added",
+                  "Stage1 official added",
+                  "Stage1 historical added",
+                  "Stage1 risk added",
+                  "Stage1 price/volume added",
+                  "recoveredCandidateProofDeltas count",
+                  "aiReviewReadyCount",
+                  "publishReadyCount",
                   "catalyst configured",
                   "catalyst attempted",
                   "catalyst found",
@@ -2303,6 +2414,30 @@ export default function EngineControlPanel() {
                   <td style={styles.td}>{resultValue(row.diagnostics?.errorMessage)}</td>
                   <td style={styles.td}>{yesNo(row.signalFound)}</td>
                   <td style={styles.td}>{row.discovery.inspected ?? "—"}</td>
+                  <td style={styles.td}>{row.r2.storageMode}</td>
+                  <td style={styles.td}>{row.r2.rawWarehouseAvailable}</td>
+                  <td style={styles.td}>{row.r2.rawDataStored}</td>
+                  <td style={styles.td}>{row.r2.sourceOfTruth}</td>
+                  <td style={styles.td}>{row.r2.nextAction}</td>
+                  <td style={styles.td}>{row.freeProof.freeProofRecoverySkipped}</td>
+                  <td style={styles.td}>{row.freeProof.candidatesInspected}</td>
+                  <td style={styles.td}>{row.freeProof.fundamentalsProofAddedCount}</td>
+                  <td style={styles.td}>{row.freeProof.officialProofAddedCount}</td>
+                  <td style={styles.td}>{row.freeProof.historicalMemoryAddedCount}</td>
+                  <td style={styles.td}>{row.freeProof.riskProofAddedCount}</td>
+                  <td style={styles.td}>{row.freeProof.improvedPriceVolumeAddedCount}</td>
+                  <td style={styles.td}>{row.freeProof.candidatesMovedForwardCount}</td>
+                  <td style={styles.td}>{row.freeProof.candidatesStillBlockedCount}</td>
+                  <td style={styles.td}>{row.freeProof.stillMissingProofSummary}</td>
+                  <td style={styles.td}>{row.freeProof.stageSkipped}</td>
+                  <td style={styles.td}>{row.freeProof.fundamentalsAddedCount}</td>
+                  <td style={styles.td}>{row.freeProof.officialAddedCount}</td>
+                  <td style={styles.td}>{row.freeProof.historicalAddedCount}</td>
+                  <td style={styles.td}>{row.freeProof.riskAddedCount}</td>
+                  <td style={styles.td}>{row.freeProof.improvedPriceVolumeAddedCountStage1}</td>
+                  <td style={styles.td}>{row.freeProof.recoveredCandidateProofDeltasCount}</td>
+                  <td style={styles.td}>{row.freeProof.aiReviewReadyCount}</td>
+                  <td style={styles.td}>{row.freeProof.publishReadyCount}</td>
                   <td style={styles.td}>{row.catalyst.configured}</td>
                   <td style={styles.td}>{row.catalyst.attempted}</td>
                   <td style={styles.td}>{row.catalyst.found}</td>

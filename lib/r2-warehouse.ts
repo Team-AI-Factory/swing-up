@@ -477,6 +477,8 @@ function diagnoseR2Health(
         "Bucket read check failed; possible bucket name mismatch, endpoint/account mismatch, credentials problem, or missing Object Read permission.",
       nextAction: permissionNextAction(health.bucket),
     };
+  if (health.canRead && health.lastConfirmedWriteAt && health.lastConfirmedDeleteAt)
+    return { suspectedCause: null, nextAction: "R2 is healthy" };
   if (health.canRead && (!health.canWrite || !health.canDelete))
     return {
       suspectedCause: [
@@ -674,7 +676,7 @@ export async function getR2OperationalStatus(options: { allowRuntimeWriteCheck?:
       lastConfirmedWriteAt: recent.writeAt,
       lastConfirmedDeleteAt: recent.deleteAt,
       sourceOfTruth: "recent_write_test",
-      rawHealth,
+      rawHealth: { ...rawHealth, suspectedCause: null, nextAction: "R2 is healthy" },
     };
   }
   const rawHealth = await checkR2Health(options.allowRuntimeWriteCheck === true);

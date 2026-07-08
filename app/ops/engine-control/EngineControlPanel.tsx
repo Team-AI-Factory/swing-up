@@ -28,6 +28,7 @@ type StageKey =
 
 type StageResult = {
   stage: string;
+  diagnostics?: JsonRecord;
   route: string;
   method: "GET" | "POST";
   status: string;
@@ -138,22 +139,6 @@ const runPayloads = {
     confirmRun: false,
     confirmPublish: false,
     confirmSend: false,
-    maxAlertsToPublish: 1,
-    allowTelegram: false,
-    maxRawSignalsToInspect: 50,
-    maxFreshPullPerSource: 3,
-    freshnessWindowHours: 72,
-    includeLiveEars: true,
-    includeStoryClustering: true,
-    includeSeriousSignalBrain: true,
-    universeMode: "global",
-    maxAssetsToScanNow: 50,
-    maxDeepScans: 5,
-    includeOfficialAnnouncements: true,
-    includeSmartSourcePull: true,
-    includeLiveEventCalendar: true,
-    includeAutonomousSourceEngine: true,
-    includeEvidencePackBuilder: true,
     includeFreeProofRecovery: true,
     includeR2TruthCheck: true,
     includeFundamentalsFallback: true,
@@ -161,6 +146,10 @@ const runPayloads = {
     includeHistoricalMemory: true,
     includeRiskDetector: true,
     includeImprovedPriceVolume: true,
+    universeMode: "global",
+    maxAssetsToScanNow: 50,
+    maxDeepScans: 5,
+    allowTelegram: false,
   },
   stage2: {
     dryRun: false,
@@ -460,6 +449,7 @@ function summarize(
   method: "GET" | "POST",
   httpStatus: number | "error",
   json: JsonValue | null,
+  diagnostics?: JsonRecord,
 ): StageResult {
   const blockers = isRecord(json)
     ? [
@@ -531,6 +521,7 @@ function summarize(
     blockers,
     warnings,
     nextAction,
+    diagnostics,
     discovery: discoverySummary(json),
     proofEnrichment: proofEnrichmentSummary(json),
     catalyst: catalystSummary(json),
@@ -540,18 +531,38 @@ function summarize(
 
 async function readResponse(response: Response): Promise<JsonValue> {
   const contentType = response.headers.get("content-type") ?? "";
-  if (contentType.includes("application/json"))
+  if (!contentType.includes("application/json")) {
+    return {
+      ok: false,
+      stage: "stage1_button_failed",
+      errorCategory: "non_json_response",
+      contentType,
+      errorMessageSafe: "Stage 1 route returned non-JSON content.",
+    };
+  }
+
+  try {
     return (await response.json()) as JsonValue;
-  return {
-    ok: response.ok,
-    contentType,
-    note: "Route returned non-JSON content and loaded without crashing.",
-  };
+  } catch {
+    return {
+      ok: false,
+      stage: "stage1_button_failed",
+      errorCategory: "invalid_json_response",
+      contentType,
+      errorMessageSafe: "Stage 1 route returned invalid JSON content.",
+    };
+  }
 }
 
 function yesNo(value: boolean | null) {
   if (value === null) return "—";
   return value ? "yes" : "no";
+}
+
+function safeErrorMessage(error: unknown): string {
+  return error instanceof Error && error.message.trim()
+    ? error.message.slice(0, 240)
+    : "Unknown browser fetch error";
 }
 
 function resultValue(value: JsonValue | undefined): string {
@@ -1714,65 +1725,107 @@ export default function EngineControlPanel() {
       stage2: "Stage 2 real AI review, no publish",
       stage3: "Stage 3 publish one approved website alert",
     } as const;
+    const route = RUN_ROUTE;
+    const startedAt = new Date().toISOString();
+    const payload = runPayloads[stage];
     setBusy(stage);
+    setMessage(`${labels[stage]} started. Loading route ${route}...`);
+    const loadingDiagnostics: JsonRecord = {
+      startedAt,
+      routeCalled: route,
+      payloadUsed: payload,
+      loading: true,
+      httpStatus: "pending",
+      result: "loading",
+      errorMessage: "",
+      finishedAt: "",
+    };
+    const loadingRow = summarize(
+      labels[stage],
+      route,
+      "POST",
+      "error",
+      { ok: true, stage: "stage1_button_loading", loading: true },
+      loadingDiagnostics,
+    );
+    setRows((current) => [
+      loadingRow,
+      ...current.filter((item) => item.stage !== loadingRow.stage),
+    ]);
+
     try {
-      const route =
-        stage === "stage1" && typeof window !== "undefined"
-          ? `${window.location.origin}${RUN_ROUTE}`
-          : RUN_ROUTE;
       const response = await fetch(route, {
         method: "POST",
         headers: headers(),
-        body: JSON.stringify(runPayloads[stage]),
+        body: JSON.stringify(payload),
         cache: "no-store",
       });
-      if (response.status === 404) {
-        const row = summarize(labels[stage], RUN_ROUTE, "POST", 404, {
-          ok: false,
-          blockers: ["Live alert cycle route is missing."],
-          nextRecommendedAction:
-            "A backend route is required before this browser control can run the live alert cycle.",
-        });
-        setRows((current) => [
-          row,
-          ...current.filter((item) => item.stage !== row.stage),
-        ]);
-        setMessage(
-          "Live alert cycle route is missing. A backend route is required.",
-        );
-      } else {
-        const json = await readResponse(response);
-        const row = summarize(
-          labels[stage],
-          route,
-          "POST",
-          response.status,
-          json,
-        );
-        setRows((current) => [
-          row,
-          ...current.filter((item) => item.stage !== row.stage),
-        ]);
-        setMessage(
-          stage === "stage3"
-            ? "Publish request completed. Confirm returned public URLs before sharing."
-            : "Safe stage completed without publish/send permissions.",
-        );
-      }
-    } catch (error) {
-      const row = summarize(labels[stage], RUN_ROUTE, "POST", "error", {
-        ok: false,
-        error: error instanceof Error ? error.message : "Unknown error",
-      });
-      setRows((current) => [
-        row,
-        ...current.filter((item) => item.stage !== row.stage),
-      ]);
+      const json = await readResponse(response);
+      const finishedAt = new Date().toISOString();
+      const diagnostics: JsonRecord = {
+        startedAt,
+        routeCalled: route,
+        payloadUsed: payload,
+        loading: false,
+        httpStatus: response.status,
+        result: response.ok && findBoolean(json, ["ok"]) !== false ? "OK" : "error",
+        errorMessage: isRecord(json)
+          ? String(json.errorMessageSafe ?? json.safeErrorMessage ?? json.error ?? "")
+          : "",
+        finishedAt,
+      };
+      const row = summarize(labels[stage], route, "POST", response.status, json, diagnostics);
+      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
       setMessage(
-        "Request failed in the browser. No fake route or fake alert was created.",
+        response.ok
+          ? stage === "stage3"
+            ? "Publish request completed. Confirm returned public URLs before sharing."
+            : "Safe stage completed without publish/send permissions."
+          : `Stage request failed with HTTP ${response.status}. See the Run table error row.`,
       );
+    } catch (error) {
+      const finishedAt = new Date().toISOString();
+      const json: JsonValue = {
+        ok: false,
+        stage: "stage1_button_failed",
+        errorCategory: "frontend_fetch_failed",
+        errorMessageSafe: safeErrorMessage(error),
+        route,
+      };
+      const diagnostics: JsonRecord = {
+        startedAt,
+        routeCalled: route,
+        payloadUsed: payload,
+        loading: false,
+        httpStatus: "error",
+        result: "error",
+        errorMessage: safeErrorMessage(error),
+        finishedAt,
+      };
+      const row = summarize(labels[stage], route, "POST", "error", json, diagnostics);
+      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      setMessage("Stage request failed in the browser. See the visible Run table error row.");
+    } finally {
+      setBusy(null);
     }
-    setBusy(null);
+  }
+
+  async function checkStage1ButtonHealth() {
+    const route = "/api/internal/stage1-button-health";
+    setBusy("stage1-button-health");
+    try {
+      const response = await fetch(route, { method: "GET", headers: headers(), cache: "no-store" });
+      const json = await readResponse(response);
+      const row = summarize("Stage 1 button health", route, "GET", response.status, json);
+      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      setMessage("Stage 1 button health check completed.");
+    } catch (error) {
+      const row = summarize("Stage 1 button health", route, "GET", "error", { ok: false, errorMessageSafe: safeErrorMessage(error) });
+      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      setMessage("Stage 1 button health check failed visibly.");
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function copyJson(row: StageResult) {
@@ -1836,10 +1889,17 @@ export default function EngineControlPanel() {
         </button>
         <button
           style={styles.button}
-          disabled={busy !== null}
+          disabled={busy !== null && busy !== "stage1"}
           onClick={() => runStage("stage1")}
         >
-          Run Stage 1 Dry Run
+          {busy === "stage1" ? "Running Stage 1 Dry Run..." : "Run Stage 1 Dry Run"}
+        </button>
+        <button
+          style={styles.button}
+          disabled={busy !== null}
+          onClick={checkStage1ButtonHealth}
+        >
+          Check Stage 1 Button Health
         </button>
         <button
           style={styles.button}
@@ -2184,6 +2244,10 @@ export default function EngineControlPanel() {
                   "route",
                   "HTTP status",
                   "result",
+                  "started at",
+                  "loading",
+                  "finished at",
+                  "error message",
                   "signal found",
                   "signals inspected",
                   "catalyst configured",
@@ -2233,6 +2297,10 @@ export default function EngineControlPanel() {
                   </td>
                   <td style={styles.td}>{row.status}</td>
                   <td style={styles.td}>{row.result}</td>
+                  <td style={styles.td}>{resultValue(row.diagnostics?.startedAt)}</td>
+                  <td style={styles.td}>{resultValue(row.diagnostics?.loading)}</td>
+                  <td style={styles.td}>{resultValue(row.diagnostics?.finishedAt)}</td>
+                  <td style={styles.td}>{resultValue(row.diagnostics?.errorMessage)}</td>
                   <td style={styles.td}>{yesNo(row.signalFound)}</td>
                   <td style={styles.td}>{row.discovery.inspected ?? "—"}</td>
                   <td style={styles.td}>{row.catalyst.configured}</td>
@@ -2310,7 +2378,9 @@ export default function EngineControlPanel() {
                 Copy JSON
               </button>
             </summary>
-            <pre style={styles.pre}>{JSON.stringify(row.json, null, 2)}</pre>
+            <pre style={styles.pre}>
+              {JSON.stringify({ diagnostics: row.diagnostics, result: row.json }, null, 2)}
+            </pre>
           </details>
         ))}
       </section>

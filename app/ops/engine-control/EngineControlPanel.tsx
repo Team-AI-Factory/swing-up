@@ -1010,6 +1010,23 @@ export default function EngineControlPanel() {
   }
 
 
+
+  async function runStage1ProofVerification() {
+    setBusy("stage1-proof-verification");
+    setMessage("Running Stage 1 proof verification. No OpenAI, publish, or Telegram permissions are allowed.");
+    const row = await callPost(
+      "Run Stage 1 Proof Verification",
+      "/api/internal/stage1-proof-verification-run",
+      { dryRun: true, confirmRun: false, maxCandidates: 20 },
+    );
+    setRows((current) => [
+      row,
+      ...current.filter((item) => item.stage !== row.stage),
+    ]);
+    setMessage("Stage 1 proof verification completed. Review proofVerificationReport and compact top candidate deltas in the JSON panel.");
+    setBusy(null);
+  }
+
   async function runFreeProofRecovery() {
     setBusy("freeProof");
     setMessage("Running R2 truth check plus free proof recovery in dry-run mode…");
@@ -1980,6 +1997,13 @@ export default function EngineControlPanel() {
           onClick={checkStage1ButtonHealth}
         >
           Check Stage 1 Button Health
+        </button>
+        <button
+          style={styles.button}
+          disabled={busy !== null}
+          onClick={runStage1ProofVerification}
+        >
+          Run Stage 1 Proof Verification
         </button>
         <button
           style={styles.button}

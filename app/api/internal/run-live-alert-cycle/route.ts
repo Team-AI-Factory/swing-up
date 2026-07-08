@@ -13,7 +13,7 @@ import { POST as publishApprovedAlertPOST } from "@/app/api/internal/publish-app
 import { runSources } from "@/lib/ops/source-runner";
 import { enrichProofForRawSignal } from "@/lib/proof-enrichment";
 import { getR2OperationalStatus, saveJsonToR2 } from "@/lib/r2-warehouse";
-import { runFreeProofRecovery } from "@/lib/free-proof-recovery";
+import { buildProofVerificationReport, runFreeProofRecovery } from "@/lib/free-proof-recovery";
 import { earRegistrySummary } from "@/lib/ear-registry";
 import { scoreSevenLayerEvidence } from "@/lib/catalyst-impact-scoring";
 import { withRedactionMetadata } from "@/lib/redact-secrets";
@@ -2578,6 +2578,12 @@ export async function POST(request: NextRequest) {
         externalHistoricalMemorySummary: { addedCount: (earlyFreeProofRecovery as JsonRecord).historicalMemoryAddedCount ?? 0 },
         riskDetectorSummary: { addedCount: (earlyFreeProofRecovery as JsonRecord).riskProofAddedCount ?? 0 },
         improvedPriceVolumeSummary: { addedCount: (earlyFreeProofRecovery as JsonRecord).improvedPriceVolumeAddedCount ?? 0 },
+        proofVerificationReport: buildProofVerificationReport({
+          includeFreeProofRecovery,
+          freeProofRecovery: earlyFreeProofRecovery,
+          candidatesBeforeRecovery: Number((earlyFreeProofRecovery as JsonRecord).candidatesInspected ?? 0),
+          candidatesAfterRecovery: Number((earlyFreeProofRecovery as JsonRecord).candidatesInspected ?? 0),
+        }),
       });
     }
 
@@ -3465,6 +3471,13 @@ export async function POST(request: NextRequest) {
         : { ok: true, skipped: true, reason: "includeFreeProofRecovery was false", noOpenAI: true, noPublish: true, noTelegram: true, secretsRedacted: true };
       const freeProofTop = Array.isArray((freeProofRecovery as JsonRecord).topRecoveredCandidates) ? ((freeProofRecovery as JsonRecord).topRecoveredCandidates as JsonRecord[]) : [];
       const recoveredCandidateProofDeltas = freeProofTop.map((r) => ({ beforeProofTypes: r.beforeProofTypes, afterProofTypes: r.afterProofTypes, proofAddedByFreeRecovery: r.proofAddedByFreeRecovery, stillMissingProof: r.stillMissingProof, nextBestProofToFetch: r.nextBestProofToFetch, stageBeforeFreeRecovery: r.stageBeforeFreeRecovery, stageAfterFreeRecovery: r.stageAfterFreeRecovery }));
+      const proofVerificationReport = buildProofVerificationReport({
+        includeFreeProofRecovery,
+        freeProofRecovery,
+        candidatesBeforeRecovery: rankedCandidates.length,
+        candidatesAfterRecovery: rankedCandidates.length,
+        topCandidates: rankedCandidates.slice(0, 20),
+      });
       for (const recovered of freeProofTop) {
         const candidate = (recovered.candidate ?? {}) as JsonRecord;
         const id = String(candidate.rawSignalId ?? "");
@@ -3777,6 +3790,7 @@ export async function POST(request: NextRequest) {
         riskDetectorSummary: { addedCount: (freeProofRecovery as JsonRecord).riskProofAddedCount ?? 0 },
         improvedPriceVolumeSummary: { addedCount: (freeProofRecovery as JsonRecord).improvedPriceVolumeAddedCount ?? 0 },
         recoveredCandidateProofDeltas,
+        proofVerificationReport,
         greatSignalSummary,
         rankedCandidates,
         blockedReasonsBySignal,
@@ -3839,6 +3853,7 @@ export async function POST(request: NextRequest) {
         riskDetectorSummary: { addedCount: (freeProofRecovery as JsonRecord).riskProofAddedCount ?? 0 },
         improvedPriceVolumeSummary: { addedCount: (freeProofRecovery as JsonRecord).improvedPriceVolumeAddedCount ?? 0 },
         recoveredCandidateProofDeltas,
+        proofVerificationReport,
         candidatesMovedForwardCount: (freeProofRecovery as JsonRecord).candidatesMovedForwardCount ?? 0,
         providerContractSummary: summary.providerContractSummary,
         fmpEndpointAccessSummary: summary.fmpEndpointAccessSummary,

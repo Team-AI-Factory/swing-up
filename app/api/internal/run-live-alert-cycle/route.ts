@@ -25,6 +25,7 @@ import {
   MEANINGFUL_METRIC_REGISTRY,
 } from "@/lib/global-ear-scheduler";
 import { runGenericNewsTriage } from "@/lib/generic-news-triage";
+import { runMacroShockScan } from "@/lib/macro-shock";
 import { runFmpProviderContractTest } from "@/lib/fmp-provider-contract";
 import {
   getLiveSourceContractSummary,
@@ -76,6 +77,7 @@ type SignalType =
   | "regulatory_or_legal_event"
   | "contract_or_customer_event"
   | "broad_macro_or_sector_ripple"
+  | "macro_geopolitical_shock"
   | "product_or_demand_signal"
   | "calendar_only_event"
   | "opinion_or_noise";
@@ -306,6 +308,19 @@ const SIGNAL_PLAYBOOKS: Record<SignalType, SignalPlaybook> = {
     minimumCleanProofTypes: 2,
     stage2EligibilityRule:
       "May reach AI review only when mapped to a sector/ticker and supported by clean proof.",
+  },
+  macro_geopolitical_shock: {
+    signalType: "macro_geopolitical_shock",
+    requiredProofTypes: [
+      "news_or_official_source",
+      "cross_asset_market_reaction_or_macro_indicator_reaction",
+      "affected_asset_mapping",
+    ],
+    optionalProofTypes: ["pattern_match", "official_source"],
+    proofThatDoesNotApply: ["single_stock_ticker_required"],
+    minimumCleanProofTypes: 99,
+    stage2EligibilityRule:
+      "Broad macro/geopolitical shocks can reach watch/proof-needed without a ticker, but cannot publish without mapped asset proof and final alert gates.",
   },
   product_or_demand_signal: {
     signalType: "product_or_demand_signal",
@@ -1739,6 +1754,8 @@ function baseResponse(input: {
     genericNewsDidNotBypassProofGate: true,
     seriousSignalsFound: 0,
     genericRippleCandidates: [] as unknown[],
+    macroShockSummary: null as unknown,
+    topMacroShockCandidate: null as unknown,
     directCompanyCatalysts: [] as unknown[],
     opinionOnlyRejected: [] as unknown[],
     proofFillingAttempts: [] as unknown[],
@@ -1887,6 +1904,7 @@ function compactStage1Response(output: JsonRecord, status = 200) {
   const recovery = obj(output.freeProofRecoverySummary);
   const proofReport = obj(output.proofVerificationReport);
   const priceVolume = obj(output.improvedPriceVolumeSummary);
+  const macroShock = obj(output.macroShockSummary);
   const blockers = compactBlockersFromOutput(output);
   const proofRecoveryCounts = {
     fundamentalsAdded: numberFrom(
@@ -2019,6 +2037,22 @@ function compactStage1Response(output: JsonRecord, status = 200) {
       rejectedNoiseCount: numberFrom(
         output.rejectedNoiseCount ?? pipeline.rejected_noise,
       ),
+    },
+    macroShockSummary: {
+      inspected: numberFrom(macroShock.macroSignalsInspected),
+      candidatesCreated: numberFrom(macroShock.macroShockCandidatesCreated),
+      topMacroShockCandidate: output.topMacroShockCandidate ?? null,
+      affectedAssetsMapped: Array.isArray(macroShock.affectedAssetsMapped)
+        ? macroShock.affectedAssetsMapped
+        : [],
+      proofAddedByType: obj(macroShock.proofAddedByType),
+      stillMissingProof: Array.isArray(macroShock.stillMissingProof)
+        ? macroShock.stillMissingProof
+        : [],
+      separatedFromSingleStockAlerts: true,
+      noOpenAI: true,
+      noPublish: true,
+      noTelegram: true,
     },
     safety: {
       noOpenAI: output.noOpenAI === true,
@@ -2501,6 +2535,28 @@ export async function POST(request: NextRequest) {
       confirmRun,
       freshnessWindowHours,
     });
+    const macroShockRun = await runMacroShockScan({
+      dryRun: true,
+      confirmRun: false,
+      maxSignals: Math.min(maxRawSignalsToInspect, 30),
+      freshnessWindowHours,
+    }).catch((error: unknown) => ({
+      ok: false,
+      safeErrorCategory: "macro_shock_stage1_failed_safely",
+      safeErrorMessage:
+        error instanceof Error ? error.message.slice(0, 160) : "Unknown error",
+      macroSignalsInspected: 0,
+      macroShockCandidatesCreated: 0,
+      topMacroShockCandidates: [],
+      affectedAssetsMapped: [],
+      proofAddedByType: {},
+      stillMissingProof: [],
+      rejectedReasons: ["macro_shock_scan_failed_safely"],
+      noOpenAI: true,
+      noPublish: true,
+      noTelegram: true,
+      secretsRedacted: true,
+    }));
     const output = {
       ...baseResponse({ dryRun, readiness, warnings }),
       universeMode,
@@ -2695,6 +2751,26 @@ export async function POST(request: NextRequest) {
         genericTriage.deepChecksTriggeredByGenericNews,
       callsSavedByGenericTriage: genericTriage.callsSavedByGenericTriage,
       genericNewsDidNotBypassProofGate: true,
+      macroShockSummary: {
+        ok: macroShockRun.ok !== false,
+        macroSignalsInspected: macroShockRun.macroSignalsInspected,
+        macroShockCandidatesCreated: macroShockRun.macroShockCandidatesCreated,
+        affectedAssetsMapped: macroShockRun.affectedAssetsMapped,
+        proofAddedByType: macroShockRun.proofAddedByType,
+        stillMissingProof: macroShockRun.stillMissingProof,
+        noOpenAI: true,
+        noPublish: true,
+        noTelegram: true,
+      },
+      topMacroShockCandidate: Array.isArray(
+        macroShockRun.topMacroShockCandidates,
+      )
+        ? macroShockRun.topMacroShockCandidates[0] ?? null
+        : null,
+      macroShockCandidates: Array.isArray(macroShockRun.topMacroShockCandidates)
+        ? macroShockRun.topMacroShockCandidates
+        : [],
+      macroShockDidNotRequireDirectTickerMatch: true,
       ...safeLiveSourceStage1Summary(),
       includeLiveEars,
       liveEarSummary,

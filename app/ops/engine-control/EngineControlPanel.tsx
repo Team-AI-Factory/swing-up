@@ -24,7 +24,8 @@ type StageKey =
   | "article"
   | "liveSource"
   | "liveEvent"
-  | "freeProof";
+  | "freeProof"
+  | "macroShock";
 
 type StageResult = {
   stage: string;
@@ -1185,6 +1186,26 @@ export default function EngineControlPanel() {
     ]);
     setMessage(
       "Free proof recovery dry-run completed. No OpenAI, publish, or Telegram calls were made.",
+    );
+    setBusy(null);
+  }
+
+  async function runMacroShockScan() {
+    setBusy("macroShock");
+    setMessage(
+      "Running Macro Shock Scan in dry-run mode. This does not call OpenAI, publish, or send Telegram.",
+    );
+    const row = await callPost(
+      "Run Macro Shock Scan",
+      "/api/internal/macro-shock-run",
+      { dryRun: true, confirmRun: false, maxSignals: 30 },
+    );
+    setRows((current) => [
+      row,
+      ...current.filter((item) => item.stage !== row.stage),
+    ]);
+    setMessage(
+      "Macro Shock Scan completed. Review topMacroShockCandidates and proofAddedByType in the JSON panel.",
     );
     setBusy(null);
   }
@@ -2370,6 +2391,13 @@ export default function EngineControlPanel() {
           onClick={runStage1ProofVerification}
         >
           Run Stage 1 Proof Verification
+        </button>
+        <button
+          style={styles.button}
+          disabled={busy !== null}
+          onClick={runMacroShockScan}
+        >
+          Run Macro Shock Scan
         </button>
         <button
           style={styles.button}

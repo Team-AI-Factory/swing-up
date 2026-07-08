@@ -13,7 +13,10 @@ import { POST as publishApprovedAlertPOST } from "@/app/api/internal/publish-app
 import { runSources } from "@/lib/ops/source-runner";
 import { enrichProofForRawSignal } from "@/lib/proof-enrichment";
 import { getR2OperationalStatus, saveJsonToR2 } from "@/lib/r2-warehouse";
-import { buildProofVerificationReport, runFreeProofRecovery } from "@/lib/free-proof-recovery";
+import {
+  buildProofVerificationReport,
+  runFreeProofRecovery,
+} from "@/lib/free-proof-recovery";
 import { earRegistrySummary } from "@/lib/ear-registry";
 import { scoreSevenLayerEvidence } from "@/lib/catalyst-impact-scoring";
 import { withRedactionMetadata } from "@/lib/redact-secrets";
@@ -43,7 +46,10 @@ import {
   summary as sourceCoverageSummaryFromRows,
 } from "@/lib/source-coverage";
 import { runAutonomousSourceEngine } from "@/lib/autonomous-source-engine";
-import { runLiveEventCalendar, buildListenHarderPlan } from "@/lib/live-event-calendar";
+import {
+  runLiveEventCalendar,
+  buildListenHarderPlan,
+} from "@/lib/live-event-calendar";
 
 export const dynamic = "force-dynamic";
 
@@ -1803,7 +1809,13 @@ async function saveStage1RawObject(
     });
     output.rawDataStored = true;
     const debug = obj(output.r2StorageDecisionDebug);
-    if (Object.keys(debug).length) output.r2StorageDecisionDebug = { ...debug, rawDataStored: true, rawWarehouseWriteUnavailable: false, finalStorageMode: "r2_raw_storage" };
+    if (Object.keys(debug).length)
+      output.r2StorageDecisionDebug = {
+        ...debug,
+        rawDataStored: true,
+        rawWarehouseWriteUnavailable: false,
+        finalStorageMode: "r2_raw_storage",
+      };
     const existing = Array.isArray(output.r2ObjectKeys)
       ? output.r2ObjectKeys
       : Array.isArray(output.rawDataObjectKeys)
@@ -1818,7 +1830,15 @@ async function saveStage1RawObject(
     output.storageMode = "postgresql_summary_only";
     output.rawWarehouseWriteUnavailable = true;
     const debug = obj(output.r2StorageDecisionDebug);
-    if (Object.keys(debug).length) output.r2StorageDecisionDebug = { ...debug, rawDataStored: false, rawWarehouseWriteUnavailable: true, finalStorageMode: "postgresql_summary_only", finalReason: "R2 raw object save failed after write/delete truth check." };
+    if (Object.keys(debug).length)
+      output.r2StorageDecisionDebug = {
+        ...debug,
+        rawDataStored: false,
+        rawWarehouseWriteUnavailable: true,
+        finalStorageMode: "postgresql_summary_only",
+        finalReason:
+          "R2 raw object save failed after write/delete truth check.",
+      };
     output.reasonStorageFallback =
       "R2 raw object save failed; Stage 1 continued with PostgreSQL summary-only fallback.";
     output.rawStorageErrorCategory =
@@ -1827,6 +1847,191 @@ async function saveStage1RawObject(
         : "r2_save_failed";
     return null;
   }
+}
+
+function numberFrom(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function compactBlockersFromOutput(output: JsonRecord) {
+  const counts = new Map<string, number>();
+  const add = (reason: string) => {
+    const clean = reason.trim().slice(0, 140);
+    if (clean) counts.set(clean, (counts.get(clean) ?? 0) + 1);
+  };
+  for (const reason of arrayText(output.proofGapsRemaining)) add(reason);
+  for (const reason of arrayText(output.blockers)) add(reason);
+  const ranked = Object.entries(obj(output.blockedReasonsBySignal));
+  for (const [, reasons] of ranked)
+    for (const reason of arrayText(reasons)) add(reason);
+  if (!counts.size && text(output.reasonStage2Locked))
+    add(text(output.reasonStage2Locked));
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([blocker, count]) => ({
+      blocker,
+      count,
+      canFixWithoutPaidApi: !/paid|plan|quota|rate limit|403/i.test(blocker),
+      recommendedNextBuild: /price|volume/i.test(blocker)
+        ? "Improve free price/volume proof recovery."
+        : /r2|warehouse|storage/i.test(blocker)
+          ? "Confirm R2 write/delete health before large raw backfills."
+          : "Improve clean proof matching without weakening gates.",
+    }));
+}
+
+function compactStage1Response(output: JsonRecord, status = 200) {
+  const pipeline = obj(output.pipelineStageCounts);
+  const r2 = obj(output.r2TruthSummary);
+  const recovery = obj(output.freeProofRecoverySummary);
+  const proofReport = obj(output.proofVerificationReport);
+  const priceVolume = obj(output.improvedPriceVolumeSummary);
+  const blockers = compactBlockersFromOutput(output);
+  const proofRecoveryCounts = {
+    fundamentalsAdded: numberFrom(
+      recovery.fundamentalsProofAddedCount ??
+        obj(output.fundamentalsFallbackSummary).addedCount,
+    ),
+    officialProofAdded: numberFrom(
+      recovery.officialProofAddedCount ??
+        obj(output.officialProofRecoverySummary).addedCount,
+    ),
+    historicalMemoryAdded: numberFrom(
+      recovery.historicalMemoryAddedCount ??
+        obj(output.externalHistoricalMemorySummary).addedCount,
+    ),
+    riskProofAdded: numberFrom(
+      recovery.riskProofAddedCount ??
+        obj(output.riskDetectorSummary).addedCount,
+    ),
+    priceVolumeAdded: numberFrom(
+      recovery.improvedPriceVolumeAddedCount ?? priceVolume.addedCount,
+    ),
+    candidatesMovedForward: numberFrom(
+      recovery.candidatesMovedForwardCount ??
+        output.candidatesMovedForwardCount,
+    ),
+  };
+  const priceVolumeCounts = {
+    snapshotsCreated: numberFrom(
+      recovery.marketSnapshotsCreatedCount ?? priceVolume.snapshotsCreated,
+    ),
+    priceVolumeProofAddedCount: proofRecoveryCounts.priceVolumeAdded,
+    cleanPriceVolumeProofCount: numberFrom(
+      recovery.cleanPriceVolumeProofCount ??
+        priceVolume.cleanPriceVolumeProofCount,
+    ),
+    partialPriceVolumeProofCount: numberFrom(
+      recovery.partialPriceVolumeProofCount ??
+        priceVolume.partialPriceVolumeProofCount,
+    ),
+    stillMissingPriceVolumeCount: numberFrom(
+      recovery.stillMissingPriceVolumeCount ??
+        priceVolume.stillMissingPriceVolumeCount,
+    ),
+  };
+  return {
+    ok: output.ok !== false,
+    overallStatus:
+      output.stage2Unlocked === true
+        ? "pass"
+        : blockers.length
+          ? "warning"
+          : "pass",
+    checkedAt: new Date().toISOString(),
+    stage1Finished: true,
+    stage1HttpStatus: status,
+    readinessSummary: {
+      stage: text(output.stage),
+      stage2Unlocked: output.stage2Unlocked === true,
+      reasonStage2Locked: text(output.reasonStage2Locked) || null,
+    },
+    r2: {
+      pass: output.rawWarehouseWriteUnavailable !== true,
+      storageMode:
+        text(output.storageMode) || text(r2.storageMode) || "unknown",
+      rawDataStored: output.rawDataStored === true,
+      rawWarehouseWriteUnavailable:
+        output.rawWarehouseWriteUnavailable === true,
+      sourceOfTruth: text(r2.sourceOfTruth) || "unknown",
+      problem:
+        output.rawWarehouseWriteUnavailable === true
+          ? text(output.reasonStorageFallback) ||
+            "R2 raw write unavailable; fallback active."
+          : null,
+    },
+    freeProofRecovery: {
+      pass: Object.values(proofRecoveryCounts).some((value) => value > 0),
+      skipped: recovery.skipped === true,
+      candidatesInspected: numberFrom(
+        recovery.candidatesInspected ?? recovery.rawSignalsInspected,
+      ),
+      ...proofRecoveryCounts,
+      problem:
+        recovery.skipped === true
+          ? text(recovery.reason) || "Free proof recovery skipped."
+          : null,
+    },
+    proofQuality: {
+      pass: text(output.reasonStage2Locked)
+        ? output.stage2Unlocked === true
+        : true,
+      staleFundamentalsRejectedCount: numberFrom(
+        proofReport.staleFundamentalsRejectedCount,
+      ),
+      form4ReclassifiedCount: numberFrom(proofReport.form4ReclassifiedCount),
+      weakHistoricalMemoryRejectedCount: numberFrom(
+        proofReport.weakHistoricalMemoryRejectedCount,
+      ),
+      contradictoryProofUnavailableCount: numberFrom(
+        proofReport.contradictoryProofUnavailableCount,
+      ),
+      problem: text(output.reasonStage2Locked) || null,
+    },
+    priceVolume: {
+      pass:
+        priceVolumeCounts.priceVolumeProofAddedCount > 0 ||
+        priceVolumeCounts.stillMissingPriceVolumeCount === 0,
+      ...priceVolumeCounts,
+      topUnavailableReason:
+        text(
+          recovery.topPriceVolumeUnavailableReason ??
+            priceVolume.topUnavailableReason,
+        ) || null,
+      problem:
+        priceVolumeCounts.stillMissingPriceVolumeCount > 0
+          ? "Some candidates still need price/volume proof."
+          : null,
+    },
+    candidatePipeline: {
+      candidatesScored: numberFrom(
+        obj(output.candidateDiscoverySummary).rawSignalsInspected,
+      ),
+      watchCandidateCount: numberFrom(pipeline.watch_candidate),
+      proofNeededCount: numberFrom(
+        output.proofNeededCount ?? pipeline.proof_needed,
+      ),
+      aiReviewReadyCount: numberFrom(
+        output.aiReviewReadyCount ?? pipeline.ai_review_ready,
+      ),
+      publishReadyCount: numberFrom(pipeline.publish_ready),
+      rejectedNoiseCount: numberFrom(
+        output.rejectedNoiseCount ?? pipeline.rejected_noise,
+      ),
+    },
+    safety: {
+      noOpenAI: output.noOpenAI === true,
+      noPublish: output.noPublish === true,
+      noTelegram: output.noTelegram === true,
+      secretsRedacted: output.secretsRedacted === true,
+    },
+    topRemainingBlockers: blockers,
+    nextBestFix:
+      text(output.nextBestSystemFix) ||
+      text(output.nextRecommendedAction) ||
+      "Review topRemainingBlockers and fix the highest-count clean proof gap first.",
+  };
 }
 
 export async function POST(request: NextRequest) {
@@ -1839,6 +2044,7 @@ export async function POST(request: NextRequest) {
   const confirmPublish = bool(body.confirmPublish, false);
   const confirmSend = bool(body.confirmSend, false);
   const allowTelegram = bool(body.allowTelegram, false);
+  const compact = bool(body.compact, false);
   const maxAlertsToPublish = Math.min(
     Math.max(int(body.maxAlertsToPublish, 1), 0),
     1,
@@ -1895,9 +2101,15 @@ export async function POST(request: NextRequest) {
     false,
   );
   const includeSmartSourcePull = bool(body.includeSmartSourcePull, false);
-  const includeAutonomousSourceEngine = bool(body.includeAutonomousSourceEngine, false);
+  const includeAutonomousSourceEngine = bool(
+    body.includeAutonomousSourceEngine,
+    false,
+  );
   const includeLiveEventCalendar = bool(body.includeLiveEventCalendar, false);
-  const includeFreeProofRecovery = bool(body.includeFreeProofRecovery, dryRun && !confirmRun);
+  const includeFreeProofRecovery = bool(
+    body.includeFreeProofRecovery,
+    dryRun && !confirmRun,
+  );
   const warnings = [
     "Telegram is disabled for this founder website test; this route never sends Telegram.",
     ...(confirmSend || allowTelegram
@@ -1915,7 +2127,10 @@ export async function POST(request: NextRequest) {
     const r2WriteAvailable = r2Health.writeAvailable;
     const storageMode = r2Health.storageMode;
     const r2StorageDecisionDebug = {
-      ok: r2Health.sourceOfTruth === "recent_write_test" || r2WriteAvailable || r2Health.rawHealth.writeAttempted === true,
+      ok:
+        r2Health.sourceOfTruth === "recent_write_test" ||
+        r2WriteAvailable ||
+        r2Health.rawHealth.writeAttempted === true,
       diagnosticRouteStorageMode: r2Health.storageMode,
       stage1StorageMode: storageMode,
       freeProofRecoveryStorageMode: null as string | null,
@@ -1931,7 +2146,31 @@ export async function POST(request: NextRequest) {
       rawDataStored: false,
       rawWarehouseWriteUnavailable: !r2WriteAvailable,
     };
-    const r2TruthSummary = { configured: r2Health.configured, connected: r2Health.connected, bucket: r2Health.rawHealth.bucket, canRead: r2Health.canRead, canWrite: r2Health.canWrite, canDelete: r2Health.canDelete, lastConfirmedReadAt: r2Health.rawHealth.canRead ? r2Health.rawHealth.lastChecked : null, lastConfirmedWriteAt: r2Health.lastConfirmedWriteAt, lastConfirmedDeleteAt: r2Health.lastConfirmedDeleteAt, sourceOfTruth: r2Health.sourceOfTruth, storageMode: r2Health.storageMode, writeAwsStatusCode: r2Health.rawHealth.writeAwsStatusCode, deleteAwsStatusCode: r2Health.rawHealth.deleteAwsStatusCode, accessKeyIdFingerprint: r2Health.rawHealth.accessKeyIdFingerprint, endpointHost: r2Health.rawHealth.endpointHost, forcePathStyleUsed: r2Health.rawHealth.forcePathStyleUsed, regionUsed: r2Health.rawHealth.regionUsed, errorCategory: r2Health.rawHealth.errorCategory, errorMessageSafe: r2Health.rawHealth.errorMessageSafe, nextAction: r2Health.rawHealth.nextAction, secretsRedacted: true };
+    const r2TruthSummary = {
+      configured: r2Health.configured,
+      connected: r2Health.connected,
+      bucket: r2Health.rawHealth.bucket,
+      canRead: r2Health.canRead,
+      canWrite: r2Health.canWrite,
+      canDelete: r2Health.canDelete,
+      lastConfirmedReadAt: r2Health.rawHealth.canRead
+        ? r2Health.rawHealth.lastChecked
+        : null,
+      lastConfirmedWriteAt: r2Health.lastConfirmedWriteAt,
+      lastConfirmedDeleteAt: r2Health.lastConfirmedDeleteAt,
+      sourceOfTruth: r2Health.sourceOfTruth,
+      storageMode: r2Health.storageMode,
+      writeAwsStatusCode: r2Health.rawHealth.writeAwsStatusCode,
+      deleteAwsStatusCode: r2Health.rawHealth.deleteAwsStatusCode,
+      accessKeyIdFingerprint: r2Health.rawHealth.accessKeyIdFingerprint,
+      endpointHost: r2Health.rawHealth.endpointHost,
+      forcePathStyleUsed: r2Health.rawHealth.forcePathStyleUsed,
+      regionUsed: r2Health.rawHealth.regionUsed,
+      errorCategory: r2Health.rawHealth.errorCategory,
+      errorMessageSafe: r2Health.rawHealth.errorMessageSafe,
+      nextAction: r2Health.rawHealth.nextAction,
+      secretsRedacted: true,
+    };
     const reasonStorageFallback = r2WriteAvailable
       ? null
       : r2Health.configured
@@ -1948,10 +2187,46 @@ export async function POST(request: NextRequest) {
       r2RawStorageReady: r2WriteAvailable,
     });
     const liveEventCalendarRun = includeLiveEventCalendar
-      ? await runLiveEventCalendar({ dryRun:true, confirmRun:false, symbols:["NVDA","AMD","MSFT","GOOGL"], lookAheadHours:72, lookBackHours:24, maxEvents:100 }).catch((error:unknown)=>({ok:false,safeErrorCategory:"live_event_calendar_stage1_failed_safely",safeErrorMessage:error instanceof Error?error.message.slice(0,160):"Unknown error",liveRoomsActiveNow:[],liveRoomsUpcoming24h:[],recentlyFinishedEvents:[],eventsCreatedOrUpdated:0,noOpenAI:true,noPublish:true,noTelegram:true}))
+      ? await runLiveEventCalendar({
+          dryRun: true,
+          confirmRun: false,
+          symbols: ["NVDA", "AMD", "MSFT", "GOOGL"],
+          lookAheadHours: 72,
+          lookBackHours: 24,
+          maxEvents: 100,
+        }).catch((error: unknown) => ({
+          ok: false,
+          safeErrorCategory: "live_event_calendar_stage1_failed_safely",
+          safeErrorMessage:
+            error instanceof Error
+              ? error.message.slice(0, 160)
+              : "Unknown error",
+          liveRoomsActiveNow: [],
+          liveRoomsUpcoming24h: [],
+          recentlyFinishedEvents: [],
+          eventsCreatedOrUpdated: 0,
+          noOpenAI: true,
+          noPublish: true,
+          noTelegram: true,
+        }))
       : null;
     const listenHarderPlan = includeLiveEventCalendar
-      ? await buildListenHarderPlan({dryRun:true}).catch((error:unknown)=>({ok:false,safeErrorCategory:"listen_harder_plan_stage1_failed_safely",safeErrorMessage:error instanceof Error?error.message.slice(0,160):"Unknown error",liveRoomsActiveNow:[],liveRoomsUpcoming24h:[],eventDrivenProofActionsCreated:0,noOpenAI:true,noPublish:true,noTelegram:true}))
+      ? await buildListenHarderPlan({ dryRun: true }).catch(
+          (error: unknown) => ({
+            ok: false,
+            safeErrorCategory: "listen_harder_plan_stage1_failed_safely",
+            safeErrorMessage:
+              error instanceof Error
+                ? error.message.slice(0, 160)
+                : "Unknown error",
+            liveRoomsActiveNow: [],
+            liveRoomsUpcoming24h: [],
+            eventDrivenProofActionsCreated: 0,
+            noOpenAI: true,
+            noPublish: true,
+            noTelegram: true,
+          }),
+        )
       : null;
     const liveEarSummary = includeLiveEars
       ? await runLiveEarRun({
@@ -2268,44 +2543,98 @@ export async function POST(request: NextRequest) {
       smartSourcePullSummary: smartSourcePullRun,
       includeAutonomousSourceEngine,
       includeLiveEventCalendar,
-      liveEventCalendarSummary: liveEventCalendarRun ? { ok:(liveEventCalendarRun as JsonRecord).ok, eventsCreatedOrUpdated:(liveEventCalendarRun as JsonRecord).eventsCreatedOrUpdated, activeEvents:Array.isArray((liveEventCalendarRun as JsonRecord).activeEvents)?((liveEventCalendarRun as JsonRecord).activeEvents as unknown[]).length:0, upcomingEvents:Array.isArray((liveEventCalendarRun as JsonRecord).upcomingEvents)?((liveEventCalendarRun as JsonRecord).upcomingEvents as unknown[]).length:0, recentlyFinishedEvents:Array.isArray((liveEventCalendarRun as JsonRecord).recentlyFinishedEvents)?((liveEventCalendarRun as JsonRecord).recentlyFinishedEvents as unknown[]).length:0, safeErrorCategory:(liveEventCalendarRun as JsonRecord).safeErrorCategory } : null,
-      liveRoomsActiveNow: (listenHarderPlan as JsonRecord | null)?.liveRoomsActiveNow ?? (liveEventCalendarRun as JsonRecord | null)?.liveRoomsActiveNow ?? [],
-      liveRoomsUpcoming24h: (listenHarderPlan as JsonRecord | null)?.liveRoomsUpcoming24h ?? (liveEventCalendarRun as JsonRecord | null)?.liveRoomsUpcoming24h ?? [],
+      liveEventCalendarSummary: liveEventCalendarRun
+        ? {
+            ok: (liveEventCalendarRun as JsonRecord).ok,
+            eventsCreatedOrUpdated: (liveEventCalendarRun as JsonRecord)
+              .eventsCreatedOrUpdated,
+            activeEvents: Array.isArray(
+              (liveEventCalendarRun as JsonRecord).activeEvents,
+            )
+              ? ((liveEventCalendarRun as JsonRecord).activeEvents as unknown[])
+                  .length
+              : 0,
+            upcomingEvents: Array.isArray(
+              (liveEventCalendarRun as JsonRecord).upcomingEvents,
+            )
+              ? (
+                  (liveEventCalendarRun as JsonRecord)
+                    .upcomingEvents as unknown[]
+                ).length
+              : 0,
+            recentlyFinishedEvents: Array.isArray(
+              (liveEventCalendarRun as JsonRecord).recentlyFinishedEvents,
+            )
+              ? (
+                  (liveEventCalendarRun as JsonRecord)
+                    .recentlyFinishedEvents as unknown[]
+                ).length
+              : 0,
+            safeErrorCategory: (liveEventCalendarRun as JsonRecord)
+              .safeErrorCategory,
+          }
+        : null,
+      liveRoomsActiveNow:
+        (listenHarderPlan as JsonRecord | null)?.liveRoomsActiveNow ??
+        (liveEventCalendarRun as JsonRecord | null)?.liveRoomsActiveNow ??
+        [],
+      liveRoomsUpcoming24h:
+        (listenHarderPlan as JsonRecord | null)?.liveRoomsUpcoming24h ??
+        (liveEventCalendarRun as JsonRecord | null)?.liveRoomsUpcoming24h ??
+        [],
       listenHarderPlan,
-      listenHarderCallsUsed: (autonomousSourceEngineRun as JsonRecord | null)?.listenHarderCallsUsed ?? 0,
-      listenHarderCallsSkipped: (autonomousSourceEngineRun as JsonRecord | null)?.listenHarderCallsSkipped ?? 0,
-      listenHarderBatchesCreated: (listenHarderPlan as JsonRecord | null)?.batchingPlan && typeof (listenHarderPlan as JsonRecord).batchingPlan === "object" && !Array.isArray((listenHarderPlan as JsonRecord).batchingPlan) ? ((listenHarderPlan as JsonRecord).batchingPlan as JsonRecord).batchesCreated : 0,
-      quotaReserveProtected: (listenHarderPlan as JsonRecord | null)?.quotaReserveProtected ?? (autonomousSourceEngineRun as JsonRecord | null)?.quotaReserveProtected ?? true,
-      eventDrivenProofActionsCreated: (listenHarderPlan as JsonRecord | null)?.eventDrivenProofActionsCreated ?? 0,
+      listenHarderCallsUsed:
+        (autonomousSourceEngineRun as JsonRecord | null)
+          ?.listenHarderCallsUsed ?? 0,
+      listenHarderCallsSkipped:
+        (autonomousSourceEngineRun as JsonRecord | null)
+          ?.listenHarderCallsSkipped ?? 0,
+      listenHarderBatchesCreated:
+        (listenHarderPlan as JsonRecord | null)?.batchingPlan &&
+        typeof (listenHarderPlan as JsonRecord).batchingPlan === "object" &&
+        !Array.isArray((listenHarderPlan as JsonRecord).batchingPlan)
+          ? ((listenHarderPlan as JsonRecord).batchingPlan as JsonRecord)
+              .batchesCreated
+          : 0,
+      quotaReserveProtected:
+        (listenHarderPlan as JsonRecord | null)?.quotaReserveProtected ??
+        (autonomousSourceEngineRun as JsonRecord | null)
+          ?.quotaReserveProtected ??
+        true,
+      eventDrivenProofActionsCreated:
+        (listenHarderPlan as JsonRecord | null)
+          ?.eventDrivenProofActionsCreated ?? 0,
       autonomousSourceEngineSummary: autonomousSourceEngineRun,
       autonomousCoverageSummary:
-        (autonomousSourceEngineRun as JsonRecord | null)?.autonomousCoverageSummary ??
-        null,
+        (autonomousSourceEngineRun as JsonRecord | null)
+          ?.autonomousCoverageSummary ?? null,
       autonomousQuotaSummary:
-        (autonomousSourceEngineRun as JsonRecord | null)?.autonomousQuotaSummary ??
-        null,
+        (autonomousSourceEngineRun as JsonRecord | null)
+          ?.autonomousQuotaSummary ?? null,
       providerQuotaSummary:
-        (autonomousSourceEngineRun as JsonRecord | null)?.providerQuotaSummary ??
-        null,
+        (autonomousSourceEngineRun as JsonRecord | null)
+          ?.providerQuotaSummary ?? null,
       smartBatchSummary:
         (autonomousSourceEngineRun as JsonRecord | null)?.smartBatchSummary ??
         null,
       dynamicCadenceSummary:
-        (autonomousSourceEngineRun as JsonRecord | null)?.dynamicCadenceSummary ??
-        null,
+        (autonomousSourceEngineRun as JsonRecord | null)
+          ?.dynamicCadenceSummary ?? null,
       quotaReserveSummary:
         (autonomousSourceEngineRun as JsonRecord | null)?.quotaReserveSummary ??
         null,
       individualRequestsAvoided:
-        (autonomousSourceEngineRun as JsonRecord | null)?.individualRequestsAvoided ?? 0,
+        (autonomousSourceEngineRun as JsonRecord | null)
+          ?.individualRequestsAvoided ?? 0,
       estimatedQuotaSavedByBatching:
-        (autonomousSourceEngineRun as JsonRecord | null)?.estimatedQuotaSavedByBatching ?? 0,
+        (autonomousSourceEngineRun as JsonRecord | null)
+          ?.estimatedQuotaSavedByBatching ?? 0,
       autonomousUniverseSummary:
-        (autonomousSourceEngineRun as JsonRecord | null)?.autonomousUniverseSummary ??
-        null,
+        (autonomousSourceEngineRun as JsonRecord | null)
+          ?.autonomousUniverseSummary ?? null,
       autonomousOpportunitiesFound:
-        (autonomousSourceEngineRun as JsonRecord | null)?.topOpportunitiesFound ??
-        [],
+        (autonomousSourceEngineRun as JsonRecord | null)
+          ?.topOpportunitiesFound ?? [],
       autonomousThreatsFound:
         (autonomousSourceEngineRun as JsonRecord | null)?.topThreatsFound ?? [],
       autonomousNextDuePulls:
@@ -2587,63 +2916,97 @@ export async function POST(request: NextRequest) {
       }).catch((error: unknown) => ({
         ok: false,
         safeErrorCategory: "free_proof_recovery_stage1_failed_safely",
-        safeErrorMessage: error instanceof Error ? error.message.slice(0, 160) : "Unknown error",
+        safeErrorMessage:
+          error instanceof Error
+            ? error.message.slice(0, 160)
+            : "Unknown error",
         noOpenAI: true,
         noPublish: true,
         noTelegram: true,
         secretsRedacted: true,
       }));
-      r2StorageDecisionDebug.freeProofRecoveryStorageMode = text(obj((earlyFreeProofRecovery as JsonRecord).r2TruthSummary).storageMode) || null;
+      r2StorageDecisionDebug.freeProofRecoveryStorageMode =
+        text(
+          obj((earlyFreeProofRecovery as JsonRecord).r2TruthSummary)
+            .storageMode,
+        ) || null;
       Object.assign(output, {
         r2StorageDecisionDebug,
         freeProofRecoverySummary: earlyFreeProofRecovery,
-        fundamentalsFallbackSummary: { addedCount: (earlyFreeProofRecovery as JsonRecord).fundamentalsProofAddedCount ?? 0 },
-        officialProofRecoverySummary: { addedCount: (earlyFreeProofRecovery as JsonRecord).officialProofAddedCount ?? 0 },
-        externalHistoricalMemorySummary: { addedCount: (earlyFreeProofRecovery as JsonRecord).historicalMemoryAddedCount ?? 0 },
-        riskDetectorSummary: { addedCount: (earlyFreeProofRecovery as JsonRecord).riskProofAddedCount ?? 0 },
-        improvedPriceVolumeSummary: { addedCount: (earlyFreeProofRecovery as JsonRecord).improvedPriceVolumeAddedCount ?? 0 },
+        fundamentalsFallbackSummary: {
+          addedCount:
+            (earlyFreeProofRecovery as JsonRecord)
+              .fundamentalsProofAddedCount ?? 0,
+        },
+        officialProofRecoverySummary: {
+          addedCount:
+            (earlyFreeProofRecovery as JsonRecord).officialProofAddedCount ?? 0,
+        },
+        externalHistoricalMemorySummary: {
+          addedCount:
+            (earlyFreeProofRecovery as JsonRecord).historicalMemoryAddedCount ??
+            0,
+        },
+        riskDetectorSummary: {
+          addedCount:
+            (earlyFreeProofRecovery as JsonRecord).riskProofAddedCount ?? 0,
+        },
+        improvedPriceVolumeSummary: {
+          addedCount:
+            (earlyFreeProofRecovery as JsonRecord)
+              .improvedPriceVolumeAddedCount ?? 0,
+        },
         proofVerificationReport: buildProofVerificationReport({
           includeFreeProofRecovery,
           freeProofRecovery: earlyFreeProofRecovery,
-          candidatesBeforeRecovery: Number((earlyFreeProofRecovery as JsonRecord).candidatesInspected ?? 0),
-          candidatesAfterRecovery: Number((earlyFreeProofRecovery as JsonRecord).candidatesInspected ?? 0),
+          candidatesBeforeRecovery: Number(
+            (earlyFreeProofRecovery as JsonRecord).candidatesInspected ?? 0,
+          ),
+          candidatesAfterRecovery: Number(
+            (earlyFreeProofRecovery as JsonRecord).candidatesInspected ?? 0,
+          ),
         }),
       });
     }
 
     if (!confirmRun && !dryRun) {
-      return redactedJson({
+      const responsePayload = {
         ...output,
         stage: "dry_run_confirm_required",
         blockers: dryRun ? [] : ["confirmRun_required"],
         nextRecommendedAction:
           "Set confirmRun=true only when you intend to inspect real source data. No OpenAI, publish, or Telegram actions ran.",
-      });
+      };
+      return redactedJson(
+        compact ? compactStage1Response(responsePayload) : responsePayload,
+      );
     }
     if (!readiness.readyForFirstPublicAlert) {
+      const responsePayload = {
+        ...output,
+        ok: false,
+        stage: "readiness_blocked",
+        blockers: readiness.blockers,
+        nextRecommendedAction:
+          readiness.exactNextFixes?.[0] ??
+          "Resolve engine-start readiness blockers before running a live alert cycle.",
+      };
       return redactedJson(
-        {
-          ...output,
-          ok: false,
-          stage: "readiness_blocked",
-          blockers: readiness.blockers,
-          nextRecommendedAction:
-            readiness.exactNextFixes?.[0] ??
-            "Resolve engine-start readiness blockers before running a live alert cycle.",
-        },
+        compact ? compactStage1Response(responsePayload, 503) : responsePayload,
         { status: 503 },
       );
     }
     if (!process.env.DATABASE_URL) {
+      const responsePayload = {
+        ...output,
+        ok: false,
+        stage: "database_blocked",
+        blockers: ["database_not_configured"],
+        nextRecommendedAction:
+          "Configure DATABASE_URL before selecting a real raw signal.",
+      };
       return redactedJson(
-        {
-          ...output,
-          ok: false,
-          stage: "database_blocked",
-          blockers: ["database_not_configured"],
-          nextRecommendedAction:
-            "Configure DATABASE_URL before selecting a real raw signal.",
-        },
+        compact ? compactStage1Response(responsePayload, 503) : responsePayload,
         { status: 503 },
       );
     }
@@ -3324,18 +3687,16 @@ export async function POST(request: NextRequest) {
           (row) => row.articleMemoryProofUsed === true,
         ).length,
         articleReaderFailureReasons,
-        articleReaderExamples: articleRows
-          .slice(0, 5)
-          .map((row) => ({
-            articleUrlHash: row.articleUrlHash,
-            articleInputMode: row.articleInputMode,
-            articleReadAttempted: row.articleReadAttempted,
-            articleMemoryUsed: row.articleMemoryUsed,
-            articleSummary: String(
-              row.articleSummary ?? row.reusedArticleSummary ?? "",
-            ).slice(0, 240),
-            errorCategory: row.errorCategory ?? null,
-          })),
+        articleReaderExamples: articleRows.slice(0, 5).map((row) => ({
+          articleUrlHash: row.articleUrlHash,
+          articleInputMode: row.articleInputMode,
+          articleReadAttempted: row.articleReadAttempted,
+          articleMemoryUsed: row.articleMemoryUsed,
+          articleSummary: String(
+            row.articleSummary ?? row.reusedArticleSummary ?? "",
+          ).slice(0, 240),
+          errorCategory: row.errorCategory ?? null,
+        })),
         openAiCalled: false,
         published: false,
         sentToTelegram: false,
@@ -3491,10 +3852,53 @@ export async function POST(request: NextRequest) {
       };
 
       const freeProofRecovery = includeFreeProofRecovery
-        ? await runFreeProofRecovery({ dryRun: true, confirmRun: false, maxCandidates: 20, includeR2TruthCheck: true, includeFundamentalsFallback: true, includeOfficialProof: true, includeHistoricalMemory: true, includeRiskDetector: true, includeImprovedPriceVolume: true, candidates: rankedCandidates.slice(0, 20) }).catch((error: unknown) => ({ ok: false, safeErrorCategory: "free_proof_recovery_stage1_failed_safely", safeErrorMessage: error instanceof Error ? error.message.slice(0, 160) : "Unknown error", noOpenAI: true, noPublish: true, noTelegram: true, secretsRedacted: true }))
-        : { ok: true, skipped: true, reason: "includeFreeProofRecovery was false", noOpenAI: true, noPublish: true, noTelegram: true, secretsRedacted: true };
-      const freeProofTop = Array.isArray((freeProofRecovery as JsonRecord).topRecoveredCandidates) ? ((freeProofRecovery as JsonRecord).topRecoveredCandidates as JsonRecord[]) : [];
-      const recoveredCandidateProofDeltas = freeProofTop.map((r) => ({ beforeProofTypes: r.beforeProofTypes, afterProofTypes: r.afterProofTypes, proofAddedByFreeRecovery: r.proofAddedByFreeRecovery, stillMissingProof: r.stillMissingProof, nextBestProofToFetch: r.nextBestProofToFetch, stageBeforeFreeRecovery: r.stageBeforeFreeRecovery, stageAfterFreeRecovery: r.stageAfterFreeRecovery }));
+        ? await runFreeProofRecovery({
+            dryRun: true,
+            confirmRun: false,
+            maxCandidates: 20,
+            includeR2TruthCheck: true,
+            includeFundamentalsFallback: true,
+            includeOfficialProof: true,
+            includeHistoricalMemory: true,
+            includeRiskDetector: true,
+            includeImprovedPriceVolume: true,
+            candidates: rankedCandidates.slice(0, 20),
+          }).catch((error: unknown) => ({
+            ok: false,
+            safeErrorCategory: "free_proof_recovery_stage1_failed_safely",
+            safeErrorMessage:
+              error instanceof Error
+                ? error.message.slice(0, 160)
+                : "Unknown error",
+            noOpenAI: true,
+            noPublish: true,
+            noTelegram: true,
+            secretsRedacted: true,
+          }))
+        : {
+            ok: true,
+            skipped: true,
+            reason: "includeFreeProofRecovery was false",
+            noOpenAI: true,
+            noPublish: true,
+            noTelegram: true,
+            secretsRedacted: true,
+          };
+      const freeProofTop = Array.isArray(
+        (freeProofRecovery as JsonRecord).topRecoveredCandidates,
+      )
+        ? ((freeProofRecovery as JsonRecord)
+            .topRecoveredCandidates as JsonRecord[])
+        : [];
+      const recoveredCandidateProofDeltas = freeProofTop.map((r) => ({
+        beforeProofTypes: r.beforeProofTypes,
+        afterProofTypes: r.afterProofTypes,
+        proofAddedByFreeRecovery: r.proofAddedByFreeRecovery,
+        stillMissingProof: r.stillMissingProof,
+        nextBestProofToFetch: r.nextBestProofToFetch,
+        stageBeforeFreeRecovery: r.stageBeforeFreeRecovery,
+        stageAfterFreeRecovery: r.stageAfterFreeRecovery,
+      }));
       const proofVerificationReport = buildProofVerificationReport({
         includeFreeProofRecovery,
         freeProofRecovery,
@@ -3505,46 +3909,132 @@ export async function POST(request: NextRequest) {
       for (const recovered of freeProofTop) {
         const candidate = (recovered.candidate ?? {}) as JsonRecord;
         const id = String(candidate.rawSignalId ?? "");
-        const target = rankedCandidates.find((row) => row.rawSignalId === id || (row.ticker && row.ticker === candidate.ticker));
+        const target = rankedCandidates.find(
+          (row) =>
+            row.rawSignalId === id ||
+            (row.ticker && row.ticker === candidate.ticker),
+        );
         if (!target) continue;
-        const added = Array.isArray(recovered.proofAddedByFreeRecovery) ? recovered.proofAddedByFreeRecovery.map(String) : [];
-        const canonicalAdded = added.map((type) => type === "official_proof" ? "filing" : type === "historical_memory" ? "pattern_match" : type);
+        const added = Array.isArray(recovered.proofAddedByFreeRecovery)
+          ? recovered.proofAddedByFreeRecovery.map(String)
+          : [];
+        const canonicalAdded = added.map((type) =>
+          type === "official_proof"
+            ? "filing"
+            : type === "historical_memory"
+              ? "pattern_match"
+              : type,
+        );
         const sourceNames = [
           text(obj(recovered.fundamentals).fundamentalsProofSource) || null,
-          obj(recovered.official).officialProofAvailable === true ? "SEC EDGAR" : null,
-          obj(recovered.historical).historicalMemoryAvailable === true ? "Stored historical memory" : null,
-          obj(recovered.priceVolume).latestPrice != null ? text(obj(recovered.priceVolume).latestPriceSource) : null,
+          obj(recovered.official).officialProofAvailable === true
+            ? "SEC EDGAR"
+            : null,
+          obj(recovered.historical).historicalMemoryAvailable === true
+            ? "Stored historical memory"
+            : null,
+          obj(recovered.priceVolume).latestPrice != null
+            ? text(obj(recovered.priceVolume).latestPriceSource)
+            : null,
         ].filter(Boolean) as string[];
         for (const type of canonicalAdded) {
-          target.proofAttachedByType[type] = (target.proofAttachedByType[type] ?? 0) + 1;
-          if (!target.proofAddedTypes.includes(type)) target.proofAddedTypes.push(type);
-          if (!target.uniqueProofTypesClean.includes(type)) target.uniqueProofTypesClean.push(type);
+          target.proofAttachedByType[type] =
+            (target.proofAttachedByType[type] ?? 0) + 1;
+          if (!target.proofAddedTypes.includes(type))
+            target.proofAddedTypes.push(type);
+          if (!target.uniqueProofTypesClean.includes(type))
+            target.uniqueProofTypesClean.push(type);
           delete target.proofUnavailableByType[type];
         }
         for (const source of sourceNames) {
-          if (!target.uniqueIndependentSourcesClean.includes(source)) target.uniqueIndependentSourcesClean.push(source);
+          if (!target.uniqueIndependentSourcesClean.includes(source))
+            target.uniqueIndependentSourcesClean.push(source);
         }
-        target.missingRequiredProof = target.missingRequiredProof.filter((type) => !canonicalAdded.includes(type) && !added.includes(type));
-        target.missingOptionalProof = target.missingOptionalProof.filter((type) => !canonicalAdded.includes(type) && !added.includes(type));
-        target.stillMissingProof = Array.isArray(recovered.stillMissingProof) ? recovered.stillMissingProof.map(String).map((type) => type === "official_proof" ? "filing" : type === "historical_memory" ? "pattern_match" : type) : target.stillMissingProof;
-        for (const type of canonicalAdded) target.stillMissingProof = target.stillMissingProof.filter((missing) => missing !== type);
+        target.missingRequiredProof = target.missingRequiredProof.filter(
+          (type) => !canonicalAdded.includes(type) && !added.includes(type),
+        );
+        target.missingOptionalProof = target.missingOptionalProof.filter(
+          (type) => !canonicalAdded.includes(type) && !added.includes(type),
+        );
+        target.stillMissingProof = Array.isArray(recovered.stillMissingProof)
+          ? recovered.stillMissingProof
+              .map(String)
+              .map((type) =>
+                type === "official_proof"
+                  ? "filing"
+                  : type === "historical_memory"
+                    ? "pattern_match"
+                    : type,
+              )
+          : target.stillMissingProof;
+        for (const type of canonicalAdded)
+          target.stillMissingProof = target.stillMissingProof.filter(
+            (missing) => missing !== type,
+          );
         target.proofStillMissingAfterRouter = target.stillMissingProof;
-        target.nextBestProofToFetch = String(recovered.nextBestProofToFetch ?? target.nextBestProofToFetch);
+        target.nextBestProofToFetch = String(
+          recovered.nextBestProofToFetch ?? target.nextBestProofToFetch,
+        );
         target.nextBestProofToFetchAfterRouter = target.nextBestProofToFetch;
-        target.proofDiversityClean = new Set(target.uniqueProofTypesClean.filter((type) => type !== "raw_signal_source" && type !== "source_health")).size;
+        target.proofDiversityClean = new Set(
+          target.uniqueProofTypesClean.filter(
+            (type) => type !== "raw_signal_source" && type !== "source_health",
+          ),
+        ).size;
         const rescoredLayers = scoreSevenLayerEvidence({
           source: String(target.source ?? ""),
           title: String(target.title ?? ""),
           summary: String((target as JsonRecord).summary ?? ""),
           proofTypes: target.uniqueProofTypesClean,
-          promotionScore: typeof target.promotionScore === "number" ? target.promotionScore : null,
+          promotionScore:
+            typeof target.promotionScore === "number"
+              ? target.promotionScore
+              : null,
         });
         target.sevenLayerEvidence = rescoredLayers;
-        (target as JsonRecord).proofTypesAfterFreeRecovery = target.proofAddedTypes;
+        (target as JsonRecord).proofTypesAfterFreeRecovery =
+          target.proofAddedTypes;
         (target as JsonRecord).freeRecoveryAttached = added.length > 0;
-        target.greatSignalScorecard = { ...target.greatSignalScorecard, proofAttachedByType: target.proofAttachedByType, uniqueProofTypesClean: target.uniqueProofTypesClean, uniqueIndependentSourcesClean: target.uniqueIndependentSourcesClean, missingRequiredProof: target.missingRequiredProof, missingOptionalProof: target.missingOptionalProof, proofStillMissingAfterRouter: target.proofStillMissingAfterRouter, nextBestProofToFetch: target.nextBestProofToFetch, fundamentalsSupportScore: target.uniqueProofTypesClean.includes("fundamentals") ? 100 : target.greatSignalScorecard.fundamentalsSupportScore, officialProofScore: target.uniqueProofTypesClean.includes("filing") ? 100 : target.greatSignalScorecard.officialProofScore, historicalMemoryScore: target.uniqueProofTypesClean.includes("pattern_match") ? 100 : target.greatSignalScorecard.historicalMemoryScore, priceVolumeContextScore: target.uniqueProofTypesClean.includes("price_volume") ? 100 : 0, proofDiversityScore: clampScore((target.proofDiversityClean / 4) * 100) };
-        (target as JsonRecord).stageAfterFreeRecovery = recovered.stageAfterFreeRecovery;
-        (target as JsonRecord).freeRecoveryProof = { fundamentals: recovered.fundamentals, official: recovered.official, historical: recovered.historical, risk: recovered.risk, priceVolume: recovered.priceVolume };
+        target.greatSignalScorecard = {
+          ...target.greatSignalScorecard,
+          proofAttachedByType: target.proofAttachedByType,
+          uniqueProofTypesClean: target.uniqueProofTypesClean,
+          uniqueIndependentSourcesClean: target.uniqueIndependentSourcesClean,
+          missingRequiredProof: target.missingRequiredProof,
+          missingOptionalProof: target.missingOptionalProof,
+          proofStillMissingAfterRouter: target.proofStillMissingAfterRouter,
+          nextBestProofToFetch: target.nextBestProofToFetch,
+          fundamentalsSupportScore: target.uniqueProofTypesClean.includes(
+            "fundamentals",
+          )
+            ? 100
+            : target.greatSignalScorecard.fundamentalsSupportScore,
+          officialProofScore: target.uniqueProofTypesClean.includes("filing")
+            ? 100
+            : target.greatSignalScorecard.officialProofScore,
+          historicalMemoryScore: target.uniqueProofTypesClean.includes(
+            "pattern_match",
+          )
+            ? 100
+            : target.greatSignalScorecard.historicalMemoryScore,
+          priceVolumeContextScore: target.uniqueProofTypesClean.includes(
+            "price_volume",
+          )
+            ? 100
+            : 0,
+          proofDiversityScore: clampScore(
+            (target.proofDiversityClean / 4) * 100,
+          ),
+        };
+        (target as JsonRecord).stageAfterFreeRecovery =
+          recovered.stageAfterFreeRecovery;
+        (target as JsonRecord).freeRecoveryProof = {
+          fundamentals: recovered.fundamentals,
+          official: recovered.official,
+          historical: recovered.historical,
+          risk: recovered.risk,
+          priceVolume: recovered.priceVolume,
+        };
       }
       const proofCompletionSummary = {
         attemptedCandidates: topDirectCandidates.map((row) => row.rawSignalId),
@@ -3829,13 +4319,35 @@ export async function POST(request: NextRequest) {
             }
           : null,
         proofCompletionSummary,
-        r2StorageDecisionDebug: { ...r2StorageDecisionDebug, freeProofRecoveryStorageMode: text(obj((freeProofRecovery as JsonRecord).r2TruthSummary).storageMode) || r2StorageDecisionDebug.freeProofRecoveryStorageMode },
+        r2StorageDecisionDebug: {
+          ...r2StorageDecisionDebug,
+          freeProofRecoveryStorageMode:
+            text(
+              obj((freeProofRecovery as JsonRecord).r2TruthSummary).storageMode,
+            ) || r2StorageDecisionDebug.freeProofRecoveryStorageMode,
+        },
         freeProofRecoverySummary: freeProofRecovery,
-        fundamentalsFallbackSummary: { addedCount: (freeProofRecovery as JsonRecord).fundamentalsProofAddedCount ?? 0 },
-        officialProofRecoverySummary: { addedCount: (freeProofRecovery as JsonRecord).officialProofAddedCount ?? 0 },
-        externalHistoricalMemorySummary: { addedCount: (freeProofRecovery as JsonRecord).historicalMemoryAddedCount ?? 0 },
-        riskDetectorSummary: { addedCount: (freeProofRecovery as JsonRecord).riskProofAddedCount ?? 0 },
-        improvedPriceVolumeSummary: { addedCount: (freeProofRecovery as JsonRecord).improvedPriceVolumeAddedCount ?? 0 },
+        fundamentalsFallbackSummary: {
+          addedCount:
+            (freeProofRecovery as JsonRecord).fundamentalsProofAddedCount ?? 0,
+        },
+        officialProofRecoverySummary: {
+          addedCount:
+            (freeProofRecovery as JsonRecord).officialProofAddedCount ?? 0,
+        },
+        externalHistoricalMemorySummary: {
+          addedCount:
+            (freeProofRecovery as JsonRecord).historicalMemoryAddedCount ?? 0,
+        },
+        riskDetectorSummary: {
+          addedCount:
+            (freeProofRecovery as JsonRecord).riskProofAddedCount ?? 0,
+        },
+        improvedPriceVolumeSummary: {
+          addedCount:
+            (freeProofRecovery as JsonRecord).improvedPriceVolumeAddedCount ??
+            0,
+        },
         recoveredCandidateProofDeltas,
         proofVerificationReport,
         greatSignalSummary,
@@ -3894,14 +4406,31 @@ export async function POST(request: NextRequest) {
         ).length,
         proofRouterSummary: proofCompletionSummary,
         freeProofRecoverySummary: freeProofRecovery,
-        fundamentalsFallbackSummary: { addedCount: (freeProofRecovery as JsonRecord).fundamentalsProofAddedCount ?? 0 },
-        officialProofRecoverySummary: { addedCount: (freeProofRecovery as JsonRecord).officialProofAddedCount ?? 0 },
-        externalHistoricalMemorySummary: { addedCount: (freeProofRecovery as JsonRecord).historicalMemoryAddedCount ?? 0 },
-        riskDetectorSummary: { addedCount: (freeProofRecovery as JsonRecord).riskProofAddedCount ?? 0 },
-        improvedPriceVolumeSummary: { addedCount: (freeProofRecovery as JsonRecord).improvedPriceVolumeAddedCount ?? 0 },
+        fundamentalsFallbackSummary: {
+          addedCount:
+            (freeProofRecovery as JsonRecord).fundamentalsProofAddedCount ?? 0,
+        },
+        officialProofRecoverySummary: {
+          addedCount:
+            (freeProofRecovery as JsonRecord).officialProofAddedCount ?? 0,
+        },
+        externalHistoricalMemorySummary: {
+          addedCount:
+            (freeProofRecovery as JsonRecord).historicalMemoryAddedCount ?? 0,
+        },
+        riskDetectorSummary: {
+          addedCount:
+            (freeProofRecovery as JsonRecord).riskProofAddedCount ?? 0,
+        },
+        improvedPriceVolumeSummary: {
+          addedCount:
+            (freeProofRecovery as JsonRecord).improvedPriceVolumeAddedCount ??
+            0,
+        },
         recoveredCandidateProofDeltas,
         proofVerificationReport,
-        candidatesMovedForwardCount: (freeProofRecovery as JsonRecord).candidatesMovedForwardCount ?? 0,
+        candidatesMovedForwardCount:
+          (freeProofRecovery as JsonRecord).candidatesMovedForwardCount ?? 0,
         providerContractSummary: summary.providerContractSummary,
         fmpEndpointAccessSummary: summary.fmpEndpointAccessSummary,
         fmpPlanRestrictionSummary: summary.fmpPlanRestrictionSummary,
@@ -3976,72 +4505,143 @@ export async function POST(request: NextRequest) {
           }
         : {};
       if (!best)
-        return redactedJson({
-          ...output,
-          stage: "no_publish",
-          approved: false,
-          publishable: false,
-          published: false,
-          blockers: [],
-          stage2Unlocked: false,
-          reasonStage2Locked:
-            summary.bestCandidateFailureReason ??
-            "No candidate passed strict proof gates.",
-          proofGapsRemaining: bestFailed?.missingRequiredProof ?? [
-            "No candidate passed strict proof gates.",
-          ],
-          finalRecommendation: r2WriteAvailable
-            ? "Do not run Stage 2"
-            : "Fix R2 before large history backfill; do not run Stage 2",
-          nextRecommendedAction: summary.recommendedNextAction,
-        });
+        return redactedJson(
+          compact
+            ? compactStage1Response({
+                ...output,
+                stage: "no_publish",
+                approved: false,
+                publishable: false,
+                published: false,
+                blockers: [],
+                stage2Unlocked: false,
+                reasonStage2Locked:
+                  summary.bestCandidateFailureReason ??
+                  "No candidate passed strict proof gates.",
+                proofGapsRemaining: bestFailed?.missingRequiredProof ?? [
+                  "No candidate passed strict proof gates.",
+                ],
+                finalRecommendation: r2WriteAvailable
+                  ? "Do not run Stage 2"
+                  : "Fix R2 before large history backfill; do not run Stage 2",
+                nextRecommendedAction: summary.recommendedNextAction,
+              })
+            : {
+                ...output,
+                stage: "no_publish",
+                approved: false,
+                publishable: false,
+                published: false,
+                blockers: [],
+                stage2Unlocked: false,
+                reasonStage2Locked:
+                  summary.bestCandidateFailureReason ??
+                  "No candidate passed strict proof gates.",
+                proofGapsRemaining: bestFailed?.missingRequiredProof ?? [
+                  "No candidate passed strict proof gates.",
+                ],
+                finalRecommendation: r2WriteAvailable
+                  ? "Do not run Stage 2"
+                  : "Fix R2 before large history backfill; do not run Stage 2",
+                nextRecommendedAction: summary.recommendedNextAction,
+              },
+        );
       if (dryRun)
-        return redactedJson({
-          ...output,
-          stage: "dry_run_planned",
-          approved: false,
-          publishable: false,
-          published: false,
-          stage2Allowed:
-            confirmRun === true &&
-            best.eligibleForBest === true &&
-            best.proofDiversityClean >= 2 &&
-            proofEnrichmentSummary.proofMatchingClean === true &&
-            !best.unsafeProofMismatchWarning,
-          stage2Unlocked:
-            confirmRun === true &&
-            best.eligibleForBest === true &&
-            best.proofDiversityClean >= 2 &&
-            proofEnrichmentSummary.proofMatchingClean === true &&
-            !best.unsafeProofMismatchWarning,
-          reasonStage2Locked:
-            confirmRun !== true
-              ? "confirmRun=false; Stage 2 AI Committee stayed locked and OpenAI was not called."
-              : best.eligibleForBest === true &&
+        return redactedJson(
+          compact
+            ? compactStage1Response({
+                ...output,
+                stage: "dry_run_planned",
+                approved: false,
+                publishable: false,
+                published: false,
+                stage2Allowed:
+                  confirmRun === true &&
+                  best.eligibleForBest === true &&
+                  best.proofDiversityClean >= 2 &&
+                  proofEnrichmentSummary.proofMatchingClean === true &&
+                  !best.unsafeProofMismatchWarning,
+                stage2Unlocked:
+                  confirmRun === true &&
+                  best.eligibleForBest === true &&
+                  best.proofDiversityClean >= 2 &&
+                  proofEnrichmentSummary.proofMatchingClean === true &&
+                  !best.unsafeProofMismatchWarning,
+                reasonStage2Locked:
+                  confirmRun !== true
+                    ? "confirmRun=false; Stage 2 AI Committee stayed locked and OpenAI was not called."
+                    : best.eligibleForBest === true &&
+                        best.proofDiversityClean >= 2 &&
+                        proofEnrichmentSummary.proofMatchingClean === true &&
+                        !best.unsafeProofMismatchWarning
+                      ? null
+                      : (best.reasonNotPromoted ??
+                        "Strict proof gates did not pass cleanly."),
+                finalRecommendation:
+                  confirmRun === true &&
+                  best.eligibleForBest === true &&
                   best.proofDiversityClean >= 2 &&
                   proofEnrichmentSummary.proofMatchingClean === true &&
                   !best.unsafeProofMismatchWarning
-                ? null
-                : (best.reasonNotPromoted ??
-                  "Strict proof gates did not pass cleanly."),
-          finalRecommendation:
-            confirmRun === true &&
-            best.eligibleForBest === true &&
-            best.proofDiversityClean >= 2 &&
-            proofEnrichmentSummary.proofMatchingClean === true &&
-            !best.unsafeProofMismatchWarning
-              ? "Stage 2 allowed"
-              : r2WriteAvailable
-                ? "Do not run Stage 2"
-                : "Fix R2 before large history backfill; do not run Stage 2",
-          approvedForAiReview:
-            confirmRun === true &&
-            best.eligibleForBest === true &&
-            best.proofDiversityClean >= 2 &&
-            proofEnrichmentSummary.proofMatchingClean === true &&
-            !best.unsafeProofMismatchWarning,
-          nextRecommendedAction: summary.recommendedNextAction,
-        });
+                    ? "Stage 2 allowed"
+                    : r2WriteAvailable
+                      ? "Do not run Stage 2"
+                      : "Fix R2 before large history backfill; do not run Stage 2",
+                approvedForAiReview:
+                  confirmRun === true &&
+                  best.eligibleForBest === true &&
+                  best.proofDiversityClean >= 2 &&
+                  proofEnrichmentSummary.proofMatchingClean === true &&
+                  !best.unsafeProofMismatchWarning,
+                nextRecommendedAction: summary.recommendedNextAction,
+              })
+            : {
+                ...output,
+                stage: "dry_run_planned",
+                approved: false,
+                publishable: false,
+                published: false,
+                stage2Allowed:
+                  confirmRun === true &&
+                  best.eligibleForBest === true &&
+                  best.proofDiversityClean >= 2 &&
+                  proofEnrichmentSummary.proofMatchingClean === true &&
+                  !best.unsafeProofMismatchWarning,
+                stage2Unlocked:
+                  confirmRun === true &&
+                  best.eligibleForBest === true &&
+                  best.proofDiversityClean >= 2 &&
+                  proofEnrichmentSummary.proofMatchingClean === true &&
+                  !best.unsafeProofMismatchWarning,
+                reasonStage2Locked:
+                  confirmRun !== true
+                    ? "confirmRun=false; Stage 2 AI Committee stayed locked and OpenAI was not called."
+                    : best.eligibleForBest === true &&
+                        best.proofDiversityClean >= 2 &&
+                        proofEnrichmentSummary.proofMatchingClean === true &&
+                        !best.unsafeProofMismatchWarning
+                      ? null
+                      : (best.reasonNotPromoted ??
+                        "Strict proof gates did not pass cleanly."),
+                finalRecommendation:
+                  confirmRun === true &&
+                  best.eligibleForBest === true &&
+                  best.proofDiversityClean >= 2 &&
+                  proofEnrichmentSummary.proofMatchingClean === true &&
+                  !best.unsafeProofMismatchWarning
+                    ? "Stage 2 allowed"
+                    : r2WriteAvailable
+                      ? "Do not run Stage 2"
+                      : "Fix R2 before large history backfill; do not run Stage 2",
+                approvedForAiReview:
+                  confirmRun === true &&
+                  best.eligibleForBest === true &&
+                  best.proofDiversityClean >= 2 &&
+                  proofEnrichmentSummary.proofMatchingClean === true &&
+                  !best.unsafeProofMismatchWarning,
+                nextRecommendedAction: summary.recommendedNextAction,
+              },
+        );
       const createResponse = await candidateFactoryPOST(
         new NextRequest("http://internal/api/internal/candidate-factory-run", {
           method: "POST",

@@ -76,8 +76,43 @@ type StageResult = {
     rejectedReasons: string;
     matchScore: string;
   };
-  r2: { storageMode: string; rawWarehouseAvailable: string; rawDataStored: string; sourceOfTruth: string; nextAction: string; };
-  freeProof: { freeProofRecoverySkipped: string; candidatesInspected: string; fundamentalsProofAddedCount: string; officialProofAddedCount: string; historicalMemoryAddedCount: string; riskProofAddedCount: string; improvedPriceVolumeAddedCount: string; candidatesMovedForwardCount: string; candidatesStillBlockedCount: string; stillMissingProofSummary: string; stageSkipped: string; fundamentalsAddedCount: string; officialAddedCount: string; historicalAddedCount: string; riskAddedCount: string; improvedPriceVolumeAddedCountStage1: string; recoveredCandidateProofDeltasCount: string; aiReviewReadyCount: string; publishReadyCount: string; tickersChecked: string; snapshotsCreated: string; priceVolumeProofAddedCount: string; cleanPriceVolumeProofCount: string; partialPriceVolumeProofCount: string; unavailableCount: string; unavailableReasons: string; sourceUsed: string; r2StorageSummary: string; };
+  r2: {
+    storageMode: string;
+    rawWarehouseAvailable: string;
+    rawDataStored: string;
+    sourceOfTruth: string;
+    nextAction: string;
+  };
+  freeProof: {
+    freeProofRecoverySkipped: string;
+    candidatesInspected: string;
+    fundamentalsProofAddedCount: string;
+    officialProofAddedCount: string;
+    historicalMemoryAddedCount: string;
+    riskProofAddedCount: string;
+    improvedPriceVolumeAddedCount: string;
+    candidatesMovedForwardCount: string;
+    candidatesStillBlockedCount: string;
+    stillMissingProofSummary: string;
+    stageSkipped: string;
+    fundamentalsAddedCount: string;
+    officialAddedCount: string;
+    historicalAddedCount: string;
+    riskAddedCount: string;
+    improvedPriceVolumeAddedCountStage1: string;
+    recoveredCandidateProofDeltasCount: string;
+    aiReviewReadyCount: string;
+    publishReadyCount: string;
+    tickersChecked: string;
+    snapshotsCreated: string;
+    priceVolumeProofAddedCount: string;
+    cleanPriceVolumeProofCount: string;
+    partialPriceVolumeProofCount: string;
+    unavailableCount: string;
+    unavailableReasons: string;
+    sourceUsed: string;
+    r2StorageSummary: string;
+  };
   json: JsonValue | null;
 };
 
@@ -199,8 +234,10 @@ function findString(value: JsonValue | null, names: string[]): string | null {
   return null;
 }
 
-
-function valueAt(value: JsonValue | null | undefined, path: string[]): JsonValue | undefined {
+function valueAt(
+  value: JsonValue | null | undefined,
+  path: string[],
+): JsonValue | undefined {
   let current: JsonValue | undefined | null = value;
   for (const part of path) {
     if (!isRecord(current)) return undefined;
@@ -211,7 +248,8 @@ function valueAt(value: JsonValue | null | undefined, path: string[]): JsonValue
 
 function displayField(value: JsonValue | undefined): string {
   if (value === undefined || value === null || value === "") return "—";
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (typeof value === "number" || typeof value === "boolean")
+    return String(value);
   if (typeof value === "string") return value;
   return JSON.stringify(value);
 }
@@ -219,7 +257,8 @@ function displayField(value: JsonValue | undefined): string {
 function displayFirst(json: JsonValue | null, paths: string[][]): string {
   for (const path of paths) {
     const value = valueAt(json, path);
-    if (value !== undefined && value !== null && value !== "") return displayField(value);
+    if (value !== undefined && value !== null && value !== "")
+      return displayField(value);
   }
   return "—";
 }
@@ -472,40 +511,111 @@ function discoverySummary(json: JsonValue | null) {
 
 function r2RunSummary(json: JsonValue | null) {
   return {
-    storageMode: displayFirst(json, [["storageMode"], ["r2TruthSummary", "storageMode"], ["rawWarehouse", "storageMode"]]),
-    rawWarehouseAvailable: displayFirst(json, [["rawWarehouseAvailable"], ["rawWarehouse", "r2WriteAvailable"]]),
+    storageMode: displayFirst(json, [
+      ["storageMode"],
+      ["r2TruthSummary", "storageMode"],
+      ["rawWarehouse", "storageMode"],
+    ]),
+    rawWarehouseAvailable: displayFirst(json, [
+      ["rawWarehouseAvailable"],
+      ["rawWarehouse", "r2WriteAvailable"],
+    ]),
     rawDataStored: displayFirst(json, [["rawDataStored"]]),
-    sourceOfTruth: displayFirst(json, [["sourceOfTruth"], ["r2TruthSummary", "sourceOfTruth"], ["rawWarehouse", "sourceOfTruth"], ["stage1StorageDecision", "sourceOfTruth"]]),
-    nextAction: displayFirst(json, [["nextAction"], ["r2TruthSummary", "nextAction"], ["rawWarehouse", "nextAction"], ["stage1StorageDecision", "nextAction"]]),
+    sourceOfTruth: displayFirst(json, [
+      ["sourceOfTruth"],
+      ["r2TruthSummary", "sourceOfTruth"],
+      ["rawWarehouse", "sourceOfTruth"],
+      ["stage1StorageDecision", "sourceOfTruth"],
+    ]),
+    nextAction: displayFirst(json, [
+      ["nextAction"],
+      ["r2TruthSummary", "nextAction"],
+      ["rawWarehouse", "nextAction"],
+      ["stage1StorageDecision", "nextAction"],
+    ]),
   };
 }
 
 function freeProofRunSummary(json: JsonValue | null) {
   return {
-    freeProofRecoverySkipped: displayFirst(json, [["freeProofRecoverySkipped"], ["freeProofRecoverySummary", "skipped"]]),
-    candidatesInspected: displayFirst(json, [["candidatesInspected"], ["freeProofRecoverySummary", "candidatesInspected"]]),
-    fundamentalsProofAddedCount: displayFirst(json, [["fundamentalsProofAddedCount"], ["freeProofRecoverySummary", "fundamentalsProofAddedCount"]]),
-    officialProofAddedCount: displayFirst(json, [["officialProofAddedCount"], ["freeProofRecoverySummary", "officialProofAddedCount"]]),
-    historicalMemoryAddedCount: displayFirst(json, [["historicalMemoryAddedCount"], ["freeProofRecoverySummary", "historicalMemoryAddedCount"]]),
-    riskProofAddedCount: displayFirst(json, [["riskProofAddedCount"], ["freeProofRecoverySummary", "riskProofAddedCount"]]),
-    improvedPriceVolumeAddedCount: displayFirst(json, [["improvedPriceVolumeAddedCount"], ["freeProofRecoverySummary", "improvedPriceVolumeAddedCount"]]),
-    candidatesMovedForwardCount: displayFirst(json, [["candidatesMovedForwardCount"], ["freeProofRecoverySummary", "candidatesMovedForwardCount"]]),
-    candidatesStillBlockedCount: displayFirst(json, [["candidatesStillBlockedCount"], ["freeProofRecoverySummary", "candidatesStillBlockedCount"]]),
-    stillMissingProofSummary: displayFirst(json, [["stillMissingProofSummary"], ["freeProofRecoverySummary", "stillMissingProofSummary"]]),
+    freeProofRecoverySkipped: displayFirst(json, [
+      ["freeProofRecoverySkipped"],
+      ["freeProofRecoverySummary", "skipped"],
+    ]),
+    candidatesInspected: displayFirst(json, [
+      ["candidatesInspected"],
+      ["freeProofRecoverySummary", "candidatesInspected"],
+    ]),
+    fundamentalsProofAddedCount: displayFirst(json, [
+      ["fundamentalsProofAddedCount"],
+      ["freeProofRecoverySummary", "fundamentalsProofAddedCount"],
+    ]),
+    officialProofAddedCount: displayFirst(json, [
+      ["officialProofAddedCount"],
+      ["freeProofRecoverySummary", "officialProofAddedCount"],
+    ]),
+    historicalMemoryAddedCount: displayFirst(json, [
+      ["historicalMemoryAddedCount"],
+      ["freeProofRecoverySummary", "historicalMemoryAddedCount"],
+    ]),
+    riskProofAddedCount: displayFirst(json, [
+      ["riskProofAddedCount"],
+      ["freeProofRecoverySummary", "riskProofAddedCount"],
+    ]),
+    improvedPriceVolumeAddedCount: displayFirst(json, [
+      ["improvedPriceVolumeAddedCount"],
+      ["freeProofRecoverySummary", "improvedPriceVolumeAddedCount"],
+    ]),
+    candidatesMovedForwardCount: displayFirst(json, [
+      ["candidatesMovedForwardCount"],
+      ["freeProofRecoverySummary", "candidatesMovedForwardCount"],
+    ]),
+    candidatesStillBlockedCount: displayFirst(json, [
+      ["candidatesStillBlockedCount"],
+      ["freeProofRecoverySummary", "candidatesStillBlockedCount"],
+    ]),
+    stillMissingProofSummary: displayFirst(json, [
+      ["stillMissingProofSummary"],
+      ["freeProofRecoverySummary", "stillMissingProofSummary"],
+    ]),
     stageSkipped: displayFirst(json, [["freeProofRecoverySummary", "skipped"]]),
-    fundamentalsAddedCount: displayFirst(json, [["fundamentalsFallbackSummary", "addedCount"]]),
-    officialAddedCount: displayFirst(json, [["officialProofRecoverySummary", "addedCount"]]),
-    historicalAddedCount: displayFirst(json, [["externalHistoricalMemorySummary", "addedCount"]]),
+    fundamentalsAddedCount: displayFirst(json, [
+      ["fundamentalsFallbackSummary", "addedCount"],
+    ]),
+    officialAddedCount: displayFirst(json, [
+      ["officialProofRecoverySummary", "addedCount"],
+    ]),
+    historicalAddedCount: displayFirst(json, [
+      ["externalHistoricalMemorySummary", "addedCount"],
+    ]),
     riskAddedCount: displayFirst(json, [["riskDetectorSummary", "addedCount"]]),
-    improvedPriceVolumeAddedCountStage1: displayFirst(json, [["improvedPriceVolumeSummary", "addedCount"]]),
-    recoveredCandidateProofDeltasCount: Array.isArray(valueAt(json, ["recoveredCandidateProofDeltas"])) ? String((valueAt(json, ["recoveredCandidateProofDeltas"]) as JsonValue[]).length) : "—",
+    improvedPriceVolumeAddedCountStage1: displayFirst(json, [
+      ["improvedPriceVolumeSummary", "addedCount"],
+    ]),
+    recoveredCandidateProofDeltasCount: Array.isArray(
+      valueAt(json, ["recoveredCandidateProofDeltas"]),
+    )
+      ? String(
+          (valueAt(json, ["recoveredCandidateProofDeltas"]) as JsonValue[])
+            .length,
+        )
+      : "—",
     aiReviewReadyCount: displayFirst(json, [["aiReviewReadyCount"]]),
-    publishReadyCount: displayFirst(json, [["publishReadyCount"], ["pipelineStageCounts", "publish_ready"]]),
+    publishReadyCount: displayFirst(json, [
+      ["publishReadyCount"],
+      ["pipelineStageCounts", "publish_ready"],
+    ]),
     tickersChecked: displayFirst(json, [["tickersChecked"]]),
     snapshotsCreated: displayFirst(json, [["snapshotsCreated"]]),
-    priceVolumeProofAddedCount: displayFirst(json, [["priceVolumeProofAddedCount"]]),
-    cleanPriceVolumeProofCount: displayFirst(json, [["cleanPriceVolumeProofCount"]]),
-    partialPriceVolumeProofCount: displayFirst(json, [["partialPriceVolumeProofCount"]]),
+    priceVolumeProofAddedCount: displayFirst(json, [
+      ["priceVolumeProofAddedCount"],
+    ]),
+    cleanPriceVolumeProofCount: displayFirst(json, [
+      ["cleanPriceVolumeProofCount"],
+    ]),
+    partialPriceVolumeProofCount: displayFirst(json, [
+      ["partialPriceVolumeProofCount"],
+    ]),
     unavailableCount: displayFirst(json, [["unavailableCount"]]),
     unavailableReasons: displayFirst(json, [["unavailableReasons"]]),
     sourceUsed: displayFirst(json, [["sourceUsed"], ["providerResults"]]),
@@ -606,7 +716,15 @@ async function readResponse(response: Response): Promise<JsonValue> {
   if (!contentType.includes("application/json")) {
     const url = new URL(response.url || "http://local/");
     if (["/alerts", "/ledger"].includes(url.pathname) && response.ok) {
-      return { ok: true, route: url.pathname, routeType: "page", loaded: true, status: "page_ok", message: "Page route loaded successfully.", secretsRedacted: true };
+      return {
+        ok: true,
+        route: url.pathname,
+        routeType: "page",
+        loaded: true,
+        status: "page_ok",
+        message: "Page route loaded successfully.",
+        secretsRedacted: true,
+      };
     }
     return {
       ok: false,
@@ -947,7 +1065,10 @@ export default function EngineControlPanel() {
 
   async function checkAdminRouteContracts() {
     setBusy("admin-contract-check");
-    const row = await callGet("Check Admin Route Contracts", "/api/internal/admin-route-contract-check");
+    const row = await callGet(
+      "Check Admin Route Contracts",
+      "/api/internal/admin-route-contract-check",
+    );
     setRows((current) => [
       row,
       ...current.filter((item) => item.stage !== row.stage),
@@ -1018,11 +1139,11 @@ export default function EngineControlPanel() {
     setBusy(null);
   }
 
-
-
   async function runStage1ProofVerification() {
     setBusy("stage1-proof-verification");
-    setMessage("Running Stage 1 proof verification. No OpenAI, publish, or Telegram permissions are allowed.");
+    setMessage(
+      "Running Stage 1 proof verification. No OpenAI, publish, or Telegram permissions are allowed.",
+    );
     const row = await callPost(
       "Run Stage 1 Proof Verification",
       "/api/internal/stage1-proof-verification-run",
@@ -1032,13 +1153,17 @@ export default function EngineControlPanel() {
       row,
       ...current.filter((item) => item.stage !== row.stage),
     ]);
-    setMessage("Stage 1 proof verification completed. Review proofVerificationReport and compact top candidate deltas in the JSON panel.");
+    setMessage(
+      "Stage 1 proof verification completed. Review proofVerificationReport and compact top candidate deltas in the JSON panel.",
+    );
     setBusy(null);
   }
 
   async function runFreeProofRecovery() {
     setBusy("freeProof");
-    setMessage("Running R2 truth check plus free proof recovery in dry-run mode…");
+    setMessage(
+      "Running R2 truth check plus free proof recovery in dry-run mode…",
+    );
     const row = await callPost(
       "Run R2 + Free Proof Recovery",
       "/api/internal/free-proof-recovery-run",
@@ -1058,22 +1183,76 @@ export default function EngineControlPanel() {
       row,
       ...current.filter((item) => item.stage !== row.stage),
     ]);
-    setMessage("Free proof recovery dry-run completed. No OpenAI, publish, or Telegram calls were made.");
+    setMessage(
+      "Free proof recovery dry-run completed. No OpenAI, publish, or Telegram calls were made.",
+    );
     setBusy(null);
   }
+  async function runCompactBuildVerification() {
+    setBusy("compact-build-verification");
+    setMessage(
+      "Running compact build verification. No OpenAI, publish, or Telegram permissions are allowed.",
+    );
+    const row = await callPost(
+      "Run Compact Build Verification",
+      "/api/internal/stage1-compact-verification",
+      { dryRun: true, confirmRun: false, maxCandidates: 20 },
+    );
+    setRows((current) => [
+      row,
+      ...current.filter((item) => item.stage !== row.stage),
+    ]);
+    setMessage(
+      "Compact build verification completed. The JSON response is intentionally small.",
+    );
+    setBusy(null);
+  }
+
+  async function checkBuildChecklist() {
+    setBusy("build-checklist");
+    const row = await callGet(
+      "Check Build Checklist",
+      "/api/internal/build-checklist",
+    );
+    setRows((current) => [
+      row,
+      ...current.filter((item) => item.stage !== row.stage),
+    ]);
+    setMessage("Build checklist completed.");
+    setBusy(null);
+  }
+
   async function runMarketSnapshotEar() {
     setBusy("market-snapshot-ear");
-    const row = await callPost("Run Market Snapshot Ear", "/api/internal/market-snapshot-ear-run", { dryRun: true, confirmRun: false, maxTickers: 20, storeRaw: true });
-    setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
-    setMessage("Market Snapshot Ear completed. No OpenAI, publish, or Telegram calls were made.");
+    const row = await callPost(
+      "Run Market Snapshot Ear",
+      "/api/internal/market-snapshot-ear-run",
+      { dryRun: true, confirmRun: false, maxTickers: 20, storeRaw: true },
+    );
+    setRows((current) => [
+      row,
+      ...current.filter((item) => item.stage !== row.stage),
+    ]);
+    setMessage(
+      "Market Snapshot Ear completed. No OpenAI, publish, or Telegram calls were made.",
+    );
     setBusy(null);
   }
 
   async function runPriceVolumeProofRecovery() {
     setBusy("price-volume-proof");
-    const row = await callPost("Run Price/Volume Proof Recovery", "/api/internal/price-volume-proof-run", { dryRun: true, confirmRun: false, maxCandidates: 20 });
-    setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
-    setMessage("Price/volume proof recovery completed. No OpenAI, publish, or Telegram calls were made.");
+    const row = await callPost(
+      "Run Price/Volume Proof Recovery",
+      "/api/internal/price-volume-proof-run",
+      { dryRun: true, confirmRun: false, maxCandidates: 20 },
+    );
+    setRows((current) => [
+      row,
+      ...current.filter((item) => item.stage !== row.stage),
+    ]);
+    setMessage(
+      "Price/volume proof recovery completed. No OpenAI, publish, or Telegram calls were made.",
+    );
     setBusy(null);
   }
 
@@ -1751,32 +1930,79 @@ export default function EngineControlPanel() {
     setBusy(null);
   }
 
-
   async function showAutonomousSourceEngineStatus() {
     setBusy("autonomous-source-engine-status");
     try {
-      const response = await fetch("/api/internal/autonomous-source-engine-status", { cache: "no-store" });
+      const response = await fetch(
+        "/api/internal/autonomous-source-engine-status",
+        { cache: "no-store" },
+      );
       const json = await readResponse(response);
-      const row = summarize("Autonomous Source Engine Status", "/api/internal/autonomous-source-engine-status", "GET", response.status, json);
-      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      const row = summarize(
+        "Autonomous Source Engine Status",
+        "/api/internal/autonomous-source-engine-status",
+        "GET",
+        response.status,
+        json,
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
       setMessage("Autonomous source engine status loaded.");
     } catch (error) {
-      const row = summarize("Autonomous Source Engine Status", "/api/internal/autonomous-source-engine-status", "GET", "error", { ok: false, error: error instanceof Error ? error.message : "Unknown error" });
-      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      const row = summarize(
+        "Autonomous Source Engine Status",
+        "/api/internal/autonomous-source-engine-status",
+        "GET",
+        "error",
+        {
+          ok: false,
+          error: error instanceof Error ? error.message : "Unknown error",
+        },
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
     }
     setBusy(null);
   }
   async function showQuotaBatchingStatus() {
     setBusy("source-quota-and-batching-status");
     try {
-      const response = await fetch("/api/internal/source-quota-and-batching-status", { cache: "no-store" });
+      const response = await fetch(
+        "/api/internal/source-quota-and-batching-status",
+        { cache: "no-store" },
+      );
       const json = await readResponse(response);
-      const row = summarize("Quota + Batching Status", "/api/internal/source-quota-and-batching-status", "GET", response.status, json);
-      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      const row = summarize(
+        "Quota + Batching Status",
+        "/api/internal/source-quota-and-batching-status",
+        "GET",
+        response.status,
+        json,
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
       setMessage("Quota and batching status loaded.");
     } catch (error) {
-      const row = summarize("Quota + Batching Status", "/api/internal/source-quota-and-batching-status", "GET", "error", { ok: false, error: error instanceof Error ? error.message : "Unknown error" });
-      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      const row = summarize(
+        "Quota + Batching Status",
+        "/api/internal/source-quota-and-batching-status",
+        "GET",
+        "error",
+        {
+          ok: false,
+          error: error instanceof Error ? error.message : "Unknown error",
+        },
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
     }
     setBusy(null);
   }
@@ -1784,14 +2010,49 @@ export default function EngineControlPanel() {
   async function runLiveEventCalendar() {
     setBusy("live-event-calendar-run");
     try {
-      const response = await fetch("/api/internal/live-event-calendar-run", { method: "POST", headers: headers(), body: JSON.stringify({ dryRun: true, confirmRun: false, symbols: ["NVDA", "AMD", "MSFT", "GOOGL"], lookAheadHours: 72, lookBackHours: 24, maxEvents: 100 }), cache: "no-store" });
+      const response = await fetch("/api/internal/live-event-calendar-run", {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({
+          dryRun: true,
+          confirmRun: false,
+          symbols: ["NVDA", "AMD", "MSFT", "GOOGL"],
+          lookAheadHours: 72,
+          lookBackHours: 24,
+          maxEvents: 100,
+        }),
+        cache: "no-store",
+      });
       const json = await readResponse(response);
-      const row = summarize("Run Live Event Calendar", "/api/internal/live-event-calendar-run", "POST", response.status, json);
-      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
-      setMessage("Live event calendar dry run completed safely. No OpenAI, publish, or Telegram calls were allowed.");
+      const row = summarize(
+        "Run Live Event Calendar",
+        "/api/internal/live-event-calendar-run",
+        "POST",
+        response.status,
+        json,
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
+      setMessage(
+        "Live event calendar dry run completed safely. No OpenAI, publish, or Telegram calls were allowed.",
+      );
     } catch (error) {
-      const row = summarize("Run Live Event Calendar", "/api/internal/live-event-calendar-run", "POST", "error", { ok: false, error: error instanceof Error ? error.message : "Unknown error" });
-      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      const row = summarize(
+        "Run Live Event Calendar",
+        "/api/internal/live-event-calendar-run",
+        "POST",
+        "error",
+        {
+          ok: false,
+          error: error instanceof Error ? error.message : "Unknown error",
+        },
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
       setMessage("Live event calendar failed safely.");
     }
     setBusy(null);
@@ -1799,43 +2060,75 @@ export default function EngineControlPanel() {
 
   async function showListenHarderPlan() {
     setBusy("listen-harder-plan");
-    const row = await callGet("Show Listen-Harder Plan", "/api/internal/listen-harder-plan");
-    setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
-    setMessage("Listen-harder plan loaded. This is focused on related events only.");
+    const row = await callGet(
+      "Show Listen-Harder Plan",
+      "/api/internal/listen-harder-plan",
+    );
+    setRows((current) => [
+      row,
+      ...current.filter((item) => item.stage !== row.stage),
+    ]);
+    setMessage(
+      "Listen-harder plan loaded. This is focused on related events only.",
+    );
     setBusy(null);
   }
 
   async function runAutonomousSourceEngine() {
     setBusy("autonomous-source-engine-run");
     try {
-      const response = await fetch("/api/internal/autonomous-source-engine-run", {
-        method: "POST",
-        headers: headers(),
-        body: JSON.stringify({
-          dryRun: true,
-          confirmRun: false,
-          mode: "balanced",
-          maxCallsTotal: 150,
-          maxProviders: 10,
-          maxEndpoints: 80,
-          maxAssetsPerCycle: 500,
-          universeMode: "global",
-          includeStocks: true,
-          includeETFs: true,
-          includeCrypto: true,
-          includeFX: true,
-          includeCommodities: true,
-          includeMacro: true,
-        }),
-        cache: "no-store",
-      });
+      const response = await fetch(
+        "/api/internal/autonomous-source-engine-run",
+        {
+          method: "POST",
+          headers: headers(),
+          body: JSON.stringify({
+            dryRun: true,
+            confirmRun: false,
+            mode: "balanced",
+            maxCallsTotal: 150,
+            maxProviders: 10,
+            maxEndpoints: 80,
+            maxAssetsPerCycle: 500,
+            universeMode: "global",
+            includeStocks: true,
+            includeETFs: true,
+            includeCrypto: true,
+            includeFX: true,
+            includeCommodities: true,
+            includeMacro: true,
+          }),
+          cache: "no-store",
+        },
+      );
       const json = await readResponse(response);
-      const row = summarize("Run Autonomous Source Engine", "/api/internal/autonomous-source-engine-run", "POST", response.status, json);
-      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      const row = summarize(
+        "Run Autonomous Source Engine",
+        "/api/internal/autonomous-source-engine-run",
+        "POST",
+        response.status,
+        json,
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
       setMessage("Autonomous source engine dry run completed safely.");
     } catch (error) {
-      const row = summarize("Run Autonomous Source Engine", "/api/internal/autonomous-source-engine-run", "POST", "error", { ok: false, error: error instanceof Error ? error.message : "Unknown error" });
-      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      const row = summarize(
+        "Run Autonomous Source Engine",
+        "/api/internal/autonomous-source-engine-run",
+        "POST",
+        "error",
+        {
+          ok: false,
+          error: error instanceof Error ? error.message : "Unknown error",
+        },
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
     }
     setBusy(null);
   }
@@ -1889,14 +2182,30 @@ export default function EngineControlPanel() {
         payloadUsed: payload,
         loading: false,
         httpStatus: response.status,
-        result: response.ok && findBoolean(json, ["ok"]) !== false ? "OK" : "error",
+        result:
+          response.ok && findBoolean(json, ["ok"]) !== false ? "OK" : "error",
         errorMessage: isRecord(json)
-          ? String(json.errorMessageSafe ?? json.safeErrorMessage ?? json.error ?? "")
+          ? String(
+              json.errorMessageSafe ??
+                json.safeErrorMessage ??
+                json.error ??
+                "",
+            )
           : "",
         finishedAt,
       };
-      const row = summarize(labels[stage], route, "POST", response.status, json, diagnostics);
-      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      const row = summarize(
+        labels[stage],
+        route,
+        "POST",
+        response.status,
+        json,
+        diagnostics,
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
       setMessage(
         response.ok
           ? stage === "stage3"
@@ -1923,9 +2232,21 @@ export default function EngineControlPanel() {
         errorMessage: safeErrorMessage(error),
         finishedAt,
       };
-      const row = summarize(labels[stage], route, "POST", "error", json, diagnostics);
-      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
-      setMessage("Stage request failed in the browser. See the visible Run table error row.");
+      const row = summarize(
+        labels[stage],
+        route,
+        "POST",
+        "error",
+        json,
+        diagnostics,
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
+      setMessage(
+        "Stage request failed in the browser. See the visible Run table error row.",
+      );
     } finally {
       setBusy(null);
     }
@@ -1935,14 +2256,33 @@ export default function EngineControlPanel() {
     const route = "/api/internal/stage1-button-health";
     setBusy("stage1-button-health");
     try {
-      const response = await fetch(route, { method: "GET", headers: headers(), cache: "no-store" });
+      const response = await fetch(route, {
+        method: "GET",
+        headers: headers(),
+        cache: "no-store",
+      });
       const json = await readResponse(response);
-      const row = summarize("Stage 1 button health", route, "GET", response.status, json);
-      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      const row = summarize(
+        "Stage 1 button health",
+        route,
+        "GET",
+        response.status,
+        json,
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
       setMessage("Stage 1 button health check completed.");
     } catch (error) {
-      const row = summarize("Stage 1 button health", route, "GET", "error", { ok: false, errorMessageSafe: safeErrorMessage(error) });
-      setRows((current) => [row, ...current.filter((item) => item.stage !== row.stage)]);
+      const row = summarize("Stage 1 button health", route, "GET", "error", {
+        ok: false,
+        errorMessageSafe: safeErrorMessage(error),
+      });
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
       setMessage("Stage 1 button health check failed visibly.");
     } finally {
       setBusy(null);
@@ -2013,7 +2353,9 @@ export default function EngineControlPanel() {
           disabled={busy !== null && busy !== "stage1"}
           onClick={() => runStage("stage1")}
         >
-          {busy === "stage1" ? "Running Stage 1 Dry Run..." : "Run Stage 1 Dry Run"}
+          {busy === "stage1"
+            ? "Running Stage 1 Dry Run..."
+            : "Run Stage 1 Dry Run"}
         </button>
         <button
           style={styles.button}
@@ -2028,6 +2370,20 @@ export default function EngineControlPanel() {
           onClick={runStage1ProofVerification}
         >
           Run Stage 1 Proof Verification
+        </button>
+        <button
+          style={styles.button}
+          disabled={busy !== null}
+          onClick={runCompactBuildVerification}
+        >
+          Run Compact Build Verification
+        </button>
+        <button
+          style={styles.button}
+          disabled={busy !== null}
+          onClick={checkBuildChecklist}
+        >
+          Check Build Checklist
         </button>
         <button
           style={styles.button}
@@ -2479,10 +2835,18 @@ export default function EngineControlPanel() {
                   </td>
                   <td style={styles.td}>{row.status}</td>
                   <td style={styles.td}>{row.result}</td>
-                  <td style={styles.td}>{resultValue(row.diagnostics?.startedAt)}</td>
-                  <td style={styles.td}>{resultValue(row.diagnostics?.loading)}</td>
-                  <td style={styles.td}>{resultValue(row.diagnostics?.finishedAt)}</td>
-                  <td style={styles.td}>{resultValue(row.diagnostics?.errorMessage)}</td>
+                  <td style={styles.td}>
+                    {resultValue(row.diagnostics?.startedAt)}
+                  </td>
+                  <td style={styles.td}>
+                    {resultValue(row.diagnostics?.loading)}
+                  </td>
+                  <td style={styles.td}>
+                    {resultValue(row.diagnostics?.finishedAt)}
+                  </td>
+                  <td style={styles.td}>
+                    {resultValue(row.diagnostics?.errorMessage)}
+                  </td>
                   <td style={styles.td}>{yesNo(row.signalFound)}</td>
                   <td style={styles.td}>{row.discovery.inspected ?? "—"}</td>
                   <td style={styles.td}>{row.r2.storageMode}</td>
@@ -2490,30 +2854,60 @@ export default function EngineControlPanel() {
                   <td style={styles.td}>{row.r2.rawDataStored}</td>
                   <td style={styles.td}>{row.r2.sourceOfTruth}</td>
                   <td style={styles.td}>{row.r2.nextAction}</td>
-                  <td style={styles.td}>{row.freeProof.freeProofRecoverySkipped}</td>
+                  <td style={styles.td}>
+                    {row.freeProof.freeProofRecoverySkipped}
+                  </td>
                   <td style={styles.td}>{row.freeProof.candidatesInspected}</td>
-                  <td style={styles.td}>{row.freeProof.fundamentalsProofAddedCount}</td>
-                  <td style={styles.td}>{row.freeProof.officialProofAddedCount}</td>
-                  <td style={styles.td}>{row.freeProof.historicalMemoryAddedCount}</td>
+                  <td style={styles.td}>
+                    {row.freeProof.fundamentalsProofAddedCount}
+                  </td>
+                  <td style={styles.td}>
+                    {row.freeProof.officialProofAddedCount}
+                  </td>
+                  <td style={styles.td}>
+                    {row.freeProof.historicalMemoryAddedCount}
+                  </td>
                   <td style={styles.td}>{row.freeProof.riskProofAddedCount}</td>
-                  <td style={styles.td}>{row.freeProof.improvedPriceVolumeAddedCount}</td>
-                  <td style={styles.td}>{row.freeProof.candidatesMovedForwardCount}</td>
-                  <td style={styles.td}>{row.freeProof.candidatesStillBlockedCount}</td>
-                  <td style={styles.td}>{row.freeProof.stillMissingProofSummary}</td>
+                  <td style={styles.td}>
+                    {row.freeProof.improvedPriceVolumeAddedCount}
+                  </td>
+                  <td style={styles.td}>
+                    {row.freeProof.candidatesMovedForwardCount}
+                  </td>
+                  <td style={styles.td}>
+                    {row.freeProof.candidatesStillBlockedCount}
+                  </td>
+                  <td style={styles.td}>
+                    {row.freeProof.stillMissingProofSummary}
+                  </td>
                   <td style={styles.td}>{row.freeProof.stageSkipped}</td>
-                  <td style={styles.td}>{row.freeProof.fundamentalsAddedCount}</td>
+                  <td style={styles.td}>
+                    {row.freeProof.fundamentalsAddedCount}
+                  </td>
                   <td style={styles.td}>{row.freeProof.officialAddedCount}</td>
-                  <td style={styles.td}>{row.freeProof.historicalAddedCount}</td>
+                  <td style={styles.td}>
+                    {row.freeProof.historicalAddedCount}
+                  </td>
                   <td style={styles.td}>{row.freeProof.riskAddedCount}</td>
-                  <td style={styles.td}>{row.freeProof.improvedPriceVolumeAddedCountStage1}</td>
-                  <td style={styles.td}>{row.freeProof.recoveredCandidateProofDeltasCount}</td>
+                  <td style={styles.td}>
+                    {row.freeProof.improvedPriceVolumeAddedCountStage1}
+                  </td>
+                  <td style={styles.td}>
+                    {row.freeProof.recoveredCandidateProofDeltasCount}
+                  </td>
                   <td style={styles.td}>{row.freeProof.aiReviewReadyCount}</td>
                   <td style={styles.td}>{row.freeProof.publishReadyCount}</td>
                   <td style={styles.td}>{row.freeProof.tickersChecked}</td>
                   <td style={styles.td}>{row.freeProof.snapshotsCreated}</td>
-                  <td style={styles.td}>{row.freeProof.priceVolumeProofAddedCount}</td>
-                  <td style={styles.td}>{row.freeProof.cleanPriceVolumeProofCount}</td>
-                  <td style={styles.td}>{row.freeProof.partialPriceVolumeProofCount}</td>
+                  <td style={styles.td}>
+                    {row.freeProof.priceVolumeProofAddedCount}
+                  </td>
+                  <td style={styles.td}>
+                    {row.freeProof.cleanPriceVolumeProofCount}
+                  </td>
+                  <td style={styles.td}>
+                    {row.freeProof.partialPriceVolumeProofCount}
+                  </td>
                   <td style={styles.td}>{row.freeProof.unavailableCount}</td>
                   <td style={styles.td}>{row.freeProof.unavailableReasons}</td>
                   <td style={styles.td}>{row.freeProof.sourceUsed}</td>
@@ -2594,7 +2988,11 @@ export default function EngineControlPanel() {
               </button>
             </summary>
             <pre style={styles.pre}>
-              {JSON.stringify({ diagnostics: row.diagnostics, result: row.json }, null, 2)}
+              {JSON.stringify(
+                { diagnostics: row.diagnostics, result: row.json },
+                null,
+                2,
+              )}
             </pre>
           </details>
         ))}

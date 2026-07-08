@@ -71,7 +71,12 @@ export function scoreSevenLayerEvidence(input: {
   riskSignals?: number | null;
 }): SevenLayerEvidenceScore {
   const textBlob = `${input.source ?? ""} ${input.title ?? ""} ${input.summary ?? ""}`.toLowerCase();
-  const proofTypes = new Set(input.proofTypes ?? []);
+  const normalizedProofTypes = (input.proofTypes ?? []).flatMap((type) => {
+    if (type === "official_proof") return [type, "filing"];
+    if (type === "historical_memory") return [type, "pattern_match"];
+    return [type];
+  });
+  const proofTypes = new Set(normalizedProofTypes);
   const priceMove = typeof input.priceMovePercent === "number" ? input.priceMovePercent : null;
   const layerScores: Record<string, number> = {
     "Layer 1 — Official truth": Math.max(proofTypes.has("filing") ? 85 : 0, layerStrengthFromText(textBlob, ["sec", "edgar", "8-k", "fda", "clinical", "contract", "award", "recall", "approval"])),
@@ -80,7 +85,7 @@ export function scoreSevenLayerEvidence(input: {
     "Layer 4 — Business quality": Math.max(proofTypes.has("fundamentals") ? 60 : 0, layerStrengthFromText(textBlob, ["revenue", "margin", "eps", "cash flow", "debt", "valuation", "estimate", "price target"], 0)),
     "Layer 5 — Real-world demand": layerStrengthFromText(textBlob, ["job", "app rank", "review", "traffic", "pricing", "product launch", "customer", "supplier", "patent"], 0),
     "Layer 6 — Risk detector": Math.max((input.riskSignals ?? 0) > 0 ? 70 : 0, layerStrengthFromText(textBlob, ["lawsuit", "investigation", "auditor", "resignation", "default", "dilution", "recall", "enforcement"], 0)),
-    "Layer 7 — Historical memory": proofTypes.has("pattern_match") ? 65 : 0,
+    "Layer 7 — Historical memory": proofTypes.has("pattern_match") || proofTypes.has("historical_memory") ? 65 : 0,
   };
   const layersSupportingCandidate = Object.entries(layerScores).filter(([, score]) => score >= 50).map(([layer]) => layer);
   const layersMissing = Object.entries(layerScores).filter(([, score]) => score < 50).map(([layer]) => layer);

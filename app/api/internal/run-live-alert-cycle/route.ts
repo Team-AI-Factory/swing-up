@@ -1802,6 +1802,8 @@ async function saveStage1RawObject(
       dataType: String(metadata.dataType ?? "run-payload"),
     });
     output.rawDataStored = true;
+    const debug = obj(output.r2StorageDecisionDebug);
+    if (Object.keys(debug).length) output.r2StorageDecisionDebug = { ...debug, rawDataStored: true, rawWarehouseWriteUnavailable: false, finalStorageMode: "r2_raw_storage" };
     const existing = Array.isArray(output.r2ObjectKeys)
       ? output.r2ObjectKeys
       : Array.isArray(output.rawDataObjectKeys)
@@ -1815,6 +1817,8 @@ async function saveStage1RawObject(
     output.rawDataStored = false;
     output.storageMode = "postgresql_summary_only";
     output.rawWarehouseWriteUnavailable = true;
+    const debug = obj(output.r2StorageDecisionDebug);
+    if (Object.keys(debug).length) output.r2StorageDecisionDebug = { ...debug, rawDataStored: false, rawWarehouseWriteUnavailable: true, finalStorageMode: "postgresql_summary_only", finalReason: "R2 raw object save failed after write/delete truth check." };
     output.reasonStorageFallback =
       "R2 raw object save failed; Stage 1 continued with PostgreSQL summary-only fallback.";
     output.rawStorageErrorCategory =
@@ -1905,11 +1909,28 @@ export async function POST(request: NextRequest) {
     const [readiness, r2Health] = await Promise.all([
       getEngineStartReadiness(),
       getR2OperationalStatus({
-        allowRuntimeWriteCheck: bool(body.allowRuntimeR2WriteCheck, false),
+        allowRuntimeWriteCheck: bool(body.includeR2TruthCheck, true),
       }),
     ]);
     const r2WriteAvailable = r2Health.writeAvailable;
     const storageMode = r2Health.storageMode;
+    const r2StorageDecisionDebug = {
+      ok: r2Health.sourceOfTruth === "recent_write_test" || r2WriteAvailable || r2Health.rawHealth.writeAttempted === true,
+      diagnosticRouteStorageMode: r2Health.storageMode,
+      stage1StorageMode: storageMode,
+      freeProofRecoveryStorageMode: null as string | null,
+      recentWriteDeleteFound: r2Health.sourceOfTruth === "recent_write_test",
+      lastConfirmedWriteAt: r2Health.lastConfirmedWriteAt,
+      lastConfirmedDeleteAt: r2Health.lastConfirmedDeleteAt,
+      readOnlyCheckAttempted: r2Health.rawHealth.writeTestNotRun === true,
+      readOnlyCheckOverrodeRecentWriteTest: false,
+      finalStorageMode: storageMode,
+      finalReason: r2WriteAvailable
+        ? "Recent or runtime R2 write/read/delete proof is available; Stage 1 may use R2 raw storage."
+        : "R2 raw storage stays disabled because no recent successful write/delete proof is available or the write/delete check failed.",
+      rawDataStored: false,
+      rawWarehouseWriteUnavailable: !r2WriteAvailable,
+    };
     const r2TruthSummary = { configured: r2Health.configured, connected: r2Health.connected, bucket: r2Health.rawHealth.bucket, canRead: r2Health.canRead, canWrite: r2Health.canWrite, canDelete: r2Health.canDelete, lastConfirmedReadAt: r2Health.rawHealth.canRead ? r2Health.rawHealth.lastChecked : null, lastConfirmedWriteAt: r2Health.lastConfirmedWriteAt, lastConfirmedDeleteAt: r2Health.lastConfirmedDeleteAt, sourceOfTruth: r2Health.sourceOfTruth, storageMode: r2Health.storageMode, writeAwsStatusCode: r2Health.rawHealth.writeAwsStatusCode, deleteAwsStatusCode: r2Health.rawHealth.deleteAwsStatusCode, accessKeyIdFingerprint: r2Health.rawHealth.accessKeyIdFingerprint, endpointHost: r2Health.rawHealth.endpointHost, forcePathStyleUsed: r2Health.rawHealth.forcePathStyleUsed, regionUsed: r2Health.rawHealth.regionUsed, errorCategory: r2Health.rawHealth.errorCategory, errorMessageSafe: r2Health.rawHealth.errorMessageSafe, nextAction: r2Health.rawHealth.nextAction, secretsRedacted: true };
     const reasonStorageFallback = r2WriteAvailable
       ? null
@@ -2531,6 +2552,7 @@ export async function POST(request: NextRequest) {
       rawDataObjectKeys: [] as string[],
       r2ObjectsWritten: 0,
       r2ObjectKeys: [] as string[],
+      r2StorageDecisionDebug,
       rawWarehouseStatus: {
         configured: r2Health.configured,
         connected: r2Health.connected,
@@ -2571,7 +2593,9 @@ export async function POST(request: NextRequest) {
         noTelegram: true,
         secretsRedacted: true,
       }));
+      r2StorageDecisionDebug.freeProofRecoveryStorageMode = text(obj((earlyFreeProofRecovery as JsonRecord).r2TruthSummary).storageMode) || null;
       Object.assign(output, {
+        r2StorageDecisionDebug,
         freeProofRecoverySummary: earlyFreeProofRecovery,
         fundamentalsFallbackSummary: { addedCount: (earlyFreeProofRecovery as JsonRecord).fundamentalsProofAddedCount ?? 0 },
         officialProofRecoverySummary: { addedCount: (earlyFreeProofRecovery as JsonRecord).officialProofAddedCount ?? 0 },
@@ -3484,19 +3508,41 @@ export async function POST(request: NextRequest) {
         const target = rankedCandidates.find((row) => row.rawSignalId === id || (row.ticker && row.ticker === candidate.ticker));
         if (!target) continue;
         const added = Array.isArray(recovered.proofAddedByFreeRecovery) ? recovered.proofAddedByFreeRecovery.map(String) : [];
-        for (const type of added) {
+        const canonicalAdded = added.map((type) => type === "official_proof" ? "filing" : type === "historical_memory" ? "pattern_match" : type);
+        const sourceNames = [
+          text(obj(recovered.fundamentals).fundamentalsProofSource) || null,
+          obj(recovered.official).officialProofAvailable === true ? "SEC EDGAR" : null,
+          obj(recovered.historical).historicalMemoryAvailable === true ? "Stored historical memory" : null,
+          obj(recovered.priceVolume).latestPrice != null ? text(obj(recovered.priceVolume).latestPriceSource) : null,
+        ].filter(Boolean) as string[];
+        for (const type of canonicalAdded) {
           target.proofAttachedByType[type] = (target.proofAttachedByType[type] ?? 0) + 1;
           if (!target.proofAddedTypes.includes(type)) target.proofAddedTypes.push(type);
           if (!target.uniqueProofTypesClean.includes(type)) target.uniqueProofTypesClean.push(type);
+          delete target.proofUnavailableByType[type];
         }
-        target.missingRequiredProof = target.missingRequiredProof.filter((type) => !added.includes(type));
-        target.stillMissingProof = Array.isArray(recovered.stillMissingProof) ? recovered.stillMissingProof.map(String) : target.stillMissingProof;
+        for (const source of sourceNames) {
+          if (!target.uniqueIndependentSourcesClean.includes(source)) target.uniqueIndependentSourcesClean.push(source);
+        }
+        target.missingRequiredProof = target.missingRequiredProof.filter((type) => !canonicalAdded.includes(type) && !added.includes(type));
+        target.missingOptionalProof = target.missingOptionalProof.filter((type) => !canonicalAdded.includes(type) && !added.includes(type));
+        target.stillMissingProof = Array.isArray(recovered.stillMissingProof) ? recovered.stillMissingProof.map(String).map((type) => type === "official_proof" ? "filing" : type === "historical_memory" ? "pattern_match" : type) : target.stillMissingProof;
+        for (const type of canonicalAdded) target.stillMissingProof = target.stillMissingProof.filter((missing) => missing !== type);
         target.proofStillMissingAfterRouter = target.stillMissingProof;
         target.nextBestProofToFetch = String(recovered.nextBestProofToFetch ?? target.nextBestProofToFetch);
         target.nextBestProofToFetchAfterRouter = target.nextBestProofToFetch;
         target.proofDiversityClean = new Set(target.uniqueProofTypesClean.filter((type) => type !== "raw_signal_source" && type !== "source_health")).size;
-        (target as JsonRecord).sevenLayerEvidence = { ...(target.sevenLayerEvidence as unknown as JsonRecord), proofTypesAfterFreeRecovery: target.proofAddedTypes, freeRecoveryAttached: added.length > 0, layersMissing: target.stillMissingProof };
-        target.greatSignalScorecard = { ...target.greatSignalScorecard, proofAttachedByType: target.proofAttachedByType, uniqueProofTypesClean: target.uniqueProofTypesClean, missingRequiredProof: target.missingRequiredProof, proofStillMissingAfterRouter: target.proofStillMissingAfterRouter, nextBestProofToFetch: target.nextBestProofToFetch };
+        const rescoredLayers = scoreSevenLayerEvidence({
+          source: String(target.source ?? ""),
+          title: String(target.title ?? ""),
+          summary: String((target as JsonRecord).summary ?? ""),
+          proofTypes: target.uniqueProofTypesClean,
+          promotionScore: typeof target.promotionScore === "number" ? target.promotionScore : null,
+        });
+        target.sevenLayerEvidence = rescoredLayers;
+        (target as JsonRecord).proofTypesAfterFreeRecovery = target.proofAddedTypes;
+        (target as JsonRecord).freeRecoveryAttached = added.length > 0;
+        target.greatSignalScorecard = { ...target.greatSignalScorecard, proofAttachedByType: target.proofAttachedByType, uniqueProofTypesClean: target.uniqueProofTypesClean, uniqueIndependentSourcesClean: target.uniqueIndependentSourcesClean, missingRequiredProof: target.missingRequiredProof, missingOptionalProof: target.missingOptionalProof, proofStillMissingAfterRouter: target.proofStillMissingAfterRouter, nextBestProofToFetch: target.nextBestProofToFetch, fundamentalsSupportScore: target.uniqueProofTypesClean.includes("fundamentals") ? 100 : target.greatSignalScorecard.fundamentalsSupportScore, officialProofScore: target.uniqueProofTypesClean.includes("filing") ? 100 : target.greatSignalScorecard.officialProofScore, historicalMemoryScore: target.uniqueProofTypesClean.includes("pattern_match") ? 100 : target.greatSignalScorecard.historicalMemoryScore, priceVolumeContextScore: target.uniqueProofTypesClean.includes("price_volume") ? 100 : 0, proofDiversityScore: clampScore((target.proofDiversityClean / 4) * 100) };
         (target as JsonRecord).stageAfterFreeRecovery = recovered.stageAfterFreeRecovery;
         (target as JsonRecord).freeRecoveryProof = { fundamentals: recovered.fundamentals, official: recovered.official, historical: recovered.historical, risk: recovered.risk, priceVolume: recovered.priceVolume };
       }
@@ -3783,6 +3829,7 @@ export async function POST(request: NextRequest) {
             }
           : null,
         proofCompletionSummary,
+        r2StorageDecisionDebug: { ...r2StorageDecisionDebug, freeProofRecoveryStorageMode: text(obj((freeProofRecovery as JsonRecord).r2TruthSummary).storageMode) || r2StorageDecisionDebug.freeProofRecoveryStorageMode },
         freeProofRecoverySummary: freeProofRecovery,
         fundamentalsFallbackSummary: { addedCount: (freeProofRecovery as JsonRecord).fundamentalsProofAddedCount ?? 0 },
         officialProofRecoverySummary: { addedCount: (freeProofRecovery as JsonRecord).officialProofAddedCount ?? 0 },

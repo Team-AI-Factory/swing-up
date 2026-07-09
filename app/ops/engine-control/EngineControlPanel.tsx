@@ -1339,6 +1339,57 @@ export default function EngineControlPanel() {
     setBusy(null);
   }
 
+  async function runPriorityArticleReader() {
+    setBusy("priority-article-reader");
+    const route = "/api/internal/priority-article-reader-run";
+    try {
+      const response = await fetch(route, {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({
+          dryRun: true,
+          confirmRun: false,
+          maxArticles: 10,
+          priorityMode: true,
+        }),
+        cache: "no-store",
+      });
+      const json = await readResponse(response);
+      const row = summarize(
+        "Run Priority Article Reader",
+        route,
+        "POST",
+        response.status,
+        json,
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
+      setMessage(
+        "Priority article reader completed. Macro/geopolitical shocks were protected; no OpenAI, publish, or Telegram permission was allowed.",
+      );
+    } catch (error) {
+      const row = summarize(
+        "Run Priority Article Reader",
+        route,
+        "POST",
+        "error",
+        {
+          ok: false,
+          error: error instanceof Error ? error.message : "Unknown error",
+        },
+      );
+      setRows((current) => [
+        row,
+        ...current.filter((item) => item.stage !== row.stage),
+      ]);
+      setMessage("Priority article reader failed safely.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function runFmpProviderContractTest() {
     setBusy("fmp-contract");
     try {
@@ -2504,6 +2555,13 @@ export default function EngineControlPanel() {
           onClick={runArticleReaderTest}
         >
           Test Article Reader
+        </button>
+        <button
+          style={styles.button}
+          disabled={busy !== null}
+          onClick={runPriorityArticleReader}
+        >
+          Run Priority Article Reader
         </button>
         <button
           style={styles.button}

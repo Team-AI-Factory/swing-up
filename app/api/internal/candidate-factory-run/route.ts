@@ -5,6 +5,7 @@ import { resolveTickerEntity } from "@/lib/entities/ticker-resolver";
 import { buildProofBundleForRawSignal, type ProofBundle, type ProofItem } from "@/lib/proof/proof-bundle-builder";
 import { evaluateRawSignalQualityGate, receiptsFromRawSignal, ruleInputFromRawSignal } from "@/lib/raw-signal-quality-gate";
 import { buildMarketSentimentImpact, loadLatestMarketSentimentSnapshot, scoreSwingUpAlert, type HistoricalPatternMatch, type ScorePreviewInput, type SwingUpScore } from "@/lib/scoring-engine";
+import { buildLiveScoreInput } from "@/lib/live-score-evidence";
 
 const SAFE_ACTIONS = new Set(["Buy Candidate", "Speculative Buy Candidate", "Watch", "Sell Review", "Avoid", "No Action"]);
 const CANDIDATE_STATUSES = ["candidate", "needs_more_data", "rejected", "draft", "queued", "review", "ready_for_review"];
@@ -30,10 +31,6 @@ type CandidateEvaluation = {
 
 function text(value: unknown, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
-}
-
-function numberValue(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function booleanValue(value: unknown, fallback: boolean) {
@@ -95,7 +92,19 @@ function summarizeProof(proofBundle: ProofBundle | null) {
 
 function summarizeScore(score: SwingUpScore | null) {
   if (!score) return null;
-  return { source: "preview", profitPotentialScore: score.profitPotentialScore, evidenceConfidenceScore: score.evidenceConfidenceScore, riskLevel: score.riskLevel ?? "missing", pricedInCheck: score.pricedInCheck, suggestedAction: score.suggestedAction, warnings: score.warnings };
+  return {
+    source: "live_evidence_gate",
+    profitPotentialScore: score.profitPotentialScore,
+    evidenceConfidenceScore: score.evidenceConfidenceScore,
+    riskLevel: score.riskLevel ?? "missing",
+    pricedInCheck: score.pricedInCheck,
+    suggestedAction: score.suggestedAction,
+    liveDataReady: score.liveDataReady,
+    inputCompleteness: score.inputCompleteness,
+    missingInputs: score.missingInputs,
+    inputProvenance: score.inputProvenance,
+    warnings: score.warnings,
+  };
 }
 
 async function latestUsefulRawSignals(limit: number) {
@@ -128,7 +137,19 @@ async function evaluateSignal(rawSignal: RawSignal, minQualityScore: number, req
   const ticker = text(resolver.ticker ?? qualityGate.ruleFilterResult.detectedTicker ?? rawSignal.ticker).toUpperCase();
   const company = text(resolver.companyName ?? qualityGate.ruleFilterResult.detectedCompany ?? payload.company ?? payload.companyName, ticker || "Unknown company");
   const eventSummary = text(rawSignal.summary, rawSignal.title);
-  const score = scoreSwingUpAlert({ ticker: ticker || company, company, expectedUpsidePercent: Math.max(4, numberValue(payload.expectedUpsidePercent) ?? Math.round(qualityGate.qualityScore / 6)), expectedDownsidePercent: numberValue(payload.expectedDownsidePercent) ?? 8, historicalPatternMatch: patternMatchLabel(pattern.score), valuationSupportScore: numberValue(payload.valuationSupportScore) ?? qualityGate.qualityScore, catalystStrengthScore: numberValue(payload.catalystStrengthScore) ?? qualityGate.qualityScore, sectorSupportScore: 50, macroSupportScore: sentiment.macroSupportScore, sourceQuality: sourceQuality(qualityGate.ruleFilterResult.sourceReliability), independentReceipts: receipts.length, hasConfirmedFilingOrExchangeSource: qualityGate.ruleFilterResult.sourceReliability === "strong", priceVolumeConfirmationScore: proofBundle?.proofTypes.includes("price_volume") ? 70 : 40, financialSupportScore: proofBundle?.proofTypes.includes("fundamentals") ? 70 : 40, verifiedRippleLinks: Math.min(receipts.length, 3), contradictionCount: 0, isRumour: qualityGate.ruleFilterResult.sourceReliability === "weak", sourceRiskScore: qualityGate.ruleFilterResult.sourceReliability === "strong" ? 15 : 35, payload: rawSignal.payload }, sentiment);
+  const score = scoreSwingUpAlert(buildLiveScoreInput({
+    ticker: ticker || company,
+    company,
+    source: rawSignal.source,
+    payload: rawSignal.payload,
+    receivedAt: rawSignal.receivedAt,
+    sourceQuality: sourceQuality(qualityGate.ruleFilterResult.sourceReliability),
+    qualityScore: qualityGate.qualityScore,
+    receiptsCount: receipts.length,
+    proofTypes: proofBundle?.proofTypes ?? [],
+    historicalPatternMatch: patternMatchLabel(pattern.score),
+    sentiment,
+  }), sentiment);
   const action = SAFE_ACTIONS.has(score.suggestedAction) ? score.suggestedAction : "No Action";
   const duplicate = await findDuplicateCandidate(ticker, eventSummary);
   const proofBlocked = requireProof && (!proofBundle || proofBundle.safeToPromote !== "yes");
@@ -141,6 +162,7 @@ async function evaluateSignal(rawSignal: RawSignal, minQualityScore: number, req
     ...(proofBlocked ? ["missing_or_insufficient_proof"] : []),
     ...(!sourceHealthAcceptable(proofBundle) ? ["source_health_not_acceptable"] : []),
     ...(!score.riskLevel ? ["risk_missing"] : []),
+    ...(!score.liveDataReady ? ["live_score_inputs_incomplete", ...score.missingInputs.map((item) => `missing_live_input:${item}`)] : []),
     ...(!SAFE_ACTIONS.has(score.suggestedAction) ? ["unsafe_action_label"] : []),
     ...(hasUnsafeWording(rawSignal.title, rawSignal.summary, action) ? ["hype_or_unsafe_wording"] : []),
     ...(proofBundle?.safeToPromote === "no" ? proofBundle.reasons : []),
@@ -154,7 +176,19 @@ async function createCandidate(rawSignal: RawSignal, evaluation: CandidateEvalua
   if (!score) throw new Error("score_missing");
   return prisma.$transaction(async (tx) => {
     const alert = await tx.alert.create({ data: { ticker: evaluation.ticker || evaluation.company, company: evaluation.company, action: evaluation.action, event: evaluation.eventSummary, status: "candidate", publishedAt: null } });
-    await tx.alertScore.create({ data: { alertId: alert.id, profitPotential: score.profitPotentialScore, evidenceConfidence: score.evidenceConfidenceScore, riskLevel: score.riskLevel, pricedInCheck: score.pricedInCheck } });
+    await tx.alertScore.create({
+      data: {
+        alertId: alert.id,
+        profitPotential: score.profitPotentialScore,
+        evidenceConfidence: score.evidenceConfidenceScore,
+        riskLevel: score.riskLevel,
+        pricedInCheck: score.pricedInCheck,
+        inputCompleteness: score.inputCompleteness,
+        liveDataReady: score.liveDataReady,
+        missingInputs: score.missingInputs,
+        inputProvenance: score.inputProvenance,
+      },
+    });
     for (const receipt of receiptsFromRawSignal(rawSignal)) {
       await tx.alertSource.create({ data: { alertId: alert.id, sourceType: text(receipt.source, rawSignal.source), receiptUrl: text(receipt.url) || null, summary: text(receipt.label, rawSignal.title) } });
     }

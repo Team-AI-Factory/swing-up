@@ -11,7 +11,7 @@ const MIN_PROFIT_SCORE = 60;
 const MIN_EVIDENCE_SCORE = 60;
 
 type PublishPayload = { candidateAlertId?: unknown; alertId?: unknown; dryRun?: unknown; confirmPublish?: unknown };
-type BlockCode = "missing_alert_id" | "database_unavailable" | "not_found" | "not_publishable_status" | "proof_missing" | "risk_missing" | "scores_missing" | "weak_scores" | "unsafe_wording" | "public_tracking_disabled" | "confirmation_required";
+type BlockCode = "missing_alert_id" | "database_unavailable" | "not_found" | "not_publishable_status" | "proof_missing" | "risk_missing" | "scores_missing" | "weak_scores" | "live_data_incomplete" | "live_price_missing" | "unsafe_wording" | "public_tracking_disabled" | "confirmation_required";
 
 type AlertRecord = Prisma.AlertGetPayload<{
   include: {
@@ -72,6 +72,10 @@ function review(alert: AlertRecord) {
     if (score.profitPotential < MIN_PROFIT_SCORE || score.evidenceConfidence < MIN_EVIDENCE_SCORE) {
       blockCodes.push("weak_scores");
       blockedReasons.push(`Latest scores are too weak for publication (profit ${score.profitPotential}, evidence ${score.evidenceConfidence}; minimum ${MIN_PROFIT_SCORE}/${MIN_EVIDENCE_SCORE}).`);
+    }
+    if (!score.liveDataReady || score.inputCompleteness < 100) {
+      blockCodes.push("live_data_incomplete");
+      blockedReasons.push(`Live scoring evidence is incomplete (${score.inputCompleteness}% complete). Missing: ${JSON.stringify(score.missingInputs)}.`);
     }
   }
   if (unsafe.length) {
@@ -170,7 +174,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(response({ dryRun, published: false, alert: null, blockedReasons: ["Alert was not found."], warnings: [], nextRecommendedAction: "Verify the candidateAlertId/alertId before retrying." }), { status: 404 });
   }
 
-  const latestSnapshot = await prisma.priceSnapshot.findFirst({ where: { ticker: alert.ticker }, orderBy: { capturedAt: "desc" } });
+  const latestSnapshot = await prisma.priceSnapshot.findFirst({
+    where: { alertId: alert.id, ticker: alert.ticker, dataQuality: "live" },
+    orderBy: { capturedAt: "desc" },
+  });
   const priceAtAlert = decimalText(latestSnapshot?.price);
   const checked = review(alert);
   const warnings = [...checked.warnings];
@@ -187,7 +194,10 @@ export async function POST(request: NextRequest) {
     const gate = await runApprovalGate({ candidateAlertId: alert.id, dryRun: true }).catch(() => null);
     if (gate?.approvalRecommendation === "approve" && gate.failedChecks.length === 0) warnings.push("Approval gate dry-run passed; alert still must be approved before publishing.");
   }
-  if (!priceAtAlert) warnings.push("No price snapshot was available; priceAtAlert will remain null rather than using a fake price.");
+  if (!priceAtAlert) {
+    checked.blockCodes.push("live_price_missing");
+    checked.blockedReasons.push("No verified live price-at-alert snapshot is available. Publishing is blocked so outcome tracking cannot start from a fake or shared ticker price.");
+  }
   if (!dryRun && !confirmPublish) checked.blockedReasons.push("confirmPublish=true is required when dryRun=false.");
 
   if (dryRun || checked.blockedReasons.length > 0) {

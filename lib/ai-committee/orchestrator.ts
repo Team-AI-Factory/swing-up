@@ -55,7 +55,7 @@ export type AiCommitteeOutput = {
 };
 
 const UNSAFE_WORDS = ["guaranteed", "risk-free", "can't lose", "cannot lose", "sure thing", "buy now", "get rich"];
-const DEFAULT_MAX_AGENTS = 6;
+const DEFAULT_MAX_AGENTS = 13;
 const DEFAULT_MAX_COST_USD = 2;
 
 function clampScore(value: unknown, fallback = 0) {
@@ -186,10 +186,10 @@ function synthesizeCommitteeOutput(evidencePack: AiCommitteeEvidencePack, agentR
 
 export async function runAiCommittee(input: RunAiCommitteeInput) {
   const startedAt = new Date();
-  const dryRun = input.dryRun ?? true;
+  const providerStatus = getAiCommitteeProviderStatus();
+  const dryRun = input.dryRun ?? providerStatus.dryRunDefault;
   const mode = input.mode === "full" ? "full" : "preview";
   const candidateAlertId = text(input.candidateAlertId ?? input.alertId);
-  const providerStatus = getAiCommitteeProviderStatus();
   if (!candidateAlertId) return { ok: false, status: "missing_candidate_alert_id", dryRun, error: "candidateAlertId or alertId is required." };
 
   if (!dryRun) {

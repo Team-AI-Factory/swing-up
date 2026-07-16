@@ -7,6 +7,7 @@ export type AiCommitteeProviderStatus = {
   dryRunDefault: boolean;
   modelEnvStatus: Record<"fast" | "deep" | "final", "configured" | "missing">;
   maxCostUsdPerRunConfigured: boolean;
+  autonomousEnabled: boolean;
 };
 
 export type AiCommitteeRunOptions = {
@@ -23,29 +24,40 @@ function envFlag(name: string, defaultValue = false) {
   return ["1", "true", "yes", "on"].includes(value.toLowerCase());
 }
 
-function dryRunDefault() {
-  return envFlag("AI_COMMITTEE_DRY_RUN_DEFAULT", true);
+function defaultModel() {
+  return process.env.OPENAI_MODEL?.trim() || "gpt-4.1-mini";
+}
+
+function configuredModel(tier: AiCommitteeModelTier) {
+  if (tier === "final") return process.env.AI_COMMITTEE_FINAL_MODEL?.trim() || defaultModel();
+  if (tier === "deep") return process.env.AI_COMMITTEE_DEEP_MODEL?.trim() || defaultModel();
+  return process.env.AI_COMMITTEE_FAST_MODEL?.trim() || defaultModel();
+}
+
+function dryRunDefault(configured: boolean, enabled: boolean) {
+  return envFlag("AI_COMMITTEE_DRY_RUN_DEFAULT", !(configured && enabled));
 }
 
 export function getAiCommitteeProviderStatus(): AiCommitteeProviderStatus {
+  const configured = Boolean(process.env.OPENAI_API_KEY);
+  const enabled = envFlag("AI_COMMITTEE_ENABLED", configured);
   return {
     provider: "openai",
-    configured: Boolean(process.env.OPENAI_API_KEY),
-    enabled: envFlag("AI_COMMITTEE_ENABLED", false),
-    dryRunDefault: dryRunDefault(),
+    configured,
+    enabled,
+    dryRunDefault: dryRunDefault(configured, enabled),
     modelEnvStatus: {
-      fast: process.env.AI_COMMITTEE_FAST_MODEL ? "configured" : "missing",
-      deep: process.env.AI_COMMITTEE_DEEP_MODEL ? "configured" : "missing",
-      final: process.env.AI_COMMITTEE_FINAL_MODEL ? "configured" : "missing",
+      fast: configuredModel("fast") ? "configured" : "missing",
+      deep: configuredModel("deep") ? "configured" : "missing",
+      final: configuredModel("final") ? "configured" : "missing",
     },
-    maxCostUsdPerRunConfigured: Boolean(process.env.AI_COMMITTEE_MAX_COST_USD_PER_RUN),
+    maxCostUsdPerRunConfigured: true,
+    autonomousEnabled: envFlag("AI_COMMITTEE_AUTONOMOUS", true),
   };
 }
 
 function modelForTier(tier: AiCommitteeModelTier) {
-  if (tier === "final") return process.env.AI_COMMITTEE_FINAL_MODEL;
-  if (tier === "deep") return process.env.AI_COMMITTEE_DEEP_MODEL;
-  return process.env.AI_COMMITTEE_FAST_MODEL;
+  return configuredModel(tier);
 }
 
 export async function runOpenAiCommitteeProvider(options: AiCommitteeRunOptions) {

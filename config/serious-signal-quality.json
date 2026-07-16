@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "branchOnly": true,
+  "protectedBranch": "main",
+  "maxIterationAttempts": 5,
+  "minimumInputCompleteness": 100,
+  "minimumIndependentReceipts": 2,
+  "minimumProfitPotentialScore": 60,
+  "minimumEvidenceConfidenceScore": 60,
+  "requireLiveInputProvenance": true,
+  "requireLivePriceAtAlert": true,
+  "allowMockFallback": false,
+  "allowNeutralFallback": false,
+  "allowAutoMerge": false,
+  "allowNotificationsDuringTests": false,
+  "allowPublishingDuringTests": false
+}

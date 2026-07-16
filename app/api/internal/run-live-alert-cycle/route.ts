@@ -39,7 +39,7 @@ import { runStoryClusterRun } from "@/lib/story-clustering";
 import { runSeriousSignalBrain } from "@/lib/serious-signal-brain";
 import { runEvidencePackBuild } from "@/lib/evidence-pack-builder";
 import type { ProofItem } from "@/lib/proof/proof-bundle-builder";
-import { articleIdentity, readArticleForMemory } from "@/lib/article-reader";
+import { runPriorityArticleReader } from "@/lib/article-reader";
 import {
   pullPlan,
   rows as sourceCoverageRows,
@@ -2765,7 +2765,7 @@ export async function POST(request: NextRequest) {
       topMacroShockCandidate: Array.isArray(
         macroShockRun.topMacroShockCandidates,
       )
-        ? macroShockRun.topMacroShockCandidates[0] ?? null
+        ? (macroShockRun.topMacroShockCandidates[0] ?? null)
         : null,
       macroShockCandidates: Array.isArray(macroShockRun.topMacroShockCandidates)
         ? macroShockRun.topMacroShockCandidates
@@ -3390,63 +3390,32 @@ export async function POST(request: NextRequest) {
       const blockedReasonsBySignal: Record<string, string[]> = {};
       const enrichedProofsBySignal: Record<string, unknown[]> = {};
       const enrichmentSummaries = [] as JsonRecord[];
-      const articleResultsBySignal: Record<string, JsonRecord> = {};
-      const articleResultsByHash = new Map<string, JsonRecord>();
       const maxArticleReadsPerRun = Math.max(
         0,
-        Math.min(Number(obj(body).maxArticleReadsPerRun ?? 5) || 5, 10),
+        Math.min(Number(obj(body).maxArticleReadsPerRun ?? 8) || 8, 10),
       );
-      let articleReadBudgetUsed = 0;
-      for (const signal of rawSignals) {
-        const articleInput = {
-          articleUrl: signal.sourceUrl,
-          title: signal.title,
-          snippet: signal.summary,
+      const priorityArticleRun = await runPriorityArticleReader({
+        signals: rawSignals.map((signal) => ({
+          id: signal.id,
           source: signal.source,
           ticker: signal.ticker,
+          title: signal.title,
+          summary: signal.summary,
+          sourceUrl: signal.sourceUrl,
           receivedAt: signal.receivedAt,
-          confirmRun,
-          dryRun,
-          duplicateArticleSourceId: signal.id,
-        };
-        const identity = articleIdentity(articleInput);
-        const hash = identity.articleUrlHash;
-        let articleMemory: JsonRecord;
-        if (hash && articleResultsByHash.has(hash)) {
-          articleMemory = {
-            ...articleResultsByHash.get(hash)!,
-            duplicateArticleInRun: true,
-            duplicateArticleSourceId: signal.id,
-            duplicateArticleReuseReason:
-              "same articleUrlHash already processed in this Stage 1 run",
-            articleReadAttempted: false,
-          };
-        } else if (articleReadBudgetUsed >= maxArticleReadsPerRun) {
-          articleMemory = {
-            ...identity,
-            hasArticleUrl: Boolean(identity.articleUrl),
-            articleReadAttempted: false,
-            articleTextAvailable: false,
-            articleSummaryAvailable: false,
-            articleInputMode: "title_snippet_only",
-            articleMemoryUsed: false,
-            articleMemoryAvailable: false,
-            articleAlreadySeen: false,
-            articleMemoryProofUsed: false,
-            articleMemoryRejectedReason: "maxArticleReadsPerRun exceeded",
-            errorCategory: "dry_run_budget_exceeded",
-            errorMessageSafe: "maxArticleReadsPerRun exceeded",
-          };
-          if (hash) articleResultsByHash.set(hash, articleMemory);
-        } else {
-          articleMemory = (await readArticleForMemory(
-            articleInput,
-          )) as JsonRecord;
-          if (articleMemory.articleReadAttempted === true)
-            articleReadBudgetUsed += 1;
-          if (hash) articleResultsByHash.set(hash, articleMemory);
-        }
-        articleResultsBySignal[signal.id] = articleMemory;
+        })),
+        dryRun,
+        confirmRun,
+        maxArticles: maxArticleReadsPerRun,
+        macroShockReservedReads:
+          Number(obj(body).macroShockReservedReads ?? 3) || 3,
+        normalCandidateReservedReads:
+          Number(obj(body).normalCandidateReservedReads ?? 5) || 5,
+      });
+      const articleResultsBySignal: Record<string, JsonRecord> =
+        priorityArticleRun.resultsBySignal as Record<string, JsonRecord>;
+      for (const signal of rawSignals) {
+        const articleMemory = obj(articleResultsBySignal[signal.id]);
         const beforeResponse = await candidateFactoryPOST(
           new NextRequest(
             "http://internal/api/internal/candidate-factory-run",
@@ -3661,6 +3630,8 @@ export async function POST(request: NextRequest) {
               /opinion|calendar|unsafe/i.test(reason),
             ),
           aiCommitteeCalled: false,
+          articleReadPriorityScore: articleMemory.articleReadPriorityScore,
+          articleReadPriorityReason: articleMemory.articleReadPriorityReason,
           articleInputMode: articleMemory.articleInputMode,
           hasArticleUrl: articleMemory.hasArticleUrl,
           articleUrlHash: articleMemory.articleUrlHash,
@@ -3730,8 +3701,20 @@ export async function POST(request: NextRequest) {
                 "article_memory_setup_failed",
             ).slice(0, 160)
           : null,
+        ...priorityArticleRun.summary,
         maxArticleReadsPerRun,
-        articlesSeenThisRun: Array.from(articleResultsByHash.keys()),
+        articlesSeenThisRun: articleRows
+          .map((row) => row.articleUrlHash)
+          .filter(Boolean),
+        articlesReadCount: priorityArticleRun.summary.articlesReadCount,
+        macroShockArticlesReadCount:
+          priorityArticleRun.summary.macroShockArticlesReadCount,
+        articlesSkippedDueToLimit:
+          priorityArticleRun.summary.articlesSkippedDueToLimit,
+        highestPrioritySkippedArticle:
+          priorityArticleRun.summary.highestPrioritySkippedArticle,
+        skippedReasons: priorityArticleRun.summary.skippedReasons,
+        nextBestFix: priorityArticleRun.summary.nextBestFix,
         articleReadAttemptedCount: articleRows.filter(
           (row) => row.articleReadAttempted === true,
         ).length,

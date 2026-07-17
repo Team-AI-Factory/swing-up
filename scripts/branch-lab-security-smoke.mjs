@@ -5,6 +5,19 @@ async function json(path, init) {
   return { response, body };
 }
 
+async function waitForHealth() {
+  for (let attempt = 1; attempt <= 30; attempt += 1) {
+    try {
+      const response = await fetch(`${baseUrl}/api/health`, { signal: AbortSignal.timeout(3_000) });
+      if (response.ok) return;
+    } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+  throw new Error(`Swing Up did not become healthy at ${baseUrl}`);
+}
+
+await waitForHealth();
+
 const isolatedGet = await json("/api/internal/railway-branch-signal-lab");
 if (isolatedGet.response.status !== 404 || isolatedGet.body?.error !== "not_found") throw new Error(`Branch lab was exposed outside an authenticated Railway branch preview (${isolatedGet.response.status}).`);
 

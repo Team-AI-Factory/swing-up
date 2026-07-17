@@ -26,7 +26,7 @@ CI does not fabricate a market, news event, or outcome. It verifies compilation,
 
 Other integrated ears such as SEC EDGAR, FINRA short-sale files, openFDA, Wikidata, and keyed equity-news providers remain available to their applicable stock, regulatory, or relationship workflows. They are not counted as direct evidence for a digital-asset alert because doing so would create misleading confidence. Keyed providers remain unavailable unless their own key and plan are configured; the lab never invents a successful response.
 
-Once per 24 hours, the preview performs a tiny, real, read-only connectivity audit of SEC EDGAR, openFDA, Marketaux, Alpha Vantage, and FMP. The audit uses dry-run mode, no database, no R2, no publishing, and no notifications. Its results are operational diagnostics only and never count as serious-signal performance evidence. The report exposes missing variable names and provider status while redacting all secret values.
+Once per 24 hours, the preview performs a tiny, real, read-only connectivity audit of SEC EDGAR, openFDA, Marketaux, Alpha Vantage, and FMP. SEC EDGAR uses its free public API with a built-in declared Swing Up contact header and needs no API key; `SEC_USER_AGENT` remains an optional override only. The audit uses dry-run mode, no database, no R2, no publishing, and no notifications. Its results are operational diagnostics only and never count as serious-signal performance evidence. The report exposes missing variable names and provider status while redacting all secret values.
 
 ## Cost and repetition controls
 

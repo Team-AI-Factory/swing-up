@@ -175,14 +175,13 @@ async function fetchMacroContext(fetchImpl: typeof fetch, now: Date): Promise<Ma
 
 function providerConfiguration() {
   const has = (name: string) => Boolean(process.env[name]?.trim());
-  const secUserAgent = process.env.SEC_USER_AGENT?.trim() ?? "";
   const providers = {
     openAi: { variable: "OPENAI_API_KEY", keyRequired: true, configured: has("OPENAI_API_KEY") },
     coinGecko: { variable: "COINGECKO_API_KEY", keyRequired: false, configured: has("COINGECKO_API_KEY"), fallback: "keyless_public" },
     gdelt: { variable: null, keyRequired: false, configured: true },
     frankfurter: { variable: null, keyRequired: false, configured: true },
     fred: { variable: "FRED_API_KEY", keyRequired: false, configured: has("FRED_API_KEY"), fallback: "public_graph_csv_latest_only" },
-    secEdgar: { variable: "SEC_USER_AGENT", keyRequired: false, configured: Boolean(secUserAgent) && !/research-contact@example\.com/i.test(secUserAgent), fallback: "public_api_requires_declared_contact_user_agent" },
+    secEdgar: { variable: null, keyRequired: false, configured: true, authentication: "none", access: "free_public_api_with_declared_contact_header" },
     fmp: { variable: "FMP_API_KEY", keyRequired: true, configured: has("FMP_API_KEY") },
     marketaux: { variable: "MARKETAUX_API_KEY", keyRequired: true, configured: has("MARKETAUX_API_KEY") },
     alphaVantage: { variable: "ALPHA_VANTAGE_API_KEY", keyRequired: true, configured: has("ALPHA_VANTAGE_API_KEY") },
@@ -193,7 +192,6 @@ function providerConfiguration() {
     .map((provider) => provider.variable as string);
   const recommendedMissingVariables = [
     ...(!providers.fred.configured ? ["FRED_API_KEY"] : []),
-    ...(!providers.secEdgar.configured ? ["SEC_USER_AGENT"] : []),
     ...(!providers.openFda.configured ? ["OPENFDA_API_KEY"] : []),
   ];
   return { providers, missingRequiredVariables, recommendedMissingVariables, secretsRedacted: true };
@@ -247,8 +245,7 @@ async function supplementalSourceAudit(now: Date, fetchImpl: typeof fetch): Prom
   const marketauxKey = process.env.MARKETAUX_API_KEY?.trim() ?? "";
   const alphaVantageKey = process.env.ALPHA_VANTAGE_API_KEY?.trim() ?? "";
   const openFdaKey = process.env.OPENFDA_API_KEY?.trim() ?? "";
-  const secUserAgent = process.env.SEC_USER_AGENT?.trim() ?? "";
-  const secConfigured = Boolean(secUserAgent) && !/research-contact@example\.com/i.test(secUserAgent);
+  const secUserAgent = process.env.SEC_USER_AGENT?.trim() || "SwingUp/0.1 support@swingup.app";
   const urls = {
     secEdgar: new URL("https://data.sec.gov/submissions/CIK0001679788.json"),
     openFda: new URL("https://api.fda.gov/drug/enforcement.json"),
@@ -270,7 +267,7 @@ async function supplementalSourceAudit(now: Date, fetchImpl: typeof fetch): Prom
   urls.fmp.searchParams.set("symbol", "BTCUSD");
   urls.fmp.searchParams.set("apikey", fmpKey);
   const settled = await Promise.allSettled([
-    auditJsonProvider({ name: "sec_edgar", url: urls.secEdgar, fetchImpl, headers: secConfigured ? { "user-agent": secUserAgent } : undefined, configured: secConfigured, configurationRequired: true }),
+    auditJsonProvider({ name: "sec_edgar", url: urls.secEdgar, fetchImpl, headers: { "user-agent": secUserAgent }, configured: true, configurationRequired: false }),
     auditJsonProvider({ name: "openfda", url: urls.openFda, fetchImpl, configured: true, configurationRequired: false }),
     auditJsonProvider({ name: "marketaux", url: urls.marketaux, fetchImpl, configured: Boolean(marketauxKey), configurationRequired: true }),
     auditJsonProvider({ name: "alpha_vantage", url: urls.alphaVantage, fetchImpl, configured: Boolean(alphaVantageKey), configurationRequired: true }),

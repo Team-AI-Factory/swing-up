@@ -10,7 +10,7 @@ In the branch preview, the startup wrapper removes database, Telegram, publishin
 
 ## What runs
 
-The preview process runs immediately at startup and then every five minutes by default. A technical failure retries after one minute. The interval can be changed with `SWING_UP_BRANCH_LAB_INTERVAL_SECONDS`, but the runner refuses intervals below 60 seconds to protect free-source quotas.
+The preview process runs immediately at startup and then every five minutes by default. CoinGecko and Google News RSS refresh on that cycle; GDELT reuses its most recent real response and refreshes at most every fifteen minutes to match its useful update cadence and avoid needless rate-limit pressure. A technical failure retries after one minute. The interval can be changed with `SWING_UP_BRANCH_LAB_INTERVAL_SECONDS`, but the runner refuses intervals below 60 seconds to protect free-source quotas.
 
 Each performance run reads current CoinGecko market data and recent receipts from both Google News RSS and GDELT for ten major digital assets. It also uses live public FRED interest-rate data and Frankfurter FX rates, refreshed hourly because those sources update more slowly. A candidate reaches the 14-agent OpenAI committee only when it has:
 

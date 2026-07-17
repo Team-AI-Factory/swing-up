@@ -26,6 +26,15 @@ type MacroContext = {
   fred: { status: "connected" | "failed"; sourceUrls: string[]; fedFundsRate: number | null; tenYearYield: number | null; latestObservationDate: string | null; error: string | null };
   frankfurter: { status: "connected" | "failed"; sourceUrl: string; date: string | null; rates: Record<string, number>; error: string | null };
 };
+type SupplementalSourceAudit = {
+  checkedAt: string;
+  performanceEvidence: false;
+  databaseWrites: false;
+  r2Writes: false;
+  publishing: false;
+  notifications: false;
+  providers: Record<string, Record<string, unknown>>;
+};
 
 const ASSETS: CryptoAsset[] = [
   { id: "bitcoin", ticker: "BTC", name: "Bitcoin" },
@@ -51,9 +60,14 @@ const GOOGLE_NEWS_URL = "https://news.google.com/rss/search";
 const GDELT_URL = "https://api.gdeltproject.org/api/v2/doc/doc";
 const FRED_FEDFUNDS_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=FEDFUNDS";
 const FRED_DGS10_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS10";
+const FRED_API_URL = "https://api.stlouisfed.org/fred/series/observations";
 const FRANKFURTER_URL = "https://api.frankfurter.app/latest?from=USD&to=EUR,JPY,CHF,CNY";
 const MACRO_REFRESH_MS = 60 * 60 * 1000;
-const macroCache = globalThis as typeof globalThis & { __swingUpBranchMacroContext?: MacroContext };
+const SUPPLEMENTAL_AUDIT_REFRESH_MS = 24 * 60 * 60 * 1000;
+const branchLabCache = globalThis as typeof globalThis & {
+  __swingUpBranchMacroContext?: MacroContext;
+  __swingUpSupplementalSourceAudit?: SupplementalSourceAudit;
+};
 
 function number(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -95,17 +109,35 @@ function latestCsvNumber(csv: string, columnName: string) {
 }
 
 async function fetchMacroContext(fetchImpl: typeof fetch, now: Date): Promise<MacroContext> {
-  const cached = macroCache.__swingUpBranchMacroContext;
+  const cached = branchLabCache.__swingUpBranchMacroContext;
   if (cached && now.getTime() - Date.parse(cached.checkedAt) < MACRO_REFRESH_MS) return cached;
+  const fredApiKey = process.env.FRED_API_KEY?.trim();
+
+  async function fetchFredSeries(seriesId: "FEDFUNDS" | "DGS10") {
+    if (!fredApiKey) {
+      const url = seriesId === "FEDFUNDS" ? FRED_FEDFUNDS_URL : FRED_DGS10_URL;
+      const response = await fetchImpl(url, { headers: { Accept: "text/csv" }, cache: "no-store", signal: AbortSignal.timeout(20_000) });
+      if (!response.ok) throw new Error(`fred_http_${response.status}`);
+      return latestCsvNumber(await response.text(), seriesId);
+    }
+    const url = new URL(FRED_API_URL);
+    url.searchParams.set("series_id", seriesId);
+    url.searchParams.set("api_key", fredApiKey);
+    url.searchParams.set("file_type", "json");
+    url.searchParams.set("sort_order", "desc");
+    url.searchParams.set("limit", "10");
+    const response = await fetchImpl(url, { headers: { Accept: "application/json" }, cache: "no-store", signal: AbortSignal.timeout(20_000) });
+    if (!response.ok) throw new Error(`fred_api_http_${response.status}`);
+    const body = await response.json() as { observations?: Array<{ date?: unknown; value?: unknown }> };
+    const observation = body.observations?.find((item) => typeof item.date === "string" && Number.isFinite(Number(item.value)));
+    return { value: observation ? Number(observation.value) : null, date: observation && typeof observation.date === "string" ? observation.date : null };
+  }
+
   const [fred, frankfurter] = await Promise.allSettled([
     Promise.all([
-      fetchImpl(FRED_FEDFUNDS_URL, { headers: { Accept: "text/csv" }, cache: "no-store", signal: AbortSignal.timeout(20_000) }),
-      fetchImpl(FRED_DGS10_URL, { headers: { Accept: "text/csv" }, cache: "no-store", signal: AbortSignal.timeout(20_000) }),
-    ]).then(async ([fedFundsResponse, tenYearResponse]) => {
-      if (!fedFundsResponse.ok || !tenYearResponse.ok) throw new Error(`fred_http_${fedFundsResponse.status}_${tenYearResponse.status}`);
-      const [fedFundsCsv, tenYearCsv] = await Promise.all([fedFundsResponse.text(), tenYearResponse.text()]);
-      const fedFunds = latestCsvNumber(fedFundsCsv, "FEDFUNDS");
-      const tenYear = latestCsvNumber(tenYearCsv, "DGS10");
+      fetchFredSeries("FEDFUNDS"),
+      fetchFredSeries("DGS10"),
+    ]).then(([fedFunds, tenYear]) => {
       if (fedFunds.value === null || tenYear.value === null) throw new Error("fred_incomplete_macro_snapshot");
       return { fedFunds, tenYear };
     }),
@@ -117,17 +149,145 @@ async function fetchMacroContext(fetchImpl: typeof fetch, now: Date): Promise<Ma
       return { date: typeof body.date === "string" ? body.date : null, rates };
     }),
   ]);
+  const fredSourceUrls = fredApiKey
+    ? ["https://fred.stlouisfed.org/series/FEDFUNDS", "https://fred.stlouisfed.org/series/DGS10"]
+    : [FRED_FEDFUNDS_URL, FRED_DGS10_URL];
   const context: MacroContext = {
     checkedAt: now.toISOString(),
     fred: fred.status === "fulfilled"
-      ? { status: "connected", sourceUrls: [FRED_FEDFUNDS_URL, FRED_DGS10_URL], fedFundsRate: fred.value.fedFunds.value, tenYearYield: fred.value.tenYear.value, latestObservationDate: fred.value.tenYear.date ?? fred.value.fedFunds.date, error: null }
-      : { status: "failed", sourceUrls: [FRED_FEDFUNDS_URL, FRED_DGS10_URL], fedFundsRate: null, tenYearYield: null, latestObservationDate: null, error: fred.reason instanceof Error ? fred.reason.message : "fred_failed" },
+      ? { status: "connected", sourceUrls: fredSourceUrls, fedFundsRate: fred.value.fedFunds.value, tenYearYield: fred.value.tenYear.value, latestObservationDate: fred.value.tenYear.date ?? fred.value.fedFunds.date, error: null }
+      : { status: "failed", sourceUrls: fredSourceUrls, fedFundsRate: null, tenYearYield: null, latestObservationDate: null, error: fred.reason instanceof Error ? fred.reason.message : "fred_failed" },
     frankfurter: frankfurter.status === "fulfilled"
       ? { status: "connected", sourceUrl: FRANKFURTER_URL, date: frankfurter.value.date, rates: frankfurter.value.rates, error: null }
       : { status: "failed", sourceUrl: FRANKFURTER_URL, date: null, rates: {}, error: frankfurter.reason instanceof Error ? frankfurter.reason.message : "frankfurter_failed" },
   };
-  macroCache.__swingUpBranchMacroContext = context;
+  branchLabCache.__swingUpBranchMacroContext = context;
   return context;
+}
+
+function providerConfiguration() {
+  const has = (name: string) => Boolean(process.env[name]?.trim());
+  const secUserAgent = process.env.SEC_USER_AGENT?.trim() ?? "";
+  const providers = {
+    openAi: { variable: "OPENAI_API_KEY", keyRequired: true, configured: has("OPENAI_API_KEY") },
+    coinGecko: { variable: "COINGECKO_API_KEY", keyRequired: false, configured: has("COINGECKO_API_KEY"), fallback: "keyless_public" },
+    gdelt: { variable: null, keyRequired: false, configured: true },
+    frankfurter: { variable: null, keyRequired: false, configured: true },
+    fred: { variable: "FRED_API_KEY", keyRequired: false, configured: has("FRED_API_KEY"), fallback: "public_graph_csv_latest_only" },
+    secEdgar: { variable: "SEC_USER_AGENT", keyRequired: false, configured: Boolean(secUserAgent) && !/research-contact@example\.com/i.test(secUserAgent), fallback: "public_api_requires_declared_contact_user_agent" },
+    fmp: { variable: "FMP_API_KEY", keyRequired: true, configured: has("FMP_API_KEY") },
+    marketaux: { variable: "MARKETAUX_API_KEY", keyRequired: true, configured: has("MARKETAUX_API_KEY") },
+    alphaVantage: { variable: "ALPHA_VANTAGE_API_KEY", keyRequired: true, configured: has("ALPHA_VANTAGE_API_KEY") },
+    openFda: { variable: "OPENFDA_API_KEY", keyRequired: false, configured: has("OPENFDA_API_KEY"), fallback: "keyless_public_lower_quota" },
+  };
+  const missingRequiredVariables = Object.values(providers)
+    .filter((provider) => provider.keyRequired && !provider.configured && provider.variable)
+    .map((provider) => provider.variable as string);
+  const recommendedMissingVariables = [
+    ...(!providers.fred.configured ? ["FRED_API_KEY"] : []),
+    ...(!providers.secEdgar.configured ? ["SEC_USER_AGENT"] : []),
+    ...(!providers.openFda.configured ? ["OPENFDA_API_KEY"] : []),
+  ];
+  return { providers, missingRequiredVariables, recommendedMissingVariables, secretsRedacted: true };
+}
+
+async function auditJsonProvider(params: {
+  name: string;
+  url: URL;
+  fetchImpl: typeof fetch;
+  headers?: Record<string, string>;
+  configured: boolean;
+  configurationRequired: boolean;
+}) {
+  if (params.configurationRequired && !params.configured) return { status: "missing_required_variable", ok: false, recordsChecked: 0, rateLimited: false };
+  try {
+    const response = await params.fetchImpl(params.url, {
+      headers: { Accept: "application/json", ...params.headers },
+      cache: "no-store",
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (response.status === 429) return { status: "rate_limited", ok: false, recordsChecked: 0, rateLimited: true };
+    if (!response.ok) return { status: `http_${response.status}`, ok: false, recordsChecked: 0, rateLimited: false };
+    const body = await response.json() as Record<string, unknown> | unknown[];
+    const record = !Array.isArray(body) ? body : null;
+    const providerMessage = typeof record?.Note === "string" ? record.Note
+      : typeof record?.Information === "string" ? record.Information
+        : typeof record?.Error === "string" ? record.Error
+          : typeof record?.["Error Message"] === "string" ? record["Error Message"]
+            : null;
+    if (providerMessage) {
+      const rateLimited = /limit|frequency|quota|calls per day/i.test(providerMessage);
+      return { status: rateLimited ? "rate_limited" : "provider_error", ok: false, recordsChecked: 0, rateLimited };
+    }
+    const nestedRows = record && Array.isArray(record.data) ? record.data
+      : record && Array.isArray(record.results) ? record.results
+        : record && Array.isArray(record.feed) ? record.feed
+          : record && record.filings && typeof record.filings === "object" && !Array.isArray(record.filings) && Array.isArray((record.filings as Record<string, unknown>).recent)
+            ? (record.filings as Record<string, unknown>).recent as unknown[]
+            : [];
+    const recordsChecked = Array.isArray(body) ? body.length : nestedRows.length || 1;
+    return { status: "connected", ok: true, recordsChecked, rateLimited: false };
+  } catch (error) {
+    return { status: "failed", ok: false, recordsChecked: 0, rateLimited: false, error: error instanceof Error ? error.message.slice(0, 180) : `${params.name}_audit_failed` };
+  }
+}
+
+async function supplementalSourceAudit(now: Date, fetchImpl: typeof fetch): Promise<SupplementalSourceAudit> {
+  const cached = branchLabCache.__swingUpSupplementalSourceAudit;
+  if (cached && now.getTime() - Date.parse(cached.checkedAt) < SUPPLEMENTAL_AUDIT_REFRESH_MS) return cached;
+  const fmpKey = process.env.FMP_API_KEY?.trim() ?? "";
+  const marketauxKey = process.env.MARKETAUX_API_KEY?.trim() ?? "";
+  const alphaVantageKey = process.env.ALPHA_VANTAGE_API_KEY?.trim() ?? "";
+  const openFdaKey = process.env.OPENFDA_API_KEY?.trim() ?? "";
+  const secUserAgent = process.env.SEC_USER_AGENT?.trim() ?? "";
+  const secConfigured = Boolean(secUserAgent) && !/research-contact@example\.com/i.test(secUserAgent);
+  const urls = {
+    secEdgar: new URL("https://data.sec.gov/submissions/CIK0001679788.json"),
+    openFda: new URL("https://api.fda.gov/drug/enforcement.json"),
+    marketaux: new URL("https://api.marketaux.com/v1/news/all"),
+    alphaVantage: new URL("https://www.alphavantage.co/query"),
+    fmp: new URL("https://financialmodelingprep.com/stable/historical-price-eod/light"),
+  };
+  urls.openFda.searchParams.set("limit", "1");
+  if (openFdaKey) urls.openFda.searchParams.set("api_key", openFdaKey);
+  urls.marketaux.searchParams.set("api_token", marketauxKey);
+  urls.marketaux.searchParams.set("symbols", "COIN");
+  urls.marketaux.searchParams.set("language", "en");
+  urls.marketaux.searchParams.set("filter_entities", "true");
+  urls.marketaux.searchParams.set("limit", "1");
+  urls.alphaVantage.searchParams.set("function", "NEWS_SENTIMENT");
+  urls.alphaVantage.searchParams.set("tickers", "CRYPTO:BTC");
+  urls.alphaVantage.searchParams.set("limit", "1");
+  urls.alphaVantage.searchParams.set("apikey", alphaVantageKey);
+  urls.fmp.searchParams.set("symbol", "BTCUSD");
+  urls.fmp.searchParams.set("apikey", fmpKey);
+  const settled = await Promise.allSettled([
+    auditJsonProvider({ name: "sec_edgar", url: urls.secEdgar, fetchImpl, headers: secConfigured ? { "user-agent": secUserAgent } : undefined, configured: secConfigured, configurationRequired: true }),
+    auditJsonProvider({ name: "openfda", url: urls.openFda, fetchImpl, configured: true, configurationRequired: false }),
+    auditJsonProvider({ name: "marketaux", url: urls.marketaux, fetchImpl, configured: Boolean(marketauxKey), configurationRequired: true }),
+    auditJsonProvider({ name: "alpha_vantage", url: urls.alphaVantage, fetchImpl, configured: Boolean(alphaVantageKey), configurationRequired: true }),
+    auditJsonProvider({ name: "fmp", url: urls.fmp, fetchImpl, configured: Boolean(fmpKey), configurationRequired: true }),
+  ]);
+  const value = (result: PromiseSettledResult<Record<string, unknown>>) => result.status === "fulfilled"
+    ? result.value
+    : { status: "failed", ok: false, recordsChecked: 0, rateLimited: false, error: result.reason instanceof Error ? result.reason.message.slice(0, 180) : "provider_audit_failed" };
+  const audit: SupplementalSourceAudit = {
+    checkedAt: now.toISOString(),
+    performanceEvidence: false,
+    databaseWrites: false,
+    r2Writes: false,
+    publishing: false,
+    notifications: false,
+    providers: {
+      secEdgar: value(settled[0]),
+      openFda: value(settled[1]),
+      marketaux: value(settled[2]),
+      alphaVantage: value(settled[3]),
+      fmp: value(settled[4]),
+    },
+  };
+  branchLabCache.__swingUpSupplementalSourceAudit = audit;
+  return audit;
 }
 
 function parseNewsRss(xml: string, now: Date): NewsReceipt[] {
@@ -343,7 +503,7 @@ export async function runBranchSignalLab(input: { allowOpenAi?: boolean; fetchIm
   const mode = "railway_branch_live_read_only";
   const startedAt = Date.now();
   try {
-    const [market, macro] = await Promise.all([fetchMarket(fetchImpl, now), fetchMacroContext(fetchImpl, now)]);
+    const [market, macro, supplementalAudit] = await Promise.all([fetchMarket(fetchImpl, now), fetchMacroContext(fetchImpl, now), supplementalSourceAudit(now, fetchImpl)]);
     const sentiment = marketSentiment(market.rows, now, macro);
     const movers = [...market.rows].sort((a, b) => Math.abs(b.change24h) - Math.abs(a.change24h)).slice(0, 5);
     const [googleResults, gdelt] = await Promise.all([
@@ -379,12 +539,15 @@ export async function runBranchSignalLab(input: { allowOpenAi?: boolean; fetchIm
         frankfurterFx: macro.frankfurter.status,
       },
       macroContext: macro,
+      providerConfiguration: providerConfiguration(),
+      supplementalSourceAudit: supplementalAudit,
       liveSourcePolicy: {
         performanceResultsRequireRealHttpResponses: true,
         fixtureOrMockPerformanceResultsAllowed: false,
         applicableDigitalAssetSources: ["CoinGecko", "Google News RSS", "GDELT", "FRED", "Frankfurter FX"],
-        nonApplicableIntegratedEars: ["SEC EDGAR", "FINRA short sale", "openFDA", "Wikidata relationship context", "FMP stock feeds", "Marketaux equity news", "Alpha Vantage equity feeds", "Polygon equity feeds"],
-        nonApplicableReason: "These sources remain integrated for their own asset or context workflows, but they cannot be counted as direct proof for a digital-asset signal.",
+        supplementalProvidersAuditedButNotCountedAsCryptoPerformanceEvidence: ["SEC EDGAR", "openFDA", "FMP", "Marketaux", "Alpha Vantage"],
+        nonApplicableIntegratedEars: ["FINRA short sale", "Wikidata relationship context", "Polygon equity feeds"],
+        nonApplicableReason: "Supplemental sources are checked in read-only dry-run mode at most once per day. Only evidence that directly matches the digital asset and event may be promoted in a future gate; connectivity alone never increases confidence.",
       },
       assetsChecked: market.rows.length, candidatesChecked: ranked.length, databaseWrites: false, publishing: false, notifications: false,
       marketSnapshot: market.rows.map((row) => ({ ticker: row.ticker, price: row.price, observedAt: row.observedAt })),

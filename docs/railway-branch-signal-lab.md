@@ -6,7 +6,7 @@ This experiment is deliberately isolated from `main` and Railway production. It 
 - `RAILWAY_ENVIRONMENT_NAME` exists and is not `production`.
 - Railway has supplied `RAILWAY_PROJECT_ID`.
 
-In the branch preview, the startup wrapper removes database, Telegram, publishing-storage, payment, and paid market-data credentials from the application process. It also skips Prisma migrations. The only paid credential retained is `OPENAI_API_KEY`, which is used only after a candidate passes the live evidence filters.
+In the branch preview, the startup wrapper removes database, Telegram, publishing-storage, payment, and uncontrolled paid-market credentials from the application process. It also skips Prisma migrations. It retains `OPENAI_API_KEY` plus the configured free-tier keys for FMP, Marketaux, Alpha Vantage, CoinGecko, FRED, and openFDA. Provider calls remain bounded by branch-specific cadence and never write to the database.
 
 ## What runs
 
@@ -25,6 +25,8 @@ The filters are never relaxed merely to produce a signal. `No Action` is a valid
 CI does not fabricate a market, news event, or outcome. It verifies compilation, branch isolation, and side-effect guards only. A result counts toward signal quality only when it came from the Railway branch preview through real HTTP responses. Missing or unavailable sources are reported as failed or not configured; they are never replaced with mock or neutral values.
 
 Other integrated ears such as SEC EDGAR, FINRA short-sale files, openFDA, Wikidata, and keyed equity-news providers remain available to their applicable stock, regulatory, or relationship workflows. They are not counted as direct evidence for a digital-asset alert because doing so would create misleading confidence. Keyed providers remain unavailable unless their own key and plan are configured; the lab never invents a successful response.
+
+Once per 24 hours, the preview performs a tiny, real, read-only connectivity audit of SEC EDGAR, openFDA, Marketaux, Alpha Vantage, and FMP. The audit uses dry-run mode, no database, no R2, no publishing, and no notifications. Its results are operational diagnostics only and never count as serious-signal performance evidence. The report exposes missing variable names and provider status while redacting all secret values.
 
 ## Cost and repetition controls
 

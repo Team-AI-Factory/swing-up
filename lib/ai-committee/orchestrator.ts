@@ -6,6 +6,7 @@ import { persistAiCommitteeRun } from "@/lib/ai-committee/run-persistence";
 export type AiCommitteeMode = "preview" | "full";
 export type AgentVerdict = "positive" | "negative" | "mixed" | "needs_more_data";
 export type OverallRecommendation = "approve" | "reject" | "needs_more_data";
+export const TRUSTED_IN_MEMORY_EVIDENCE = Symbol("trusted-in-memory-ai-committee-evidence");
 
 export type RunAiCommitteeInput = {
   candidateAlertId?: string;
@@ -16,6 +17,8 @@ export type RunAiCommitteeInput = {
   maxAgents?: number;
   maxCostUsd?: number;
   mode?: AiCommitteeMode;
+  persistResult?: boolean;
+  [TRUSTED_IN_MEMORY_EVIDENCE]?: AiCommitteeEvidencePack;
 };
 
 export type AiCommitteeAgentResult = {
@@ -140,6 +143,15 @@ function summarizeEvidence(pack: AiCommitteeEvidencePack) {
       historicalPattern: pack.historicalPatternMatch.strength,
       ripple: pack.wikidataRippleRelationships.strength,
     },
+    evidenceSections: {
+      filing: { summary: pack.filingEvidence.summary, items: pack.filingEvidence.items.slice(0, 3) },
+      news: { summary: pack.newsEvidence.summary, items: pack.newsEvidence.items.slice(0, 5) },
+      priceVolume: { summary: pack.priceVolumeEvidence.summary, items: pack.priceVolumeEvidence.items.slice(0, 3) },
+      fundamentals: { summary: pack.fundamentalsEvidence.summary, items: pack.fundamentalsEvidence.items.slice(0, 3) },
+      macro: { summary: pack.macroEvidence.summary, items: pack.macroEvidence.items.slice(0, 3) },
+      cryptoFx: { summary: pack.cryptoFxEvidence.summary, items: pack.cryptoFxEvidence.items.slice(0, 3) },
+      historical: { summary: pack.historicalPatternMatch.summary, items: pack.historicalPatternMatch.items.slice(0, 3) },
+    },
   };
 }
 
@@ -186,10 +198,12 @@ function synthesizeCommitteeOutput(evidencePack: AiCommitteeEvidencePack, agentR
 
 export async function runAiCommittee(input: RunAiCommitteeInput) {
   const startedAt = new Date();
+  const persistResult = input.persistResult !== false;
+  const trustedEvidencePack = input[TRUSTED_IN_MEMORY_EVIDENCE];
   const providerStatus = getAiCommitteeProviderStatus();
   const dryRun = input.dryRun ?? providerStatus.dryRunDefault;
   const mode = input.mode === "full" ? "full" : "preview";
-  const candidateAlertId = text(input.candidateAlertId ?? input.alertId);
+  const candidateAlertId = text(input.candidateAlertId ?? input.alertId ?? trustedEvidencePack?.candidateAlertId);
   if (!candidateAlertId) return { ok: false, status: "missing_candidate_alert_id", dryRun, error: "candidateAlertId or alertId is required." };
 
   if (!dryRun) {
@@ -198,7 +212,15 @@ export async function runAiCommittee(input: RunAiCommitteeInput) {
     if (!input.confirmRun) return { ok: false, status: "confirmation_required", dryRun, providerStatus };
   }
 
-  const evidence = await buildAiCommitteeEvidencePack(candidateAlertId).catch((error: unknown) => ({
+  const evidence = trustedEvidencePack ? {
+    ok: true as const,
+    dryRun: true as const,
+    candidateAlertId,
+    evidencePack: trustedEvidencePack,
+    missingRequiredEvidence: trustedEvidencePack.missingEvidence,
+    warnings: trustedEvidencePack.dataFreshnessWarnings,
+    readyForCommittee: trustedEvidencePack.missingEvidence.length === 0,
+  } : await buildAiCommitteeEvidencePack(candidateAlertId).catch((error: unknown) => ({
     ok: false as const,
     dryRun: true as const,
     candidateAlertId,
@@ -210,11 +232,11 @@ export async function runAiCommittee(input: RunAiCommitteeInput) {
   }));
   if (!evidence.ok || !evidence.evidencePack) {
     const status = evidence.error ?? "evidence_pack_missing";
-    await persistAiCommitteeRun({ candidateAlertId, alertId: input.alertId ?? candidateAlertId, status, mode, dryRun, selectedAgents: [], agentResults: [], committeeOutput: null, providerStatus, startedAt, finishedAt: new Date(), error: status, request: input }).catch(() => null);
+    if (persistResult) await persistAiCommitteeRun({ candidateAlertId, alertId: input.alertId ?? candidateAlertId, status, mode, dryRun, selectedAgents: [], agentResults: [], committeeOutput: null, providerStatus, startedAt, finishedAt: new Date(), error: status, request: input }).catch(() => null);
     return { ok: false, status, dryRun, evidence };
   }
   if (!dryRun && evidence.missingRequiredEvidence.length) {
-    await persistAiCommitteeRun({ candidateAlertId, alertId: input.alertId ?? candidateAlertId, status: "evidence_pack_incomplete", mode, dryRun, selectedAgents: [], agentResults: [], committeeOutput: null, providerStatus, startedAt, finishedAt: new Date(), error: "evidence_pack_incomplete", request: input }).catch(() => null);
+    if (persistResult) await persistAiCommitteeRun({ candidateAlertId, alertId: input.alertId ?? candidateAlertId, status: "evidence_pack_incomplete", mode, dryRun, selectedAgents: [], agentResults: [], committeeOutput: null, providerStatus, startedAt, finishedAt: new Date(), error: "evidence_pack_incomplete", request: input }).catch(() => null);
     return { ok: false, status: "evidence_pack_incomplete", dryRun, missingRequiredEvidence: evidence.missingRequiredEvidence, evidence };
   }
 
@@ -223,7 +245,7 @@ export async function runAiCommittee(input: RunAiCommitteeInput) {
   const estimatedCost = estimateAgentCost(agents.length + (finalJudge ? 1 : 0), mode);
   const maxCostUsd = input.maxCostUsd ?? Number(process.env.AI_COMMITTEE_MAX_COST_USD_PER_RUN ?? DEFAULT_MAX_COST_USD);
   if (!dryRun && estimatedCost > maxCostUsd) {
-    await persistAiCommitteeRun({ candidateAlertId, alertId: input.alertId ?? candidateAlertId, status: "cost_limit_exceeded", mode, dryRun, selectedAgents: agents.map((agent) => agent.id).concat(finalJudge ? [finalJudge.id] : []), agentResults: [], committeeOutput: null, providerStatus, startedAt, finishedAt: new Date(), error: "cost_limit_exceeded", request: input }).catch(() => null);
+    if (persistResult) await persistAiCommitteeRun({ candidateAlertId, alertId: input.alertId ?? candidateAlertId, status: "cost_limit_exceeded", mode, dryRun, selectedAgents: agents.map((agent) => agent.id).concat(finalJudge ? [finalJudge.id] : []), agentResults: [], committeeOutput: null, providerStatus, startedAt, finishedAt: new Date(), error: "cost_limit_exceeded", request: input }).catch(() => null);
     return { ok: false, status: "cost_limit_exceeded", dryRun, estimatedCost, maxCostUsd };
   }
 
@@ -261,6 +283,6 @@ export async function runAiCommittee(input: RunAiCommitteeInput) {
   const status = dryRun ? "dry_run" : "completed";
   const effectiveProviderStatus = dryRun ? { ...providerStatus, openAiCalled: false } : providerStatus;
   const plannedAgents = agents.map((agent) => agent.id).concat(finalJudge ? [finalJudge.id] : []);
-  const persistedRun = await persistAiCommitteeRun({ candidateAlertId, alertId: input.alertId ?? candidateAlertId, status, mode, dryRun, selectedAgents: plannedAgents, agentResults, committeeOutput, providerStatus: effectiveProviderStatus, startedAt, finishedAt: new Date(), request: input }).catch(() => null);
-  return { ok: true, status, dryRun, mode, providerStatus: effectiveProviderStatus, plannedAgents, evidence, agentResults, committeeOutput, persistedRunId: persistedRun?.id ?? null, compatibility: { callsOpenAi: !dryRun, publishes: false, sendsTelegram: false, writesDatabase: true } };
+  const persistedRun = persistResult ? await persistAiCommitteeRun({ candidateAlertId, alertId: input.alertId ?? candidateAlertId, status, mode, dryRun, selectedAgents: plannedAgents, agentResults, committeeOutput, providerStatus: effectiveProviderStatus, startedAt, finishedAt: new Date(), request: input }).catch(() => null) : null;
+  return { ok: true, status, dryRun, mode, providerStatus: effectiveProviderStatus, plannedAgents, evidence, agentResults, committeeOutput, persistedRunId: persistedRun?.id ?? null, compatibility: { callsOpenAi: !dryRun, publishes: false, sendsTelegram: false, writesDatabase: persistResult } };
 }

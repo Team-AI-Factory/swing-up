@@ -61,6 +61,12 @@ jobs:
         run: npm run build
 
       - name: Start isolated application
+        env:
+          OPENAI_API_KEY: "fake-ci-key-never-sent"
+          AI_COMMITTEE_DRY_RUN_DEFAULT: "false"
+          SWING_UP_BRANCH_LAB_ALLOW_LOCAL: "true"
+          SWING_UP_BRANCH_LAB_FIXTURE_MODE: "true"
+          SWING_UP_BRANCH_LAB_RUNTIME_TOKEN: "ci-branch-lab-token"
         shell: bash
         run: |
           npm start -- --hostname 127.0.0.1 --port 3010 > /tmp/swing-up-branch.log 2>&1 &
@@ -70,6 +76,12 @@ jobs:
         env:
           SWING_UP_EVAL_BASE_URL: http://127.0.0.1:3010
         run: npm run eval:serious-signal
+
+      - name: Verify branch live-lab safety gates
+        env:
+          SWING_UP_EVAL_BASE_URL: http://127.0.0.1:3010
+          SWING_UP_BRANCH_LAB_RUNTIME_TOKEN: "ci-branch-lab-token"
+        run: npm run smoke:branch-lab-security
 
       - name: Optional branch preview smoke
         if: ${{ vars.SWING_UP_BRANCH_TEST_URL != '' }}

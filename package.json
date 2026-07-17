@@ -17,6 +17,7 @@
     "db:seed": "node prisma/seed.mjs",
     "smoke:routes": "node scripts/smoke-routes.mjs",
     "smoke:production": "node scripts/production-smoke.mjs",
+    "smoke:branch-lab-security": "node scripts/branch-lab-security-smoke.mjs",
     "eval:serious-signal": "node scripts/serious-signal-evaluation.mjs"
   },
   "dependencies": {

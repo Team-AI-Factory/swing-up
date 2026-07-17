@@ -21,6 +21,11 @@ type MarketCandidate = CryptoAsset & {
 };
 type NewsChannel = "google_news_rss" | "gdelt";
 type NewsReceipt = { title: string; url: string; publisher: string; publishedAt: string; catalystKeywords: string[]; channel: NewsChannel };
+type MacroContext = {
+  checkedAt: string;
+  fred: { status: "connected" | "failed"; sourceUrls: string[]; fedFundsRate: number | null; tenYearYield: number | null; latestObservationDate: string | null; error: string | null };
+  frankfurter: { status: "connected" | "failed"; sourceUrl: string; date: string | null; rates: Record<string, number>; error: string | null };
+};
 
 const ASSETS: CryptoAsset[] = [
   { id: "bitcoin", ticker: "BTC", name: "Bitcoin" },
@@ -44,6 +49,11 @@ const NEWS_MAX_AGE_MS = 48 * 60 * 60 * 1000;
 const COINGECKO_URL = "https://api.coingecko.com/api/v3/simple/price";
 const GOOGLE_NEWS_URL = "https://news.google.com/rss/search";
 const GDELT_URL = "https://api.gdeltproject.org/api/v2/doc/doc";
+const FRED_FEDFUNDS_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=FEDFUNDS";
+const FRED_DGS10_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS10";
+const FRANKFURTER_URL = "https://api.frankfurter.app/latest?from=USD&to=EUR,JPY,CHF,CNY";
+const MACRO_REFRESH_MS = 60 * 60 * 1000;
+const macroCache = globalThis as typeof globalThis & { __swingUpBranchMacroContext?: MacroContext };
 
 function number(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -69,6 +79,55 @@ function decodeXml(value: string) {
 function tagValue(xml: string, tag: string) {
   const match = xml.match(new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</${tag}>`, "i"));
   return match ? decodeXml(match[1]) : "";
+}
+
+function latestCsvNumber(csv: string, columnName: string) {
+  const rows = csv.trim().split(/\r?\n/);
+  const headers = rows[0]?.split(",").map((value) => value.trim()) ?? [];
+  const column = headers.indexOf(columnName);
+  if (column < 0) return { value: null, date: null };
+  for (let index = rows.length - 1; index >= 1; index -= 1) {
+    const values = rows[index]?.split(",") ?? [];
+    const parsed = Number(values[column]);
+    if (Number.isFinite(parsed)) return { value: parsed, date: values[0]?.trim() || null };
+  }
+  return { value: null, date: null };
+}
+
+async function fetchMacroContext(fetchImpl: typeof fetch, now: Date): Promise<MacroContext> {
+  const cached = macroCache.__swingUpBranchMacroContext;
+  if (cached && now.getTime() - Date.parse(cached.checkedAt) < MACRO_REFRESH_MS) return cached;
+  const [fred, frankfurter] = await Promise.allSettled([
+    Promise.all([
+      fetchImpl(FRED_FEDFUNDS_URL, { headers: { Accept: "text/csv" }, cache: "no-store", signal: AbortSignal.timeout(20_000) }),
+      fetchImpl(FRED_DGS10_URL, { headers: { Accept: "text/csv" }, cache: "no-store", signal: AbortSignal.timeout(20_000) }),
+    ]).then(async ([fedFundsResponse, tenYearResponse]) => {
+      if (!fedFundsResponse.ok || !tenYearResponse.ok) throw new Error(`fred_http_${fedFundsResponse.status}_${tenYearResponse.status}`);
+      const [fedFundsCsv, tenYearCsv] = await Promise.all([fedFundsResponse.text(), tenYearResponse.text()]);
+      const fedFunds = latestCsvNumber(fedFundsCsv, "FEDFUNDS");
+      const tenYear = latestCsvNumber(tenYearCsv, "DGS10");
+      if (fedFunds.value === null || tenYear.value === null) throw new Error("fred_incomplete_macro_snapshot");
+      return { fedFunds, tenYear };
+    }),
+    fetchImpl(FRANKFURTER_URL, { headers: { Accept: "application/json" }, cache: "no-store", signal: AbortSignal.timeout(25_000) }).then(async (response) => {
+      if (!response.ok) throw new Error(`frankfurter_http_${response.status}`);
+      const body = await response.json() as { date?: unknown; base?: unknown; rates?: unknown };
+      const rates = body.rates && typeof body.rates === "object" && !Array.isArray(body.rates) ? Object.fromEntries(Object.entries(body.rates).filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1]))) : {};
+      if (body.base !== "USD" || Object.keys(rates).length < 3) throw new Error("frankfurter_incomplete_fx_snapshot");
+      return { date: typeof body.date === "string" ? body.date : null, rates };
+    }),
+  ]);
+  const context: MacroContext = {
+    checkedAt: now.toISOString(),
+    fred: fred.status === "fulfilled"
+      ? { status: "connected", sourceUrls: [FRED_FEDFUNDS_URL, FRED_DGS10_URL], fedFundsRate: fred.value.fedFunds.value, tenYearYield: fred.value.tenYear.value, latestObservationDate: fred.value.tenYear.date ?? fred.value.fedFunds.date, error: null }
+      : { status: "failed", sourceUrls: [FRED_FEDFUNDS_URL, FRED_DGS10_URL], fedFundsRate: null, tenYearYield: null, latestObservationDate: null, error: fred.reason instanceof Error ? fred.reason.message : "fred_failed" },
+    frankfurter: frankfurter.status === "fulfilled"
+      ? { status: "connected", sourceUrl: FRANKFURTER_URL, date: frankfurter.value.date, rates: frankfurter.value.rates, error: null }
+      : { status: "failed", sourceUrl: FRANKFURTER_URL, date: null, rates: {}, error: frankfurter.reason instanceof Error ? frankfurter.reason.message : "frankfurter_failed" },
+  };
+  macroCache.__swingUpBranchMacroContext = context;
+  return context;
 }
 
 function parseNewsRss(xml: string, now: Date): NewsReceipt[] {
@@ -113,79 +172,70 @@ async function fetchMarket(fetchImpl: typeof fetch, now: Date) {
   return { rows, sourceUrl: url.toString() };
 }
 
-async function fetchNews(asset: CryptoAsset, fetchImpl: typeof fetch, now: Date) {
+async function fetchGoogleNews(asset: CryptoAsset, fetchImpl: typeof fetch, now: Date) {
   const googleUrl = new URL(GOOGLE_NEWS_URL);
   googleUrl.searchParams.set("q", `(${asset.name} OR ${asset.ticker}) crypto when:2d`);
   googleUrl.searchParams.set("hl", "en-US");
   googleUrl.searchParams.set("gl", "US");
   googleUrl.searchParams.set("ceid", "US:en");
+  const response = await fetchImpl(googleUrl, { headers: { Accept: "application/rss+xml, text/xml" }, cache: "no-store", signal: AbortSignal.timeout(12_000) });
+  if (!response.ok) throw new Error(`google_news_http_${response.status}`);
+  return { receipts: parseNewsRss(await response.text(), now), sourceUrl: googleUrl.toString() };
+}
+
+async function fetchGdeltNews(assets: CryptoAsset[], fetchImpl: typeof fetch, now: Date) {
   const gdeltUrl = new URL(GDELT_URL);
-  gdeltUrl.searchParams.set("query", `("${asset.name}" OR "${asset.ticker}") (crypto OR cryptocurrency)`);
+  gdeltUrl.searchParams.set("query", `(${assets.flatMap((asset) => [`"${asset.name}"`, `"${asset.ticker}"`]).join(" OR ")}) (crypto OR cryptocurrency)`);
   gdeltUrl.searchParams.set("mode", "ArtList");
   gdeltUrl.searchParams.set("format", "json");
   gdeltUrl.searchParams.set("timespan", "48h");
-  gdeltUrl.searchParams.set("maxrecords", "40");
+  gdeltUrl.searchParams.set("maxrecords", "100");
   gdeltUrl.searchParams.set("sort", "DateDesc");
-  const [google, gdelt] = await Promise.allSettled([
-    fetchImpl(googleUrl, { headers: { Accept: "application/rss+xml, text/xml" }, cache: "no-store", signal: AbortSignal.timeout(12_000) }).then(async (response) => {
-      if (!response.ok) throw new Error(`google_news_http_${response.status}`);
-      return parseNewsRss(await response.text(), now);
-    }),
-    fetchImpl(gdeltUrl, { headers: { Accept: "application/json", "user-agent": "SwingUpBranchLab/1.0" }, cache: "no-store", signal: AbortSignal.timeout(15_000) }).then(async (response) => {
-      if (!response.ok) throw new Error(`gdelt_http_${response.status}`);
-      const body = await response.json() as { articles?: Array<Record<string, unknown>> };
-      return (Array.isArray(body.articles) ? body.articles : []).flatMap((article): NewsReceipt[] => {
-        const title = typeof article.title === "string" ? article.title.trim().slice(0, 240) : "";
-        const articleUrl = typeof article.url === "string" ? article.url.trim() : "";
-        const domain = typeof article.domain === "string" ? article.domain.trim().toLowerCase() : "";
-        const seenDate = typeof article.seendate === "string" ? article.seendate.trim() : "";
-        const normalizedDate = /^\d{8}T\d{6}Z$/.test(seenDate)
-          ? `${seenDate.slice(0, 4)}-${seenDate.slice(4, 6)}-${seenDate.slice(6, 8)}T${seenDate.slice(9, 11)}:${seenDate.slice(11, 13)}:${seenDate.slice(13, 15)}Z`
-          : seenDate;
-        const publishedAt = new Date(normalizedDate);
-        let publisher = domain;
-        if (!publisher && articleUrl) {
-          try { publisher = new URL(articleUrl).hostname.replace(/^www\./, ""); } catch {}
-        }
-        if (!title || !articleUrl || !publisher || Number.isNaN(publishedAt.getTime())) return [];
-        if (now.getTime() - publishedAt.getTime() > NEWS_MAX_AGE_MS || publishedAt.getTime() > now.getTime() + 5 * 60_000) return [];
-        const lower = title.toLowerCase();
-        return [{ title, url: articleUrl, publisher, publishedAt: publishedAt.toISOString(), catalystKeywords: CATALYST_KEYWORDS.filter((keyword) => lower.includes(keyword)), channel: "gdelt" }];
-      });
-    }),
-  ]);
-  const receipts = [
-    ...(google.status === "fulfilled" ? google.value : []),
-    ...(gdelt.status === "fulfilled" ? gdelt.value : []),
-  ];
+  const response = await fetchImpl(gdeltUrl, { headers: { Accept: "application/json", "user-agent": "SwingUpBranchLab/1.0" }, cache: "no-store", signal: AbortSignal.timeout(15_000) });
+  if (!response.ok) throw new Error(`gdelt_http_${response.status}`);
+  const body = await response.json() as { articles?: Array<Record<string, unknown>> };
+  const receipts = (Array.isArray(body.articles) ? body.articles : []).flatMap((article): NewsReceipt[] => {
+    const title = typeof article.title === "string" ? article.title.trim().slice(0, 240) : "";
+    const articleUrl = typeof article.url === "string" ? article.url.trim() : "";
+    const domain = typeof article.domain === "string" ? article.domain.trim().toLowerCase() : "";
+    const seenDate = typeof article.seendate === "string" ? article.seendate.trim() : "";
+    const normalizedDate = /^\d{8}T\d{6}Z$/.test(seenDate) ? `${seenDate.slice(0, 4)}-${seenDate.slice(4, 6)}-${seenDate.slice(6, 8)}T${seenDate.slice(9, 11)}:${seenDate.slice(11, 13)}:${seenDate.slice(13, 15)}Z` : seenDate;
+    const publishedAt = new Date(normalizedDate);
+    let publisher = domain;
+    if (!publisher && articleUrl) {
+      try { publisher = new URL(articleUrl).hostname.replace(/^www\./, ""); } catch {}
+    }
+    if (!title || !articleUrl || !publisher || Number.isNaN(publishedAt.getTime())) return [];
+    if (now.getTime() - publishedAt.getTime() > NEWS_MAX_AGE_MS || publishedAt.getTime() > now.getTime() + 5 * 60_000) return [];
+    const lower = title.toLowerCase();
+    return [{ title, url: articleUrl, publisher, publishedAt: publishedAt.toISOString(), catalystKeywords: CATALYST_KEYWORDS.filter((keyword) => lower.includes(keyword)), channel: "gdelt" }];
+  });
   const unique = new Map<string, NewsReceipt>();
   for (const receipt of receipts) {
     const key = `${receipt.publisher.toLowerCase()}|${receipt.title.toLowerCase().replace(/\s+/g, " ")}`;
     if (!unique.has(key)) unique.set(key, receipt);
   }
-  return {
-    receipts: [...unique.values()].sort((a, b) => Date.parse(b.publishedAt) - Date.parse(a.publishedAt)).slice(0, 16),
-    sourceUrls: { googleNewsRss: googleUrl.toString(), gdelt: gdeltUrl.toString() },
-    sourceStatus: {
-      googleNewsRss: google.status === "fulfilled" ? "connected" : "failed",
-      gdelt: gdelt.status === "fulfilled" ? "connected" : "failed",
-    },
-    errors: [
-      ...(google.status === "rejected" ? [google.reason instanceof Error ? google.reason.message : "google_news_failed"] : []),
-      ...(gdelt.status === "rejected" ? [gdelt.reason instanceof Error ? gdelt.reason.message : "gdelt_failed"] : []),
-    ],
-  };
+  return { receipts: [...unique.values()].sort((a, b) => Date.parse(b.publishedAt) - Date.parse(a.publishedAt)), sourceUrl: gdeltUrl.toString() };
 }
 
-function marketSentiment(rows: MarketCandidate[], now: Date) {
+function receiptMatchesAsset(receipt: NewsReceipt, asset: CryptoAsset) {
+  const text = receipt.title.toLowerCase();
+  const escapedName = asset.name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escapedTicker = asset.ticker.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^a-z0-9])(${escapedName}|${escapedTicker})([^a-z0-9]|$)`, "i").test(text);
+}
+
+function marketSentiment(rows: MarketCandidate[], now: Date, macro: MacroContext) {
   const average = rows.reduce((sum, row) => sum + row.change24h, 0) / rows.length;
   const support = clamp(50 + average * 4);
-  const riskOff = average <= -5 ? 35 : average <= -2 ? 20 : average >= 2 ? 5 : 12;
+  const macroPressure = (macro.fred.fedFundsRate !== null && macro.fred.fedFundsRate > 4.5 ? 15 : 0) + (macro.fred.tenYearYield !== null && macro.fred.tenYearYield > 4.5 ? 15 : 0);
+  const macroSupport = clamp(75 - macroPressure);
+  const riskOff = (average <= -5 ? 35 : average <= -2 ? 20 : average >= 2 ? 5 : 12) + macroPressure;
   return buildMarketSentimentImpact({
     overallMarketMood: average >= 2 ? "risk_on" : average <= -2 ? "risk_off" : "mixed",
-    macroRiskLevel: average <= -5 ? "high" : average <= -2 ? "medium" : "low",
+    macroRiskLevel: macroPressure >= 30 || average <= -5 ? "high" : macroPressure >= 15 || average <= -2 ? "medium" : "low",
     sentimentSupportScore: support,
-    macroSupportScore: support,
+    macroSupportScore: macroSupport,
     profitPotentialAdjustment: average >= 2 ? 3 : average <= -2 ? -4 : 0,
     confidenceAdjustment: 0,
     riskOffPenalty: riskOff,
@@ -208,6 +258,7 @@ function scoreCandidate(row: MarketCandidate, receipts: NewsReceipt[], sentiment
     sourceQuality: `live_news_channels_${channels.size}_unique_publishers_${publishers.size}`,
     independentReceipts: `live_coingecko_plus_news_channels_${channels.size}_publishers_${publishers.size}`,
     priceVolumeConfirmationScore: `live_coingecko_price_volume_market_cap_${row.observedAt}`,
+    macroSupportScore: "live_fred_fedfunds_and_dgs10",
   };
   const score = scoreSwingUpAlert({
     ticker: row.ticker,
@@ -243,9 +294,9 @@ function section(available: boolean, strength: EvidenceStrength, summary: string
   return { available, strength, summary, items };
 }
 
-function evidencePack(params: { row: MarketCandidate; receipts: NewsReceipt[]; score: SwingUpScore; marketSourceUrl: string; newsSourceUrls: { googleNewsRss: string; gdelt: string }; publishers: string[]; volumeToMarketCap: number; now: Date }): AiCommitteeEvidencePack {
+function evidencePack(params: { row: MarketCandidate; receipts: NewsReceipt[]; score: SwingUpScore; marketSourceUrl: string; newsSourceUrls: { googleNewsRss: string; gdelt: string }; publishers: string[]; volumeToMarketCap: number; macro: MacroContext; now: Date }): AiCommitteeEvidencePack {
   const { row, receipts, score, publishers, now } = params;
-  const links = [params.marketSourceUrl, params.newsSourceUrls.googleNewsRss, params.newsSourceUrls.gdelt, ...receipts.map((receipt) => receipt.url)];
+  const links = [params.marketSourceUrl, params.newsSourceUrls.googleNewsRss, params.newsSourceUrls.gdelt, ...params.macro.fred.sourceUrls, params.macro.frankfurter.sourceUrl, ...receipts.map((receipt) => receipt.url)];
   const newsItems = receipts.map((receipt) => ({ source: receipt.publisher, discoveryChannel: receipt.channel, title: receipt.title, url: receipt.url, observedAt: receipt.publishedAt, catalystKeywords: receipt.catalystKeywords }));
   const marketItem = { source: "CoinGecko", ticker: row.ticker, priceUsd: row.price, change24h: row.change24h, volume24h: row.volume24h, marketCap: row.marketCap, volumeToMarketCap: params.volumeToMarketCap, observedAt: row.observedAt, url: params.marketSourceUrl };
   return {
@@ -253,18 +304,18 @@ function evidencePack(params: { row: MarketCandidate; receipts: NewsReceipt[]; s
     rawSignalIds: [], ticker: row.ticker, company: `${row.name} digital asset`, actionLabel: score.suggestedAction,
     eventHeadline: receipts[0]?.title ?? `${row.ticker} live market catalyst scan`,
     whatHappened: `${row.name} moved ${row.change24h.toFixed(2)}% in 24 hours. ${receipts.length} recent news receipts from ${publishers.length} unique publishers were checked.`,
-    sourceNames: ["CoinGecko", "Google News RSS", "GDELT", ...publishers], sourceLinks: [...new Set(links)],
+    sourceNames: ["CoinGecko", "Google News RSS", "GDELT", "FRED", "Frankfurter FX", ...publishers], sourceLinks: [...new Set(links)],
     sourceFreshness: [
       { source: "CoinGecko", collectedAt: row.observedAt, ageHours: Math.max(0, (now.getTime() - Date.parse(row.observedAt)) / 3_600_000), freshness: "fresh" },
       ...receipts.map((receipt) => ({ source: receipt.publisher, collectedAt: receipt.publishedAt, ageHours: Math.max(0, (now.getTime() - Date.parse(receipt.publishedAt)) / 3_600_000), freshness: "fresh" as const })),
     ],
-    sourceHealth: [{ source: "CoinGecko", status: "connected", checkedAt: now.toISOString(), lastSuccessAt: now.toISOString(), responseTimeMs: null, problem: null, notes: "Live read-only branch experiment." }, { source: "Google News RSS", status: "connected", checkedAt: now.toISOString(), lastSuccessAt: now.toISOString(), responseTimeMs: null, problem: null, notes: "Live read-only branch experiment." }, { source: "GDELT", status: "connected", checkedAt: now.toISOString(), lastSuccessAt: now.toISOString(), responseTimeMs: null, problem: null, notes: "Live read-only branch experiment." }],
+    sourceHealth: [{ source: "CoinGecko", status: "connected", checkedAt: now.toISOString(), lastSuccessAt: now.toISOString(), responseTimeMs: null, problem: null, notes: "Live read-only branch experiment." }, { source: "Google News RSS", status: "connected", checkedAt: now.toISOString(), lastSuccessAt: now.toISOString(), responseTimeMs: null, problem: null, notes: "Live read-only branch experiment." }, { source: "GDELT", status: "connected", checkedAt: now.toISOString(), lastSuccessAt: now.toISOString(), responseTimeMs: null, problem: null, notes: "Live read-only branch experiment." }, { source: "FRED", status: params.macro.fred.status, checkedAt: params.macro.checkedAt, lastSuccessAt: params.macro.fred.status === "connected" ? params.macro.checkedAt : null, responseTimeMs: null, problem: params.macro.fred.error, notes: "Live public macro context." }, { source: "Frankfurter FX", status: params.macro.frankfurter.status, checkedAt: params.macro.checkedAt, lastSuccessAt: params.macro.frankfurter.status === "connected" ? params.macro.checkedAt : null, responseTimeMs: null, problem: params.macro.frankfurter.error, notes: "Live public FX context." }],
     proofBundleSummary: { proofCount: links.length, proofTypes: ["news", "price_volume", "crypto_market"], uniquePublishers: publishers.length, liveOnly: true },
     filingEvidence: section(true, "medium", "Issuer filings are not applicable to this digital asset; regulatory news receipts are included in the news section.", []),
     newsEvidence: section(newsItems.length >= 2, newsItems.length >= 3 ? "strong" : "medium", `${newsItems.length} recent receipts from ${publishers.length} unique publishers.`, newsItems),
     priceVolumeEvidence: section(true, "strong", "Current price, 24-hour move, volume, and market capitalization came directly from CoinGecko.", [marketItem]),
     fundamentalsEvidence: section(true, "medium", "Crypto market structure uses live market cap and turnover; company accounting metrics do not apply.", [marketItem]),
-    macroEvidence: section(true, "medium", `Top-asset crypto sentiment is ${score.marketSentimentImpact.overallMarketMood}.`, [score.marketSentimentImpact]),
+    macroEvidence: section(params.macro.fred.status === "connected" && params.macro.frankfurter.status === "connected", "strong", `Top-asset crypto sentiment is ${score.marketSentimentImpact.overallMarketMood}; FRED rates and Frankfurter FX context were checked from live public endpoints.`, [score.marketSentimentImpact, params.macro.fred, params.macro.frankfurter]),
     fdaRegulatoryEvidence: section(true, "medium", "FDA evidence is not applicable; relevant regulatory headlines are in news evidence.", []),
     cryptoFxEvidence: section(true, "strong", "Direct live digital-asset market evidence is available.", [marketItem]),
     finraShortPressureEvidence: section(true, "medium", "FINRA short-sale data is not applicable to this spot digital asset.", []),
@@ -292,37 +343,59 @@ export async function runBranchSignalLab(input: { allowOpenAi?: boolean; fetchIm
   const mode = "railway_branch_live_read_only";
   const startedAt = Date.now();
   try {
-    const market = await fetchMarket(fetchImpl, now);
-    const sentiment = marketSentiment(market.rows, now);
+    const [market, macro] = await Promise.all([fetchMarket(fetchImpl, now), fetchMacroContext(fetchImpl, now)]);
+    const sentiment = marketSentiment(market.rows, now, macro);
     const movers = [...market.rows].sort((a, b) => Math.abs(b.change24h) - Math.abs(a.change24h)).slice(0, 5);
-    const newsResults = await Promise.all(movers.map(async (row) => ({ row, ...(await fetchNews(row, fetchImpl, now).catch((error: unknown) => ({ receipts: [] as NewsReceipt[], sourceUrls: { googleNewsRss: "", gdelt: "" }, sourceStatus: { googleNewsRss: "failed", gdelt: "failed" }, errors: [error instanceof Error ? error.message : "news_fetch_failed"] }))) })));
+    const [googleResults, gdelt] = await Promise.all([
+      Promise.all(movers.map((row) => fetchGoogleNews(row, fetchImpl, now)
+        .then((result) => ({ ...result, status: "connected" as const, error: null }))
+        .catch((error: unknown) => ({ receipts: [] as NewsReceipt[], sourceUrl: "", status: "failed" as const, error: error instanceof Error ? error.message : "google_news_failed" })))),
+      fetchGdeltNews(movers, fetchImpl, now)
+        .then((result) => ({ ...result, status: "connected" as const, error: null }))
+        .catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : "gdelt_failed";
+          return { receipts: [] as NewsReceipt[], sourceUrl: "", status: message.includes("429") ? "rate_limited" as const : "failed" as const, error: message };
+        }),
+    ]);
+    const newsResults = movers.map((row, index) => {
+      const google = googleResults[index];
+      const combined = [...google.receipts, ...gdelt.receipts.filter((receipt) => receiptMatchesAsset(receipt, row))];
+      const unique = new Map(combined.map((receipt) => [`${receipt.publisher.toLowerCase()}|${receipt.title.toLowerCase().replace(/\s+/g, " ")}`, receipt]));
+      return { row, receipts: [...unique.values()].slice(0, 16), sourceUrls: { googleNewsRss: google.sourceUrl, gdelt: gdelt.sourceUrl }, sourceStatus: { googleNewsRss: google.status, gdelt: gdelt.status }, errors: [google.error, gdelt.error].filter((value): value is string => Boolean(value)) };
+    });
     const ranked = newsResults.map(({ row, receipts, sourceUrls, sourceStatus, errors }) => {
       const scored = scoreCandidate(row, receipts, sentiment);
       const qualityScore = clamp(scored.score.profitPotentialScore * 0.4 + scored.score.evidenceConfidenceScore * 0.4 + Math.min(100, scored.publishers.length * 25) * 0.2);
       return { row, receipts, newsSourceUrls: sourceUrls, newsSourceStatus: sourceStatus, newsErrors: errors, ...scored, qualityScore };
     }).sort((a, b) => b.qualityScore - a.qualityScore);
-    const best = ranked.find((candidate) => candidate.score.liveDataReady && candidate.score.inputCompleteness === 100 && candidate.publishers.length >= 2 && candidate.channels.length === 2 && candidate.newsSourceStatus.googleNewsRss === "connected" && candidate.newsSourceStatus.gdelt === "connected" && candidate.keywordCount >= 1 && Math.abs(candidate.row.change24h) >= 2 && candidate.score.evidenceConfidenceScore >= 55) ?? null;
+    const best = ranked.find((candidate) => candidate.score.liveDataReady && candidate.score.inputCompleteness === 100 && candidate.publishers.length >= 2 && candidate.channels.length === 2 && candidate.newsSourceStatus.googleNewsRss === "connected" && candidate.newsSourceStatus.gdelt === "connected" && macro.fred.status === "connected" && macro.frankfurter.status === "connected" && candidate.keywordCount >= 1 && Math.abs(candidate.row.change24h) >= 2 && candidate.score.evidenceConfidenceScore >= 55) ?? null;
     const common = {
       ok: true, mode, checkedAt: now.toISOString(), durationMs: Date.now() - startedAt,
       sources: {
         coinGecko: "connected",
         googleNewsRss: newsResults.some((result) => result.sourceStatus.googleNewsRss === "connected") ? "connected" : "failed",
-        gdelt: newsResults.some((result) => result.sourceStatus.gdelt === "connected") ? "connected" : "failed",
+        gdelt: gdelt.status,
+        fred: macro.fred.status,
+        frankfurterFx: macro.frankfurter.status,
       },
+      macroContext: macro,
       liveSourcePolicy: {
         performanceResultsRequireRealHttpResponses: true,
         fixtureOrMockPerformanceResultsAllowed: false,
-        applicableDigitalAssetSources: ["CoinGecko", "Google News RSS", "GDELT"],
-        nonApplicableIntegratedEars: ["SEC EDGAR", "FINRA short sale", "openFDA", "Frankfurter FX", "FRED", "Wikidata relationship context"],
+        applicableDigitalAssetSources: ["CoinGecko", "Google News RSS", "GDELT", "FRED", "Frankfurter FX"],
+        nonApplicableIntegratedEars: ["SEC EDGAR", "FINRA short sale", "openFDA", "Wikidata relationship context", "FMP stock feeds", "Marketaux equity news", "Alpha Vantage equity feeds", "Polygon equity feeds"],
         nonApplicableReason: "These sources remain integrated for their own asset or context workflows, but they cannot be counted as direct proof for a digital-asset signal.",
       },
       assetsChecked: market.rows.length, candidatesChecked: ranked.length, databaseWrites: false, publishing: false, notifications: false,
       marketSnapshot: market.rows.map((row) => ({ ticker: row.ticker, price: row.price, observedAt: row.observedAt })),
       rankedCandidates: ranked.map((candidate) => ({ ticker: candidate.row.ticker, change24h: Math.round(candidate.row.change24h * 100) / 100, newsReceipts: candidate.receipts.length, newsChannels: candidate.channels, uniquePublishers: candidate.publishers.length, catalystKeywordCount: candidate.keywordCount, inputCompleteness: candidate.score.inputCompleteness, profitPotentialScore: candidate.score.profitPotentialScore, evidenceConfidenceScore: candidate.score.evidenceConfidenceScore, suggestedAction: candidate.score.suggestedAction, qualityScore: candidate.qualityScore, qualifiedForCommittee: candidate === best })),
     };
+    const failedRequiredSources = Object.entries(common.sources).filter(([, status]) => status === "failed").map(([source]) => source);
+    if (failedRequiredSources.length) return { ...common, ok: false, status: "technical_failure", seriousSignalFound: false, openAiCalled: false, qualityScore: ranked[0]?.qualityScore ?? 0, blockers: [`Required live sources failed: ${failedRequiredSources.join(", ")}. No substitute data was used.`], technicalFailureFingerprint: `required_live_sources_${failedRequiredSources.sort().join("_")}` };
+    if (common.sources.gdelt === "rate_limited") return { ...common, status: "source_rate_limit_cooldown", seriousSignalFound: false, openAiCalled: false, qualityScore: ranked[0]?.qualityScore ?? 0, blockers: ["GDELT asked the lab to slow down. The next live cycle will retry without substituting or inventing news."], technicalFailureFingerprint: null };
     if (!best) return { ...common, status: "no_qualified_signal", seriousSignalFound: false, openAiCalled: false, qualityScore: ranked[0]?.qualityScore ?? 0, blockers: ["No current asset had enough independent, recent catalyst evidence and market confirmation. Filters were not weakened."], technicalFailureFingerprint: null };
     const fingerprint = candidateFingerprint(best.row, best.receipts);
-    const pack = evidencePack({ row: best.row, receipts: best.receipts, score: best.score, marketSourceUrl: market.sourceUrl, newsSourceUrls: best.newsSourceUrls, publishers: best.publishers, volumeToMarketCap: best.volumeToMarketCap, now });
+    const pack = evidencePack({ row: best.row, receipts: best.receipts, score: best.score, marketSourceUrl: market.sourceUrl, newsSourceUrls: best.newsSourceUrls, publishers: best.publishers, volumeToMarketCap: best.volumeToMarketCap, macro, now });
     const provider = getAiCommitteeProviderStatus();
     const selectedCandidate = { ticker: best.row.ticker, company: best.row.name, price: best.row.price, change24h: best.row.change24h, direction: best.row.change24h >= 0 ? "upside" : "downside", newsReceipts: best.receipts, score: best.score };
     if (input.skipOpenAiCandidateFingerprints?.includes(fingerprint)) return { ...common, status: "qualified_candidate_already_reviewed", seriousSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, qualityScore: best.qualityScore, selectedCandidate, committee: { configured: provider.configured, enabled: provider.enabled }, blockers: ["The same evidence was already reviewed recently, so OpenAI was not called again."], technicalFailureFingerprint: null };

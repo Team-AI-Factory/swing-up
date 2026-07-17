@@ -17,7 +17,7 @@ The evaluator requires complete live input provenance, at least two independent 
 
 The outcome worker uses CoinGecko prices for supported digital assets. It stores provider, asset ID, currency, source URL, timestamp, data-quality label, and alert ID with every snapshot. This prevents price history from a different alert on the same asset being reused accidentally.
 
-CI uses no simulated market or news data and makes no performance claim. Live performance is measured only in the guarded Railway preview, where the lab polls real CoinGecko, Google News RSS, and GDELT responses every five minutes by default.
+CI uses no simulated market or news data and makes no performance claim. Live performance is measured only in the guarded Railway preview, where the lab polls real CoinGecko, Google News RSS, and GDELT responses every five minutes by default, with slower FRED and Frankfurter context refreshed hourly.
 
 ## Iteration limit
 

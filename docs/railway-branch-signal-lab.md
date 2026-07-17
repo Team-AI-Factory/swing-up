@@ -12,10 +12,10 @@ In the branch preview, the startup wrapper removes database, Telegram, publishin
 
 The preview process runs immediately at startup and then every five minutes by default. A technical failure retries after one minute. The interval can be changed with `SWING_UP_BRANCH_LAB_INTERVAL_SECONDS`, but the runner refuses intervals below 60 seconds to protect free-source quotas.
 
-Each performance run reads current CoinGecko market data and recent receipts from both Google News RSS and GDELT for ten major digital assets. A candidate reaches the 14-agent OpenAI committee only when it has:
+Each performance run reads current CoinGecko market data and recent receipts from both Google News RSS and GDELT for ten major digital assets. It also uses live public FRED interest-rate data and Frankfurter FX rates, refreshed hourly because those sources update more slowly. A candidate reaches the 14-agent OpenAI committee only when it has:
 
 - 100% live input provenance;
-- both live news discovery channels, at least two independent news publishers, and CoinGecko market proof;
+- both live news discovery channels, at least two independent news publishers, CoinGecko market proof, and connected FRED/Frankfurter context;
 - a recent catalyst keyword;
 - a meaningful 24-hour move and price/volume confirmation; and
 - at least the configured evidence-confidence threshold.
@@ -24,7 +24,7 @@ The filters are never relaxed merely to produce a signal. `No Action` is a valid
 
 CI does not fabricate a market, news event, or outcome. It verifies compilation, branch isolation, and side-effect guards only. A result counts toward signal quality only when it came from the Railway branch preview through real HTTP responses. Missing or unavailable sources are reported as failed or not configured; they are never replaced with mock or neutral values.
 
-Other integrated ears such as SEC EDGAR, FINRA short-sale files, openFDA, FRED, Frankfurter FX, and Wikidata remain available to their applicable stock, regulatory, macro, FX, or relationship workflows. They are not counted as direct evidence for a digital-asset alert because doing so would create misleading confidence. Keyed providers remain unavailable unless their own key and plan are configured; the lab never invents a successful response.
+Other integrated ears such as SEC EDGAR, FINRA short-sale files, openFDA, Wikidata, and keyed equity-news providers remain available to their applicable stock, regulatory, or relationship workflows. They are not counted as direct evidence for a digital-asset alert because doing so would create misleading confidence. Keyed providers remain unavailable unless their own key and plan are configured; the lab never invents a successful response.
 
 ## Cost and repetition controls
 

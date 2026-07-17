@@ -19,7 +19,8 @@ type MarketCandidate = CryptoAsset & {
   marketCap: number;
   observedAt: string;
 };
-type NewsReceipt = { title: string; url: string; publisher: string; publishedAt: string; catalystKeywords: string[] };
+type NewsChannel = "google_news_rss" | "gdelt";
+type NewsReceipt = { title: string; url: string; publisher: string; publishedAt: string; catalystKeywords: string[]; channel: NewsChannel };
 
 const ASSETS: CryptoAsset[] = [
   { id: "bitcoin", ticker: "BTC", name: "Bitcoin" },
@@ -42,29 +43,7 @@ const CATALYST_KEYWORDS = [
 const NEWS_MAX_AGE_MS = 48 * 60 * 60 * 1000;
 const COINGECKO_URL = "https://api.coingecko.com/api/v3/simple/price";
 const GOOGLE_NEWS_URL = "https://news.google.com/rss/search";
-
-export function createBranchSignalLabFixtureFetch(now = new Date()): typeof fetch {
-  const changes: Record<string, number> = { bitcoin: 6.2, ethereum: 1.4, solana: -1.2, ripple: 0.8, binancecoin: -0.7, cardano: 0.5, dogecoin: -0.4, chainlink: 0.3, "avalanche-2": -0.2, sui: 0.1 };
-  const prices: Record<string, number> = { bitcoin: 100_000, ethereum: 4_000, solana: 200, ripple: 2, binancecoin: 700, cardano: 1, dogecoin: 0.2, chainlink: 25, "avalanche-2": 40, sui: 4 };
-  return (async (input: RequestInfo | URL) => {
-    const target = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url);
-    if (target.hostname === "api.coingecko.com") {
-      const body = Object.fromEntries(ASSETS.map((asset, index) => [asset.id, { usd: prices[asset.id], usd_24h_change: changes[asset.id], usd_24h_vol: 12_000_000_000 - index * 500_000_000, usd_market_cap: 1_500_000_000_000 - index * 100_000_000_000, last_updated_at: Math.floor(now.getTime() / 1000) }]));
-      return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
-    }
-    if (target.hostname === "news.google.com") {
-      const query = target.searchParams.get("q") ?? "";
-      const items = /bitcoin|btc/i.test(query) ? [
-        ["Regulator approves spot Bitcoin ETF expansion", "Reuters"],
-        ["Institutional treasury adoption launches new Bitcoin programme", "Bloomberg"],
-        ["Court settlement removes Bitcoin market uncertainty", "CoinDesk"],
-      ] : [];
-      const xml = `<?xml version="1.0"?><rss><channel>${items.map(([title, publisher], index) => `<item><title>${title}</title><link>https://fixture.invalid/${index}</link><source>${publisher}</source><pubDate>${now.toUTCString()}</pubDate></item>`).join("")}</channel></rss>`;
-      return new Response(xml, { status: 200, headers: { "content-type": "application/rss+xml" } });
-    }
-    return new Response("not found", { status: 404 });
-  }) as typeof fetch;
-}
+const GDELT_URL = "https://api.gdeltproject.org/api/v2/doc/doc";
 
 function number(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -103,7 +82,7 @@ function parseNewsRss(xml: string, now: Date): NewsReceipt[] {
     if (now.getTime() - publishedAt.getTime() > NEWS_MAX_AGE_MS || publishedAt.getTime() > now.getTime() + 5 * 60_000) return [];
     const lower = title.toLowerCase();
     const catalystKeywords = CATALYST_KEYWORDS.filter((keyword) => lower.includes(keyword));
-    return [{ title, url, publisher, publishedAt: publishedAt.toISOString(), catalystKeywords }];
+    return [{ title, url, publisher, publishedAt: publishedAt.toISOString(), catalystKeywords, channel: "google_news_rss" as const }];
   });
 }
 
@@ -115,7 +94,8 @@ async function fetchMarket(fetchImpl: typeof fetch, now: Date) {
   url.searchParams.set("include_24hr_vol", "true");
   url.searchParams.set("include_market_cap", "true");
   url.searchParams.set("include_last_updated_at", "true");
-  const response = await fetchImpl(url, { headers: { Accept: "application/json" }, cache: "no-store", signal: AbortSignal.timeout(15_000) });
+  const coinGeckoKey = process.env.COINGECKO_API_KEY?.trim();
+  const response = await fetchImpl(url, { headers: { Accept: "application/json", ...(coinGeckoKey ? { "x-cg-demo-api-key": coinGeckoKey } : {}) }, cache: "no-store", signal: AbortSignal.timeout(15_000) });
   if (!response.ok) throw new Error(`coingecko_http_${response.status}`);
   const body = await response.json() as Record<string, MarketRow | undefined>;
   const rows = ASSETS.flatMap((asset): MarketCandidate[] => {
@@ -134,20 +114,67 @@ async function fetchMarket(fetchImpl: typeof fetch, now: Date) {
 }
 
 async function fetchNews(asset: CryptoAsset, fetchImpl: typeof fetch, now: Date) {
-  const url = new URL(GOOGLE_NEWS_URL);
-  url.searchParams.set("q", `(${asset.name} OR ${asset.ticker}) crypto when:2d`);
-  url.searchParams.set("hl", "en-US");
-  url.searchParams.set("gl", "US");
-  url.searchParams.set("ceid", "US:en");
-  const response = await fetchImpl(url, { headers: { Accept: "application/rss+xml, text/xml" }, cache: "no-store", signal: AbortSignal.timeout(12_000) });
-  if (!response.ok) throw new Error(`google_news_http_${response.status}`);
-  const receipts = parseNewsRss(await response.text(), now);
+  const googleUrl = new URL(GOOGLE_NEWS_URL);
+  googleUrl.searchParams.set("q", `(${asset.name} OR ${asset.ticker}) crypto when:2d`);
+  googleUrl.searchParams.set("hl", "en-US");
+  googleUrl.searchParams.set("gl", "US");
+  googleUrl.searchParams.set("ceid", "US:en");
+  const gdeltUrl = new URL(GDELT_URL);
+  gdeltUrl.searchParams.set("query", `("${asset.name}" OR "${asset.ticker}") (crypto OR cryptocurrency)`);
+  gdeltUrl.searchParams.set("mode", "ArtList");
+  gdeltUrl.searchParams.set("format", "json");
+  gdeltUrl.searchParams.set("timespan", "48h");
+  gdeltUrl.searchParams.set("maxrecords", "40");
+  gdeltUrl.searchParams.set("sort", "DateDesc");
+  const [google, gdelt] = await Promise.allSettled([
+    fetchImpl(googleUrl, { headers: { Accept: "application/rss+xml, text/xml" }, cache: "no-store", signal: AbortSignal.timeout(12_000) }).then(async (response) => {
+      if (!response.ok) throw new Error(`google_news_http_${response.status}`);
+      return parseNewsRss(await response.text(), now);
+    }),
+    fetchImpl(gdeltUrl, { headers: { Accept: "application/json", "user-agent": "SwingUpBranchLab/1.0" }, cache: "no-store", signal: AbortSignal.timeout(15_000) }).then(async (response) => {
+      if (!response.ok) throw new Error(`gdelt_http_${response.status}`);
+      const body = await response.json() as { articles?: Array<Record<string, unknown>> };
+      return (Array.isArray(body.articles) ? body.articles : []).flatMap((article): NewsReceipt[] => {
+        const title = typeof article.title === "string" ? article.title.trim().slice(0, 240) : "";
+        const articleUrl = typeof article.url === "string" ? article.url.trim() : "";
+        const domain = typeof article.domain === "string" ? article.domain.trim().toLowerCase() : "";
+        const seenDate = typeof article.seendate === "string" ? article.seendate.trim() : "";
+        const normalizedDate = /^\d{8}T\d{6}Z$/.test(seenDate)
+          ? `${seenDate.slice(0, 4)}-${seenDate.slice(4, 6)}-${seenDate.slice(6, 8)}T${seenDate.slice(9, 11)}:${seenDate.slice(11, 13)}:${seenDate.slice(13, 15)}Z`
+          : seenDate;
+        const publishedAt = new Date(normalizedDate);
+        let publisher = domain;
+        if (!publisher && articleUrl) {
+          try { publisher = new URL(articleUrl).hostname.replace(/^www\./, ""); } catch {}
+        }
+        if (!title || !articleUrl || !publisher || Number.isNaN(publishedAt.getTime())) return [];
+        if (now.getTime() - publishedAt.getTime() > NEWS_MAX_AGE_MS || publishedAt.getTime() > now.getTime() + 5 * 60_000) return [];
+        const lower = title.toLowerCase();
+        return [{ title, url: articleUrl, publisher, publishedAt: publishedAt.toISOString(), catalystKeywords: CATALYST_KEYWORDS.filter((keyword) => lower.includes(keyword)), channel: "gdelt" }];
+      });
+    }),
+  ]);
+  const receipts = [
+    ...(google.status === "fulfilled" ? google.value : []),
+    ...(gdelt.status === "fulfilled" ? gdelt.value : []),
+  ];
   const unique = new Map<string, NewsReceipt>();
   for (const receipt of receipts) {
-    const key = `${receipt.publisher.toLowerCase()}|${receipt.title.toLowerCase()}`;
+    const key = `${receipt.publisher.toLowerCase()}|${receipt.title.toLowerCase().replace(/\s+/g, " ")}`;
     if (!unique.has(key)) unique.set(key, receipt);
   }
-  return { receipts: [...unique.values()].slice(0, 8), sourceUrl: url.toString() };
+  return {
+    receipts: [...unique.values()].sort((a, b) => Date.parse(b.publishedAt) - Date.parse(a.publishedAt)).slice(0, 16),
+    sourceUrls: { googleNewsRss: googleUrl.toString(), gdelt: gdeltUrl.toString() },
+    sourceStatus: {
+      googleNewsRss: google.status === "fulfilled" ? "connected" : "failed",
+      gdelt: gdelt.status === "fulfilled" ? "connected" : "failed",
+    },
+    errors: [
+      ...(google.status === "rejected" ? [google.reason instanceof Error ? google.reason.message : "google_news_failed"] : []),
+      ...(gdelt.status === "rejected" ? [gdelt.reason instanceof Error ? gdelt.reason.message : "gdelt_failed"] : []),
+    ],
+  };
 }
 
 function marketSentiment(rows: MarketCandidate[], now: Date) {
@@ -168,6 +195,7 @@ function marketSentiment(rows: MarketCandidate[], now: Date) {
 
 function scoreCandidate(row: MarketCandidate, receipts: NewsReceipt[], sentiment: ReturnType<typeof marketSentiment>) {
   const publishers = new Set(receipts.map((receipt) => receipt.publisher.toLowerCase()));
+  const channels = new Set(receipts.map((receipt) => receipt.channel));
   const keywordCount = new Set(receipts.flatMap((receipt) => receipt.catalystKeywords)).size;
   const catalystStrength = clamp(40 + keywordCount * 12 + Math.min(18, Math.abs(row.change24h) * 2));
   const volumeToMarketCap = row.volume24h / row.marketCap;
@@ -175,10 +203,10 @@ function scoreCandidate(row: MarketCandidate, receipts: NewsReceipt[], sentiment
   const sourceQuality = publishers.size >= 3 ? "high" as const : publishers.size >= 2 ? "medium" as const : "low" as const;
   const expectedMove = Math.max(4, Math.min(20, Math.abs(row.change24h) * 1.25));
   const inputProvenance = {
-    catalystStrengthScore: `live_google_news_${publishers.size}_publishers_${keywordCount}_catalysts`,
+    catalystStrengthScore: `live_google_news_and_gdelt_${publishers.size}_publishers_${keywordCount}_catalysts`,
     priceMovePercent: `live_coingecko_24h_${row.observedAt}`,
-    sourceQuality: `live_google_news_unique_publishers_${publishers.size}`,
-    independentReceipts: `live_coingecko_plus_google_news_publishers_${publishers.size}`,
+    sourceQuality: `live_news_channels_${channels.size}_unique_publishers_${publishers.size}`,
+    independentReceipts: `live_coingecko_plus_news_channels_${channels.size}_publishers_${publishers.size}`,
     priceVolumeConfirmationScore: `live_coingecko_price_volume_market_cap_${row.observedAt}`,
   };
   const score = scoreSwingUpAlert({
@@ -208,29 +236,29 @@ function scoreCandidate(row: MarketCandidate, receipts: NewsReceipt[], sentiment
     inputProvenance,
     liveEvidenceOnly: true,
   }, sentiment);
-  return { score, publishers: [...publishers], keywordCount, catalystStrength, priceVolume, volumeToMarketCap };
+  return { score, publishers: [...publishers], channels: [...channels], keywordCount, catalystStrength, priceVolume, volumeToMarketCap };
 }
 
 function section(available: boolean, strength: EvidenceStrength, summary: string, items: Array<Record<string, unknown>>) {
   return { available, strength, summary, items };
 }
 
-function evidencePack(params: { row: MarketCandidate; receipts: NewsReceipt[]; score: SwingUpScore; marketSourceUrl: string; newsSourceUrl: string; publishers: string[]; volumeToMarketCap: number; now: Date }): AiCommitteeEvidencePack {
+function evidencePack(params: { row: MarketCandidate; receipts: NewsReceipt[]; score: SwingUpScore; marketSourceUrl: string; newsSourceUrls: { googleNewsRss: string; gdelt: string }; publishers: string[]; volumeToMarketCap: number; now: Date }): AiCommitteeEvidencePack {
   const { row, receipts, score, publishers, now } = params;
-  const links = [params.marketSourceUrl, params.newsSourceUrl, ...receipts.map((receipt) => receipt.url)];
-  const newsItems = receipts.map((receipt) => ({ source: receipt.publisher, title: receipt.title, url: receipt.url, observedAt: receipt.publishedAt, catalystKeywords: receipt.catalystKeywords }));
+  const links = [params.marketSourceUrl, params.newsSourceUrls.googleNewsRss, params.newsSourceUrls.gdelt, ...receipts.map((receipt) => receipt.url)];
+  const newsItems = receipts.map((receipt) => ({ source: receipt.publisher, discoveryChannel: receipt.channel, title: receipt.title, url: receipt.url, observedAt: receipt.publishedAt, catalystKeywords: receipt.catalystKeywords }));
   const marketItem = { source: "CoinGecko", ticker: row.ticker, priceUsd: row.price, change24h: row.change24h, volume24h: row.volume24h, marketCap: row.marketCap, volumeToMarketCap: params.volumeToMarketCap, observedAt: row.observedAt, url: params.marketSourceUrl };
   return {
     candidateAlertId: `branch-lab-${crypto.randomUUID()}`,
     rawSignalIds: [], ticker: row.ticker, company: `${row.name} digital asset`, actionLabel: score.suggestedAction,
     eventHeadline: receipts[0]?.title ?? `${row.ticker} live market catalyst scan`,
     whatHappened: `${row.name} moved ${row.change24h.toFixed(2)}% in 24 hours. ${receipts.length} recent news receipts from ${publishers.length} unique publishers were checked.`,
-    sourceNames: ["CoinGecko", "Google News RSS", ...publishers], sourceLinks: [...new Set(links)],
+    sourceNames: ["CoinGecko", "Google News RSS", "GDELT", ...publishers], sourceLinks: [...new Set(links)],
     sourceFreshness: [
       { source: "CoinGecko", collectedAt: row.observedAt, ageHours: Math.max(0, (now.getTime() - Date.parse(row.observedAt)) / 3_600_000), freshness: "fresh" },
       ...receipts.map((receipt) => ({ source: receipt.publisher, collectedAt: receipt.publishedAt, ageHours: Math.max(0, (now.getTime() - Date.parse(receipt.publishedAt)) / 3_600_000), freshness: "fresh" as const })),
     ],
-    sourceHealth: [{ source: "CoinGecko", status: "connected", checkedAt: now.toISOString(), lastSuccessAt: now.toISOString(), responseTimeMs: null, problem: null, notes: "Live read-only branch experiment." }, { source: "Google News RSS", status: "connected", checkedAt: now.toISOString(), lastSuccessAt: now.toISOString(), responseTimeMs: null, problem: null, notes: "Live read-only branch experiment." }],
+    sourceHealth: [{ source: "CoinGecko", status: "connected", checkedAt: now.toISOString(), lastSuccessAt: now.toISOString(), responseTimeMs: null, problem: null, notes: "Live read-only branch experiment." }, { source: "Google News RSS", status: "connected", checkedAt: now.toISOString(), lastSuccessAt: now.toISOString(), responseTimeMs: null, problem: null, notes: "Live read-only branch experiment." }, { source: "GDELT", status: "connected", checkedAt: now.toISOString(), lastSuccessAt: now.toISOString(), responseTimeMs: null, problem: null, notes: "Live read-only branch experiment." }],
     proofBundleSummary: { proofCount: links.length, proofTypes: ["news", "price_volume", "crypto_market"], uniquePublishers: publishers.length, liveOnly: true },
     filingEvidence: section(true, "medium", "Issuer filings are not applicable to this digital asset; regulatory news receipts are included in the news section.", []),
     newsEvidence: section(newsItems.length >= 2, newsItems.length >= 3 ? "strong" : "medium", `${newsItems.length} recent receipts from ${publishers.length} unique publishers.`, newsItems),
@@ -258,32 +286,43 @@ function candidateFingerprint(row: MarketCandidate, receipts: NewsReceipt[]) {
   return crypto.createHash("sha256").update(`${row.ticker}|${evidence}`).digest("hex").slice(0, 20);
 }
 
-export async function runBranchSignalLab(input: { allowOpenAi?: boolean; fetchImpl?: typeof fetch; now?: Date; skipOpenAiCandidateFingerprints?: string[]; sourceMode?: "live" | "fixture" } = {}) {
+export async function runBranchSignalLab(input: { allowOpenAi?: boolean; fetchImpl?: typeof fetch; now?: Date; skipOpenAiCandidateFingerprints?: string[] } = {}) {
   const now = input.now ?? new Date();
   const fetchImpl = input.fetchImpl ?? fetch;
-  const mode = input.sourceMode === "fixture" ? "railway_branch_fixture_read_only" : "railway_branch_live_read_only";
+  const mode = "railway_branch_live_read_only";
   const startedAt = Date.now();
   try {
     const market = await fetchMarket(fetchImpl, now);
     const sentiment = marketSentiment(market.rows, now);
     const movers = [...market.rows].sort((a, b) => Math.abs(b.change24h) - Math.abs(a.change24h)).slice(0, 5);
-    const newsResults = await Promise.all(movers.map(async (row) => ({ row, ...(await fetchNews(row, fetchImpl, now).catch((error: unknown) => ({ receipts: [] as NewsReceipt[], sourceUrl: "", error: error instanceof Error ? error.message : "news_fetch_failed" }))) })));
-    const ranked = newsResults.map(({ row, receipts, sourceUrl, ...rest }) => {
+    const newsResults = await Promise.all(movers.map(async (row) => ({ row, ...(await fetchNews(row, fetchImpl, now).catch((error: unknown) => ({ receipts: [] as NewsReceipt[], sourceUrls: { googleNewsRss: "", gdelt: "" }, sourceStatus: { googleNewsRss: "failed", gdelt: "failed" }, errors: [error instanceof Error ? error.message : "news_fetch_failed"] }))) })));
+    const ranked = newsResults.map(({ row, receipts, sourceUrls, sourceStatus, errors }) => {
       const scored = scoreCandidate(row, receipts, sentiment);
       const qualityScore = clamp(scored.score.profitPotentialScore * 0.4 + scored.score.evidenceConfidenceScore * 0.4 + Math.min(100, scored.publishers.length * 25) * 0.2);
-      return { row, receipts, newsSourceUrl: sourceUrl, newsError: "error" in rest ? rest.error : null, ...scored, qualityScore };
+      return { row, receipts, newsSourceUrls: sourceUrls, newsSourceStatus: sourceStatus, newsErrors: errors, ...scored, qualityScore };
     }).sort((a, b) => b.qualityScore - a.qualityScore);
-    const best = ranked.find((candidate) => candidate.score.liveDataReady && candidate.score.inputCompleteness === 100 && candidate.publishers.length >= 2 && candidate.keywordCount >= 1 && Math.abs(candidate.row.change24h) >= 2 && candidate.score.evidenceConfidenceScore >= 55) ?? null;
+    const best = ranked.find((candidate) => candidate.score.liveDataReady && candidate.score.inputCompleteness === 100 && candidate.publishers.length >= 2 && candidate.channels.length === 2 && candidate.newsSourceStatus.googleNewsRss === "connected" && candidate.newsSourceStatus.gdelt === "connected" && candidate.keywordCount >= 1 && Math.abs(candidate.row.change24h) >= 2 && candidate.score.evidenceConfidenceScore >= 55) ?? null;
     const common = {
       ok: true, mode, checkedAt: now.toISOString(), durationMs: Date.now() - startedAt,
-      sources: { coinGecko: "connected", googleNewsRss: newsResults.some((result) => result.receipts.length) ? "connected" : "degraded" },
+      sources: {
+        coinGecko: "connected",
+        googleNewsRss: newsResults.some((result) => result.sourceStatus.googleNewsRss === "connected") ? "connected" : "failed",
+        gdelt: newsResults.some((result) => result.sourceStatus.gdelt === "connected") ? "connected" : "failed",
+      },
+      liveSourcePolicy: {
+        performanceResultsRequireRealHttpResponses: true,
+        fixtureOrMockPerformanceResultsAllowed: false,
+        applicableDigitalAssetSources: ["CoinGecko", "Google News RSS", "GDELT"],
+        nonApplicableIntegratedEars: ["SEC EDGAR", "FINRA short sale", "openFDA", "Frankfurter FX", "FRED", "Wikidata relationship context"],
+        nonApplicableReason: "These sources remain integrated for their own asset or context workflows, but they cannot be counted as direct proof for a digital-asset signal.",
+      },
       assetsChecked: market.rows.length, candidatesChecked: ranked.length, databaseWrites: false, publishing: false, notifications: false,
       marketSnapshot: market.rows.map((row) => ({ ticker: row.ticker, price: row.price, observedAt: row.observedAt })),
-      rankedCandidates: ranked.map((candidate) => ({ ticker: candidate.row.ticker, change24h: Math.round(candidate.row.change24h * 100) / 100, newsReceipts: candidate.receipts.length, uniquePublishers: candidate.publishers.length, catalystKeywordCount: candidate.keywordCount, inputCompleteness: candidate.score.inputCompleteness, profitPotentialScore: candidate.score.profitPotentialScore, evidenceConfidenceScore: candidate.score.evidenceConfidenceScore, suggestedAction: candidate.score.suggestedAction, qualityScore: candidate.qualityScore, qualifiedForCommittee: candidate === best })),
+      rankedCandidates: ranked.map((candidate) => ({ ticker: candidate.row.ticker, change24h: Math.round(candidate.row.change24h * 100) / 100, newsReceipts: candidate.receipts.length, newsChannels: candidate.channels, uniquePublishers: candidate.publishers.length, catalystKeywordCount: candidate.keywordCount, inputCompleteness: candidate.score.inputCompleteness, profitPotentialScore: candidate.score.profitPotentialScore, evidenceConfidenceScore: candidate.score.evidenceConfidenceScore, suggestedAction: candidate.score.suggestedAction, qualityScore: candidate.qualityScore, qualifiedForCommittee: candidate === best })),
     };
     if (!best) return { ...common, status: "no_qualified_signal", seriousSignalFound: false, openAiCalled: false, qualityScore: ranked[0]?.qualityScore ?? 0, blockers: ["No current asset had enough independent, recent catalyst evidence and market confirmation. Filters were not weakened."], technicalFailureFingerprint: null };
     const fingerprint = candidateFingerprint(best.row, best.receipts);
-    const pack = evidencePack({ row: best.row, receipts: best.receipts, score: best.score, marketSourceUrl: market.sourceUrl, newsSourceUrl: best.newsSourceUrl, publishers: best.publishers, volumeToMarketCap: best.volumeToMarketCap, now });
+    const pack = evidencePack({ row: best.row, receipts: best.receipts, score: best.score, marketSourceUrl: market.sourceUrl, newsSourceUrls: best.newsSourceUrls, publishers: best.publishers, volumeToMarketCap: best.volumeToMarketCap, now });
     const provider = getAiCommitteeProviderStatus();
     const selectedCandidate = { ticker: best.row.ticker, company: best.row.name, price: best.row.price, change24h: best.row.change24h, direction: best.row.change24h >= 0 ? "upside" : "downside", newsReceipts: best.receipts, score: best.score };
     if (input.skipOpenAiCandidateFingerprints?.includes(fingerprint)) return { ...common, status: "qualified_candidate_already_reviewed", seriousSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, qualityScore: best.qualityScore, selectedCandidate, committee: { configured: provider.configured, enabled: provider.enabled }, blockers: ["The same evidence was already reviewed recently, so OpenAI was not called again."], technicalFailureFingerprint: null };

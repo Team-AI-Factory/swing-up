@@ -1,6 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { NextRequest, NextResponse } from "next/server";
-import { createBranchSignalLabFixtureFetch, runBranchSignalLab } from "@/lib/branch-signal-lab";
+import { runBranchSignalLab } from "@/lib/branch-signal-lab";
 
 export const dynamic = "force-dynamic";
 
@@ -121,10 +121,9 @@ export async function POST(request: NextRequest) {
   const history = await loadHistory();
   if (history.stopped) return NextResponse.json({ ok: false, stopped: true, stopReason: history.stopReason, runCount: history.runs.length }, { status: 409 });
   const now = Date.now();
-  const fixtureMode = process.env.SWING_UP_BRANCH_LAB_FIXTURE_MODE === "true";
   const openAiRuns = history.runs.filter((run) => run.openAiCalled === true && now - Date.parse(String(run.checkedAt ?? "")) < 24 * 60 * 60 * 1000).length;
   const reviewedFingerprints = history.runs.filter((run) => run.openAiCalled === true && now - Date.parse(String(run.checkedAt ?? "")) < OPENAI_EVIDENCE_COOLDOWN_MS).map((run) => run.candidateFingerprint).filter((value): value is string => typeof value === "string");
-  const report = await runBranchSignalLab({ allowOpenAi: fixtureMode ? false : openAiRuns < MAX_OPENAI_RUNS_PER_24_HOURS, skipOpenAiCandidateFingerprints: reviewedFingerprints, fetchImpl: fixtureMode ? createBranchSignalLabFixtureFetch(new Date(now)) : undefined, sourceMode: fixtureMode ? "fixture" : "live" }) as JsonRecord;
+  const report = await runBranchSignalLab({ allowOpenAi: openAiRuns < MAX_OPENAI_RUNS_PER_24_HOURS, skipOpenAiCandidateFingerprints: reviewedFingerprints }) as JsonRecord;
   updateForwardOutcomes(history, report);
   const previousFailures = history.runs.slice(-2).map((run) => run.technicalFailureFingerprint).filter(Boolean);
   const fingerprint = report.technicalFailureFingerprint;

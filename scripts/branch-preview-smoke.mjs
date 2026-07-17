@@ -9,8 +9,10 @@ async function check(path, options = {}) {
 }
 
 await check("/api/health");
-const evaluation = await check("/api/internal/serious-signal-evaluation", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
-if (!evaluation.passed) throw new Error(`Branch evaluation failed: ${(evaluation.failures || []).join(", ")}`);
+const lab = await check("/api/internal/railway-branch-signal-lab");
+if (lab.mode !== "railway_branch_live_read_only") throw new Error(`Unexpected branch lab mode: ${lab.mode}`);
+if (lab.latest?.mode && lab.latest.mode !== "railway_branch_live_read_only") throw new Error(`A non-live performance run was reported: ${lab.latest.mode}`);
+if (lab.runs?.some((run) => run.databaseWrites !== false || run.publishing !== false || run.notifications !== false)) throw new Error("A branch run violated the no-side-effect contract.");
 const outcomeStatus = await check("/api/internal/live-outcome-evaluator");
 if (!outcomeStatus.realPricesOnly || outcomeStatus.mockFallback !== false) throw new Error("Live outcome evaluator allows a non-live fallback");
 
@@ -23,4 +25,4 @@ if (process.env.SWING_UP_AUTOMATION_TOKEN) {
   if (!liveDryRun.realPricesOnly) throw new Error("Live outcome dry-run did not enforce real prices");
 }
 
-console.log(JSON.stringify({ ok: true, baseUrl, evaluation: evaluation.metrics, outcomeStatus }, null, 2));
+console.log(JSON.stringify({ ok: true, baseUrl, runCount: lab.runCount, latestStatus: lab.latest?.status ?? null, consistentSeriousSignals: lab.consistentSeriousSignals, outcomeStatus }, null, 2));

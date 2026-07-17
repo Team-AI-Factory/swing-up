@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   evaluate:
-    name: Branch-only signal and outcome evaluation
+    name: Branch-only code and safety checks (no simulated performance)
     if: github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -61,26 +61,14 @@ jobs:
         run: npm run build
 
       - name: Start isolated application
-        env:
-          OPENAI_API_KEY: "fake-ci-key-never-sent"
-          AI_COMMITTEE_DRY_RUN_DEFAULT: "false"
-          SWING_UP_BRANCH_LAB_ALLOW_LOCAL: "true"
-          SWING_UP_BRANCH_LAB_FIXTURE_MODE: "true"
-          SWING_UP_BRANCH_LAB_RUNTIME_TOKEN: "ci-branch-lab-token"
         shell: bash
         run: |
           npm start -- --hostname 127.0.0.1 --port 3010 > /tmp/swing-up-branch.log 2>&1 &
           echo $! > /tmp/swing-up-branch.pid
 
-      - name: Evaluate serious-signal gates
+      - name: Verify branch isolation and committee safety gates
         env:
           SWING_UP_EVAL_BASE_URL: http://127.0.0.1:3010
-        run: npm run eval:serious-signal
-
-      - name: Verify branch live-lab safety gates
-        env:
-          SWING_UP_EVAL_BASE_URL: http://127.0.0.1:3010
-          SWING_UP_BRANCH_LAB_RUNTIME_TOKEN: "ci-branch-lab-token"
         run: npm run smoke:branch-lab-security
 
       - name: Optional branch preview smoke
@@ -93,15 +81,6 @@ jobs:
       - name: Show server log on failure
         if: failure()
         run: tail -200 /tmp/swing-up-branch.log || true
-
-      - name: Upload evaluation report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: serious-signal-evaluation-${{ github.run_attempt }}
-          path: artifacts/
-          if-no-files-found: warn
-          retention-days: 30
 
       - name: Stop isolated application
         if: always()

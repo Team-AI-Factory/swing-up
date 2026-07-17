@@ -8,6 +8,8 @@
   "minimumUsefulValidatedSignalRate": 0.67,
   "maxOpenAiCommitteeRunsPer24Hours": 3,
   "duplicateEvidenceCooldownHours": 12,
+  "livePollingIntervalSeconds": 300,
+  "technicalFailureRetrySeconds": 60,
   "minimumInputCompleteness": 100,
   "minimumIndependentReceipts": 2,
   "minimumProfitPotentialScore": 60,
@@ -16,6 +18,8 @@
   "requireLivePriceAtAlert": true,
   "allowMockFallback": false,
   "allowNeutralFallback": false,
+  "allowFixturePerformanceResults": false,
+  "requireRealHttpResponsesForPerformanceResults": true,
   "allowAutoMerge": false,
   "allowNotificationsDuringTests": false,
   "allowPublishingDuringTests": false

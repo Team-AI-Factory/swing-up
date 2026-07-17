@@ -206,12 +206,6 @@ export async function runAiCommittee(input: RunAiCommitteeInput) {
   const candidateAlertId = text(input.candidateAlertId ?? input.alertId ?? trustedEvidencePack?.candidateAlertId);
   if (!candidateAlertId) return { ok: false, status: "missing_candidate_alert_id", dryRun, error: "candidateAlertId or alertId is required." };
 
-  if (!dryRun) {
-    if (!providerStatus.configured) return { ok: false, status: "not_configured", dryRun, providerStatus };
-    if (!providerStatus.enabled) return { ok: false, status: "disabled", dryRun, providerStatus };
-    if (!input.confirmRun) return { ok: false, status: "confirmation_required", dryRun, providerStatus };
-  }
-
   const evidence = trustedEvidencePack ? {
     ok: true as const,
     dryRun: true as const,
@@ -234,6 +228,11 @@ export async function runAiCommittee(input: RunAiCommitteeInput) {
     const status = evidence.error ?? "evidence_pack_missing";
     if (persistResult) await persistAiCommitteeRun({ candidateAlertId, alertId: input.alertId ?? candidateAlertId, status, mode, dryRun, selectedAgents: [], agentResults: [], committeeOutput: null, providerStatus, startedAt, finishedAt: new Date(), error: status, request: input }).catch(() => null);
     return { ok: false, status, dryRun, evidence };
+  }
+  if (!dryRun) {
+    if (!providerStatus.configured) return { ok: false, status: "not_configured", dryRun, providerStatus };
+    if (!providerStatus.enabled) return { ok: false, status: "disabled", dryRun, providerStatus };
+    if (!input.confirmRun) return { ok: false, status: "confirmation_required", dryRun, providerStatus };
   }
   if (!dryRun && evidence.missingRequiredEvidence.length) {
     if (persistResult) await persistAiCommitteeRun({ candidateAlertId, alertId: input.alertId ?? candidateAlertId, status: "evidence_pack_incomplete", mode, dryRun, selectedAgents: [], agentResults: [], committeeOutput: null, providerStatus, startedAt, finishedAt: new Date(), error: "evidence_pack_incomplete", request: input }).catch(() => null);

@@ -8,6 +8,12 @@ const environment = (process.env.RAILWAY_ENVIRONMENT_NAME || "").trim().toLowerC
 const branchLab = Boolean(process.env.RAILWAY_PROJECT_ID && branch === LAB_BRANCH && environment && environment !== "production");
 const runtimeToken = crypto.randomBytes(32).toString("hex");
 const port = process.env.PORT || "3000";
+function intervalMs(raw, fallbackSeconds, maximumMs) {
+  const seconds = Number(raw || fallbackSeconds);
+  return Number.isFinite(seconds) ? Math.max(60_000, Math.min(maximumMs, seconds * 1000)) : fallbackSeconds * 1000;
+}
+const normalPollMs = intervalMs(process.env.SWING_UP_BRANCH_LAB_INTERVAL_SECONDS, 300, 3_600_000);
+const technicalRetryMs = intervalMs(process.env.SWING_UP_BRANCH_LAB_TECHNICAL_RETRY_SECONDS, 60, normalPollMs);
 let child = null;
 
 function isolatedBranchEnvironment() {
@@ -72,25 +78,29 @@ async function runLab() {
       signal: AbortSignal.timeout(240_000),
     });
     const text = await response.text();
+    let report = null;
+    try { report = JSON.parse(text); } catch {}
     console.log(`[swing-up-branch-lab] status=${response.status} ${text.slice(0, 12000)}`);
-    return response.status !== 409;
+    if (response.status === 409 || report?.stopped === true) return { keepRunning: false, delayMs: normalPollMs };
+    const technicalFailure = !response.ok || report?.status === "technical_failure" || report?.ok === false;
+    return { keepRunning: true, delayMs: technicalFailure ? technicalRetryMs : normalPollMs };
   } catch (error) {
     console.error(`[swing-up-branch-lab] ${error instanceof Error ? error.message : "run_failed"}`);
-    return true;
+    return { keepRunning: true, delayMs: technicalRetryMs };
   }
 }
 
 if (branchLab) {
-  console.log(`[swing-up-branch-lab] enabled for ${branch} in ${environment}; production publishing and notifications remain disabled.`);
+  console.log(`[swing-up-branch-lab] enabled for ${branch} in ${environment}; live polling=${Math.round(normalPollMs / 1000)}s, technical retry=${Math.round(technicalRetryMs / 1000)}s; production publishing and notifications remain disabled.`);
   void (async () => {
     if (!(await waitForHealth())) {
       console.error("[swing-up-branch-lab] app health timeout; no experiment ran.");
       return;
     }
-    let keepRunning = await runLab();
-    while (keepRunning && child && !child.killed) {
-      await new Promise((resolve) => setTimeout(resolve, 60 * 60 * 1000));
-      keepRunning = await runLab();
+    let next = await runLab();
+    while (next.keepRunning && child && !child.killed) {
+      await new Promise((resolve) => setTimeout(resolve, next.delayMs));
+      next = await runLab();
     }
   })();
 } else {

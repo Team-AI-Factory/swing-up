@@ -17,9 +17,11 @@ The evaluator requires complete live input provenance, at least two independent 
 
 The outcome worker uses CoinGecko prices for supported digital assets. It stores provider, asset ID, currency, source URL, timestamp, data-quality label, and alert ID with every snapshot. This prevents price history from a different alert on the same asset being reused accidentally.
 
+CI uses no simulated market or news data and makes no performance claim. Live performance is measured only in the guarded Railway preview, where the lab polls real CoinGecko, Google News RSS, and GDELT responses every five minutes by default.
+
 ## Iteration limit
 
-ChatGPT may inspect and improve the isolated branch up to five times per failing evaluation cycle. It must stop when the gates pass, after five unsuccessful attempts, or when a change would require new paid data, secrets, production access, publishing, notifications, or a main-branch merge.
+ChatGPT may inspect and improve the isolated branch up to three times for the same technical failure without measurable gain. A quiet market or correctly rejected evidence is not a technical failure. The process must stop when the live gates pass, after three no-gain repairs to the same issue, or when a change would require new paid data, secrets, production access, publishing, notifications, or a main-branch merge.
 
 ## Optional branch deployment
 

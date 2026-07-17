@@ -72,6 +72,7 @@ const MACRO_REFRESH_MS = 60 * 60 * 1000;
 const SUPPLEMENTAL_AUDIT_REFRESH_MS = 24 * 60 * 60 * 1000;
 const branchLabCache = globalThis as typeof globalThis & {
   __swingUpGdeltSnapshot?: GdeltSnapshot;
+  __swingUpGdeltCooldownUntil?: number;
   __swingUpBranchMacroContext?: MacroContext;
   __swingUpSupplementalSourceAudit?: SupplementalSourceAudit;
 };
@@ -355,6 +356,9 @@ async function fetchGdeltNews(assets: CryptoAsset[], fetchImpl: typeof fetch, no
   if (cached && now.getTime() - Date.parse(cached.checkedAt) < GDELT_REFRESH_MS) {
     return { receipts: cached.receipts, sourceUrl: cached.sourceUrl };
   }
+  if ((branchLabCache.__swingUpGdeltCooldownUntil ?? 0) > now.getTime()) {
+    throw new Error("gdelt_http_429_cooldown");
+  }
   const gdeltUrl = new URL(GDELT_URL);
   gdeltUrl.searchParams.set("query", `(${assets.flatMap((asset) => [`"${asset.name}"`, `"${asset.ticker}"`]).join(" OR ")}) (crypto OR cryptocurrency)`);
   gdeltUrl.searchParams.set("mode", "ArtList");
@@ -363,6 +367,18 @@ async function fetchGdeltNews(assets: CryptoAsset[], fetchImpl: typeof fetch, no
   gdeltUrl.searchParams.set("maxrecords", "100");
   gdeltUrl.searchParams.set("sort", "DateDesc");
   const response = await fetchImpl(gdeltUrl, { headers: { Accept: "application/json", "user-agent": "SwingUpBranchLab/1.0" }, cache: "no-store", signal: AbortSignal.timeout(15_000) });
+  if (response.status === 429) {
+    const retryAfter = response.headers.get("retry-after")?.trim() ?? "";
+    const retryAfterSeconds = Number(retryAfter);
+    const retryAfterDate = Date.parse(retryAfter);
+    const providerDelayMs = Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0
+      ? retryAfterSeconds * 1000
+      : Number.isFinite(retryAfterDate)
+        ? Math.max(0, retryAfterDate - now.getTime())
+        : 0;
+    branchLabCache.__swingUpGdeltCooldownUntil = now.getTime() + Math.max(GDELT_REFRESH_MS, providerDelayMs);
+    throw new Error("gdelt_http_429");
+  }
   if (!response.ok) throw new Error(`gdelt_http_${response.status}`);
   const body = await response.json() as { articles?: Array<Record<string, unknown>> };
   const receipts = (Array.isArray(body.articles) ? body.articles : []).flatMap((article): NewsReceipt[] => {
@@ -392,6 +408,7 @@ async function fetchGdeltNews(assets: CryptoAsset[], fetchImpl: typeof fetch, no
     sourceUrl: gdeltUrl.toString(),
   };
   branchLabCache.__swingUpGdeltSnapshot = snapshot;
+  branchLabCache.__swingUpGdeltCooldownUntil = undefined;
   return { receipts: snapshot.receipts, sourceUrl: snapshot.sourceUrl };
 }
 

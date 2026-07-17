@@ -35,6 +35,11 @@ type SupplementalSourceAudit = {
   notifications: false;
   providers: Record<string, Record<string, unknown>>;
 };
+type GdeltSnapshot = {
+  checkedAt: string;
+  receipts: NewsReceipt[];
+  sourceUrl: string;
+};
 
 const ASSETS: CryptoAsset[] = [
   { id: "bitcoin", ticker: "BTC", name: "Bitcoin" },
@@ -62,9 +67,11 @@ const FRED_FEDFUNDS_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=FE
 const FRED_DGS10_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS10";
 const FRED_API_URL = "https://api.stlouisfed.org/fred/series/observations";
 const FRANKFURTER_URL = "https://api.frankfurter.app/latest?from=USD&to=EUR,JPY,CHF,CNY";
+const GDELT_REFRESH_MS = 15 * 60 * 1000;
 const MACRO_REFRESH_MS = 60 * 60 * 1000;
 const SUPPLEMENTAL_AUDIT_REFRESH_MS = 24 * 60 * 60 * 1000;
 const branchLabCache = globalThis as typeof globalThis & {
+  __swingUpGdeltSnapshot?: GdeltSnapshot;
   __swingUpBranchMacroContext?: MacroContext;
   __swingUpSupplementalSourceAudit?: SupplementalSourceAudit;
 };
@@ -344,6 +351,10 @@ async function fetchGoogleNews(asset: CryptoAsset, fetchImpl: typeof fetch, now:
 }
 
 async function fetchGdeltNews(assets: CryptoAsset[], fetchImpl: typeof fetch, now: Date) {
+  const cached = branchLabCache.__swingUpGdeltSnapshot;
+  if (cached && now.getTime() - Date.parse(cached.checkedAt) < GDELT_REFRESH_MS) {
+    return { receipts: cached.receipts, sourceUrl: cached.sourceUrl };
+  }
   const gdeltUrl = new URL(GDELT_URL);
   gdeltUrl.searchParams.set("query", `(${assets.flatMap((asset) => [`"${asset.name}"`, `"${asset.ticker}"`]).join(" OR ")}) (crypto OR cryptocurrency)`);
   gdeltUrl.searchParams.set("mode", "ArtList");
@@ -375,7 +386,13 @@ async function fetchGdeltNews(assets: CryptoAsset[], fetchImpl: typeof fetch, no
     const key = `${receipt.publisher.toLowerCase()}|${receipt.title.toLowerCase().replace(/\s+/g, " ")}`;
     if (!unique.has(key)) unique.set(key, receipt);
   }
-  return { receipts: [...unique.values()].sort((a, b) => Date.parse(b.publishedAt) - Date.parse(a.publishedAt)), sourceUrl: gdeltUrl.toString() };
+  const snapshot: GdeltSnapshot = {
+    checkedAt: now.toISOString(),
+    receipts: [...unique.values()].sort((a, b) => Date.parse(b.publishedAt) - Date.parse(a.publishedAt)),
+    sourceUrl: gdeltUrl.toString(),
+  };
+  branchLabCache.__swingUpGdeltSnapshot = snapshot;
+  return { receipts: snapshot.receipts, sourceUrl: snapshot.sourceUrl };
 }
 
 function receiptMatchesAsset(receipt: NewsReceipt, asset: CryptoAsset) {

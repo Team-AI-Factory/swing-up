@@ -29,7 +29,7 @@ The filters are never relaxed merely to produce a signal. `No Action` is a valid
 
 ## Outcome validation
 
-Reviewed candidates are kept only in the preview container's temporary report. Later hourly snapshots calculate real CoinGecko forward returns at 1D, 3D, 7D, 30D, and 90D. A consistent result requires at least three serious signals with a 1D evaluation and at least a two-thirds useful rate.
+Reviewed candidates are kept only in the preview container's temporary report. Later hourly snapshots calculate real CoinGecko forward returns at 1D, 3D, 7D, 30D, and 90D. A consistent result requires at least three distinct serious-signal evidence fingerprints with a 1D evaluation and at least a two-thirds useful rate. Repeating the same evidence cannot satisfy this target.
 
 The redacted report is available from:
 

@@ -91,7 +91,8 @@ export async function GET() {
   if (!branchAllowed()) return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
   const history = await loadHistory();
   const recent = history.runs.slice(-3);
-  const validatedSeriousSignals = history.runs.filter((run) => run.seriousSignalFound === true && Array.isArray(run.outcomeEvaluations) && run.outcomeEvaluations.some((outcome) => record(outcome)?.checkpoint === "1D"));
+  const validatedSeriousSignalRuns = history.runs.filter((run) => run.seriousSignalFound === true && Array.isArray(run.outcomeEvaluations) && run.outcomeEvaluations.some((outcome) => record(outcome)?.checkpoint === "1D"));
+  const validatedSeriousSignals = [...new Map(validatedSeriousSignalRuns.map((run) => [String(run.candidateFingerprint ?? run.checkedAt), run])).values()];
   const usefulValidatedSignals = validatedSeriousSignals.filter((run) => (run.outcomeEvaluations as unknown[]).some((outcome) => record(outcome)?.checkpoint === "1D" && record(outcome)?.usefulAtCheckpoint === true));
   return NextResponse.json({
     ok: true,
@@ -104,6 +105,7 @@ export async function GET() {
     consistentSafeBehavior: recent.length === 3 && recent.every(safeRun),
     consecutiveSeriousSignals: recent.filter((run) => run.seriousSignalFound === true).length,
     validatedSeriousSignalCount: validatedSeriousSignals.length,
+    distinctValidatedEvidenceCount: validatedSeriousSignals.length,
     usefulValidatedSeriousSignalCount: usefulValidatedSignals.length,
     consistentSeriousSignals: validatedSeriousSignals.length >= 3 && usefulValidatedSignals.length / validatedSeriousSignals.length >= 2 / 3,
     latest: history.runs.at(-1) ?? null,

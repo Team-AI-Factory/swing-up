@@ -16,7 +16,8 @@
     "db:studio": "prisma studio",
     "db:seed": "node prisma/seed.mjs",
     "smoke:routes": "node scripts/smoke-routes.mjs",
-    "smoke:production": "node scripts/production-smoke.mjs"
+    "smoke:production": "node scripts/production-smoke.mjs",
+    "smoke:combined-opportunity-engine": "node --experimental-strip-types scripts/combined-opportunity-engine-smoke.ts"
   },
   "dependencies": {
     "next": "^15.1.3",

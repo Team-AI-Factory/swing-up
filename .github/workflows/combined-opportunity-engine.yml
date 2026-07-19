@@ -1,0 +1,70 @@
+name: Combined Opportunity Engine
+
+on:
+  push:
+    branches:
+      - "agent/combined-opportunity-engine"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "lib/opportunity-engine/**"
+      - "app/api/internal/combined-opportunity-engine/**"
+      - "scripts/combined-opportunity-engine-smoke.ts"
+      - "package.json"
+      - ".github/workflows/combined-opportunity-engine.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: combined-opportunity-engine-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate isolated two-path engine
+    if: github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/swing_up_ci
+      SWING_UP_TEST_MODE: "true"
+      PUBLIC_LEDGER_TRACKING_ENABLED: "false"
+      PUBLIC_TRACKING_ENABLED: "false"
+
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+
+      - name: Refuse main branch execution
+        shell: bash
+        run: |
+          branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          if [[ "${branch}" == "main" ]]; then
+            echo "Combined Opportunity Engine validation is forbidden on main." >&2
+            exit 1
+          fi
+          echo "Testing isolated branch: ${branch}"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit --fund=false
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Test both connected paths
+        run: npm run smoke:combined-opportunity-engine

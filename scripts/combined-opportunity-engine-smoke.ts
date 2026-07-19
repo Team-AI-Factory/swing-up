@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { evaluateEvent, evaluateFoundation } from "../lib/opportunity-engine/engine.ts";
-import type { CompanyFoundationInput, EventSignalInput, StoredThesisSnapshot } from "../lib/opportunity-engine/types.ts";
 
-const foundation: CompanyFoundationInput = {
+const { evaluateEvent, evaluateFoundation } = require("../lib/opportunity-engine/engine.ts") as typeof import("../lib/opportunity-engine/engine");
+
+const foundation = {
   ticker: "NVDA",
   company: "NVIDIA Corporation",
   sector: "Technology",
@@ -47,8 +47,8 @@ const foundation: CompanyFoundationInput = {
     confidence: 75,
   },
   receipts: [
-    { source: "SEC", url: "https://www.sec.gov/", observedAt: new Date().toISOString(), reliability: "official" },
-    { source: "Company IR", url: "https://investor.nvidia.com/", observedAt: new Date().toISOString(), reliability: "official" },
+    { source: "SEC", url: "https://www.sec.gov/", observedAt: new Date().toISOString(), reliability: "official" as const },
+    { source: "Company IR", url: "https://investor.nvidia.com/", observedAt: new Date().toISOString(), reliability: "official" as const },
   ],
   missingFields: [],
   warnings: [],
@@ -57,10 +57,10 @@ const foundation: CompanyFoundationInput = {
 const decision = evaluateFoundation(foundation);
 assert.equal(decision.path, "foundation");
 assert.ok(decision.scores.opportunityScore >= 0 && decision.scores.opportunityScore <= 100);
-assert.ok(decision.pillars.length === 7);
+assert.equal(decision.pillars.length, 7);
 assert.ok(decision.killCriteria.length >= 3);
 
-const thesis: StoredThesisSnapshot = {
+const thesis = {
   id: null,
   ticker: decision.ticker,
   company: decision.company,
@@ -75,7 +75,7 @@ const thesis: StoredThesisSnapshot = {
   updatedAt: decision.evaluatedAt,
 };
 
-const positiveEvent: EventSignalInput = {
+const positiveEvent = {
   rawSignalId: "test-positive",
   ticker: "NVDA",
   signalType: "earnings",
@@ -91,13 +91,12 @@ const positive = evaluateEvent(positiveEvent, thesis);
 assert.equal(positive.impact.direction, "confirming");
 assert.ok(["thesis_strengthening", "catalyst_alert"].includes(positive.alertType));
 
-const negativeEvent: EventSignalInput = {
+const negative = evaluateEvent({
   ...positiveEvent,
   rawSignalId: "test-negative",
   title: "Company cuts guidance after customer loss",
   summary: "Official filing reports margin pressure and an investigation.",
-};
-const negative = evaluateEvent(negativeEvent, thesis);
+}, thesis);
 assert.equal(negative.impact.direction, "disconfirming");
 assert.ok(["risk_warning", "thesis_broken"].includes(negative.alertType));
 assert.equal(negative.evidence[0]?.path, "event");

@@ -24,6 +24,12 @@ function isolatedBranchEnvironment() {
     AI_COMMITTEE_ENABLED: "true",
     AI_COMMITTEE_AUTONOMOUS: "true",
     AI_COMMITTEE_DRY_RUN_DEFAULT: "false",
+    OPENAI_MODEL: "gpt-4.1-mini-2025-04-14",
+    AI_COMMITTEE_FAST_MODEL: "gpt-4.1-mini-2025-04-14",
+    AI_COMMITTEE_DEEP_MODEL: "gpt-4.1-mini-2025-04-14",
+    AI_COMMITTEE_FINAL_MODEL: "gpt-4.1-mini-2025-04-14",
+    AI_COMMITTEE_MODEL_ALLOWLIST: "gpt-4.1-mini-2025-04-14",
+    AI_COMMITTEE_REQUEST_TIMEOUT_MS: "12000",
     PUBLIC_LEDGER_TRACKING_ENABLED: "false",
     PUBLIC_TRACKING_ENABLED: "false",
   };
@@ -81,7 +87,7 @@ async function runLab() {
     try { report = JSON.parse(text); } catch {}
     console.log(`[swing-up-branch-lab] status=${response.status} ${text.slice(0, 12000)}`);
     if (response.status === 409 || report?.stopped === true) return { keepRunning: false, delayMs: normalPollMs };
-    const technicalFailure = !response.ok || report?.status === "technical_failure" || report?.ok === false;
+    const technicalFailure = !response.ok || (report?.status === "technical_failure" && report?.repairEligible === true);
     return { keepRunning: true, delayMs: technicalFailure ? technicalRetryMs : normalPollMs };
   } catch (error) {
     console.error(`[swing-up-branch-lab] ${error instanceof Error ? error.message : "run_failed"}`);

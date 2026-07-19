@@ -54,6 +54,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Verify live-lab evidence and provider policies
+        run: npm run smoke:branch-lab-policy && npm run smoke:ai-committee-crypto-policy && npm run smoke:ai-committee-provider-guardrails
+
       - name: Lint
         run: npm run lint
 

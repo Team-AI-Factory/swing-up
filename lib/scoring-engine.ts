@@ -277,7 +277,7 @@ export function scoreSwingUpAlert(input: ScorePreviewInput, sentiment: MarketSen
   const profitPotentialScore = clamp(positiveProfit - negativeProfit + sentiment.profitPotentialAdjustment + 12);
 
   const receiptsScore = clamp(num(input.independentReceipts, 0) * 22);
-  const confirmedSource = input.hasConfirmedFilingOrExchangeSource ? 100 : input.isRumour ? 15 : 45;
+  const confirmedSource = input.hasConfirmedFilingOrExchangeSource ? 100 : input.isRumour ? 15 : input.liveEvidenceOnly ? 0 : 45;
   const contradictions = clamp(num(input.contradictionCount, 0) * 18);
   const rumourPenalty = input.isRumour || input.sourceQuality === "rumour" ? 24 : 0;
   const freshnessReliability = sentiment.sentimentDataStatus === "available" ? clamp((sentiment.sentimentSupportScore + sentiment.macroSupportScore) / 2) : 0;

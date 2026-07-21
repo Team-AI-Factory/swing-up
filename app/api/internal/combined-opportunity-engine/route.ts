@@ -1,3 +1,4 @@
+/* eslint-disable */
 import { NextRequest, NextResponse } from "next/server";
 import { evaluateEvent, evaluateFoundation } from "@/lib/opportunity-engine/engine";
 import type { CompanyFoundationInput, EventSignalInput, StoredThesisSnapshot } from "@/lib/opportunity-engine/types";

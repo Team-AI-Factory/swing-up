@@ -17,7 +17,7 @@
     "db:seed": "node prisma/seed.mjs",
     "smoke:routes": "node scripts/smoke-routes.mjs",
     "smoke:production": "node scripts/production-smoke.mjs",
-    "smoke:combined-opportunity-engine": "node --experimental-strip-types scripts/combined-opportunity-engine-smoke.ts"
+    "smoke:combined-opportunity-engine": "rm -rf /tmp/swing-up-opportunity-test && npx tsc scripts/combined-opportunity-engine-smoke.ts lib/opportunity-engine/engine.ts lib/opportunity-engine/types.ts --outDir /tmp/swing-up-opportunity-test --module commonjs --moduleResolution node --target ES2022 --esModuleInterop --skipLibCheck && node /tmp/swing-up-opportunity-test/scripts/combined-opportunity-engine-smoke.js"
   },
   "dependencies": {
     "next": "^15.1.3",

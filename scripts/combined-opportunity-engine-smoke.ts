@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 
-const { evaluateEvent, evaluateFoundation } = require("../lib/opportunity-engine/engine.ts") as typeof import("../lib/opportunity-engine/engine");
+const { evaluateEvent, evaluateFoundation } = require("../lib/opportunity-engine/engine") as typeof import("../lib/opportunity-engine/engine");
 
 const foundation = {
   ticker: "NVDA",

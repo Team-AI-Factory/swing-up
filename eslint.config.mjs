@@ -17,7 +17,7 @@ const eslintConfig = [
       "out/**",
       "lib/opportunity-engine/**",
       "app/api/internal/combined-opportunity-engine/**",
-      "scripts/opportunity-engine-smoke.ts",
+      "scripts/combined-opportunity-engine-smoke.ts",
     ],
   },
 ];

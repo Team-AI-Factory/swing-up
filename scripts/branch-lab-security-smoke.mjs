@@ -43,6 +43,9 @@ const startScript = await readFile(new URL("./railway-branch-start.mjs", import.
 const strippedVariables = startScript.match(/for \(const key of \[([\s\S]*?)\]\) delete env\[key\];/)?.[1] ?? "";
 if (!strippedVariables.includes("DATABASE_URL") || !strippedVariables.includes("TELEGRAM_BOT_TOKEN")) throw new Error("Branch startup no longer strips database or notification credentials.");
 if (strippedVariables.includes("R2_ACCESS_KEY_ID") || strippedVariables.includes("R2_SECRET_ACCESS_KEY") || strippedVariables.includes("CLOUDFLARE_R2_ACCESS_KEY_ID") || strippedVariables.includes("CLOUDFLARE_R2_SECRET_ACCESS_KEY")) throw new Error("Branch startup strips the Cloudflare R2 state credentials.");
+for (const marker of ["labRunInFlight", "watchdog recovered an overdue scan", "SWING_UP_BRANCH_LAB_EFFECTIVE_INTERVAL_SECONDS"]) {
+  if (!startScript.includes(marker)) throw new Error(`Branch scanner watchdog policy is missing: ${marker}`);
+}
 
 const routeSource = await readFile(new URL("../app/api/internal/railway-branch-signal-lab/route.ts", import.meta.url), "utf8");
 for (const marker of [
@@ -60,4 +63,4 @@ for (const marker of [`"if-match"`, `"if-none-match"`, `res.status === 412`, `re
   if (!r2Source.includes(marker)) throw new Error(`Cloudflare R2 conditional-write guard is missing: ${marker}`);
 }
 
-console.log(JSON.stringify({ ok: true, performanceSimulationUsed: false, branchLabUnavailableOutsidePreview: true, untrustedEvidenceBlocked: true, cloudflareR2PrimaryState: true, railwayVolumePrimaryState: false, openAiCalled: false, databaseWrites: false, publishing: false, notifications: false }, null, 2));
+console.log(JSON.stringify({ ok: true, performanceSimulationUsed: false, branchLabUnavailableOutsidePreview: true, untrustedEvidenceBlocked: true, cloudflareR2PrimaryState: true, railwayVolumePrimaryState: false, overdueScanWatchdog: true, openAiCalled: false, databaseWrites: false, publishing: false, notifications: false }, null, 2));

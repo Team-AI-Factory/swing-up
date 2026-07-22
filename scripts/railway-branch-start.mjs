@@ -15,6 +15,11 @@ function intervalMs(raw, fallbackSeconds, maximumMs) {
 const normalPollMs = intervalMs(process.env.SWING_UP_BRANCH_LAB_INTERVAL_SECONDS, 300, 3_600_000);
 const technicalRetryMs = intervalMs(process.env.SWING_UP_BRANCH_LAB_TECHNICAL_RETRY_SECONDS, 60, normalPollMs);
 let child = null;
+let labRunInFlight = false;
+let labStopped = false;
+let nextLabRunAt = 0;
+let labTimer = null;
+let watchdogTimer = null;
 
 function isolatedBranchEnvironment() {
   const env = {
@@ -32,6 +37,8 @@ function isolatedBranchEnvironment() {
     AI_COMMITTEE_REQUEST_TIMEOUT_MS: "12000",
     PUBLIC_LEDGER_TRACKING_ENABLED: "false",
     PUBLIC_TRACKING_ENABLED: "false",
+    SWING_UP_BRANCH_LAB_EFFECTIVE_INTERVAL_SECONDS: `${Math.round(normalPollMs / 1000)}`,
+    SWING_UP_BRANCH_LAB_EFFECTIVE_TECHNICAL_RETRY_SECONDS: `${Math.round(technicalRetryMs / 1000)}`,
   };
   for (const key of [
     "DATABASE_URL", "DIRECT_URL", "TELEGRAM_BOT_TOKEN", "TELEGRAM_TEST_CHAT_ID",
@@ -95,6 +102,37 @@ async function runLab() {
   }
 }
 
+function clearLabTimers() {
+  if (labTimer) clearTimeout(labTimer);
+  if (watchdogTimer) clearInterval(watchdogTimer);
+  labTimer = null;
+  watchdogTimer = null;
+}
+
+function scheduleLabRun(delayMs) {
+  if (labStopped) return;
+  const safeDelayMs = Math.max(0, delayMs);
+  nextLabRunAt = Date.now() + safeDelayMs;
+  if (labTimer) clearTimeout(labTimer);
+  labTimer = setTimeout(() => void executeScheduledLabRun(), safeDelayMs);
+}
+
+async function executeScheduledLabRun() {
+  if (labStopped || labRunInFlight) return;
+  labRunInFlight = true;
+  try {
+    const next = await runLab();
+    if (!next.keepRunning) {
+      labStopped = true;
+      clearLabTimers();
+      return;
+    }
+    scheduleLabRun(next.delayMs);
+  } finally {
+    labRunInFlight = false;
+  }
+}
+
 if (branchLab) {
   console.log(`[swing-up-branch-lab] enabled for ${branch} in ${environment}; live polling=${Math.round(normalPollMs / 1000)}s, technical retry=${Math.round(technicalRetryMs / 1000)}s; branch state uses isolated Cloudflare R2 while PostgreSQL, production publishing, and notifications remain disabled.`);
   void (async () => {
@@ -102,16 +140,19 @@ if (branchLab) {
       console.error("[swing-up-branch-lab] app health timeout; no experiment ran.");
       return;
     }
-    let next = await runLab();
-    while (next.keepRunning && child && !child.killed) {
-      await new Promise((resolve) => setTimeout(resolve, next.delayMs));
-      next = await runLab();
-    }
+    scheduleLabRun(0);
+    watchdogTimer = setInterval(() => {
+      if (!labStopped && !labRunInFlight && nextLabRunAt > 0 && Date.now() > nextLabRunAt + 30_000) {
+        console.warn("[swing-up-branch-lab] watchdog recovered an overdue scan.");
+        scheduleLabRun(0);
+      }
+    }, 60_000);
   })();
 } else {
   console.log("[swing-up-branch-lab] disabled; normal application start.");
 }
 
 child.on("exit", (code, signal) => {
+  clearLabTimers();
   process.exitCode = code ?? (signal ? 1 : 0);
 });

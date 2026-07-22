@@ -188,6 +188,11 @@ function finiteNumber(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function positiveEnvironmentNumber(value: string | undefined, fallback: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 function reservationConsumed(reservation: OpenAiReservation) {
   return reservation.status === "pending" || reservation.status === "completed" || reservation.status === "attempted_no_completion";
 }
@@ -365,6 +370,12 @@ export async function GET() {
     usefulValidatedSeriousSignalCount: usefulValidatedSignals.length,
     consistentSeriousSignals,
     outcomeEvaluationPolicy: { provider: "CoinGecko live snapshot", checkpoints: OUTCOME_CHECKPOINTS.map((checkpoint) => checkpoint.label), maximumDelayMinutes: OUTCOME_EVALUATION_TOLERANCE_MS / 60_000, lateSnapshotReuseAllowed: false },
+    pollingPolicy: {
+      liveIntervalSeconds: positiveEnvironmentNumber(process.env.SWING_UP_BRANCH_LAB_EFFECTIVE_INTERVAL_SECONDS, 300),
+      technicalRetrySeconds: positiveEnvironmentNumber(process.env.SWING_UP_BRANCH_LAB_EFFECTIVE_TECHNICAL_RETRY_SECONDS, 60),
+      watchdogEnabled: true,
+      maximumOverdueSecondsBeforeRecovery: 30,
+    },
     stateStorage: storageMetadata(storage),
     openAiReservationPolicy: { durableStateRequired: true, durableStateAvailable: r2StateReady(storage), stateBlocker: r2StateBlocker(storage), maxAttemptsPerRolling24Hours: MAX_OPENAI_RUNS_PER_24_HOURS, sameEvidenceCooldownHours: OPENAI_EVIDENCE_COOLDOWN_MS / (60 * 60 * 1000), consumedReservationCount: history.openAiReservations.filter(reservationConsumed).length },
     providerQuotaStorageDurable: r2StateReady(storage),

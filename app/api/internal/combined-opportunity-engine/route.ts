@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { evaluateEvent, evaluateFoundation } from "@/lib/opportunity-engine/engine";
 import { fetchLiveOpportunityUniverse } from "@/lib/opportunity-engine/live-data";
+import { enrichLiveOpportunityUniverse } from "@/lib/opportunity-engine/provider-enrichment";
 import type { CompanyFoundationInput, EventSignalInput, StoredThesisSnapshot } from "@/lib/opportunity-engine/types";
 
 export const dynamic = "force-dynamic";
@@ -91,6 +92,8 @@ function thesisFromDecision(decision: ReturnType<typeof evaluateFoundation>): St
     opportunityScore: decision.scores.opportunityScore,
     evidenceConfidence: decision.scores.evidenceConfidence,
     riskScore: decision.scores.riskScore,
+    signalAction: decision.signalAction,
+    confidence: decision.confidence,
     originalUnderwriting: decision,
     currentAssessment: decision,
     updatedAt: decision.evaluatedAt,
@@ -104,8 +107,14 @@ export async function GET() {
     engine: "combined_opportunity_engine",
     paths: ["foundation", "event"],
     liveDataAvailable: true,
-    liveDataSources: ["SEC Company Facts", "SEC filing archives", "Yahoo Finance public chart API"],
+    liveDataSources: ["SEC Company Facts", "SEC filing archives", "Yahoo Finance public chart API", "configured Railway estimates, price, and news providers"],
     mode: "isolated_preview_only",
+    confidencePolicy: {
+      seriousSignalThreshold: 90,
+      minimumHistoricalSamples: 30,
+      requiresLowerConfidenceBound: 0.9,
+      abstainsWhenUncalibrated: true,
+    },
     runtime: runtimeDiagnostics(),
     safety: { databaseWrites: false, publishing: false, notifications: false, payments: false, openAiCalls: false },
   });
@@ -118,10 +127,15 @@ export async function POST(request: NextRequest) {
 
   const body = object(await request.json().catch(() => ({})));
   const useLiveData = body.useLiveData === true;
+  const useProviderEnrichment = body.useProviderEnrichment !== false;
   const requestedLiveTickers = tickerList(body.liveTickers);
-  const live = useLiveData
+  const baseLive = useLiveData
     ? await fetchLiveOpportunityUniverse(requestedLiveTickers.length ? requestedLiveTickers : ["AAPL", "MSFT", "NVDA", "KO"])
     : { snapshots: [], errors: [] };
+  const enrichment = useLiveData && useProviderEnrichment
+    ? await enrichLiveOpportunityUniverse(baseLive.snapshots)
+    : { snapshots: baseLive.snapshots, providerSummary: [] };
+  const live = { snapshots: enrichment.snapshots, errors: baseLive.errors };
   const providedFoundations = Array.isArray(body.foundations) ? body.foundations.filter(validFoundation).slice(0, 25) : [];
   const foundations = latestByTicker([...providedFoundations, ...live.snapshots.map((snapshot) => snapshot.foundation)]);
   const providedEvents = Array.isArray(body.events) ? body.events.filter(validEvent).slice(0, 50) : [];
@@ -137,17 +151,25 @@ export async function POST(request: NextRequest) {
     return thesis ? [evaluateEvent(event, thesis)] : [];
   });
   const unmatchedEventTickers = eventRows.map((event) => event.ticker.toUpperCase()).filter((ticker) => !thesisByTicker.has(ticker));
+  const decisions = [...foundationDecisions, ...eventDecisions];
 
   return NextResponse.json({
     ok: true,
     dryRun: true,
-    dataMode: useLiveData ? "real_live_sec_and_market_data" : "provided_input_only",
+    dataMode: useLiveData ? "real_live_sec_market_and_configured_provider_data" : "provided_input_only",
     runtime: runtimeDiagnostics(),
+    confidencePolicy: {
+      seriousSignalThreshold: 90,
+      minimumHistoricalSamples: 30,
+      requiresLowerConfidenceBound: 0.9,
+      noUncalibratedDirectionalAlerts: true,
+    },
     foundationDecisions,
     eventDecisions,
     unmatchedEventTickers,
     liveData: {
       requested: useLiveData,
+      providerEnrichmentRequested: useProviderEnrichment,
       tickersRequested: requestedLiveTickers,
       snapshots: live.snapshots.map((snapshot) => ({
         ticker: snapshot.foundation.ticker,
@@ -159,21 +181,32 @@ export async function POST(request: NextRequest) {
         marketSource: snapshot.metadata.marketSource,
         marketDate: snapshot.metadata.marketDate,
         realDataReceipts: snapshot.metadata.realDataReceipts,
+        optionalProvidersUsed: object(snapshot.foundation.raw?.providerEnrichment).providersUsed ?? [],
+        expectationSources: snapshot.foundation.expectations.sources ?? [],
+        priceSourceCount: snapshot.foundation.market.priceSourceCount ?? 1,
+        contradictions: snapshot.foundation.contradictions ?? [],
       })),
+      providerSummary: enrichment.providerSummary,
       errors: live.errors,
       noSyntheticData: live.snapshots.every((snapshot) => snapshot.foundation.raw?.noSyntheticData === true),
     },
     summary: {
       foundationsChecked: foundationDecisions.length,
       eventsChecked: eventDecisions.length,
-      alertEligible: [...foundationDecisions, ...eventDecisions].filter((item) => item.userAlertEligible).length,
+      alertEligible: decisions.filter((item) => item.userAlertEligible).length,
+      seriousSignals: decisions.filter((item) => item.seriousSignal).length,
+      buySignals: decisions.filter((item) => item.signalAction === "buy" && item.seriousSignal).length,
+      sellSignals: decisions.filter((item) => item.signalAction === "sell" && item.seriousSignal).length,
+      watchOutSignals: decisions.filter((item) => item.signalAction === "watch_out" && item.seriousSignal).length,
+      abstentions: decisions.filter((item) => item.abstained).length,
       researchCandidates: foundationDecisions.filter((item) => item.candidateBucket === "advance_to_deeper_work").length,
       thesisStrengthening: eventDecisions.filter((item) => item.alertType === "thesis_strengthening" || item.alertType === "catalyst_alert").length,
       riskWarnings: eventDecisions.filter((item) => item.alertType === "risk_warning").length,
       brokenTheses: eventDecisions.filter((item) => item.alertType === "thesis_broken").length,
       liveProviderErrors: live.errors.length,
+      optionalProviderErrors: enrichment.providerSummary.reduce((sum, row) => sum + row.providerErrors.length, 0),
     },
     safety: { databaseWrites: false, publishing: false, notifications: false, payments: false, openAiCalls: false },
-    nextStep: "Use the redacted runtime provider diagnostics to connect estimates, targets, second-source market data, and calibrated outcome history before permitting a 90% serious signal.",
+    nextStep: "Build and validate chronological outcome calibration. Until the 90% lower confidence bound is proven on at least 30 real outcomes, all directional results remain research/watch only.",
   });
 }

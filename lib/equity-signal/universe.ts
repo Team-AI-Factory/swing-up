@@ -14,6 +14,7 @@ export type EquityUniverseEntry = {
 export type EquityUniverseSnapshot = {
   version: 1;
   scope: "active_us_exchange_listed_common_equities_and_adrs";
+  constructionMode: "nasdaq_plus_sec" | "partial_nasdaq_plus_sec" | "sec_official_fallback";
   refreshedAt: string;
   entries: EquityUniverseEntry[];
   coverage: {
@@ -131,7 +132,29 @@ function mergeEntries(nasdaq: ParsedDirectory, other: ParsedDirectory, secRows: 
     };
     if (!current || (!current.cik && next.cik)) merged.set(source.ticker, next);
   }
+  // SEC's official exchange file is an independent universe source, not only a
+  // CIK lookup table. If Nasdaq Trader temporarily blocks a Railway IP, retain
+  // every eligible SEC exchange row so one upstream host cannot reduce the
+  // scanner to zero stocks.
+  for (const filing of secRows) {
+    if (merged.has(filing.ticker)) continue;
+    const classification = securityClassification(filing.name, "N", "N");
+    if (!classification.eligible) continue;
+    merged.set(filing.ticker, {
+      ticker: filing.ticker,
+      name: filing.name,
+      exchange: filing.exchange,
+      cik: filing.cik,
+      aliases: companyAliases(filing.name),
+      securityType: classification.securityType,
+      sourceNames: ["SEC company_tickers_exchange"],
+    });
+  }
   return [...merged.values()].sort((left, right) => left.ticker.localeCompare(right.ticker));
+}
+
+function emptyDirectory(): ParsedDirectory {
+  return { entries: [], rows: 0, excluded: {} };
 }
 
 async function responseText(fetchImpl: typeof fetch, url: string, accept: string) {
@@ -147,6 +170,7 @@ async function cachedSnapshot() {
     if (!object.found || !object.text) return { snapshot: null, etag: object.etag };
     const snapshot = JSON.parse(object.text) as EquityUniverseSnapshot;
     if (!snapshot || snapshot.version !== 1 || !Array.isArray(snapshot.entries)) return { snapshot: null, etag: object.etag };
+    if (!snapshot.constructionMode) snapshot.constructionMode = "nasdaq_plus_sec";
     return { snapshot, etag: object.etag };
   } catch {
     return { snapshot: null, etag: null };
@@ -163,28 +187,50 @@ export async function loadEquityUniverse(fetchImpl: typeof fetch, now = new Date
     responseText(fetchImpl, OTHER_LISTED_URL, "text/plain"),
     responseText(fetchImpl, SEC_TICKERS_URL, "application/json"),
   ]);
-  const source = (index: number, name: string, url: string) => settled[index].status === "fulfilled"
-    ? { name, url, status: "connected", records: 0, error: null }
-    : { name, url, status: "temporarily_unavailable", records: 0, error: settled[index].reason instanceof Error ? settled[index].reason.message : "request_failed" };
-  if (settled[0].status !== "fulfilled" || settled[1].status !== "fulfilled") {
-    if (cached.snapshot) return { snapshot: cached.snapshot, cache: "cloudflare_r2_stale_fallback" as const, refreshed: false, r2Write: false };
-    throw new Error("official_equity_universe_unavailable");
+  const source = (index: number, name: string, url: string, parseError: string | null = null) => {
+    const item = settled[index];
+    if (item.status === "fulfilled" && !parseError) return { name, url, status: "connected", records: 0, error: null };
+    const requestError = item.status === "rejected" && item.reason instanceof Error ? item.reason.message : "request_failed";
+    return { name, url, status: "temporarily_unavailable", records: 0, error: parseError ?? requestError };
+  };
+  const nasdaq = settled[0].status === "fulfilled" ? parsePipeDirectory(settled[0].value, "nasdaq") : emptyDirectory();
+  const other = settled[1].status === "fulfilled" ? parsePipeDirectory(settled[1].value, "other") : emptyDirectory();
+  let secRows: SecRow[] = [];
+  let secParseError: string | null = null;
+  if (settled[2].status === "fulfilled") {
+    try {
+      secRows = parseSecRows(JSON.parse(settled[2].value) as unknown);
+      if (!secRows.length) secParseError = "invalid_or_empty_payload";
+    } catch {
+      secParseError = "invalid_json_payload";
+    }
   }
-  const nasdaq = parsePipeDirectory(settled[0].value, "nasdaq");
-  const other = parsePipeDirectory(settled[1].value, "other");
-  const secRows = settled[2].status === "fulfilled" ? parseSecRows(JSON.parse(settled[2].value) as unknown) : [];
+  if (!nasdaq.entries.length && !other.entries.length && !secRows.length) {
+    if (cached.snapshot) return { snapshot: cached.snapshot, cache: "cloudflare_r2_stale_fallback" as const, refreshed: false, r2Write: false };
+    const failures = settled.map((item, index) => item.status === "rejected" ? `${index}:${item.reason instanceof Error ? item.reason.message : "request_failed"}` : null).filter(Boolean).join("|");
+    throw new Error(`official_equity_universe_unavailable:${failures}`);
+  }
   const entries = mergeEntries(nasdaq, other, secRows);
+  if (!entries.length) {
+    if (cached.snapshot) return { snapshot: cached.snapshot, cache: "cloudflare_r2_stale_fallback" as const, refreshed: false, r2Write: false };
+    throw new Error("official_equity_universe_empty_after_security_filter");
+  }
   const excludedByReason = { ...nasdaq.excluded };
   for (const [reason, count] of Object.entries(other.excluded)) excludedByReason[reason] = (excludedByReason[reason] ?? 0) + count;
   const cikMapped = entries.filter((entry) => entry.cik).length;
   const sources = [
     { ...source(0, "Nasdaq Trader nasdaqlisted", NASDAQ_LISTED_URL), records: nasdaq.rows },
     { ...source(1, "Nasdaq Trader otherlisted", OTHER_LISTED_URL), records: other.rows },
-    { ...source(2, "SEC company_tickers_exchange", SEC_TICKERS_URL), records: secRows.length },
+    { ...source(2, "SEC company_tickers_exchange", SEC_TICKERS_URL, secParseError), records: secRows.length },
   ];
   const snapshot: EquityUniverseSnapshot = {
     version: 1,
     scope: "active_us_exchange_listed_common_equities_and_adrs",
+    constructionMode: nasdaq.entries.length && other.entries.length
+      ? "nasdaq_plus_sec"
+      : nasdaq.entries.length || other.entries.length
+        ? "partial_nasdaq_plus_sec"
+        : "sec_official_fallback",
     refreshedAt: now.toISOString(),
     entries,
     coverage: {

@@ -23,6 +23,7 @@
     "smoke:equity-historical-analogs": "node scripts/equity-historical-analogs-smoke.mjs",
     "smoke:equity-historical-bootstrap": "node scripts/equity-historical-bootstrap-smoke.mjs",
     "smoke:equity-sec-filing-details": "node scripts/equity-sec-filing-details-smoke.mjs",
+    "smoke:equity-universe-fallback": "node scripts/equity-universe-fallback-smoke.mjs",
     "smoke:ai-committee-crypto-policy": "node scripts/ai-committee-crypto-policy-smoke.mjs",
     "smoke:ai-committee-provider-guardrails": "node scripts/ai-committee-provider-guardrails-smoke.mjs",
     "smoke:branch-lab-policy": "node scripts/branch-signal-lab-policy-smoke.mjs"

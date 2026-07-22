@@ -239,7 +239,7 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       providerDetails: providerDetails(providers),
       secFilingDetails: eventResult.secFilingDetails,
       providerConfiguration: providerConfiguration(),
-      universe: { refreshedAt: universeResult.snapshot.refreshedAt, cache: universeResult.cache, refreshedThisRun: universeResult.refreshed, r2Write: universeResult.r2Write, coverage: universeResult.snapshot.coverage, sources: universeResult.snapshot.sources },
+      universe: { constructionMode: universeResult.snapshot.constructionMode, refreshedAt: universeResult.snapshot.refreshedAt, cache: universeResult.cache, refreshedThisRun: universeResult.refreshed, r2Write: universeResult.r2Write, coverage: universeResult.snapshot.coverage, sources: universeResult.snapshot.sources },
       candidateFunnel: { stocksInUniverse: universeResult.snapshot.entries.length, realEventReceipts: eventResult.receipts.length, mappedRelationships: mapped.diagnostics.mappedRelationships, eventClusters: mapped.diagnostics.eventClusters, directCandidates: mapped.diagnostics.directCandidates, knockOnCandidates: mapped.diagnostics.rippleCandidates, candidatesPassingEventFirstGate: gatePassed.length, candidatesWithMarketQuote: quotedQualified.length, candidatesSkippedBecauseRecentlyReviewed: quotedQualified.length - unreviewedQuoted.length, unreviewedCandidatesAvailable: unreviewedQuoted.length, committeeCandidates: best?.quote && !reviewedFingerprints.has(fingerprintCandidate(best)) ? 1 : 0 },
       historicalLearning: {
         realPointInTimeSignalsAvailable: historicalSignals.length,

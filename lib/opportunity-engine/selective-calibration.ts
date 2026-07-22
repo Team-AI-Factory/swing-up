@@ -53,9 +53,9 @@ function outcome(row: ScoredHistoricalCase, action: SelectiveModel["action"], ho
   const excessReturn = horizonDays === 30 ? row.excess30d : row.excess90d;
   const drawdown = horizonDays === 30 ? row.drawdown30d : row.drawdown90d;
   const label = action === "buy"
-    ? returnPercent > 0 && excessReturn > 0
+    ? returnPercent > 0
     : action === "sell"
-      ? returnPercent < 0 && excessReturn < 0
+      ? returnPercent < 0
       : drawdown <= -8;
   return { label, result: { returnPercent, excessReturn, drawdown } };
 }

@@ -39,7 +39,8 @@ function momentum(input: CompanyFoundationInput) {
 
 function valuation(input: CompanyFoundationInput) {
   const v = input.valuation;
-  const pe = known(v.forwardPriceToEarnings) ? 100 - score(v.forwardPriceToEarnings, 8, 55) : 45;
+  const peInput = known(v.forwardPriceToEarnings) ? v.forwardPriceToEarnings : v.priceToEarnings;
+  const pe = known(peInput) ? 100 - score(peInput, 8, 55) : 45;
   const fcf = known(v.freeCashFlowYield) ? score(v.freeCashFlowYield, 0, 0.1) : 45;
   const ps = known(v.priceToSales) ? 100 - score(v.priceToSales, 1, 20) : 45;
   return clamp(pe * 0.4 + fcf * 0.4 + ps * 0.2);
@@ -109,19 +110,24 @@ export function evaluateFoundation(input: CompanyFoundationInput): FoundationDec
     ? "conditional" : candidateBucket === "valuation_or_expectations_gated" ? "wait_for_price" : evidence < 55 ? "wait_for_proof" : "not_decision_grade";
   const thesisStatus: ThesisStatus = candidateBucket === "advance_to_deeper_work" ? "strengthening" : candidateBucket === "deprioritized_or_reject" ? "watch" : "untested";
   const alertType: OpportunityAlertType = candidateBucket === "advance_to_deeper_work" ? "new_opportunity" : "wait_for_proof";
+  const expectationsMissing = !known(input.expectations.analystRevisionScore)
+    && !known(input.expectations.earningsSurprisePercent)
+    && !known(input.expectations.consensusRevenueGrowthPercent);
   const blockedReasons = [
     ...(evidence < 65 ? ["evidence_confidence_below_alert_threshold"] : []),
     ...(riskScore >= 65 ? ["risk_too_high_for_opportunity_alert"] : []),
     ...(opportunityScore < 70 ? ["opportunity_score_below_alert_threshold"] : []),
     ...(input.market.currentPrice === null ? ["current_price_missing"] : []),
+    ...(expectationsMissing ? ["market_expectations_not_available"] : []),
   ];
+  const valuationPe = input.valuation.forwardPriceToEarnings ?? input.valuation.priceToEarnings;
   const pillars = [
     pillar("growth", "Growth", financialMomentum >= 60 ? "confirming" : financialMomentum < 40 ? "warning" : "neutral", `Revenue growth: ${input.metrics.revenueGrowthYoY ?? "missing"}`, "Next reported revenue and guidance"),
     pillar("margins", "Margins", known(input.metrics.operatingMargin) && known(input.metrics.priorOperatingMargin) && input.metrics.operatingMargin > input.metrics.priorOperatingMargin ? "confirming" : "neutral", `Operating margin: ${input.metrics.operatingMargin ?? "missing"}`, "Next operating margin"),
     pillar("cash_conversion", "Cash conversion", known(input.metrics.freeCashFlowMargin) && input.metrics.freeCashFlowMargin > 0 ? "confirming" : "warning", `FCF margin: ${input.metrics.freeCashFlowMargin ?? "missing"}`, "Next free-cash-flow update"),
     pillar("balance_sheet", "Balance sheet", riskScore < 50 ? "confirming" : riskScore >= 70 ? "impaired" : "warning", `Debt/assets: ${input.metrics.debtToAssets ?? "missing"}`, "Debt, cash and dilution update"),
-    pillar("valuation", "Valuation", valuationSupport >= 60 ? "confirming" : valuationSupport < 40 ? "warning" : "neutral", `Forward P/E: ${input.valuation.forwardPriceToEarnings ?? "missing"}`, "Price and estimate refresh"),
-    pillar("expectations", "Expectations", expectationsGap >= 60 ? "confirming" : "neutral", `Expectations score: ${expectationsGap}`, "Estimate revisions and surprise"),
+    pillar("valuation", "Valuation", valuationSupport >= 60 ? "confirming" : valuationSupport < 40 ? "warning" : "neutral", `P/E: ${valuationPe ?? "missing"}`, "Price and estimate refresh"),
+    pillar("expectations", "Expectations", expectationsMissing ? "untested" : expectationsGap >= 60 ? "confirming" : "neutral", expectationsMissing ? "Verified market expectations unavailable" : `Expectations score: ${expectationsGap}`, "Estimate revisions and surprise"),
     pillar("catalyst", "Catalyst", input.catalyst.description ? "confirming" : "untested", input.catalyst.description ?? "No dated catalyst", input.catalyst.expectedAt ?? "Find a dated proof point"),
   ];
 
@@ -130,10 +136,10 @@ export function evaluateFoundation(input: CompanyFoundationInput): FoundationDec
     candidateBucket, thesisStatus, securityReadiness, alertType,
     userAlertEligible: blockedReasons.length === 0, scores,
     actionability: candidateBucket === "advance_to_deeper_work" ? "Research candidate: complete valuation and red-team review before any user-facing alert." : "Keep in the research funnel until missing proof or valuation improves.",
-    variantWedge: expectationsGap >= 60 ? "Reported fundamentals may be improving faster than current expectations." : "No strong expectations gap has been proven yet.",
+    variantWedge: expectationsMissing ? "Reported fundamentals are measurable, but no verified market-expectations edge has been proven." : expectationsGap >= 60 ? "Reported fundamentals may be improving faster than current expectations." : "No strong expectations gap has been proven yet.",
     whyNow: input.catalyst.description ?? (financialMomentum >= 60 ? "Fundamental momentum is improving without requiring a fresh-news trigger." : "The company was screened for persistent monitoring."),
-    firstRejection: riskScore >= 65 ? "Risk is too high." : evidence < 65 ? "The evidence pack is incomplete." : valuationSupport < 40 ? "The stock may already price in too much success." : "The opportunity score is not high enough.",
-    whatWouldMakeInvestable: ["Fresh official financial evidence", "Current price and valuation", "A defined catalyst or proof point", "Bull/base/bear downside review"],
+    firstRejection: riskScore >= 65 ? "Risk is too high." : evidence < 65 ? "The evidence pack is incomplete." : expectationsMissing ? "Verified market expectations are missing." : valuationSupport < 40 ? "The stock may already price in too much success." : "The opportunity score is not high enough.",
+    whatWouldMakeInvestable: ["Fresh official financial evidence", "Current price and valuation", "Verified consensus or market expectations", "A defined catalyst or proof point", "Bull/base/bear downside review"],
     killCriteria: ["Two consecutive periods of worsening growth", "Material margin or cash-flow deterioration", "Balance-sheet stress or heavy dilution", "Valuation removes the reward-to-risk advantage"],
     blockedReasons, pillars,
     evidence: input.receipts.map((item) => ({ path: "foundation", direction: "neutral", pillar: "other", sourceName: item.source, sourceUrl: item.url, rawSignalId: null, observedAt: item.observedAt ?? input.observedAt, summary: `Foundation receipt from ${item.source}`, reliability: item.reliability, payload: { fields: item.fields ?? [] } })),
@@ -142,8 +148,8 @@ export function evaluateFoundation(input: CompanyFoundationInput): FoundationDec
   };
 }
 
-const POSITIVE = ["raises guidance", "beats", "contract win", "approval", "record revenue", "margin expansion", "buyback", "debt reduction"];
-const NEGATIVE = ["cuts guidance", "misses", "investigation", "fraud", "recall", "offering", "dilution", "default", "bankruptcy", "customer loss", "margin pressure"];
+const POSITIVE = ["raises guidance", "beats", "contract win", "approval", "record revenue", "revenue growth", "margin expansion", "margin improvement", "cash flow improvement", "buyback", "debt reduction"];
+const NEGATIVE = ["cuts guidance", "misses", "investigation", "fraud", "recall", "offering", "dilution", "default", "bankruptcy", "customer loss", "revenue decline", "margin pressure", "margin contraction", "cash flow deterioration"];
 
 export function evaluateEvent(event: EventSignalInput, thesis: StoredThesisSnapshot): EventDecision {
   const text = `${event.title} ${event.summary}`.toLowerCase();

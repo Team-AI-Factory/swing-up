@@ -52,6 +52,8 @@ function schedulerState() {
 }
 
 function localUrl(path: string) {
+  const publicDomain = process.env.RAILWAY_PUBLIC_DOMAIN?.trim();
+  if (publicDomain) return `https://${publicDomain}${path}`;
   const port = process.env.PORT?.trim() || "3000";
   return `http://127.0.0.1:${port}${path}`;
 }

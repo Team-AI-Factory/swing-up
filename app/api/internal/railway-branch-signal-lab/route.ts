@@ -372,6 +372,7 @@ export async function GET() {
     outcomeEvaluationPolicy: { provider: "CoinGecko live snapshot", checkpoints: OUTCOME_CHECKPOINTS.map((checkpoint) => checkpoint.label), maximumDelayMinutes: OUTCOME_EVALUATION_TOLERANCE_MS / 60_000, lateSnapshotReuseAllowed: false },
     pollingPolicy: {
       schedulerOwner: process.env.SWING_UP_BRANCH_LAB_SCHEDULER_OWNER === "next_server" ? "next_server" : "unavailable",
+      schedulerTransport: process.env.RAILWAY_PUBLIC_DOMAIN?.trim() ? "railway_https_domain" : "loopback",
       liveIntervalSeconds: positiveEnvironmentNumber(process.env.SWING_UP_BRANCH_LAB_EFFECTIVE_INTERVAL_SECONDS, 300),
       technicalRetrySeconds: positiveEnvironmentNumber(process.env.SWING_UP_BRANCH_LAB_EFFECTIVE_TECHNICAL_RETRY_SECONDS, 60),
       watchdogEnabled: true,

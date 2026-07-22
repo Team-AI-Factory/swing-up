@@ -49,7 +49,7 @@ for (const marker of [`SWING_UP_BRANCH_LAB_SCHEDULER_OWNER: "next_server"`, "SWI
 const instrumentationSource = await readFile(new URL("../instrumentation.ts", import.meta.url), "utf8");
 if (!instrumentationSource.includes("startBranchSignalLabRuntimeScheduler")) throw new Error("Next.js instrumentation does not start the branch scanner.");
 const schedulerSource = await readFile(new URL("../lib/branch-signal-lab-runtime-scheduler.ts", import.meta.url), "utf8");
-for (const marker of ["state.inFlight", "Next.js watchdog recovered an overdue scan", "SWING_UP_BRANCH_LAB_RUNTIME_TOKEN", "state=Cloudflare R2"]) {
+for (const marker of ["state.inFlight", "Next.js watchdog recovered an overdue scan", "SWING_UP_BRANCH_LAB_RUNTIME_TOKEN", "RAILWAY_PUBLIC_DOMAIN", "state=Cloudflare R2"]) {
   if (!schedulerSource.includes(marker)) throw new Error(`Next.js branch scanner watchdog policy is missing: ${marker}`);
 }
 

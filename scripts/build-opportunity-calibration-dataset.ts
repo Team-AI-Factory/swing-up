@@ -5,7 +5,7 @@ import { buildCleanHistoricalOpportunityCases } from "../lib/opportunity-engine/
 const outputPath = process.env.CALIBRATION_DATASET_PATH ?? "/tmp/combined-opportunity-engine-calibration-dataset.json";
 const earliestDate = process.env.CALIBRATION_EARLIEST_DATE ?? "2016-01-01";
 const tickers = (process.env.CALIBRATION_TICKERS ?? "AAPL,MSFT,NVDA,GOOGL,AMZN,META,AVGO,AMD,TSLA,WMT,JPM,BAC,XOM,CVX,KO,PEP,UNH,HD,COST,CRM,ORCL,NFLX,UBER,ADBE,INTC,QCOM,CSCO,MCD,NKE,DIS")
-  .split(",").map((ticker) => ticker.trim().toUpperCase()).filter(Boolean).slice(0, 35);
+  .split(",").map((ticker) => ticker.trim().toUpperCase()).filter(Boolean).slice(0, 100);
 
 const round = (value: number | null | undefined) => typeof value === "number" && Number.isFinite(value) ? Number(value.toFixed(8)) : null;
 const safe = (error: unknown) => error instanceof Error ? error.message.replace(/\s+/g, " ").slice(0, 260) : "dataset_build_failed";
@@ -68,10 +68,13 @@ async function main() {
   }).sort((left, right) => `${left.filingDate}:${left.ticker}`.localeCompare(`${right.filingDate}:${right.ticker}`));
 
   const dataset = {
-    version: 1,
+    version: 2,
     checkedAt: new Date().toISOString(),
     sourceMode: "real_point_in_time_sec_and_market_data",
     earliestDate,
+    requestedTickers: tickers,
+    requestedTickerCount: tickers.length,
+    tickersWithCases: [...new Set(rows.map((row) => row.ticker))],
     cleaning: source.cleaning,
     rows,
     sourceErrors: source.errors,
@@ -80,11 +83,11 @@ async function main() {
   };
   await mkdir(outputPath.split("/").slice(0, -1).join("/") || ".", { recursive: true });
   await writeFile(outputPath, `${JSON.stringify(dataset, null, 2)}\n`, "utf8");
-  console.log(JSON.stringify({ ok: true, rowCount: rows.length, tickers: [...new Set(rows.map((row) => row.ticker))].length, cleaning: source.cleaning, sourceErrors: source.errors.length, outputPath }, null, 2));
+  console.log(JSON.stringify({ ok: true, rowCount: rows.length, requestedTickers: tickers.length, tickersWithCases: dataset.tickersWithCases.length, cleaning: source.cleaning, sourceErrors: source.errors.length, outputPath }, null, 2));
 }
 
 main().catch(async (error) => {
-  const report = { version: 1, ok: false, checkedAt: new Date().toISOString(), fatalError: safe(error) };
+  const report = { version: 2, ok: false, checkedAt: new Date().toISOString(), fatalError: safe(error) };
   await mkdir(outputPath.split("/").slice(0, -1).join("/") || ".", { recursive: true });
   await writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
   console.error(JSON.stringify(report, null, 2));

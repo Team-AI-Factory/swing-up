@@ -54,6 +54,9 @@ function providerCallRequest(value: RequestInfo | URL, now: Date): BranchProvide
   if (host === "api.marketaux.com") {
     return { ...base, provider: "marketaux", quotaKey: "marketaux_free_100_daily", cadenceKey: "marketaux_equity_news", rollingWindowMs: day, maximumCallsInWindow: 96, minimumIntervalMs: 14.5 * minute };
   }
+  if (host === "api.commerce.gov") {
+    return { ...base, provider: "commerce", quotaKey: "commerce_demo_key_50_daily", cadenceKey: "commerce_official_news", rollingWindowMs: day, maximumCallsInWindow: 48, minimumIntervalMs: 29 * minute };
+  }
   if (host === "www.alphavantage.co") {
     const fn = (url.searchParams.get("function") ?? "unknown").toUpperCase();
     const symbol = (url.searchParams.get("symbol") ?? "all").toUpperCase();

@@ -195,8 +195,14 @@ export function providerCooldownMs(input: { failureCount: number; refreshMs: num
 export type ProviderBudgetReservation = { quotaKey: string; cadenceKey: string; reservedAt: string };
 export type ProviderBudgetRequest = { quotaKey: string; cadenceKey: string; rollingWindowMs: number; maximumCallsInWindow: number; minimumIntervalMs: number };
 
+function canonicalQuotaKey(value: string) {
+  if (value === "marketaux_free") return "marketaux_free_100_daily";
+  return value;
+}
+
 export function providerCallBudgetDecision(reservations: ProviderBudgetReservation[], request: ProviderBudgetRequest, now: number) {
-  const callsInWindow = reservations.filter((reservation) => reservation.quotaKey === request.quotaKey && now - Date.parse(reservation.reservedAt) >= 0 && now - Date.parse(reservation.reservedAt) < request.rollingWindowMs);
+  const requestedQuotaKey = canonicalQuotaKey(request.quotaKey);
+  const callsInWindow = reservations.filter((reservation) => canonicalQuotaKey(reservation.quotaKey) === requestedQuotaKey && now - Date.parse(reservation.reservedAt) >= 0 && now - Date.parse(reservation.reservedAt) < request.rollingWindowMs);
   if (callsInWindow.length >= request.maximumCallsInWindow) {
     const oldest = callsInWindow.map((reservation) => Date.parse(reservation.reservedAt)).filter(Number.isFinite).sort((left, right) => left - right)[0] ?? now;
     return { allowed: false as const, nextRetryAt: new Date(oldest + request.rollingWindowMs).toISOString(), reason: "rolling_quota_guard" as const };

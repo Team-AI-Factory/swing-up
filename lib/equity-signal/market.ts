@@ -193,7 +193,7 @@ export async function enrichCandidateQuotes(
   const connected = settled.filter((item) => item.outcome.quote && item.outcome.status === "connected");
   const provider: ProviderResult = {
     provider: "public_equity_quote_fallback_chain",
-    status: connected.length ? "connected" : statuses.includes("not_entitled") ? "not_entitled" : statuses.includes("not_due") ? "not_due" : statuses[0] ?? "not_configured",
+    status: !settled.length ? "not_due" : connected.length ? "connected" : statuses.includes("not_entitled") ? "not_entitled" : statuses.includes("not_due") ? "not_due" : statuses[0] ?? "temporarily_unavailable",
     checkedAt: settled.length ? now.toISOString() : null,
     nextRetryAt: null,
     sourceUrls: [YAHOO_CHART_URL, `${ALPHA_VANTAGE_URL}?function=GLOBAL_QUOTE`, FMP_URL],

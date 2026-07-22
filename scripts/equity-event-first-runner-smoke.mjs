@@ -107,11 +107,19 @@ assert.equal(approved.databaseWrites, false);
 assert.equal(approved.publishing, false);
 assert.equal(approved.notifications, false);
 
-const calibrated = await runEquitySignalLab({ now: new Date("2026-07-22T10:00:00.000Z"), allowOpenAi: true, historicalSignals: Array.from({ length: 20 }, (_, index) => ({ id: `history-${index}` })), beforeOpenAiCall: async () => true });
+const calibratedHistory = Array.from({ length: 20 }, (_, index) => ({
+  id: `history-${index}`,
+  dataQuality: "real",
+  provenance: { origin: index < 15 ? "swing_up_forward_outcome" : "public_historical_bootstrap" },
+}));
+const calibrated = await runEquitySignalLab({ now: new Date("2026-07-22T10:00:00.000Z"), allowOpenAi: true, historicalSignals: calibratedHistory, beforeOpenAiCall: async () => true });
 assert.equal(calibrated.seriousSignalFound, true);
 assert.equal(calibrated.actionableSignalFound, true);
 assert.equal(calibrated.alertType, "buy");
 assert.equal(calibrated.selectedCandidate.priceForecast.status, "calibrated");
 assert.equal(calibrated.selectedCandidate.priceForecast.horizon, "7D");
+assert.equal(calibrated.historicalLearning.realPointInTimeSignalsAvailable, 20);
+assert.equal(calibrated.historicalLearning.swingUpForwardSignalsAvailable, 15);
+assert.equal(calibrated.historicalLearning.publicBootstrapSignalsAvailable, 5);
 
 console.log(JSON.stringify({ ok: true, eventQualifiedAtZeroPercentMove: true, cryptoDisabled: true, priorMoveNotRequired: true, strictCommitteeStillRequired: true, watchBeforeCalibration: true, buyAfterCalibration: true, noWritesOrPublishing: true }, null, 2));

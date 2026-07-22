@@ -7,6 +7,7 @@ const SEC_AGENT = "SwingUp/1.0 support@swingup.app";
 const GOOGLE_NEWS_URL = "https://news.google.com/rss/search";
 const GDELT_URL = "https://api.gdeltproject.org/api/v2/doc/doc";
 const MARKETAUX_URL = "https://api.marketaux.com/v1/news/all";
+const COMMERCE_NEWS_API_URL = "https://api.commerce.gov/api/news";
 const ALPHA_VANTAGE_URL = "https://www.alphavantage.co/query";
 const FEDERAL_REGISTER_URL = "https://www.federalregister.gov/api/v1/documents.json";
 const OPENFDA_URL = "https://api.fda.gov/drug/enforcement.json";
@@ -21,7 +22,6 @@ const OFFICIAL_FEEDS: OfficialFeed[] = [
   { provider: "bea", channel: "bea", url: "https://apps.bea.gov/rss/rss.xml", publisher: "U.S. Bureau of Economic Analysis" },
   { provider: "sec_press", channel: "sec_press_release", url: "https://www.sec.gov/news/pressreleases.rss", publisher: "U.S. Securities and Exchange Commission" },
   { provider: "white_house", channel: "white_house", url: "https://www.whitehouse.gov/news/feed/", publisher: "The White House" },
-  { provider: "commerce", channel: "federal_register", url: "https://www.commerce.gov/feeds/news", publisher: "U.S. Department of Commerce" },
   { provider: "cisa", channel: "federal_register", url: "https://www.cisa.gov/cybersecurity-advisories/all.xml", publisher: "Cybersecurity and Infrastructure Security Agency" },
   { provider: "state_department", channel: "federal_register", url: "https://www.state.gov/rss-feed/collected-department-releases/feed/", publisher: "U.S. Department of State" },
   { provider: "defense_department", channel: "federal_register", url: "https://www.defense.gov/DesktopModules/ArticleCS/RSS.ashx?ContentType=9&Site=945&max=25", publisher: "U.S. Department of Defense" },
@@ -117,6 +117,15 @@ function errorCategory(error: unknown) {
   if (/rate.?limit|http_429/i.test(message)) return { status: "rate_limited" as ProviderStatus, error: "rate_limited" };
   if (/http_(?:401|402|403)|not_entitled/i.test(message)) return { status: "not_entitled" as ProviderStatus, error: "not_entitled" };
   return { status: "temporarily_unavailable" as ProviderStatus, error: message.slice(0, 160) };
+}
+
+function marketauxErrorCategory(error: unknown) {
+  const message = error instanceof Error ? error.message : "request_failed";
+  if (/http_401/i.test(message)) return { status: "not_entitled" as ProviderStatus, error: "invalid_api_token" };
+  if (/http_402/i.test(message)) return { status: "rate_limited" as ProviderStatus, error: "usage_limit_reached" };
+  if (/http_403/i.test(message)) return { status: "not_entitled" as ProviderStatus, error: "endpoint_access_restricted" };
+  if (/http_400/i.test(message)) return { status: "failed" as ProviderStatus, error: "malformed_parameters" };
+  return errorCategory(error);
 }
 
 function publicFeedErrorCategory(error: unknown) {
@@ -325,16 +334,22 @@ export async function fetchGoogleDiscovery(fetchImpl: typeof fetch, now: Date): 
 
 export async function fetchGdeltDiscovery(fetchImpl: typeof fetch, now: Date): Promise<ProviderResult> {
   const url = new URL(GDELT_URL);
-  url.searchParams.set("query", '(earnings OR guidance OR acquisition OR "product launch" OR "AI breakthrough" OR cyberattack OR sanctions OR tariff OR war OR "Federal Reserve" OR inflation OR oil OR "supply chain") sourcelang:english');
+  const queryBuckets = [
+    '(earnings OR guidance OR acquisition OR merger OR "product launch" OR "contract award" OR recall OR investigation OR offering) sourcelang:english',
+    '("AI breakthrough" OR "technology breakthrough" OR semiconductor OR cyberattack OR "clinical trial" OR "FDA approval") sourcelang:english',
+    '(sanctions OR tariff OR "military strike" OR invasion OR oil OR "supply chain" OR "Federal Reserve" OR inflation OR jobs OR Treasury) sourcelang:english',
+  ];
+  url.searchParams.set("query", queryBuckets[Math.floor(now.getTime() / (15 * 60_000)) % queryBuckets.length]);
   url.searchParams.set("mode", "ArtList");
   url.searchParams.set("format", "json");
-  url.searchParams.set("timespan", "1h");
-  url.searchParams.set("maxrecords", "250");
+  url.searchParams.set("timespan", "2h");
+  url.searchParams.set("maxrecords", "75");
   url.searchParams.set("sort", "DateDesc");
   try {
-    const { body } = await fetchText(fetchImpl, url, "application/json", 20_000);
+    const { body } = await fetchText(fetchImpl, url, "application/json", 25_000);
     const json = JSON.parse(body) as { articles?: Array<Record<string, unknown>> };
-    const receipts = (Array.isArray(json.articles) ? json.articles : []).flatMap((article): EventReceipt[] => {
+    if (!Array.isArray(json.articles)) throw new Error("invalid_gdelt_payload");
+    const receipts = json.articles.flatMap((article): EventReceipt[] => {
       const title = text(article.title, 280);
       const articleUrl = safeUrl(text(article.url));
       const domain = text(article.domain, 120).replace(/^www\./, "");
@@ -362,12 +377,13 @@ export async function fetchMarketauxDiscovery(fetchImpl: typeof fetch, now: Date
   url.searchParams.set("filter_entities", "true");
   url.searchParams.set("group_similar", "true");
   url.searchParams.set("language", "en");
-  url.searchParams.set("published_after", new Date(now.getTime() - 2 * 60 * 60 * 1000).toISOString());
+  url.searchParams.set("published_after", new Date(now.getTime() - 2 * 60 * 60 * 1000).toISOString().slice(0, 19));
   url.searchParams.set("limit", "3");
   try {
     const { body } = await fetchText(fetchImpl, url, "application/json");
     const json = JSON.parse(body) as { data?: Array<Record<string, unknown>> };
-    const receipts = (Array.isArray(json.data) ? json.data : []).flatMap((article): EventReceipt[] => {
+    if (!Array.isArray(json.data)) throw new Error("invalid_marketaux_payload");
+    const receipts = json.data.flatMap((article): EventReceipt[] => {
       const title = text(article.title, 280);
       const articleUrl = safeUrl(text(article.url));
       const publishedAt = validDate(article.published_at, now, 24 * 60 * 60 * 1000);
@@ -380,8 +396,61 @@ export async function fetchMarketauxDiscovery(fetchImpl: typeof fetch, now: Date
     });
     return result({ provider: "marketaux", status: "connected", checkedAt: now.toISOString(), sourceUrls: [`${MARKETAUX_URL}?countries=us&entity_types=equity&limit=3`], receipts, recordsRead: receipts.length, entitlementVerified: true });
   } catch (error) {
-    const failure = errorCategory(error);
+    const failure = marketauxErrorCategory(error);
     return result({ provider: "marketaux", status: failure.status, sourceUrls: [MARKETAUX_URL], error: failure.error, entitlementVerified: failure.status !== "not_entitled" });
+  }
+}
+
+export async function fetchCommerceNews(fetchImpl: typeof fetch, now: Date): Promise<ProviderResult> {
+  const url = new URL(COMMERCE_NEWS_API_URL);
+  url.searchParams.set("page[limit]", "25");
+  url.searchParams.set("api_key", "DEMO_KEY");
+  try {
+    const { body } = await fetchText(fetchImpl, url, "application/json", 20_000);
+    const json = JSON.parse(body) as { data?: Array<Record<string, unknown>> };
+    if (!Array.isArray(json.data)) throw new Error("invalid_commerce_payload");
+    const rows = json.data;
+    const receipts = rows.flatMap((row): EventReceipt[] => {
+      const attributes = row.attributes && typeof row.attributes === "object" && !Array.isArray(row.attributes)
+        ? row.attributes as Record<string, unknown>
+        : {};
+      const fields = { ...row, ...attributes };
+      const title = text(fields.label ?? fields.title, 280);
+      const articleUrl = safeUrl(text(fields.href ?? fields.self));
+      const timestamp = typeof fields.post_date === "number" ? fields.post_date * 1_000 : fields.post_date_formatted ?? fields.post_date;
+      const publishedAt = validDate(timestamp, now, 7 * 24 * 60 * 60 * 1000);
+      const newsTypes = Array.isArray(fields.news_type)
+        ? fields.news_type.filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value))
+        : [];
+      const rawEventType = newsTypes.map((value) => text(value.label, 120)).filter(Boolean).join(", ") || null;
+      if (!title || !articleUrl || !publishedAt) return [];
+      return [makeReceipt({
+        title,
+        summary: decodeXml(text(fields.body ?? fields.subtitle, 2_000)).slice(0, 900) || null,
+        url: articleUrl,
+        publisher: "U.S. Department of Commerce",
+        publishedAt,
+        channel: "federal_register",
+        official: true,
+        primarySource: true,
+        scheduled: false,
+        symbolHints: [],
+        companyHints: [],
+        rawEventType,
+      })];
+    });
+    return result({
+      provider: "commerce",
+      status: "connected",
+      checkedAt: now.toISOString(),
+      sourceUrls: [COMMERCE_NEWS_API_URL],
+      receipts,
+      recordsRead: rows.length,
+      entitlementVerified: true,
+    });
+  } catch (error) {
+    const failure = publicFeedErrorCategory(error);
+    return result({ provider: "commerce", status: failure.status, sourceUrls: [COMMERCE_NEWS_API_URL], error: failure.error });
   }
 }
 
@@ -530,6 +599,7 @@ export async function collectEventSources(fetchImpl: typeof fetch, now: Date) {
     { provider: "google_news_rss", sourceUrls: [GOOGLE_NEWS_URL], run: () => fetchGoogleDiscovery(fetchImpl, now) },
     { provider: "gdelt", sourceUrls: [GDELT_URL], run: () => fetchGdeltDiscovery(fetchImpl, now) },
     { provider: "marketaux", sourceUrls: [MARKETAUX_URL], run: () => fetchMarketauxDiscovery(fetchImpl, now) },
+    { provider: "commerce", sourceUrls: [COMMERCE_NEWS_API_URL], run: () => fetchCommerceNews(fetchImpl, now) },
     { provider: "alpha_vantage_news", sourceUrls: [ALPHA_VANTAGE_URL], run: () => fetchAlphaNews(fetchImpl, now) },
     { provider: "alpha_vantage_earnings_calendar", sourceUrls: [ALPHA_VANTAGE_URL], run: () => fetchAlphaEarningsCalendar(fetchImpl, now) },
     { provider: "federal_register", sourceUrls: [FEDERAL_REGISTER_URL], run: () => fetchFederalRegister(fetchImpl, now) },

@@ -55,7 +55,7 @@ jobs:
         run: npm run typecheck
 
       - name: Verify live-lab evidence and provider policies
-        run: npm run smoke:branch-lab-policy && npm run smoke:equity-universe-fallback && npm run smoke:equity-event-semantics && npm run smoke:equity-historical-analogs && npm run smoke:equity-historical-bootstrap && npm run smoke:equity-event-first-runner && npm run smoke:equity-sec-filing-details && npm run smoke:ai-committee-crypto-policy && npm run smoke:ai-committee-provider-guardrails
+        run: npm run smoke:branch-lab-policy && npm run smoke:equity-universe-fallback && npm run smoke:equity-event-semantics && npm run smoke:equity-event-sources && npm run smoke:equity-historical-analogs && npm run smoke:equity-historical-bootstrap && npm run smoke:equity-event-first-runner && npm run smoke:equity-sec-filing-details && npm run smoke:ai-committee-crypto-policy && npm run smoke:ai-committee-provider-guardrails
 
       - name: Lint
         run: npm run lint

@@ -122,6 +122,11 @@ const providerBudgetHistory = [{ quotaKey: "marketaux_free", cadenceKey: "market
 assert.equal(policy.providerCallBudgetDecision(providerBudgetHistory, providerBudgetRequest, Date.parse(at) + 5 * 60_000).reason, "cadence_guard");
 assert.equal(policy.providerCallBudgetDecision(providerBudgetHistory, providerBudgetRequest, Date.parse(at) + 21 * 60_000).allowed, true);
 assert.equal(policy.providerCallBudgetDecision([...providerBudgetHistory, { ...providerBudgetHistory[0], reservedAt: "2026-07-19T00:21:00.000Z" }], providerBudgetRequest, Date.parse(at) + 42 * 60_000).reason, "rolling_quota_guard");
+const migratedMarketauxBudget = policy.providerCallBudgetDecision([
+  { quotaKey: "marketaux_free", cadenceKey: "marketaux_news", reservedAt: at },
+  { quotaKey: "marketaux_free_100_daily", cadenceKey: "marketaux_equity_news", reservedAt: new Date(Date.parse(at) + 30_000).toISOString() },
+], { quotaKey: "marketaux_free_100_daily", cadenceKey: "marketaux_equity_news_v2", rollingWindowMs: 24 * 60 * 60_000, maximumCallsInWindow: 2, minimumIntervalMs: 0 }, Date.parse(at) + 60_000);
+assert.equal(migratedMarketauxBudget.reason, "rolling_quota_guard");
 
 const externalFailure = { status: "source_temporarily_unavailable", failureScope: "external_provider", repairEligible: false, technicalFailureFingerprint: "external_provider_gdelt" };
 assert.equal(policy.noGainRepairAttempts([externalFailure, externalFailure], externalFailure), 0);
@@ -139,6 +144,7 @@ console.log(JSON.stringify({
   balancedEvidenceChannels: true,
   stableEventFingerprint: true,
   durableProviderBudgetPolicy: true,
+  legacyMarketauxReservationsCountTowardCurrentPlan: true,
   externalFailuresNotRepairEligible: true,
   applicationFailureStopPolicy: true,
 }, null, 2));

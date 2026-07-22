@@ -217,6 +217,9 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       bootstrapPublicHistoricalSignals(input.historicalSignals ?? [], fetchImpl, now),
     ]);
     const historicalSignals = mergeHistoricalSignals(input.historicalSignals ?? [], historicalBootstrap.records);
+    const realHistoricalSignals = historicalSignals.filter((record) => record.dataQuality === "real");
+    const swingUpForwardSignals = realHistoricalSignals.filter((record) => record.provenance?.origin === "swing_up_forward_outcome");
+    const publicBootstrapSignals = realHistoricalSignals.filter((record) => record.provenance?.origin === "public_historical_bootstrap");
     const mapped = buildImpactCandidates(eventResult.receipts, universeResult.snapshot, macroResult.context, now, historicalSignals);
     const quoted = await enrichCandidateQuotes(mapped.candidates, fetchImpl, now, 3, input.outcomeTickers ?? []);
     const ranked = quoted.candidates.map((candidate) => withPriceForecast(candidate, now));
@@ -244,8 +247,10 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       universe: { constructionMode: universeResult.snapshot.constructionMode, refreshedAt: universeResult.snapshot.refreshedAt, cache: universeResult.cache, refreshedThisRun: universeResult.refreshed, r2Write: universeResult.r2Write, coverage: universeResult.snapshot.coverage, sources: universeResult.snapshot.sources },
       candidateFunnel: { stocksInUniverse: universeResult.snapshot.entries.length, realEventReceipts: eventResult.receipts.length, mappedRelationships: mapped.diagnostics.mappedRelationships, eventClusters: mapped.diagnostics.eventClusters, directCandidates: mapped.diagnostics.directCandidates, knockOnCandidates: mapped.diagnostics.rippleCandidates, candidatesPassingEventFirstGate: gatePassed.length, candidatesWithMarketQuote: quotedQualified.length, candidatesSkippedBecauseRecentlyReviewed: quotedQualified.length - unreviewedQuoted.length, unreviewedCandidatesAvailable: unreviewedQuoted.length, committeeCandidates: best?.quote && !reviewedFingerprints.has(fingerprintCandidate(best)) ? 1 : 0 },
       historicalLearning: {
-        realPointInTimeSignalsAvailable: historicalSignals.length,
-        swingUpForwardSignalsAvailable: input.historicalSignals?.length ?? 0,
+        realPointInTimeSignalsAvailable: realHistoricalSignals.length,
+        swingUpForwardSignalsAvailable: swingUpForwardSignals.length,
+        publicBootstrapSignalsAvailable: publicBootstrapSignals.length,
+        unclassifiedRealSignalsAvailable: realHistoricalSignals.length - swingUpForwardSignals.length - publicBootstrapSignals.length,
         publicBootstrapSignalsAddedThisRun: historicalBootstrap.records.length,
         publicBootstrapSeedsAvailable: historicalBootstrap.seedsAvailable,
         publicBootstrapSeedsRemaining: historicalBootstrap.seedsRemaining,

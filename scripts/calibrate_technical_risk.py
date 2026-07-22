@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Strict chronological calibration for selective Swing Up serious alerts.
+"""Strict chronological calibration for a selective Swing Up Watch Out alert.
 
-Models and thresholds are selected on old data, certified on a later calibration
-period, and tested once on an untouched newest period. Failure means abstention.
+The engine abstains unless a fixed model and threshold pass a later calibration
+period and then an untouched newest period with a one-sided 90% error bound.
 """
 from __future__ import annotations
 
@@ -36,12 +36,12 @@ EMBARGO_DAYS = max(30, int(os.getenv("TECHNICAL_RISK_EMBARGO_DAYS", "100")))
 RANDOM_STATE = 1729
 
 
-def one_sided_error_upper(errors: int, total: int, confidence: float = CERTIFICATE_CONFIDENCE) -> float | None:
+def one_sided_error_upper(errors: int, total: int) -> float | None:
     if total <= 0:
         return None
     if errors >= total:
         return 1.0
-    return float(beta.ppf(confidence, errors + 1, total - errors))
+    return float(beta.ppf(CERTIFICATE_CONFIDENCE, errors + 1, total - errors))
 
 
 def wilson_lower(wins: int, total: int, z: float = 1.2815515655446004) -> float | None:
@@ -56,6 +56,30 @@ def wilson_lower(wins: int, total: int, z: float = 1.2815515655446004) -> float 
 
 def safe_auc(labels: np.ndarray, probabilities: np.ndarray) -> float | None:
     return None if len(np.unique(labels)) < 2 else float(roc_auc_score(labels, probabilities))
+
+
+@dataclass(frozen=True)
+class Definition:
+    action: str
+    horizon_days: int
+    label: str
+    success_definition: str
+
+
+@dataclass(frozen=True)
+class Candidate:
+    name: str
+    family: str
+    include_ticker: bool
+    params: dict[str, Any]
+
+
+FEATURES = [
+    "return1d", "return5d", "return20d", "return60d", "return120d", "return252d",
+    "drawdown20d", "drawdown60d", "drawdown120d", "volatility20d", "volatility60d",
+    "volumeRatio20d", "rangePosition252d", "gapPercent", "intradayRangePercent",
+    "logDollarVolume", "month",
+]
 
 
 def load_dataset() -> tuple[pd.DataFrame, dict[str, Any]]:
@@ -74,104 +98,61 @@ def load_dataset() -> tuple[pd.DataFrame, dict[str, Any]]:
     return frame, payload
 
 
-@dataclass(frozen=True)
-class Definition:
-    action: str
-    horizon_days: int
-    label: str
-    success_definition: str
-
-
-@dataclass(frozen=True)
-class Candidate:
-    name: str
-    family: str
-    include_ticker: bool
-    feature_set: str
-    params: dict[str, Any]
-
-
-NUMERIC_FEATURES = [
-    "return1d", "return5d", "return20d", "return60d", "return120d", "return252d",
-    "drawdown20d", "drawdown60d", "drawdown120d", "volatility20d", "volatility60d",
-    "volumeRatio20d", "rangePosition252d", "gapPercent", "intradayRangePercent",
-    "logDollarVolume", "month",
-]
-PRICE_FEATURES = [
-    "return1d", "return5d", "return20d", "return60d", "return120d", "return252d",
-    "drawdown20d", "drawdown60d", "drawdown120d", "volatility20d", "volatility60d",
-    "volumeRatio20d", "rangePosition252d", "gapPercent", "intradayRangePercent", "month",
-]
-
-
 def add_labels(frame: pd.DataFrame) -> list[Definition]:
     frame["watch_out_30_8"] = frame["drawdown30d"] <= -8
     frame["watch_out_90_8"] = frame["drawdown90d"] <= -8
     frame["watch_out_90_12"] = frame["drawdown90d"] <= -12
-    frame["sell_30"] = (frame["return30d"] <= -7) & (frame["excess30d"] <= -4)
-    frame["sell_90"] = (frame["return90d"] <= -10) & (frame["excess90d"] <= -5)
-    frame["buy_30"] = (frame["return30d"] >= 7) & (frame["excess30d"] >= 4)
-    frame["buy_90"] = (frame["return90d"] >= 12) & (frame["excess90d"] >= 6)
     return [
         Definition("watch_out", 30, "watch_out_30_8", "At least an 8% drawdown after the alert close within 30 trading sessions."),
         Definition("watch_out", 90, "watch_out_90_8", "At least an 8% drawdown after the alert close within 90 trading sessions."),
         Definition("watch_out", 90, "watch_out_90_12", "At least a 12% drawdown after the alert close within 90 trading sessions."),
-        Definition("sell", 30, "sell_30", "At least a 7% loss and 4% benchmark underperformance after 30 trading sessions."),
-        Definition("sell", 90, "sell_90", "At least a 10% loss and 5% benchmark underperformance after 90 trading sessions."),
-        Definition("buy", 30, "buy_30", "At least a 7% gain and 4% benchmark outperformance after 30 trading sessions."),
-        Definition("buy", 90, "buy_90", "At least a 12% gain and 6% benchmark outperformance after 90 trading sessions."),
     ]
 
 
-def candidates() -> list[Candidate]:
+def model_candidates() -> list[Candidate]:
     result: list[Candidate] = []
-    for feature_set in ("all", "price"):
-        for include_ticker in (False, True):
-            for c_value in (0.05, 0.2, 1.0, 5.0):
-                result.append(Candidate(f"logistic_{feature_set}_{include_ticker}_c{c_value}", "logistic", include_ticker, feature_set, {"C": c_value}))
-            for depth in (3, 5, 8, None):
-                for leaf in (5, 12, 25, 45):
-                    result.append(Candidate(f"extra_{feature_set}_{include_ticker}_d{depth}_l{leaf}", "extra", include_ticker, feature_set, {"depth": depth, "leaf": leaf}))
-                    result.append(Candidate(f"rf_{feature_set}_{include_ticker}_d{depth}_l{leaf}", "rf", include_ticker, feature_set, {"depth": depth, "leaf": leaf}))
-        for depth in (1, 2, 3):
-            for leaf in (8, 18, 35, 60):
-                result.append(Candidate(f"gb_{feature_set}_d{depth}_l{leaf}", "gb", False, feature_set, {"depth": depth, "leaf": leaf}))
-        for leaves in (7, 15, 31):
-            for minimum_leaf in (10, 20, 40, 70):
-                result.append(Candidate(f"hist_{feature_set}_n{leaves}_l{minimum_leaf}", "hist", False, feature_set, {"leaves": leaves, "leaf": minimum_leaf}))
+    for include_ticker in (False, True):
+        for c_value in (0.1, 1.0, 5.0):
+            result.append(Candidate(f"logistic_{include_ticker}_c{c_value}", "logistic", include_ticker, {"C": c_value}))
+        for depth, leaf in ((3, 8), (5, 18), (None, 35)):
+            result.append(Candidate(f"extra_{include_ticker}_d{depth}_l{leaf}", "extra", include_ticker, {"depth": depth, "leaf": leaf}))
+            result.append(Candidate(f"rf_{include_ticker}_d{depth}_l{leaf}", "rf", include_ticker, {"depth": depth, "leaf": leaf}))
+    for depth, leaf in ((1, 12), (2, 25), (3, 45)):
+        result.append(Candidate(f"gb_d{depth}_l{leaf}", "gb", False, {"depth": depth, "leaf": leaf}))
+    for leaves, leaf in ((7, 15), (15, 30), (31, 55)):
+        result.append(Candidate(f"hist_n{leaves}_l{leaf}", "hist", False, {"leaves": leaves, "leaf": leaf}))
     return result
 
 
-def estimator(candidate: Candidate) -> Pipeline:
-    features = NUMERIC_FEATURES if candidate.feature_set == "all" else PRICE_FEATURES
+def build_estimator(candidate: Candidate) -> Pipeline:
     numeric = Pipeline([
         ("impute", SimpleImputer(strategy="median", add_indicator=True)),
         ("scale", StandardScaler() if candidate.family == "logistic" else "passthrough"),
     ])
-    transformers: list[tuple[str, Any, list[str]]] = [("numeric", numeric, features)]
+    transformers: list[tuple[str, Any, list[str]]] = [("numeric", numeric, FEATURES)]
     if candidate.include_ticker:
         transformers.append(("ticker", OneHotEncoder(handle_unknown="ignore", min_frequency=3, sparse_output=False), ["ticker"]))
     preprocessing = ColumnTransformer(transformers, remainder="drop", sparse_threshold=0)
     if candidate.family == "logistic":
-        model = LogisticRegression(C=candidate.params["C"], max_iter=1800, random_state=RANDOM_STATE)
+        model = LogisticRegression(C=candidate.params["C"], max_iter=1600, random_state=RANDOM_STATE)
     elif candidate.family == "extra":
         model = ExtraTreesClassifier(
-            n_estimators=450, max_depth=candidate.params["depth"], min_samples_leaf=candidate.params["leaf"],
+            n_estimators=250, max_depth=candidate.params["depth"], min_samples_leaf=candidate.params["leaf"],
             max_features="sqrt", class_weight="balanced_subsample", n_jobs=-1, random_state=RANDOM_STATE,
         )
     elif candidate.family == "rf":
         model = RandomForestClassifier(
-            n_estimators=450, max_depth=candidate.params["depth"], min_samples_leaf=candidate.params["leaf"],
+            n_estimators=250, max_depth=candidate.params["depth"], min_samples_leaf=candidate.params["leaf"],
             max_features="sqrt", class_weight="balanced_subsample", n_jobs=-1, random_state=RANDOM_STATE,
         )
     elif candidate.family == "gb":
         model = GradientBoostingClassifier(
-            n_estimators=220, learning_rate=0.035, max_depth=candidate.params["depth"],
+            n_estimators=180, learning_rate=0.04, max_depth=candidate.params["depth"],
             min_samples_leaf=candidate.params["leaf"], subsample=0.8, random_state=RANDOM_STATE,
         )
     elif candidate.family == "hist":
         model = HistGradientBoostingClassifier(
-            max_iter=240, learning_rate=0.04, max_leaf_nodes=candidate.params["leaves"],
+            max_iter=200, learning_rate=0.04, max_leaf_nodes=candidate.params["leaves"],
             min_samples_leaf=candidate.params["leaf"], l2_regularization=2.0, random_state=RANDOM_STATE,
         )
     else:
@@ -180,7 +161,7 @@ def estimator(candidate: Candidate) -> Pipeline:
 
 
 def threshold_candidates(probabilities: np.ndarray, labels: np.ndarray) -> list[dict[str, Any]]:
-    thresholds = np.unique(np.quantile(probabilities, np.linspace(0.50, 0.9975, 220)))
+    thresholds = np.unique(np.quantile(probabilities, np.linspace(0.50, 0.9975, 180)))
     results: list[dict[str, Any]] = []
     for threshold in thresholds:
         selected = probabilities >= threshold
@@ -202,34 +183,27 @@ def threshold_candidates(probabilities: np.ndarray, labels: np.ndarray) -> list[
     return results
 
 
-def selection_result(candidate: Candidate, train: pd.DataFrame, validation: pd.DataFrame, definition: Definition) -> tuple[dict[str, Any], Pipeline] | None:
-    model = estimator(candidate)
-    model.fit(train, train[definition.label].astype(int))
-    probabilities = model.predict_proba(validation)[:, 1]
-    labels = validation[definition.label].astype(int).to_numpy()
-    thresholds = threshold_candidates(probabilities, labels)
-    if not thresholds:
-        return None
-    selected = thresholds[0]
-    return ({
-        "candidate": asdict(candidate),
-        "averagePrecision": float(average_precision_score(labels, probabilities)),
-        "rocAuc": safe_auc(labels, probabilities),
-        "brier": float(brier_score_loss(labels, probabilities)),
-        "baseRate": float(labels.mean()),
-        "selectedThreshold": selected,
-        "topThresholds": thresholds[:10],
-    }, model)
-
-
 def select_model(train: pd.DataFrame, validation: pd.DataFrame, definition: Definition) -> tuple[dict[str, Any], Pipeline, list[dict[str, Any]]]:
     evaluations: list[tuple[dict[str, Any], Pipeline]] = []
-    for candidate in candidates():
+    for candidate in model_candidates():
         try:
-            result = selection_result(candidate, train, validation, definition)
-            if result:
-                evaluations.append(result)
-        except Exception as error:  # noqa: BLE001
+            model = build_estimator(candidate)
+            model.fit(train, train[definition.label].astype(int))
+            probabilities = model.predict_proba(validation)[:, 1]
+            labels = validation[definition.label].astype(int).to_numpy()
+            thresholds = threshold_candidates(probabilities, labels)
+            if not thresholds:
+                continue
+            evaluations.append(({
+                "candidate": asdict(candidate),
+                "averagePrecision": float(average_precision_score(labels, probabilities)),
+                "rocAuc": safe_auc(labels, probabilities),
+                "brier": float(brier_score_loss(labels, probabilities)),
+                "baseRate": float(labels.mean()),
+                "selectedThreshold": thresholds[0],
+                "topThresholds": thresholds[:10],
+            }, model))
+        except Exception:
             continue
     if not evaluations:
         raise RuntimeError(f"No model could be fit for {definition.label}.")
@@ -240,10 +214,10 @@ def select_model(train: pd.DataFrame, validation: pd.DataFrame, definition: Defi
         item[0]["selectedThreshold"]["sampleSize"],
     ), reverse=True)
     selected_result, selected_model = evaluations[0]
-    return selected_result, selected_model, [row for row, _ in evaluations[:15]]
+    return selected_result, selected_model, [row for row, _ in evaluations[:12]]
 
 
-def fixed_threshold_evaluation(model: Pipeline, frame: pd.DataFrame, definition: Definition, threshold: float, minimum: int) -> dict[str, Any]:
+def evaluate_fixed(model: Pipeline, frame: pd.DataFrame, definition: Definition, threshold: float, minimum: int) -> dict[str, Any]:
     probabilities = model.predict_proba(frame)[:, 1]
     selected = probabilities >= threshold
     labels = frame[definition.label].astype(int).to_numpy()
@@ -278,28 +252,29 @@ def chronological_partitions(frame: pd.DataFrame) -> dict[str, pd.DataFrame]:
     calibration_start = frame.iloc[int(total * 0.55)]["eventDate"]
     final_start = frame.iloc[int(total * 0.70)]["eventDate"]
     embargo = pd.Timedelta(days=EMBARGO_DAYS)
-    train = frame[frame["eventDate"] < validation_start - embargo].copy()
-    validation = frame[(frame["eventDate"] >= validation_start) & (frame["eventDate"] < calibration_start - embargo)].copy()
-    calibration = frame[(frame["eventDate"] >= calibration_start) & (frame["eventDate"] < final_start - embargo)].copy()
-    final = frame[frame["eventDate"] >= final_start].copy()
-    if min(len(train), len(validation), len(calibration), len(final)) < 80:
-        raise RuntimeError(f"Chronological partitions are too small after embargo: {len(train)}, {len(validation)}, {len(calibration)}, {len(final)}")
-    return {"train": train, "validation": validation, "calibration": calibration, "final": final}
+    partitions = {
+        "train": frame[frame["eventDate"] < validation_start - embargo].copy(),
+        "validation": frame[(frame["eventDate"] >= validation_start) & (frame["eventDate"] < calibration_start - embargo)].copy(),
+        "calibration": frame[(frame["eventDate"] >= calibration_start) & (frame["eventDate"] < final_start - embargo)].copy(),
+        "final": frame[frame["eventDate"] >= final_start].copy(),
+    }
+    if min(map(len, partitions.values())) < 80:
+        raise RuntimeError(f"Chronological partitions are too small after embargo: {[len(value) for value in partitions.values()]}")
+    return partitions
 
 
 def run_definition(partitions: dict[str, pd.DataFrame], definition: Definition) -> dict[str, Any]:
     selected, model, top_models = select_model(partitions["train"], partitions["validation"], definition)
     threshold = selected["selectedThreshold"]["threshold"]
-    calibration = fixed_threshold_evaluation(model, partitions["calibration"], definition, threshold, MIN_CALIBRATION_SIGNALS)
-    final = fixed_threshold_evaluation(model, partitions["final"], definition, threshold, MIN_FINAL_SIGNALS) if calibration["passed"] else None
-    passed = bool(calibration["passed"] and final and final["passed"])
+    calibration = evaluate_fixed(model, partitions["calibration"], definition, threshold, MIN_CALIBRATION_SIGNALS)
+    final = evaluate_fixed(model, partitions["final"], definition, threshold, MIN_FINAL_SIGNALS) if calibration["passed"] else None
     return {
         "definition": asdict(definition),
         "selectedModel": selected,
         "topValidationModels": top_models,
         "calibrationCertificate": calibration,
         "untouchedFinalEvaluation": final,
-        "passed": passed,
+        "passed": bool(calibration["passed"] and final and final["passed"]),
     }
 
 
@@ -310,7 +285,7 @@ def main() -> int:
     results = [run_definition(partitions, definition) for definition in definitions]
     passed = [result for result in results if result["passed"]]
     report = {
-        "version": 1,
+        "version": 2,
         "passed": bool(passed),
         "checkedAt": pd.Timestamp.utcnow().isoformat(),
         "methodology": {
@@ -326,9 +301,9 @@ def main() -> int:
             "minimumFinalSignals": MIN_FINAL_SIGNALS,
             "thresholdSelection": "Model and fixed probability threshold selected only on validation data.",
             "certificateMethod": "One-sided Clopper-Pearson upper confidence bound on error in later calibration and untouched final periods.",
-            "abstentionPolicy": "No passing calibration and final certificate means no serious directional alert.",
+            "abstentionPolicy": "No passing calibration and final certificate means no serious Watch Out alert.",
             "noSyntheticData": True,
-            "survivorshipCaveat": "The first technical calibration universe contains currently identifiable liquid securities; delisted securities remain a required expansion before broad production claims.",
+            "survivorshipCaveat": "The first technical universe contains currently identifiable securities; delisted securities remain a required expansion before a broad production claim.",
         },
         "summary": {
             "totalCases": len(frame),
@@ -367,7 +342,7 @@ if __name__ == "__main__":
     except Exception as error:  # noqa: BLE001
         REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
         failure = {
-            "version": 1,
+            "version": 2,
             "passed": False,
             "checkedAt": pd.Timestamp.utcnow().isoformat(),
             "fatalError": str(error)[:500],

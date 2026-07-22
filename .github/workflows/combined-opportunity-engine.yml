@@ -47,7 +47,7 @@ jobs:
       CALIBRATION_TARGET_ERROR: "0.10"
       CALIBRATION_CERTIFICATE_CONFIDENCE: "0.90"
       CALIBRATION_TICKERS: "AAPL,MSFT,NVDA,GOOGL,AMZN,META,AVGO,AMD,TSLA,WMT,JPM,BAC,XOM,CVX,KO,PEP,UNH,HD,COST,CRM,ORCL,NFLX,UBER,ADBE,INTC,QCOM,CSCO,MCD,NKE,DIS"
-      CALIBRATION_DATASET_PATH: "/tmp/combined-opportunity-engine-calibration-dataset.json"
+      CALIBRATION_DATASET_PATH: "artifacts/combined-opportunity-engine-calibration-dataset.json"
       CALIBRATION_REPORT_PATH: "artifacts/combined-opportunity-engine-calibration.json"
 
     steps:
@@ -74,7 +74,22 @@ jobs:
         run: npm ci --prefer-offline --no-audit --fund=false
 
       - name: Typecheck
-        run: npm run typecheck
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          set +e
+          npm run typecheck 2>&1 | tee artifacts/combined-opportunity-engine-typecheck.log
+          status=${PIPESTATUS[0]}
+          exit "${status}"
+
+      - name: Upload typecheck diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: combined-opportunity-engine-typecheck
+          path: artifacts/combined-opportunity-engine-typecheck.log
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Lint
         run: npm run lint
@@ -149,6 +164,15 @@ jobs:
         with:
           name: combined-opportunity-engine-live-report
           path: artifacts/combined-opportunity-engine-live-report.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload calibration dataset
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: combined-opportunity-engine-calibration-dataset
+          path: artifacts/combined-opportunity-engine-calibration-dataset.json
           if-no-files-found: warn
           retention-days: 14
 

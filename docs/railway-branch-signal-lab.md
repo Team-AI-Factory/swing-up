@@ -6,7 +6,7 @@ This experiment is deliberately isolated from `main` and Railway production. It 
 - `RAILWAY_ENVIRONMENT_NAME` exists and is not `production`.
 - Railway has supplied `RAILWAY_PROJECT_ID`.
 
-In the branch preview, the startup wrapper removes database, Telegram, publishing-storage, payment, and uncontrolled paid-market credentials from the application process. It also skips Prisma migrations. It retains `OPENAI_API_KEY` plus the configured free-tier keys for FMP, Marketaux, Alpha Vantage, CoinGecko, FRED, and openFDA. Provider calls remain bounded by branch-specific cadence and never write to the database.
+In the branch preview, the startup wrapper removes database, Telegram, payment, and uncontrolled paid-market credentials from the application process. It also skips Prisma migrations. It retains `OPENAI_API_KEY`, the configured free-tier provider keys, and only the Cloudflare R2 credentials needed for the branch lab's isolated state object. Provider calls remain bounded by branch-specific cadence and never write to PostgreSQL.
 
 ## What runs
 
@@ -31,7 +31,7 @@ SEC EDGAR and openFDA remain active read-only ears for event-specific regulatory
 
 The free CoinGecko Demo credential can be supplied as `COINGECKO_DEMO_API_KEY`; the existing `COINGECKO_API_KEY` name remains a backwards-compatible Demo-key alias. The branch never guesses that this is a paid Pro key or sends it to the Pro hostname.
 
-Once per 24 hours, the preview performs a tiny, real, read-only connectivity audit of SEC EDGAR and openFDA. SEC EDGAR uses its free public API with a built-in declared Swing Up contact header and needs no API key or Railway variable. openFDA remains context/connectivity-only and can never trigger or raise a serious-alert score. Marketaux, Alpha Vantage, and FMP are already exercised by the live crypto-news path, so they are not called a second time merely for auditing. The audit uses no database, no R2, no publishing, and no notifications. Audit connectivity itself never counts as serious-signal evidence. The report exposes missing variable names and provider status while redacting all secret values.
+Once per 24 hours, the preview performs a tiny, real, read-only connectivity audit of SEC EDGAR and openFDA. SEC EDGAR uses its free public API with a built-in declared Swing Up contact header and needs no API key or Railway variable. openFDA remains context/connectivity-only and can never trigger or raise a serious-alert score. Marketaux, Alpha Vantage, and FMP are already exercised by the live crypto-news path, so they are not called a second time merely for auditing. The audit writes no source data to PostgreSQL or the production R2 warehouse, never publishes, and never sends notifications. The separate branch-state object is still updated to preserve quota reservations and run history. Audit connectivity itself never counts as serious-signal evidence. The report exposes missing variable names and provider status while redacting all secret values.
 
 ## Cost and repetition controls
 
@@ -45,9 +45,11 @@ Once per 24 hours, the preview performs a tiny, real, read-only connectivity aud
 
 ## Durable branch state
 
-Attach a Railway Volume to the **PR preview service only**. Railway supplies `RAILWAY_VOLUME_MOUNT_PATH`; the lab creates its state directory and stores `swing-up-railway-branch-signal-lab.json` there using atomic file replacement. As an alternative, `SWING_UP_BRANCH_LAB_STATE_PATH` may be set to an absolute volume directory or an absolute `.json` file path. This state contains only branch-lab reports, forward outcomes, provider-call quota reservations, and OpenAI attempt reservations. It does not use the production database, R2, migrations, publishing credentials, or another production data store.
+Cloudflare R2 is the primary and only writable state store for the branch lab. The lab uses the fixed, isolated object `branch-labs/pr-261/serious-signal/state.json`. This object contains only branch-lab reports, forward outcomes, provider-call quota reservations, and OpenAI attempt reservations. It does not use PostgreSQL, Prisma migrations, publishing credentials, or production alert objects.
 
-If no durable path exists, the lab falls back to `/tmp` for non-paid observation only. If a configured volume cannot be created, read, or written, it also falls back safely and reports the reason without exposing the filesystem path. `stateStorage` in the GET and POST responses reports the backend, whether it is durable, whether it survives a preview redeploy, and whether fallback is active. OpenAI committee calls remain blocked while fallback is active.
+Writes use R2 ETag conditions. A save succeeds only when the object still has the exact version that the lab read; a competing writer receives a conflict instead of silently overwriting newer quota or outcome state. When the R2 object is first created, the lab imports the existing Railway-volume JSON once so the already collected real run history is not discarded. The Railway Volume is never used as the primary store and receives no new branch-lab writes after migration.
+
+If R2 is missing, unreadable, unwritable, or has invalid JSON, the live cycle stops before provider or OpenAI calls and reports a safe external-storage blocker. It does not fall back to PostgreSQL, Railway storage, or `/tmp`, because splitting quota and outcome history across stores could cause duplicate paid calls or lost results. `stateStorage` reports `backend=cloudflare_r2`, `primary=cloudflare_r2`, `postgresUsed=false`, and `railwayVolumeUsedAsPrimary=false` when healthy.
 
 ## Outcome validation
 
@@ -63,4 +65,4 @@ The POST trigger requires a random runtime-only token generated inside the previ
 
 ## Railway requirement
 
-Railway PR Environments must be enabled for the repository. Railway then creates an isolated preview deployment for the PR and supplies the branch/environment system variables used by the guard. The durable state requirement additionally needs a Railway Volume attached specifically to that preview service.
+Railway PR Environments must be enabled for the repository. Railway then creates an isolated preview deployment for the PR and supplies the branch/environment system variables used by the guard. The preview must inherit the configured Cloudflare R2 bucket, endpoint/account, access key, and secret key variables with Object Read and Object Write permission. A Railway Volume is not required after the one-time migration.

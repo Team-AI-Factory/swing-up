@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+
 const baseUrl = (process.env.SWING_UP_EVAL_BASE_URL || "http://127.0.0.1:3010").replace(/\/$/, "");
 async function json(path, init) {
   const response = await fetch(`${baseUrl}${path}`, init);
@@ -37,4 +39,25 @@ const untrusted = await json("/api/ai-committee/run", {
 if (untrusted.response.ok || untrusted.body?.status !== "evidence_pack_unavailable") throw new Error(`Public committee route accepted untrusted in-memory evidence (${untrusted.response.status}, ${untrusted.body?.status}).`);
 if (Array.isArray(untrusted.body?.agentResults) || untrusted.body?.compatibility?.callsOpenAi === true) throw new Error("Untrusted evidence reached the OpenAI execution path.");
 
-console.log(JSON.stringify({ ok: true, performanceSimulationUsed: false, branchLabUnavailableOutsidePreview: true, untrustedEvidenceBlocked: true, openAiCalled: false, databaseWrites: false, publishing: false, notifications: false }, null, 2));
+const startScript = await readFile(new URL("./railway-branch-start.mjs", import.meta.url), "utf8");
+const strippedVariables = startScript.match(/for \(const key of \[([\s\S]*?)\]\) delete env\[key\];/)?.[1] ?? "";
+if (!strippedVariables.includes("DATABASE_URL") || !strippedVariables.includes("TELEGRAM_BOT_TOKEN")) throw new Error("Branch startup no longer strips database or notification credentials.");
+if (strippedVariables.includes("R2_ACCESS_KEY_ID") || strippedVariables.includes("R2_SECRET_ACCESS_KEY") || strippedVariables.includes("CLOUDFLARE_R2_ACCESS_KEY_ID") || strippedVariables.includes("CLOUDFLARE_R2_SECRET_ACCESS_KEY")) throw new Error("Branch startup strips the Cloudflare R2 state credentials.");
+
+const routeSource = await readFile(new URL("../app/api/internal/railway-branch-signal-lab/route.ts", import.meta.url), "utf8");
+for (const marker of [
+  `const R2_STATE_KEY = "branch-labs/pr-261/serious-signal/state.json"`,
+  `backend: "cloudflare_r2"`,
+  `primary: "cloudflare_r2"`,
+  `postgresUsed: false`,
+  `railwayVolumeUsedAsPrimary: false`,
+  `writeVersionedJsonToR2`,
+]) {
+  if (!routeSource.includes(marker)) throw new Error(`Cloudflare R2 branch-state policy is missing: ${marker}`);
+}
+const r2Source = await readFile(new URL("../lib/r2-warehouse.ts", import.meta.url), "utf8");
+for (const marker of [`"if-match"`, `"if-none-match"`, `res.status === 412`, `readVersionedTextFromR2`, `writeVersionedJsonToR2`]) {
+  if (!r2Source.includes(marker)) throw new Error(`Cloudflare R2 conditional-write guard is missing: ${marker}`);
+}
+
+console.log(JSON.stringify({ ok: true, performanceSimulationUsed: false, branchLabUnavailableOutsidePreview: true, untrustedEvidenceBlocked: true, cloudflareR2PrimaryState: true, railwayVolumePrimaryState: false, openAiCalled: false, databaseWrites: false, publishing: false, notifications: false }, null, 2));

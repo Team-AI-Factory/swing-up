@@ -1,13 +1,14 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join } from "node:path";
+import { readFile } from "node:fs/promises";
+import { isAbsolute, join } from "node:path";
 import { NextRequest, NextResponse } from "next/server";
 import { runBranchSignalLab, type BranchProviderCallDecision, type BranchProviderCallRequest } from "@/lib/branch-signal-lab";
 import { isLegacyExternalStopReason, noGainRepairAttempts, providerCallBudgetDecision, repairEligibleFailure } from "@/lib/branch-signal-lab-policy";
+import { getR2Config, readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 
 export const dynamic = "force-dynamic";
 
 const REPORT_FILENAME = "swing-up-railway-branch-signal-lab.json";
-const EPHEMERAL_REPORT_PATH = `/tmp/${REPORT_FILENAME}`;
+const R2_STATE_KEY = "branch-labs/pr-261/serious-signal/state.json";
 const LAB_BRANCH = "agent/live-signal-evaluation-automation";
 const MAX_OPENAI_RUNS_PER_24_HOURS = 3;
 const OPENAI_EVIDENCE_COOLDOWN_MS = 12 * 60 * 60 * 1000;
@@ -32,12 +33,17 @@ type OpenAiReservation = {
 };
 type ProviderCallReservation = Omit<BranchProviderCallRequest, "checkedAt"> & { reservedAt: string };
 type History = { version: number; branch: string; deploymentId: string | null; stopped: boolean; stopReason: string | null; totalRunCount: number; runs: JsonRecord[]; openAiReservations: OpenAiReservation[]; providerCallReservations: ProviderCallReservation[]; updatedAt: string };
-type StateStorage = {
+type LegacyFileStorage = {
   path: string;
-  backend: "railway_volume" | "configured_path" | "ephemeral_tmp";
+  backend: "railway_volume" | "configured_path";
+};
+type StateStorage = {
+  backend: "cloudflare_r2" | "cloudflare_r2_unavailable";
+  etag: string | null;
   durable: boolean;
-  fallbackActive: boolean;
+  writable: boolean;
   fallbackReason: string | null;
+  migratedFrom: LegacyFileStorage["backend"] | null;
 };
 
 function branchAllowed() {
@@ -48,105 +54,114 @@ function branchAllowed() {
 }
 
 function emptyHistory(): History {
-  return { version: 4, branch: process.env.RAILWAY_GIT_BRANCH?.trim() || LAB_BRANCH, deploymentId: process.env.RAILWAY_DEPLOYMENT_ID?.trim() || null, stopped: false, stopReason: null, totalRunCount: 0, runs: [], openAiReservations: [], providerCallReservations: [], updatedAt: new Date().toISOString() };
+  return { version: 5, branch: process.env.RAILWAY_GIT_BRANCH?.trim() || LAB_BRANCH, deploymentId: process.env.RAILWAY_DEPLOYMENT_ID?.trim() || null, stopped: false, stopReason: null, totalRunCount: 0, runs: [], openAiReservations: [], providerCallReservations: [], updatedAt: new Date().toISOString() };
 }
 
 function errorCode(error: unknown) {
   if (error && typeof error === "object" && "code" in error && typeof error.code === "string") return error.code.toLowerCase();
+  if (error instanceof Error && /^r2_state_[a-z0-9_]+$/i.test(error.message)) return error.message.toLowerCase();
   return error instanceof SyntaxError ? "invalid_json" : "state_storage_error";
 }
 
-function ephemeralStorage(fallbackReason: string | null = null): StateStorage {
-  return { path: EPHEMERAL_REPORT_PATH, backend: "ephemeral_tmp", durable: false, fallbackActive: Boolean(fallbackReason), fallbackReason };
+function r2Storage(etag: string | null, migratedFrom: StateStorage["migratedFrom"] = null): StateStorage {
+  return { backend: "cloudflare_r2", etag, durable: true, writable: true, fallbackReason: null, migratedFrom };
 }
 
-function requestedStorage(): StateStorage {
+function r2Unavailable(fallbackReason: string, migratedFrom: StateStorage["migratedFrom"] = null): StateStorage {
+  return { backend: "cloudflare_r2_unavailable", etag: null, durable: false, writable: false, fallbackReason, migratedFrom };
+}
+
+function legacyStorage(): LegacyFileStorage | null {
   const explicitPath = process.env.SWING_UP_BRANCH_LAB_STATE_PATH?.trim();
   if (explicitPath) {
-    if (!isAbsolute(explicitPath)) return ephemeralStorage("configured_state_path_must_be_absolute");
+    if (!isAbsolute(explicitPath)) return null;
     const path = explicitPath.toLowerCase().endsWith(".json") ? explicitPath : join(explicitPath, REPORT_FILENAME);
-    return { path, backend: "configured_path", durable: true, fallbackActive: false, fallbackReason: null };
+    return { path, backend: "configured_path" };
   }
   const volumeMountPath = process.env.RAILWAY_VOLUME_MOUNT_PATH?.trim();
   if (volumeMountPath) {
-    if (!isAbsolute(volumeMountPath)) return ephemeralStorage("railway_volume_mount_path_must_be_absolute");
-    return { path: join(volumeMountPath, REPORT_FILENAME), backend: "railway_volume", durable: true, fallbackActive: false, fallbackReason: null };
+    if (!isAbsolute(volumeMountPath)) return null;
+    return { path: join(volumeMountPath, REPORT_FILENAME), backend: "railway_volume" };
   }
-  return ephemeralStorage("durable_state_not_configured");
+  return null;
 }
 
-async function prepareStorage(storage: StateStorage) {
-  try {
-    await mkdir(dirname(storage.path), { recursive: true });
-    return storage;
-  } catch (error) {
-    if (!storage.durable) throw error;
-    const fallback = ephemeralStorage(`durable_storage_${errorCode(error)}`);
-    await mkdir(dirname(fallback.path), { recursive: true });
-    return fallback;
+function normalizeHistory(parsed: History) {
+  if (!parsed || !Array.isArray(parsed.runs)) return emptyHistory();
+  parsed.version = 5;
+  if (!Number.isFinite(parsed.totalRunCount)) parsed.totalRunCount = Math.max(parsed.runs.length, ...parsed.runs.map((run) => finiteNumber(run.runNumber) ?? 0));
+  if (!Array.isArray(parsed.openAiReservations)) parsed.openAiReservations = [];
+  if (!Array.isArray(parsed.providerCallReservations)) parsed.providerCallReservations = [];
+  if (parsed.stopped && isLegacyExternalStopReason(parsed.stopReason)) {
+    parsed.stopped = false;
+    parsed.stopReason = null;
   }
+  return parsed;
 }
 
-async function readHistory(storage: StateStorage) {
+async function readLegacyHistory(storage: LegacyFileStorage | null) {
+  if (!storage) return { history: emptyHistory(), source: null };
   try {
-    const parsed = JSON.parse(await readFile(storage.path, "utf8")) as History;
-    if (!parsed || !Array.isArray(parsed.runs)) return emptyHistory();
-    if (!Number.isFinite(parsed.totalRunCount)) parsed.totalRunCount = Math.max(parsed.runs.length, ...parsed.runs.map((run) => finiteNumber(run.runNumber) ?? 0));
-    if (!Array.isArray(parsed.openAiReservations)) parsed.openAiReservations = [];
-    if (!Array.isArray(parsed.providerCallReservations)) parsed.providerCallReservations = [];
-    if (parsed.stopped && isLegacyExternalStopReason(parsed.stopReason)) {
-      parsed.stopped = false;
-      parsed.stopReason = null;
-    }
-    return parsed;
+    return { history: normalizeHistory(JSON.parse(await readFile(storage.path, "utf8")) as History), source: storage.backend };
   } catch (error) {
-    if (errorCode(error) !== "enoent") throw error;
-    return emptyHistory();
+    if (errorCode(error) === "enoent") return { history: emptyHistory(), source: null };
+    throw error;
   }
 }
 
 async function loadHistory(): Promise<{ history: History; storage: StateStorage }> {
-  let storage = await prepareStorage(requestedStorage());
+  const legacy = await readLegacyHistory(legacyStorage()).catch(() => ({ history: emptyHistory(), source: null }));
+  if (!getR2Config().configured) return { history: legacy.history, storage: r2Unavailable("cloudflare_r2_not_configured", legacy.source) };
   try {
-    return { history: await readHistory(storage), storage };
-  } catch (error) {
-    if (!storage.durable) return { history: emptyHistory(), storage: { ...storage, fallbackActive: true, fallbackReason: errorCode(error) } };
-    storage = await prepareStorage(ephemeralStorage(`durable_storage_${errorCode(error)}`));
-    try {
-      return { history: await readHistory(storage), storage };
-    } catch {
-      return { history: emptyHistory(), storage };
+    const current = await readVersionedTextFromR2(R2_STATE_KEY);
+    if (current.found) {
+      if (!current.text) throw new Error("r2_state_empty_object");
+      if (!current.etag) throw new Error("r2_state_read_missing_etag");
+      return { history: normalizeHistory(JSON.parse(current.text) as History), storage: r2Storage(current.etag) };
     }
+    const initialized = await writeVersionedJsonToR2(R2_STATE_KEY, legacy.history, { createOnly: true });
+    if (initialized.conflict) {
+      const winner = await readVersionedTextFromR2(R2_STATE_KEY);
+      if (!winner.found || !winner.text || !winner.etag) throw new Error("r2_state_initialize_conflict_read_failed");
+      return { history: normalizeHistory(JSON.parse(winner.text) as History), storage: r2Storage(winner.etag) };
+    }
+    return { history: legacy.history, storage: r2Storage(initialized.etag, legacy.source) };
+  } catch (error) {
+    return { history: legacy.history, storage: r2Unavailable(errorCode(error), legacy.source) };
   }
 }
 
-async function writeHistory(history: History, storage: StateStorage) {
-  history.updatedAt = new Date().toISOString();
-  const temporaryPath = `${storage.path}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(temporaryPath, `${JSON.stringify(history, null, 2)}\n`, "utf8");
-  await rename(temporaryPath, storage.path);
+function r2StateReady(storage: StateStorage) {
+  return storage.backend === "cloudflare_r2" && storage.durable && storage.writable && Boolean(storage.etag);
 }
 
 async function saveHistory(history: History, storage: StateStorage) {
-  try {
-    await writeHistory(history, storage);
-    return storage;
-  } catch (error) {
-    if (!storage.durable) throw error;
-    const fallback = await prepareStorage(ephemeralStorage(`durable_storage_${errorCode(error)}`));
-    await writeHistory(history, fallback);
-    return fallback;
-  }
+  if (!r2StateReady(storage)) throw new Error("r2_state_primary_unavailable");
+  history.updatedAt = new Date().toISOString();
+  const written = await writeVersionedJsonToR2(R2_STATE_KEY, history, storage.etag ? { expectedEtag: storage.etag } : { createOnly: true });
+  if (written.conflict || !written.etag) throw new Error("r2_state_write_conflict");
+  return r2Storage(written.etag, storage.migratedFrom);
 }
 
 function storageMetadata(storage: StateStorage) {
   return {
     backend: storage.backend,
+    primary: "cloudflare_r2",
     durable: storage.durable,
-    survivesPreviewRedeploy: storage.durable,
-    fallbackActive: storage.fallbackActive,
+    writable: storage.writable,
+    survivesPreviewRedeploy: r2StateReady(storage),
+    fallbackActive: false,
     fallbackReason: storage.fallbackReason,
+    migratedFrom: storage.migratedFrom,
+    postgresUsed: false,
+    railwayVolumeUsedAsPrimary: false,
   };
+}
+
+function r2StateBlocker(storage: StateStorage) {
+  return r2StateReady(storage)
+    ? null
+    : "Cloudflare R2 branch state is unavailable. Verify the R2 bucket, endpoint/account, access key, secret key, and Object Read/Write permissions in the PR preview environment.";
 }
 
 function suppliedToken(request: NextRequest) {
@@ -351,8 +366,8 @@ export async function GET() {
     consistentSeriousSignals,
     outcomeEvaluationPolicy: { provider: "CoinGecko live snapshot", checkpoints: OUTCOME_CHECKPOINTS.map((checkpoint) => checkpoint.label), maximumDelayMinutes: OUTCOME_EVALUATION_TOLERANCE_MS / 60_000, lateSnapshotReuseAllowed: false },
     stateStorage: storageMetadata(storage),
-    openAiReservationPolicy: { durableStateRequired: true, durableStateAvailable: storage.durable, stateBlocker: storage.durable ? null : "Attach a branch-preview Railway Volume or configure SWING_UP_BRANCH_LAB_STATE_PATH on one.", maxAttemptsPerRolling24Hours: MAX_OPENAI_RUNS_PER_24_HOURS, sameEvidenceCooldownHours: OPENAI_EVIDENCE_COOLDOWN_MS / (60 * 60 * 1000), consumedReservationCount: history.openAiReservations.filter(reservationConsumed).length },
-    providerQuotaStorageDurable: storage.durable,
+    openAiReservationPolicy: { durableStateRequired: true, durableStateAvailable: r2StateReady(storage), stateBlocker: r2StateBlocker(storage), maxAttemptsPerRolling24Hours: MAX_OPENAI_RUNS_PER_24_HOURS, sameEvidenceCooldownHours: OPENAI_EVIDENCE_COOLDOWN_MS / (60 * 60 * 1000), consumedReservationCount: history.openAiReservations.filter(reservationConsumed).length },
+    providerQuotaStorageDurable: r2StateReady(storage),
     providerQuotaUsage: providerQuotaUsage(history, Date.now()),
     latest: history.runs.at(-1) ?? null,
     runs: history.runs.slice(-6),
@@ -368,10 +383,27 @@ export async function POST(request: NextRequest) {
   const history = loaded.history;
   let storage = loaded.storage;
   if (history.stopped) return NextResponse.json({ ok: false, stopped: true, stopReason: history.stopReason, runCount: history.totalRunCount, retainedRunCount: history.runs.length, stateStorage: storageMetadata(storage) }, { status: 409 });
+  if (!r2StateReady(storage)) {
+    return NextResponse.json({
+      ok: false,
+      mode: "railway_branch_live_read_only",
+      status: "state_storage_unavailable",
+      failureScope: "external_storage",
+      repairEligible: false,
+      technicalFailureFingerprint: null,
+      realProviderResponsesOnly: true,
+      databaseWrites: false,
+      publishing: false,
+      notifications: false,
+      openAiCalled: false,
+      stateStorage: storageMetadata(storage),
+      blocker: r2StateBlocker(storage),
+    }, { status: 503 });
+  }
   const now = Date.now();
   const openAiAttempts = openAiAttemptsInWindow(history, now, 24 * 60 * 60 * 1000);
   const reviewedFingerprints = reviewedFingerprintsInWindow(history, now, OPENAI_EVIDENCE_COOLDOWN_MS);
-  const allowOpenAi = storage.durable && openAiAttempts < MAX_OPENAI_RUNS_PER_24_HOURS;
+  const allowOpenAi = r2StateReady(storage) && openAiAttempts < MAX_OPENAI_RUNS_PER_24_HOURS;
   let activeReservationId: string | null = null;
   let providerReservationQueue: Promise<void> = Promise.resolve();
   const reserveProviderCall = (request: BranchProviderCallRequest): Promise<BranchProviderCallDecision> => {
@@ -398,7 +430,7 @@ export async function POST(request: NextRequest) {
     skipOpenAiCandidateFingerprints: reviewedFingerprints,
     beforeOpenAiCall: async (candidate) => {
       const reservationNow = Date.now();
-      if (!storage.durable || openAiAttemptsInWindow(history, reservationNow, 24 * 60 * 60 * 1000) >= MAX_OPENAI_RUNS_PER_24_HOURS) return false;
+      if (!r2StateReady(storage) || openAiAttemptsInWindow(history, reservationNow, 24 * 60 * 60 * 1000) >= MAX_OPENAI_RUNS_PER_24_HOURS) return false;
       if (reviewedFingerprintsInWindow(history, reservationNow, OPENAI_EVIDENCE_COOLDOWN_MS).includes(candidate.candidateFingerprint)) return false;
       const reservation: OpenAiReservation = {
         id: `${candidate.candidateFingerprint}:${reservationNow}`,
@@ -410,9 +442,8 @@ export async function POST(request: NextRequest) {
       };
       history.openAiReservations.push(reservation);
       storage = await saveHistory(history, storage);
-      if (!storage.durable) {
+      if (!r2StateReady(storage)) {
         reservation.status = "denied_storage_fallback";
-        await saveHistory(history, storage);
         return false;
       }
       activeReservationId = reservation.id;
@@ -438,5 +469,5 @@ export async function POST(request: NextRequest) {
   pruneHistory(history, Date.now());
   storage = await saveHistory(history, storage);
   const openAiRunsLast24Hours = openAiAttemptsInWindow(history, Date.now(), 24 * 60 * 60 * 1000);
-  return NextResponse.json({ ...report, runNumber, retainedRunCount: history.runs.length, repairAttemptNumber, stopped: history.stopped, stopReason: history.stopReason, openAiRunsLast24Hours, openAiAttemptsLast24Hours: openAiRunsLast24Hours, maxOpenAiRunsPer24Hours: MAX_OPENAI_RUNS_PER_24_HOURS, openAiReservationId: activeReservationId, openAiRequiresDurableState: true, openAiAllowedAtRunStart: allowOpenAi, openAiStateBlocker: storage.durable ? null : "Attach a branch-preview Railway Volume or configure SWING_UP_BRANCH_LAB_STATE_PATH on one.", stateStorage: storageMetadata(storage) });
+  return NextResponse.json({ ...report, runNumber, retainedRunCount: history.runs.length, repairAttemptNumber, stopped: history.stopped, stopReason: history.stopReason, openAiRunsLast24Hours, openAiAttemptsLast24Hours: openAiRunsLast24Hours, maxOpenAiRunsPer24Hours: MAX_OPENAI_RUNS_PER_24_HOURS, openAiReservationId: activeReservationId, openAiRequiresDurableState: true, openAiAllowedAtRunStart: allowOpenAi, openAiStateBlocker: r2StateBlocker(storage), stateStorage: storageMetadata(storage), stateWritesToR2: true, productionR2DataWrites: false });
 }

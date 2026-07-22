@@ -35,7 +35,7 @@ function isolatedBranchEnvironment() {
   };
   for (const key of [
     "DATABASE_URL", "DIRECT_URL", "TELEGRAM_BOT_TOKEN", "TELEGRAM_TEST_CHAT_ID",
-    "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
     "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "POLYGON_API_KEY", "BENZINGA_API_KEY",
   ]) delete env[key];
   return env;
@@ -96,7 +96,7 @@ async function runLab() {
 }
 
 if (branchLab) {
-  console.log(`[swing-up-branch-lab] enabled for ${branch} in ${environment}; live polling=${Math.round(normalPollMs / 1000)}s, technical retry=${Math.round(technicalRetryMs / 1000)}s; production publishing and notifications remain disabled.`);
+  console.log(`[swing-up-branch-lab] enabled for ${branch} in ${environment}; live polling=${Math.round(normalPollMs / 1000)}s, technical retry=${Math.round(technicalRetryMs / 1000)}s; branch state uses isolated Cloudflare R2 while PostgreSQL, production publishing, and notifications remain disabled.`);
   void (async () => {
     if (!(await waitForHealth())) {
       console.error("[swing-up-branch-lab] app health timeout; no experiment ran.");

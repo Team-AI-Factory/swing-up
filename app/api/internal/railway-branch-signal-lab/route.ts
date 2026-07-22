@@ -15,6 +15,7 @@ const R2_STATE_KEY = "branch-labs/pr-261/serious-signal/state.json";
 const R2_EQUITY_HISTORY_KEY = "branch-labs/pr-261/serious-signal/equity-history-v1.json";
 const LAB_BRANCH = "agent/live-signal-evaluation-automation";
 const MAX_HISTORICAL_SIGNAL_RECORDS = 50_000;
+const INVALIDATED_FALSE_MAPPING_EVENT_KEYS = new Set(["81c417f4d7038faf99bd"]);
 const MAX_OPENAI_RUNS_PER_24_HOURS = 3;
 const SCAN_LEASE_MS = 7 * 60 * 1000;
 const OPENAI_EVIDENCE_COOLDOWN_MS = 12 * 60 * 60 * 1000;
@@ -48,7 +49,7 @@ type SchedulerInvocation = {
 type ScanLease = { ownerId: string; acquiredAt: string; expiresAt: string };
 type History = { version: number; branch: string; deploymentId: string | null; stopped: boolean; stopReason: string | null; scanLease: ScanLease | null; totalRunCount: number; runs: JsonRecord[]; openAiReservations: OpenAiReservation[]; providerCallReservations: ProviderCallReservation[]; updatedAt: string };
 type HistoricalSignalLibrary = { version: 1; records: HistoricalSignalRecord[]; updatedAt: string };
-type HistoricalSignalLibraryLoad = { library: HistoricalSignalLibrary; etag: string | null; error: string | null };
+type HistoricalSignalLibraryLoad = { library: HistoricalSignalLibrary; etag: string | null; error: string | null; rewriteRequired: boolean };
 type LegacyFileStorage = {
   path: string;
   backend: "railway_volume" | "configured_path";
@@ -176,7 +177,9 @@ function isHistoricalSignalRecord(value: unknown): value is HistoricalSignalReco
 function normalizeHistoricalSignalLibrary(value: unknown): HistoricalSignalLibrary {
   if (!value || typeof value !== "object" || Array.isArray(value)) return emptyHistoricalSignalLibrary();
   const parsed = value as Record<string, unknown>;
-  const records = Array.isArray(parsed.records) ? parsed.records.filter(isHistoricalSignalRecord) : [];
+  const records = Array.isArray(parsed.records)
+    ? parsed.records.filter(isHistoricalSignalRecord).filter((item) => !INVALIDATED_FALSE_MAPPING_EVENT_KEYS.has(item.eventKey))
+    : [];
   return {
     version: 1,
     records: mergeHistoricalSignals(records).slice(-MAX_HISTORICAL_SIGNAL_RECORDS),
@@ -185,14 +188,21 @@ function normalizeHistoricalSignalLibrary(value: unknown): HistoricalSignalLibra
 }
 
 async function loadHistoricalSignalLibrary(): Promise<HistoricalSignalLibraryLoad> {
-  if (!getR2Config().configured) return { library: emptyHistoricalSignalLibrary(), etag: null, error: "cloudflare_r2_not_configured" };
+  if (!getR2Config().configured) return { library: emptyHistoricalSignalLibrary(), etag: null, error: "cloudflare_r2_not_configured", rewriteRequired: false };
   try {
     const current = await readVersionedTextFromR2(R2_EQUITY_HISTORY_KEY);
-    if (!current.found) return { library: emptyHistoricalSignalLibrary(), etag: null, error: null };
+    if (!current.found) return { library: emptyHistoricalSignalLibrary(), etag: null, error: null, rewriteRequired: false };
     if (!current.text || !current.etag) throw new Error("r2_equity_history_invalid_object");
-    return { library: normalizeHistoricalSignalLibrary(JSON.parse(current.text)), etag: current.etag, error: null };
+    const raw = JSON.parse(current.text) as Record<string, unknown>;
+    const rawRecords = Array.isArray(raw.records) ? raw.records.filter(isHistoricalSignalRecord) : [];
+    return {
+      library: normalizeHistoricalSignalLibrary(raw),
+      etag: current.etag,
+      error: null,
+      rewriteRequired: rawRecords.some((item) => INVALIDATED_FALSE_MAPPING_EVENT_KEYS.has(item.eventKey)),
+    };
   } catch (error) {
-    return { library: emptyHistoricalSignalLibrary(), etag: null, error: errorCode(error) };
+    return { library: emptyHistoricalSignalLibrary(), etag: null, error: errorCode(error), rewriteRequired: false };
   }
 }
 
@@ -205,20 +215,20 @@ async function persistHistoricalSignalLibrary(
   additions: HistoricalSignalRecord[],
 ): Promise<HistoricalSignalLibraryLoad> {
   const merged = mergeHistoricalSignals(loaded.library.records, additions).slice(-MAX_HISTORICAL_SIGNAL_RECORDS);
-  if (!additions.length || sameHistoricalSignals(loaded.library.records, merged)) return { ...loaded, library: { ...loaded.library, records: merged } };
+  if (!loaded.rewriteRequired && (!additions.length || sameHistoricalSignals(loaded.library.records, merged))) return { ...loaded, library: { ...loaded.library, records: merged } };
   const payload: HistoricalSignalLibrary = { version: 1, records: merged, updatedAt: new Date().toISOString() };
   try {
     const written = await writeVersionedJsonToR2(R2_EQUITY_HISTORY_KEY, payload, loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true });
-    if (!written.conflict && written.etag) return { library: payload, etag: written.etag, error: null };
+    if (!written.conflict && written.etag) return { library: payload, etag: written.etag, error: null, rewriteRequired: false };
     const winner = await loadHistoricalSignalLibrary();
     if (winner.error) return winner;
     const retryRecords = mergeHistoricalSignals(winner.library.records, additions).slice(-MAX_HISTORICAL_SIGNAL_RECORDS);
     const retryPayload: HistoricalSignalLibrary = { version: 1, records: retryRecords, updatedAt: new Date().toISOString() };
     const retried = await writeVersionedJsonToR2(R2_EQUITY_HISTORY_KEY, retryPayload, winner.etag ? { expectedEtag: winner.etag } : { createOnly: true });
     if (retried.conflict || !retried.etag) throw new Error("r2_equity_history_write_conflict");
-    return { library: retryPayload, etag: retried.etag, error: null };
+    return { library: retryPayload, etag: retried.etag, error: null, rewriteRequired: false };
   } catch (error) {
-    return { library: { ...loaded.library, records: merged }, etag: loaded.etag, error: errorCode(error) };
+    return { library: { ...loaded.library, records: merged }, etag: loaded.etag, error: errorCode(error), rewriteRequired: loaded.rewriteRequired };
   }
 }
 
@@ -354,7 +364,7 @@ function outcomeTrackingEntries(history: History): OutcomeTrackingEntry[] {
       const price = finiteNumber(candidate.price);
       const benchmarkPrice = finiteNumber(candidate.benchmarkPrice);
       const direction = candidate.direction;
-      if (!fingerprint || !ticker || price === null || price <= 0 || benchmarkPrice === null || benchmarkPrice <= 0 || (direction !== "upside" && direction !== "downside") || seen.has(fingerprint)) continue;
+      if (!fingerprint || INVALIDATED_FALSE_MAPPING_EVENT_KEYS.has(fingerprint) || !ticker || price === null || price <= 0 || benchmarkPrice === null || benchmarkPrice <= 0 || (direction !== "upside" && direction !== "downside") || seen.has(fingerprint)) continue;
       seen.add(fingerprint);
       const outcomeOwner = typeof run.candidateFingerprint === "string" && run.candidateFingerprint === fingerprint ? run : candidate;
       entries.push({ run, candidate, fingerprint, outcomeOwner });

@@ -30,7 +30,8 @@ function clamp(value: number) {
 const HEADLINE_STOP_WORDS = new Set(["a", "an", "and", "as", "at", "by", "for", "from", "in", "is", "of", "on", "or", "the", "to", "with"]);
 const COMPANY_SUFFIXES = /\b(?:incorporated|inc|corporation|corp|company|co|limited|ltd|plc|holdings?|group|class [a-z])\b/gi;
 const AMBIGUOUS_EQUITY_TICKERS = new Set(["A", "AI", "ALL", "ARE", "ARM", "CAN", "CAT", "CAR", "COST", "FOR", "IT", "LIFE", "LOVE", "ON", "OPEN", "OR", "SEE", "SO", "T", "UP", "W"]);
-const AMBIGUOUS_COMPANY_NAMES = new Set(["american", "capital", "central", "digital", "eastern", "energy", "financial", "first", "freedom", "general", "global", "health", "international", "national", "new", "northern", "pacific", "resources", "royal", "services", "southern", "systems", "technology", "technologies", "trust", "united", "western", "world"]);
+const AMBIGUOUS_COMPANY_NAMES = new Set(["american", "capital", "central", "digital", "eastern", "energy", "financial", "first", "freedom", "general", "global", "health", "international", "national", "new", "northern", "pacific", "people", "resources", "royal", "services", "southern", "systems", "technology", "technologies", "trust", "united", "western", "world"]);
+const INTEL_ISSUER_CONTEXT = /\b(?:intel(?:['’]s)?(?:\s+(?:corp(?:oration)?))?\s+(?:announces?|launches?|unveils?|reports?|earnings|guidance|shares?|stock|chips?|semiconductors?|processors?|cpus?|foundry)|(?:shares?|stock|chips?|semiconductors?|processors?|cpus?|foundry)\s+(?:(?:from|of|at|by)\s+)?intel)\b/i;
 
 function escaped(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -63,10 +64,16 @@ export function matchesEquityText(text: string, equity: { name: string; ticker: 
   if (!ticker) return false;
   const padded = ` ${text.replace(/[^A-Za-z0-9$.-]+/g, " ")} `;
   const lower = padded.toLowerCase();
-  const names = [equity.name, ...(equity.aliases ?? [])]
+  const sourceNames = [equity.name, ...(equity.aliases ?? [])];
+  const normalizedText = ` ${text.toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim()} `;
+  const exactNames = sourceNames
+    .map((name) => name.toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim())
+    .filter((name) => name.length >= 5 && name.includes(" "));
+  if (exactNames.some((name) => normalizedText.includes(` ${name} `))) return true;
+  const names = sourceNames
     .map(normalizedCompanyName)
     .filter((name) => name.length >= 5 && !/^(?:the|group|holdings?|company)$/.test(name) && !AMBIGUOUS_COMPANY_NAMES.has(name));
-  if (names.some((name) => lower.includes(` ${name} `))) return true;
+  if (names.some((name) => lower.includes(` ${name} `) && (name !== "intel" || INTEL_ISSUER_CONTEXT.test(text)))) return true;
   const escapedTicker = escaped(ticker);
   if (new RegExp(`\\$${escapedTicker}(?:\\b|(?=[.-]))`).test(padded)) return true;
   if (AMBIGUOUS_EQUITY_TICKERS.has(ticker) || ticker.length < 2) return false;

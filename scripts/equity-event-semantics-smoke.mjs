@@ -33,9 +33,11 @@ const universe = {
   entries: [
     entry("FRHC", "Freedom Holding Corp.", ["Freedom Holding Corp.", "Freedom"]),
     entry("EML", "EASTERN CO", ["Eastern"]),
+    entry("INTC", "INTEL CORP", ["Intel"]),
+    entry("PPLI", "People Inc", ["People"]),
     entry("XOM", "Exxon Mobil Corporation", ["Exxon Mobil"]),
   ],
-  coverage: { nasdaqRows: 3, otherExchangeRows: 0, eligibleEquities: 3, cikMapped: 0, cikMappedPercent: 0, adrCount: 0, excludedByReason: {} },
+  coverage: { nasdaqRows: 5, otherExchangeRows: 0, eligibleEquities: 5, cikMapped: 0, cikMappedPercent: 0, adrCount: 0, excludedByReason: {} },
   sources: [],
 };
 const macro = { checkedAt: "2026-07-22T13:00:00.000Z", status: "connected", series: [], regime: ["normal"], historicalComparisonAvailable: false, errors: [] };
@@ -82,6 +84,12 @@ const easternTime = build([receipt({
 })]);
 assert.equal(easternTime.candidates.some((item) => item.ticker === "EML"), false);
 
+const declassifiedIntel = build([receipt({
+  title: "President Declassifies Intel on Foreign Election Interference",
+  summary: "The government says people should review a deep-state coverup and intelligence-community findings.",
+})]);
+assert.equal(declassifiedIntel.candidates.some((item) => item.ticker === "INTC" || item.ticker === "PPLI"), false);
+
 const activeConflict = build([receipt({
   title: "Military strikes close a Red Sea shipping route as conflict escalates",
   channel: "defense_department",
@@ -96,12 +104,19 @@ const exactIssuer = build([receipt({
 })]);
 assert.equal(exactIssuer.candidates.some((item) => item.ticker === "FRHC" && item.relationship === "direct" && item.eventFamily === "financing_dilution"), true);
 
+const exactIntelIssuer = build([receipt({
+  title: "Intel launches a new semiconductor processor",
+})]);
+assert.equal(exactIntelIssuer.candidates.some((item) => item.ticker === "INTC" && item.relationship === "direct" && item.eventFamily === "product_launch"), true);
+
 console.log(JSON.stringify({
   ok: true,
   warAnniversaryRejected: true,
   departmentNameNotConflict: true,
   genericCompanyWordRejected: true,
   timeZoneWordNotIssuer: true,
+  wordSenseNotIssuer: true,
   activeConflictStillMapped: true,
   exactTickerAndCompanyStillMapped: true,
+  exactIntelIssuerStillMapped: true,
 }, null, 2));

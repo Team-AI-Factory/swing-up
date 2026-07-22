@@ -66,6 +66,9 @@ for (const marker of [
   `technicalFailureFingerprint = \`branch_route_\${category}\``,
   `status: "scan_already_in_progress"`,
   `storage: "cloudflare_r2"`,
+  `INVALIDATED_FALSE_MAPPING_EVENT_KEYS`,
+  `rewriteRequired`,
+  `INVALIDATED_FALSE_MAPPING_EVENT_KEYS.has(fingerprint)`,
 ]) {
   if (!routeSource.includes(marker)) throw new Error(`Cloudflare R2 branch-state policy is missing: ${marker}`);
 }

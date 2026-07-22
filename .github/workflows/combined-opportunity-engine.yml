@@ -1,0 +1,197 @@
+name: Combined Opportunity Engine
+
+on:
+  push:
+    branches:
+      - "agent/combined-opportunity-engine"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "lib/opportunity-engine/**"
+      - "app/api/internal/combined-opportunity-engine/**"
+      - "scripts/combined-opportunity-engine-*"
+      - "scripts/global-market-scanner-smoke.ts"
+      - "scripts/build-opportunity-calibration-dataset.ts"
+      - "scripts/calibrate_opportunity_conformal.py"
+      - "package.json"
+      - ".github/workflows/combined-opportunity-engine.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: combined-opportunity-engine-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate isolated two-path engine
+    if: github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/swing_up_ci
+      SWING_UP_TEST_MODE: "true"
+      PUBLIC_LEDGER_TRACKING_ENABLED: "false"
+      PUBLIC_TRACKING_ENABLED: "false"
+      SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+      LIVE_TEST_ROUNDS: "3"
+      LIVE_TEST_MIN_TICKERS: "3"
+      LIVE_TEST_TICKERS: "AAPL,MSFT,NVDA,XOM,KO"
+      LIVE_TEST_REPORT_PATH: "artifacts/combined-opportunity-engine-live-report.json"
+      CALIBRATION_EARLIEST_DATE: "2016-01-01"
+      CALIBRATION_MIN_HOLDOUT_SAMPLES: "30"
+      CALIBRATION_MIN_CERTIFICATE_SAMPLES: "20"
+      CALIBRATION_TARGET_ERROR: "0.10"
+      CALIBRATION_CERTIFICATE_CONFIDENCE: "0.90"
+      CALIBRATION_TICKERS: "AAPL,MSFT,NVDA,GOOGL,AMZN,META,AVGO,AMD,TSLA,WMT,JPM,BAC,XOM,CVX,KO,PEP,UNH,HD,COST,CRM,ORCL,NFLX,UBER,ADBE,INTC,QCOM,CSCO,MCD,NKE,DIS"
+      CALIBRATION_DATASET_PATH: "artifacts/combined-opportunity-engine-calibration-dataset.json"
+      CALIBRATION_REPORT_PATH: "artifacts/combined-opportunity-engine-calibration.json"
+
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+
+      - name: Refuse main branch execution
+        shell: bash
+        run: |
+          branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          if [[ "${branch}" == "main" ]]; then
+            echo "Combined Opportunity Engine validation is forbidden on main." >&2
+            exit 1
+          fi
+          echo "Testing isolated branch: ${branch}"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit --fund=false
+
+      - name: Typecheck
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          set +e
+          npm run typecheck 2>&1 | tee artifacts/combined-opportunity-engine-typecheck.log
+          status=${PIPESTATUS[0]}
+          exit "${status}"
+
+      - name: Upload typecheck diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: combined-opportunity-engine-typecheck
+          path: artifacts/combined-opportunity-engine-typecheck.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Test controlled foundation and event paths
+        run: npm run smoke:combined-opportunity-engine
+
+      - name: Test global stock universe normalization and filtering
+        run: npm run smoke:global-market-scanner
+
+      - name: Test repeated workflow with real SEC and market data
+        run: npm run smoke:combined-opportunity-engine-live
+
+      - name: Start isolated branch application
+        shell: bash
+        env:
+          SWING_UP_COMBINED_ENGINE_ALLOW_LOCAL: "true"
+        run: |
+          npm start -- --hostname 127.0.0.1 --port 3015 > /tmp/combined-opportunity-engine.log 2>&1 &
+          echo $! > /tmp/combined-opportunity-engine.pid
+          for attempt in $(seq 1 45); do
+            if curl --fail --silent http://127.0.0.1:3015/api/internal/combined-opportunity-engine > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/combined-opportunity-engine.log
+          exit 1
+
+      - name: Test repeated real-data branch API workflow
+        env:
+          COMBINED_ENGINE_BASE_URL: http://127.0.0.1:3015
+        run: node scripts/combined-opportunity-engine-live-route-smoke.mjs
+
+      - name: Show isolated application log on failure
+        if: failure()
+        run: tail -250 /tmp/combined-opportunity-engine.log || true
+
+      - name: Stop isolated branch application
+        if: always()
+        run: kill "$(cat /tmp/combined-opportunity-engine.pid)" 2>/dev/null || true
+
+      - name: Build clean point-in-time calibration dataset
+        run: npm run build:combined-opportunity-engine-calibration-dataset
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install calibration libraries
+        run: python -m pip install --disable-pip-version-check --no-input numpy pandas scipy scikit-learn
+
+      - name: Calibrate selective serious-signal risk
+        run: python scripts/calibrate_opportunity_conformal.py
+
+      - name: Audit deployed Railway provider capabilities
+        if: success()
+        continue-on-error: true
+        env:
+          COMBINED_ENGINE_RAILWAY_URL: https://swing-up-swing-up-pr-262.up.railway.app
+          EXPECTED_BRANCH_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+          SWING_UP_AUTOMATION_TOKEN: ${{ secrets.SWING_UP_AUTOMATION_TOKEN }}
+          RAILWAY_PROVIDER_REPORT_PATH: artifacts/combined-opportunity-engine-railway-providers.json
+          RAILWAY_AUDIT_TIMEOUT_MS: "180000"
+        run: node scripts/combined-opportunity-engine-railway-provider-audit.mjs
+
+      - name: Upload real-data consistency report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: combined-opportunity-engine-live-report
+          path: artifacts/combined-opportunity-engine-live-report.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload calibration dataset
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: combined-opportunity-engine-calibration-dataset
+          path: artifacts/combined-opportunity-engine-calibration-dataset.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload conformal calibration report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: combined-opportunity-engine-calibration
+          path: artifacts/combined-opportunity-engine-calibration.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload Railway provider audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: combined-opportunity-engine-railway-provider-audit
+          path: artifacts/combined-opportunity-engine-railway-providers.json
+          if-no-files-found: warn
+          retention-days: 14

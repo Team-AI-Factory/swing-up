@@ -1,0 +1,112 @@
+name: External Watch Out Certification
+
+on:
+  push:
+    branches:
+      - "agent/combined-opportunity-engine"
+    paths:
+      - "scripts/build-technical-risk-dataset.ts"
+      - "scripts/certify_external_watch_out_rule.py"
+      - "package.json"
+      - ".github/workflows/external-watch-out-certification.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "scripts/build-technical-risk-dataset.ts"
+      - "scripts/certify_external_watch_out_rule.py"
+      - "package.json"
+      - ".github/workflows/external-watch-out-certification.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: external-watch-out-certification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  certify:
+    name: Test frozen Watch Out rule on unseen stocks
+    if: github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    env:
+      TECHNICAL_RISK_EARLIEST_DATE: "2012-01-01"
+      TECHNICAL_RISK_CONCURRENCY: "4"
+      TECHNICAL_RISK_EVENT_COOLDOWN: "100"
+      TECHNICAL_RISK_TICKERS: "MSTR,MARA,RIOT,CLSK,HUT,IREN,CIFR,WULF,BITF,BTDR,CORZ,HOOD,SOFI,AFRM,UPST,CVNA,CHWY,DASH,CART,LYFT,OPEN,RDFN,RKT,AMC,GME,BYND,SPCE,QS,LAZR,ACHR,JOBY,EVGO,CHPT,BE,PLUG,FCEL,RUN,NOVA,SEDG,MAXN,ARRY,RKLB,ASTS,LUNR,RDW,BKSY,IONQ,RGTI,QBTS,QUBT,AI,BBAI,SOUN,PATH,CFLT,ESTC,BILL,HIMS,CELH,DUOL,ELF,CAVA,TOST,APP,RBLX,NU,IOT,TEM,CRSP,EDIT,NTLA,BEAM,RXRX,DNA,PACB,BFLY,CLOV,TDOC,LMND,ROOT,W,FUBO,UPWK,FVRR,ETSY,WBD,PARA,TLRY,CGC,ACB,CRON,SNDL,VFS,LI,XPEV,PSNY,FFIE,MULN,BLNK,FREY,ENVX,SLDP,MVST,STEM,FLNC,NFE,CLNE,GEVO,AMTX,SAVA,VKTX,AXSM,SRPT,FOLD,ALNY,IOVA,IMVT,ARWR,BLUE,VERV,GH,EXAS,NTRA,TWST,ILMN,BMRN,BIIB,GTLB,S,TENB,CYBR,VRNS,GENI,ABNB,RDDT,PCT,LAC,MP,ALB,CCJ,UEC,AA,FCX,CLF,X,NUE,AAL,UAL,DAL,JBLU"
+      TECHNICAL_RISK_DATASET_PATH: "artifacts/external-watch-out-dataset.json"
+      EXTERNAL_WATCH_OUT_DATASET_PATH: "artifacts/external-watch-out-dataset.json"
+      EXTERNAL_WATCH_OUT_REPORT_PATH: "artifacts/external-watch-out-certificate.json"
+      EXTERNAL_WATCH_OUT_MIN_SIGNALS: "30"
+      EXTERNAL_WATCH_OUT_MIN_UNIQUE_TICKERS: "20"
+      EXTERNAL_WATCH_OUT_TARGET_ERROR: "0.10"
+      EXTERNAL_WATCH_OUT_CERTIFICATE_CONFIDENCE: "0.90"
+
+    steps:
+      - name: Check out isolated branch
+        uses: actions/checkout@v4
+
+      - name: Refuse main branch execution
+        shell: bash
+        run: |
+          branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          test "${branch}" != "main"
+          echo "Testing frozen Watch Out rule on unseen stocks from ${branch}"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install application dependencies
+        run: npm ci --prefer-offline --no-audit --fund=false
+
+      - name: Build unseen-stock point-in-time dataset
+        run: npm run build:technical-risk-calibration-dataset
+
+      - name: Upload burned external holdout dataset
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: external-watch-out-dataset
+          path: artifacts/external-watch-out-dataset.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install certification libraries
+        run: python -m pip install --disable-pip-version-check --no-input pandas scipy
+
+      - name: Apply the frozen rule once
+        id: certificate
+        continue-on-error: true
+        run: python scripts/certify_external_watch_out_rule.py
+
+      - name: Upload external certificate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: external-watch-out-certificate
+          path: artifacts/external-watch-out-certificate.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce external certificate
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path("artifacts/external-watch-out-certificate.json").read_text())
+          if not report.get("passed"):
+              raise SystemExit("The frozen Watch Out rule did not pass the unseen-stock 90% certificate.")
+          print(report["rule"]["id"], report["overall"])
+          PY

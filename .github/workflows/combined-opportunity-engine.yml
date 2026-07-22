@@ -27,7 +27,7 @@ jobs:
     name: Validate isolated two-path engine
     if: github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 60
     env:
       DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/swing_up_ci
       SWING_UP_TEST_MODE: "true"
@@ -38,6 +38,10 @@ jobs:
       LIVE_TEST_MIN_TICKERS: "3"
       LIVE_TEST_TICKERS: "AAPL,MSFT,NVDA,XOM,KO"
       LIVE_TEST_REPORT_PATH: "artifacts/combined-opportunity-engine-live-report.json"
+      CALIBRATION_EARLIEST_DATE: "2016-01-01"
+      CALIBRATION_MIN_HOLDOUT_SAMPLES: "30"
+      CALIBRATION_TICKERS: "AAPL,MSFT,NVDA,GOOGL,AMZN,META,AVGO,AMD,TSLA,WMT,JPM,BAC,XOM,CVX,KO,PEP,UNH,HD,COST,CRM,ORCL,NFLX,UBER,ADBE,INTC,QCOM,CSCO,MCD,NKE,DIS"
+      CALIBRATION_REPORT_PATH: "artifacts/combined-opportunity-engine-calibration.json"
 
     steps:
       - name: Check out branch
@@ -106,8 +110,12 @@ jobs:
         if: always()
         run: kill "$(cat /tmp/combined-opportunity-engine.pid)" 2>/dev/null || true
 
+      - name: Calibrate on chronological real historical outcomes
+        id: calibration
+        run: npm run test:combined-opportunity-engine-calibration
+
       - name: Audit deployed Railway provider capabilities
-        if: github.event_name == 'push'
+        if: always() && github.event_name == 'push'
         env:
           COMBINED_ENGINE_RAILWAY_URL: https://swing-up-swing-up-pr-262.up.railway.app
           EXPECTED_BRANCH_COMMIT: ${{ github.sha }}
@@ -121,6 +129,15 @@ jobs:
         with:
           name: combined-opportunity-engine-live-report
           path: artifacts/combined-opportunity-engine-live-report.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload chronological calibration report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: combined-opportunity-engine-calibration
+          path: artifacts/combined-opportunity-engine-calibration.json
           if-no-files-found: warn
           retention-days: 14
 

@@ -10,6 +10,15 @@ on:
       - "scripts/calibrate_opportunity_conformal.py"
       - "package.json"
       - ".github/workflows/opportunity-calibration-lab.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "lib/opportunity-engine/**"
+      - "scripts/build-opportunity-calibration-dataset.ts"
+      - "scripts/calibrate_opportunity_conformal.py"
+      - "package.json"
+      - ".github/workflows/opportunity-calibration-lab.yml"
   workflow_dispatch:
 
 permissions:

@@ -27,7 +27,7 @@ jobs:
     name: Validate isolated two-path engine
     if: github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 50
     env:
       DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/swing_up_ci
       SWING_UP_TEST_MODE: "true"
@@ -106,11 +106,29 @@ jobs:
         if: always()
         run: kill "$(cat /tmp/combined-opportunity-engine.pid)" 2>/dev/null || true
 
+      - name: Audit deployed Railway provider capabilities
+        if: github.event_name == 'push'
+        env:
+          COMBINED_ENGINE_RAILWAY_URL: https://swing-up-swing-up-pr-262.up.railway.app
+          EXPECTED_BRANCH_COMMIT: ${{ github.sha }}
+          SWING_UP_AUTOMATION_TOKEN: ${{ secrets.SWING_UP_AUTOMATION_TOKEN }}
+          RAILWAY_PROVIDER_REPORT_PATH: artifacts/combined-opportunity-engine-railway-providers.json
+        run: node scripts/combined-opportunity-engine-railway-provider-audit.mjs
+
       - name: Upload real-data consistency report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: combined-opportunity-engine-live-report
           path: artifacts/combined-opportunity-engine-live-report.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload Railway provider audit
+        if: always() && github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: combined-opportunity-engine-railway-provider-audit
+          path: artifacts/combined-opportunity-engine-railway-providers.json
           if-no-files-found: warn
           retention-days: 14

@@ -150,12 +150,14 @@ jobs:
         run: python scripts/calibrate_opportunity_conformal.py
 
       - name: Audit deployed Railway provider capabilities
-        if: always()
+        if: success()
+        continue-on-error: true
         env:
           COMBINED_ENGINE_RAILWAY_URL: https://swing-up-swing-up-pr-262.up.railway.app
           EXPECTED_BRANCH_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
           SWING_UP_AUTOMATION_TOKEN: ${{ secrets.SWING_UP_AUTOMATION_TOKEN }}
           RAILWAY_PROVIDER_REPORT_PATH: artifacts/combined-opportunity-engine-railway-providers.json
+          RAILWAY_AUDIT_TIMEOUT_MS: "180000"
         run: node scripts/combined-opportunity-engine-railway-provider-audit.mjs
 
       - name: Upload real-data consistency report

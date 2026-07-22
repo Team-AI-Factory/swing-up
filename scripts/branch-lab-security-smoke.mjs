@@ -43,7 +43,7 @@ const startScript = await readFile(new URL("./railway-branch-start.mjs", import.
 const strippedVariables = startScript.match(/for \(const key of \[([\s\S]*?)\]\) delete env\[key\];/)?.[1] ?? "";
 if (!strippedVariables.includes("DATABASE_URL") || !strippedVariables.includes("TELEGRAM_BOT_TOKEN")) throw new Error("Branch startup no longer strips database or notification credentials.");
 if (strippedVariables.includes("R2_ACCESS_KEY_ID") || strippedVariables.includes("R2_SECRET_ACCESS_KEY") || strippedVariables.includes("CLOUDFLARE_R2_ACCESS_KEY_ID") || strippedVariables.includes("CLOUDFLARE_R2_SECRET_ACCESS_KEY")) throw new Error("Branch startup strips the Cloudflare R2 state credentials.");
-for (const marker of [`SWING_UP_BRANCH_LAB_SCHEDULER_OWNER: "dedicated_worker"`, `scripts/railway-branch-worker.mjs`, "workerLastHeartbeatAt", "dedicated worker heartbeat overdue"]) {
+for (const marker of [`SWING_UP_BRANCH_LAB_SCHEDULER_OWNER: "dedicated_worker"`, `scripts/railway-branch-worker.mjs`, "workerLastHeartbeatAt", "dedicated worker heartbeat overdue", "WORKER_RUNTIME_STATUS_PATH", "recordWorkerStatus"]) {
   if (!startScript.includes(marker)) throw new Error(`Branch startup does not supervise the dedicated scanner: ${marker}`);
 }
 const workerSource = await readFile(new URL("./railway-branch-worker.mjs", import.meta.url), "utf8");
@@ -61,6 +61,8 @@ for (const marker of [
   `writeVersionedJsonToR2`,
   `error: "invalid_scheduler"`,
   `schedulerInvocation: invocation`,
+  `ephemeralDiagnosticsOnly: true`,
+  `persistentSignalState: "cloudflare_r2"`,
 ]) {
   if (!routeSource.includes(marker)) throw new Error(`Cloudflare R2 branch-state policy is missing: ${marker}`);
 }

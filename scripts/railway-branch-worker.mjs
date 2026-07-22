@@ -24,7 +24,8 @@ let stopping = false;
 const shutdown = new AbortController();
 
 function tellSupervisor(message) {
-  if (typeof process.send === "function") process.send({ at: new Date().toISOString(), ...message });
+  if (typeof process.send !== "function") return;
+  try { process.send({ at: new Date().toISOString(), workerStartedAt, ...message }); } catch {}
 }
 
 function stop() {

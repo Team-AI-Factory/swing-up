@@ -8,6 +8,7 @@ import { getR2Config, readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/
 export const dynamic = "force-dynamic";
 
 const REPORT_FILENAME = "swing-up-railway-branch-signal-lab.json";
+const WORKER_RUNTIME_STATUS_PATH = "/tmp/swing-up-branch-worker-runtime.json";
 const R2_STATE_KEY = "branch-labs/pr-261/serious-signal/state.json";
 const LAB_BRANCH = "agent/live-signal-evaluation-automation";
 const MAX_OPENAI_RUNS_PER_24_HOURS = 3;
@@ -180,6 +181,32 @@ function schedulerInvocation(request: NextRequest): SchedulerInvocation | null {
   const sequence = Number(request.headers.get("x-swing-up-branch-lab-worker-sequence"));
   if (!Number.isFinite(Date.parse(workerStartedAt)) || !Number.isInteger(sequence) || sequence < 1) return null;
   return { owner: "dedicated_worker", transport: "loopback", workerStartedAt, sequence };
+}
+
+async function runtimeWorkerStatus() {
+  try {
+    const parsed = JSON.parse(await readFile(WORKER_RUNTIME_STATUS_PATH, "utf8")) as JsonRecord;
+    return {
+      stage: typeof parsed.stage === "string" ? parsed.stage : "unknown",
+      at: typeof parsed.at === "string" ? parsed.at : null,
+      workerStartedAt: typeof parsed.workerStartedAt === "string" ? parsed.workerStartedAt : null,
+      sequence: finiteNumber(parsed.sequence) ?? 0,
+      httpStatus: finiteNumber(parsed.httpStatus),
+      exitCode: finiteNumber(parsed.exitCode),
+      signal: typeof parsed.signal === "string" ? parsed.signal : null,
+      errorCategory: typeof parsed.errorCategory === "string" ? parsed.errorCategory : null,
+      ephemeralDiagnosticsOnly: true,
+      persistentSignalState: "cloudflare_r2",
+    };
+  } catch (error) {
+    return {
+      stage: "unavailable",
+      at: null,
+      errorCategory: errorCode(error),
+      ephemeralDiagnosticsOnly: true,
+      persistentSignalState: "cloudflare_r2",
+    };
+  }
 }
 
 function safeRun(run: JsonRecord) {
@@ -375,6 +402,7 @@ export async function GET() {
     && latestSchedulerInvocation?.transport === "loopback"
     && lastRunAgeSeconds !== null
     && lastRunAgeSeconds <= effectiveIntervalSeconds + 120;
+  const runtimeWorker = await runtimeWorkerStatus();
   return NextResponse.json({
     ok: true,
     mode: "railway_branch_live_read_only",
@@ -403,6 +431,7 @@ export async function GET() {
       technicalRetrySeconds: positiveEnvironmentNumber(process.env.SWING_UP_BRANCH_LAB_EFFECTIVE_TECHNICAL_RETRY_SECONDS, 60),
       watchdogEnabled: true,
       lastWorkerInvocation: latestSchedulerInvocation,
+      runtimeWorker,
       lastRunAgeSeconds,
       schedulerHealthy,
     },

@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { writeFile } from "node:fs/promises";
 
 const LAB_BRANCH = "agent/live-signal-evaluation-automation";
 const branch = (process.env.RAILWAY_GIT_BRANCH || "").trim();
@@ -14,11 +15,20 @@ function intervalMs(raw, fallbackSeconds, maximumMs) {
 }
 const normalPollMs = intervalMs(process.env.SWING_UP_BRANCH_LAB_INTERVAL_SECONDS, 300, 3_600_000);
 const technicalRetryMs = intervalMs(process.env.SWING_UP_BRANCH_LAB_TECHNICAL_RETRY_SECONDS, 60, normalPollMs);
+const WORKER_RUNTIME_STATUS_PATH = "/tmp/swing-up-branch-worker-runtime.json";
 let child = null;
 let worker = null;
 let workerRestartTimer = null;
 let workerLastHeartbeatAt = 0;
 let workerStoppedByLab = false;
+let statusWrite = Promise.resolve();
+
+function recordWorkerStatus(stage, details = {}) {
+  const status = { stage, at: new Date().toISOString(), ...details };
+  statusWrite = statusWrite
+    .then(() => writeFile(WORKER_RUNTIME_STATUS_PATH, JSON.stringify(status), "utf8"))
+    .catch((error) => console.error(`[swing-up-branch-lab] worker_status_${error instanceof Error ? error.message : "write_failed"}`));
+}
 
 function isolatedBranchEnvironment() {
   const env = {
@@ -72,13 +82,24 @@ function clearWorkerRestart() {
 function startWorker() {
   if (!branchLab || worker || workerStoppedByLab || !child || child.killed) return;
   workerLastHeartbeatAt = Date.now();
+  recordWorkerStatus("worker_starting");
   worker = launch(process.execPath, ["scripts/railway-branch-worker.mjs"], applicationEnvironment, ["ignore", "inherit", "inherit", "ipc"]);
+  recordWorkerStatus("worker_spawned");
   worker.on("message", (message) => {
     workerLastHeartbeatAt = Date.now();
     if (message?.type === "stopped_by_lab") workerStoppedByLab = true;
+    recordWorkerStatus(typeof message?.type === "string" ? message.type : "worker_message", {
+      workerStartedAt: typeof message?.workerStartedAt === "string" ? message.workerStartedAt : null,
+      sequence: Number.isFinite(message?.sequence) ? message.sequence : 0,
+      httpStatus: Number.isFinite(message?.status) ? message.status : null,
+    });
+  });
+  worker.on("error", (error) => {
+    recordWorkerStatus("worker_spawn_error", { errorCategory: error instanceof Error ? error.name : "spawn_error" });
   });
   worker.on("exit", (code, signal) => {
     console.warn(`[swing-up-branch-lab] dedicated worker exited code=${code ?? "null"} signal=${signal ?? "none"}.`);
+    recordWorkerStatus("worker_exited", { exitCode: code, signal: signal ?? null });
     worker = null;
     if (!workerStoppedByLab && child && !child.killed) {
       clearWorkerRestart();
@@ -90,6 +111,7 @@ function startWorker() {
 const workerWatchdog = branchLab ? setInterval(() => {
   if (worker && workerLastHeartbeatAt > 0 && Date.now() - workerLastHeartbeatAt > 90_000) {
     console.error("[swing-up-branch-lab] dedicated worker heartbeat overdue; restarting worker process.");
+    recordWorkerStatus("worker_heartbeat_overdue");
     worker.kill("SIGKILL");
   } else if (!worker && !workerRestartTimer && !workerStoppedByLab && child && !child.killed) {
     startWorker();

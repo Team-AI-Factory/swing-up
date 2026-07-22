@@ -65,6 +65,8 @@ The redacted report is available from:
 
 The POST trigger requires a random runtime-only token generated inside the preview container plus the dedicated worker identity headers. The worker calls the route over `127.0.0.1`, so the alarm does not depend on Railway's public edge routing. Each stored run records the worker start time and monotonic sequence number. These values prove which worker invoked a run without exposing the runtime token. The token is not a repository or Railway secret.
 
+The public redacted report also includes a small runtime diagnostic showing only the worker stage, timestamp, sequence, and safe exit/status category. This diagnostic is an ephemeral `/tmp` heartbeat, not signal history, quota state, evidence, or an R2 fallback. Cloudflare R2 remains the only persistent branch-lab state store.
+
 ## Railway requirement
 
 Railway PR Environments must be enabled for the repository. Railway then creates an isolated preview deployment for the PR and supplies the branch/environment system variables used by the guard. The preview must inherit the configured Cloudflare R2 bucket, endpoint/account, access key, and secret key variables with Object Read and Object Write permission. A Railway Volume is not required after the one-time migration.

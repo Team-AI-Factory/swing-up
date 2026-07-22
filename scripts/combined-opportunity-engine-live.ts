@@ -9,16 +9,11 @@ const integer = (value: string | undefined, fallback: number, minimum: number, m
   const parsed = Number.parseInt(value ?? "", 10);
   return Number.isFinite(parsed) ? Math.max(minimum, Math.min(maximum, parsed)) : fallback;
 };
-
 const roundNumber = (value: number | null, digits = 6) => value === null ? null : Number(value.toFixed(digits));
 const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const roundsRequested = integer(process.env.LIVE_TEST_ROUNDS, 3, 3, 5);
 const minimumStableTickers = integer(process.env.LIVE_TEST_MIN_TICKERS, 3, 3, 5);
-const tickersRequested = (process.env.LIVE_TEST_TICKERS ?? "AAPL,MSFT,NVDA,XOM,KO")
-  .split(",")
-  .map((ticker) => ticker.trim().toUpperCase())
-  .filter(Boolean)
-  .slice(0, 5);
+const tickersRequested = (process.env.LIVE_TEST_TICKERS ?? "AAPL,MSFT,NVDA,XOM,KO").split(",").map((ticker) => ticker.trim().toUpperCase()).filter(Boolean).slice(0, 5);
 const outputPath = process.env.LIVE_TEST_REPORT_PATH ?? "artifacts/combined-opportunity-engine-live-report.json";
 
 type EvaluatedSnapshot = {
@@ -84,10 +79,7 @@ function thesisFrom(decision: FoundationDecision): StoredThesisSnapshot {
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
   if (value && typeof value === "object") {
-    return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
-      .join(",")}}`;
+    return `{${Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`).join(",")}}`;
   }
   return JSON.stringify(value);
 }
@@ -104,7 +96,7 @@ function evaluate(snapshot: LiveOpportunitySnapshot, round: number): EvaluatedSn
   const sourceChecks = {
     secCompanyFacts: snapshot.metadata.companyFactsUrl.startsWith("https://data.sec.gov/api/xbrl/companyfacts/"),
     secFiling: snapshot.metadata.filingUrl.startsWith("https://www.sec.gov/Archives/edgar/data/"),
-    realMarketData: /^https:\/\/stooq\.com\//.test(snapshot.metadata.marketSourceUrl),
+    realMarketData: /^https:\/\/query[12]\.finance\.yahoo\.com\//.test(snapshot.metadata.marketSourceUrl),
     noSyntheticData: raw.noSyntheticData === true && snapshot.event.payload.noSyntheticData === true,
     currentPricePositive: (snapshot.foundation.market.currentPrice ?? 0) > 0,
     officialReceipts,
@@ -168,13 +160,7 @@ async function main() {
   for (let round = 1; round <= roundsRequested; round += 1) {
     const startedAt = new Date().toISOString();
     const live = await fetchLiveOpportunityUniverse(tickersRequested, new Date());
-    rounds.push({
-      round,
-      startedAt,
-      completedAt: new Date().toISOString(),
-      snapshots: live.snapshots.map((snapshot) => evaluate(snapshot, round)),
-      errors: live.errors,
-    });
+    rounds.push({ round, startedAt, completedAt: new Date().toISOString(), snapshots: live.snapshots.map((snapshot) => evaluate(snapshot, round)), errors: live.errors });
     if (round < roundsRequested) await sleep(1_000);
   }
 
@@ -184,12 +170,10 @@ async function main() {
     const scores = tickerRecords.map((record) => record.foundationDecision.scores.opportunityScore);
     const prices = tickerRecords.map((record) => record.foundationInput.market.currentPrice).filter((value): value is number => typeof value === "number");
     const scoreRange = scores.length ? Math.max(...scores) - Math.min(...scores) : null;
-    const priceRangePercent = prices.length && Math.min(...prices) > 0
-      ? ((Math.max(...prices) - Math.min(...prices)) / Math.min(...prices)) * 100
-      : null;
+    const priceRangePercent = prices.length && Math.min(...prices) > 0 ? ((Math.max(...prices) - Math.min(...prices)) / Math.min(...prices)) * 100 : null;
     const classificationSignatures = [...new Set(tickerRecords.map((record) => record.classificationSignature))];
     const fundamentalFingerprints = [...new Set(tickerRecords.map((record) => record.fundamentalFingerprint))];
-    const allSourceChecksPass = tickerRecords.every((record) =>
+    const allSourceChecksPass = tickerRecords.length > 0 && tickerRecords.every((record) =>
       record.sourceChecks.secCompanyFacts
       && record.sourceChecks.secFiling
       && record.sourceChecks.realMarketData
@@ -224,6 +208,7 @@ async function main() {
         fiscalPeriod: latest.metadata.fiscalPeriod,
         latestFiling: `${latest.metadata.latestFilingForm} ${latest.metadata.latestFilingDate} ${latest.metadata.latestFilingAccession}`,
         marketDate: latest.metadata.marketDate,
+        marketSource: latest.metadata.marketSource,
         opportunityScore: latest.foundationDecision.scores.opportunityScore,
         evidenceConfidence: latest.foundationDecision.scores.evidenceConfidence,
         riskScore: latest.foundationDecision.scores.riskScore,
@@ -245,7 +230,7 @@ async function main() {
   });
   const nonNeutralEventCount = latestStableRecords.filter((record) => record.eventDecision.impact.direction !== "neutral").length;
   const allRoundsMeetMinimum = rounds.every((round) => round.snapshots.length >= minimumStableTickers);
-  const allStableSourcesReal = latestStableRecords.every((record) => record.sourceChecks.noSyntheticData && record.sourceChecks.secCompanyFacts && record.sourceChecks.secFiling && record.sourceChecks.realMarketData);
+  const allStableSourcesReal = latestStableRecords.length > 0 && latestStableRecords.every((record) => record.sourceChecks.noSyntheticData && record.sourceChecks.secCompanyFacts && record.sourceChecks.secFiling && record.sourceChecks.realMarketData);
   const failureReasons = [
     ...(stable.length < minimumStableTickers ? [`only_${stable.length}_stable_tickers_minimum_${minimumStableTickers}`] : []),
     ...(!allRoundsMeetMinimum ? ["one_or_more_rounds_below_minimum_live_ticker_coverage"] : []),
@@ -254,7 +239,7 @@ async function main() {
   ];
   const passed = failureReasons.length === 0;
   const report = {
-    version: 1,
+    version: 2,
     passed,
     checkedAt: new Date().toISOString(),
     sourceMode: "real_live_sec_and_market_data",
@@ -264,7 +249,7 @@ async function main() {
       tickersRequested,
       officialFoundationSource: "SEC Company Facts API",
       officialEventSource: "SEC Submissions and filing archives",
-      marketSource: "Stooq public daily market CSV",
+      marketSource: "Yahoo Finance public chart API",
       classificationConsistency: "Same fiscal period, SEC accession, normalized fundamentals, candidate bucket, thesis state, and event result in every round.",
       numericTolerance: { opportunityScorePoints: 2, priceRangePercent: 2.5 },
       noMockFixtures: true,
@@ -282,13 +267,7 @@ async function main() {
     },
     consistencyByTicker,
     rounds,
-    safety: {
-      databaseWrites: false,
-      alertPublishing: false,
-      notifications: false,
-      payments: false,
-      openAiCalls: false,
-    },
+    safety: { databaseWrites: false, alertPublishing: false, notifications: false, payments: false, openAiCalls: false },
   };
 
   await mkdir(outputPath.split("/").slice(0, -1).join("/") || ".", { recursive: true });

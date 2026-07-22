@@ -4,7 +4,7 @@ export type RiskLevel = "low" | "medium" | "high" | "extreme";
 export type HistoricalPatternMatch = "strong" | "moderate" | "weak" | "no_clear_match";
 export type PricedInCheck = "not_fully_priced_in" | "partially_priced_in" | "mostly_priced_in" | "unclear";
 export type SuggestedAction = "Buy Candidate" | "Speculative Buy Candidate" | "Watch" | "Sell Review" | "Avoid" | "No Action";
-export type SentimentDataStatus = "available" | "missing";
+export type SentimentDataStatus = "available" | "missing" | "stale";
 
 type SourceQuality = "confirmed" | "high" | "medium" | "low" | "rumour";
 
@@ -32,6 +32,8 @@ export type ScorePreviewInput = {
   sourceRiskScore?: number;
   liquidityRiskScore?: number;
   dilutionRiskScore?: number;
+  inputProvenance?: Record<string, string>;
+  liveEvidenceOnly?: boolean;
   payload?: unknown;
 };
 
@@ -44,6 +46,8 @@ export type MarketSentimentImpact = {
   confidenceAdjustment: number;
   riskOffPenalty: number;
   sentimentDataStatus: SentimentDataStatus;
+  observedAt: string | null;
+  ageMinutes: number | null;
 };
 
 export type SwingUpScore = {
@@ -57,6 +61,10 @@ export type SwingUpScore = {
   suggestedAction: SuggestedAction;
   marketSentimentImpact: MarketSentimentImpact;
   scoreBreakdown: Record<string, number>;
+  liveDataReady: boolean;
+  inputCompleteness: number;
+  missingInputs: string[];
+  inputProvenance: Record<string, string>;
   warnings: string[];
   notes: string[];
   compatibility: {
@@ -110,6 +118,28 @@ function clamp(value: number) {
 
 function num(value: unknown, fallback: number) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function finite(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+const REQUIRED_LIVE_INPUTS = [
+  "catalystStrengthScore",
+  "priceMovePercent",
+  "sourceQuality",
+  "independentReceipts",
+  "priceVolumeConfirmationScore",
+] as const;
+
+function hasInput(input: ScorePreviewInput, key: (typeof REQUIRED_LIVE_INPUTS)[number]) {
+  if (key === "sourceQuality") return Boolean(input.sourceQuality);
+  return finite(input[key]);
+}
+
+function liveProvenance(input: ScorePreviewInput, key: string) {
+  const value = input.inputProvenance?.[key]?.trim().toLowerCase() ?? "";
+  return Boolean(value && !/mock|preview|default|neutral|placeholder|synthetic|assumed/.test(value));
 }
 
 function sourceQualityScore(quality: SourceQuality | undefined) {
@@ -170,16 +200,21 @@ export async function loadLatestMarketSentimentSnapshot(): Promise<SnapshotLike 
 }
 
 export function buildMarketSentimentImpact(snapshot: SnapshotLike | null): MarketSentimentImpact {
-  if (!snapshot) {
+  const observedAt = snapshot?.createdAt instanceof Date ? snapshot.createdAt : null;
+  const ageMinutes = observedAt ? Math.max(0, Math.round((Date.now() - observedAt.getTime()) / 60000)) : null;
+  const stale = ageMinutes !== null && ageMinutes > 120;
+  if (!snapshot || stale) {
     return {
       overallMarketMood: null,
       macroRiskLevel: "unknown",
-      sentimentSupportScore: 50,
-      macroSupportScore: 50,
-      profitPotentialAdjustment: 0,
-      confidenceAdjustment: 0,
-      riskOffPenalty: 0,
-      sentimentDataStatus: "missing",
+      sentimentSupportScore: 0,
+      macroSupportScore: 0,
+      profitPotentialAdjustment: -10,
+      confidenceAdjustment: -20,
+      riskOffPenalty: 35,
+      sentimentDataStatus: stale ? "stale" : "missing",
+      observedAt: observedAt?.toISOString() ?? null,
+      ageMinutes,
     };
   }
 
@@ -192,19 +227,31 @@ export function buildMarketSentimentImpact(snapshot: SnapshotLike | null): Marke
     confidenceAdjustment: Math.max(-20, Math.min(20, Math.round(num(snapshot.confidenceAdjustment, 0)))),
     riskOffPenalty: clamp(num(snapshot.riskOffPenalty, 0)),
     sentimentDataStatus: "available",
+    observedAt: observedAt?.toISOString() ?? null,
+    ageMinutes,
   };
 }
 
 export function scoreSwingUpAlert(input: ScorePreviewInput, sentiment: MarketSentimentImpact): SwingUpScore {
+  const provenance = input.inputProvenance ?? {};
+  const verifiedInputs = REQUIRED_LIVE_INPUTS.filter((key) => hasInput(input, key) && (!input.liveEvidenceOnly || liveProvenance(input, key)));
+  const missingInputs = REQUIRED_LIVE_INPUTS.filter(
+    (key) => !hasInput(input, key) || (input.liveEvidenceOnly !== false && !liveProvenance(input, key)),
+  ).map(String);
+  if (sentiment.sentimentDataStatus !== "available") missingInputs.push(`marketSentiment:${sentiment.sentimentDataStatus}`);
+  if ((input.independentReceipts ?? 0) < 2) missingInputs.push("independentReceipts:min_2");
+  const uniqueMissingInputs = Array.from(new Set(missingInputs));
+  const inputCompleteness = clamp(((verifiedInputs.length + (sentiment.sentimentDataStatus === "available" ? 1 : 0)) / (REQUIRED_LIVE_INPUTS.length + 1)) * 100);
+  const liveDataReady = uniqueMissingInputs.length === 0;
   const pattern = input.historicalPatternMatch ?? "no_clear_match";
   const patternStrength = patternScore(pattern);
   const sourceStrength = sourceQualityScore(input.sourceQuality);
-  const expectedUpside = num(input.expectedUpsidePercent, 8);
-  const expectedDownside = Math.abs(num(input.expectedDownsidePercent, 7));
-  const catalystStrength = clamp(num(input.catalystStrengthScore, 50));
-  const valuationSupport = clamp(num(input.valuationSupportScore, 50));
-  const sectorSupport = clamp(num(input.sectorSupportScore, 50));
-  const macroSupport = clamp(num(input.macroSupportScore, sentiment.macroSupportScore));
+  const expectedUpside = num(input.expectedUpsidePercent, 0);
+  const expectedDownside = Math.abs(num(input.expectedDownsidePercent, 20));
+  const catalystStrength = clamp(num(input.catalystStrengthScore, 0));
+  const valuationSupport = clamp(num(input.valuationSupportScore, 0));
+  const sectorSupport = clamp(num(input.sectorSupportScore, 0));
+  const macroSupport = clamp(num(input.macroSupportScore, 0));
   const sentimentSupport = sentiment.sentimentSupportScore;
   const priceMove = num(input.priceMovePercent, Number.NaN);
   const pricedInCheck = pricedIn(priceMove, catalystStrength);
@@ -214,11 +261,11 @@ export function scoreSwingUpAlert(input: ScorePreviewInput, sentiment: MarketSen
   const downsideRisk = clamp(expectedDownside * 5);
   const riskPenalties = {
     downsideRisk,
-    overboughtRisk: clamp(num(input.overboughtRiskScore, priceMove > 10 ? 55 : 25)),
-    balanceSheetRisk: clamp(num(input.balanceSheetRiskScore, 35)),
+    overboughtRisk: clamp(num(input.overboughtRiskScore, 80)),
+    balanceSheetRisk: clamp(num(input.balanceSheetRiskScore, 80)),
     sourceRisk: clamp(num(input.sourceRiskScore, 100 - sourceStrength)),
-    liquidityRisk: clamp(num(input.liquidityRiskScore, 30)),
-    dilutionRisk: clamp(num(input.dilutionRiskScore, 25)),
+    liquidityRisk: clamp(num(input.liquidityRiskScore, 80)),
+    dilutionRisk: clamp(num(input.dilutionRiskScore, 80)),
     pricedInPenalty: pricedPenalty,
     marketRiskOffPenalty: sentiment.riskOffPenalty,
   };
@@ -229,24 +276,26 @@ export function scoreSwingUpAlert(input: ScorePreviewInput, sentiment: MarketSen
   const negativeProfit = Object.values(riskPenalties).reduce((sum, value) => sum + value, 0) * 0.09;
   const profitPotentialScore = clamp(positiveProfit - negativeProfit + sentiment.profitPotentialAdjustment + 12);
 
-  const receiptsScore = clamp(num(input.independentReceipts, 1) * 22);
-  const confirmedSource = input.hasConfirmedFilingOrExchangeSource ? 100 : input.isRumour ? 15 : 45;
+  const receiptsScore = clamp(num(input.independentReceipts, 0) * 22);
+  const confirmedSource = input.hasConfirmedFilingOrExchangeSource ? 100 : input.isRumour ? 15 : input.liveEvidenceOnly ? 0 : 45;
   const contradictions = clamp(num(input.contradictionCount, 0) * 18);
   const rumourPenalty = input.isRumour || input.sourceQuality === "rumour" ? 24 : 0;
-  const freshnessReliability = sentiment.sentimentDataStatus === "available" ? clamp((sentiment.sentimentSupportScore + sentiment.macroSupportScore) / 2) : 35;
-  const evidenceConfidenceScore = clamp(
+  const freshnessReliability = sentiment.sentimentDataStatus === "available" ? clamp((sentiment.sentimentSupportScore + sentiment.macroSupportScore) / 2) : 0;
+  const rawEvidenceConfidenceScore = clamp(
     sourceStrength * 0.18 + receiptsScore * 0.13 + confirmedSource * 0.13 + clamp(num(input.priceVolumeConfirmationScore, 45)) * 0.11 +
       clamp(num(input.financialSupportScore, 45)) * 0.11 + patternStrength * 0.1 + clamp(num(input.verifiedRippleLinks, 0) * 28) * 0.08 +
       freshnessReliability * 0.08 + sentiment.confidenceAdjustment + 8 - contradictions - rumourPenalty,
   );
+  const evidenceConfidenceScore = Math.min(rawEvidenceConfidenceScore, inputCompleteness);
 
   const rawRisk = clamp(expectedUpside * 1.5 + downsideRisk * 0.8 + Object.values(riskPenalties).reduce((sum, value) => sum + value, 0) * 0.16 - evidenceConfidenceScore * 0.22 - valuationSupport * 0.08);
   const riskLevel: RiskLevel = rawRisk >= 78 ? "extreme" : rawRisk >= 58 ? "high" : rawRisk >= 34 ? "medium" : "low";
-  const suggestedAction = chooseAction(profitPotentialScore, evidenceConfidenceScore, riskLevel, pricedInCheck);
+  const suggestedAction = liveDataReady ? chooseAction(profitPotentialScore, evidenceConfidenceScore, riskLevel, pricedInCheck) : "No Action";
   const warnings = [
     "Profit Potential Score is an opportunity attractiveness score, not a guaranteed profit probability.",
     "Evidence Confidence Score measures proof strength, not the chance of profit.",
-    ...(sentiment.sentimentDataStatus === "missing" ? ["Market sentiment snapshot is missing; neutral sentiment assumptions were used."] : []),
+    ...(sentiment.sentimentDataStatus !== "available" ? [`Market sentiment is ${sentiment.sentimentDataStatus}; conservative penalties were used and publication is blocked.`] : []),
+    ...(uniqueMissingInputs.length ? [`Live evidence gate is incomplete: ${uniqueMissingInputs.join(", ")}. No neutral or preview fallback was used.`] : []),
     ...(riskLevel === "high" || riskLevel === "extreme" ? ["High-upside setup carries elevated downside risk unless receipts, valuation, balance sheet, and source quality remain strong."] : []),
   ];
 
@@ -261,9 +310,13 @@ export function scoreSwingUpAlert(input: ScorePreviewInput, sentiment: MarketSen
     suggestedAction,
     marketSentimentImpact: sentiment,
     scoreBreakdown: { upsideSupport, patternStrength, valuationSupport, catalystStrength, sectorSupport, macroSupport, sourceStrength, sentimentSupport, receiptsScore, confirmedSource, freshnessReliability, contradictions, ...riskPenalties },
+    liveDataReady,
+    inputCompleteness,
+    missingInputs: uniqueMissingInputs,
+    inputProvenance: provenance,
     warnings,
-    notes: ["Scoring preview only; no real paid or user alert is published.", "Outputs are shaped for alert cards, AI Brain Input Contract, and future Public Ledger records."],
-    compatibility: { alertCardReady: true, aiBrainInputContractReady: true, publicLedgerReady: true, publishesRealAlert: false },
+    notes: ["Missing live inputs are penalized and block action; they are never replaced with neutral preview values.", "Outputs are shaped for alert cards, AI Brain Input Contract, and Public Ledger records."],
+    compatibility: { alertCardReady: true, aiBrainInputContractReady: true, publicLedgerReady: liveDataReady, publishesRealAlert: false },
   };
 }
 

@@ -14,6 +14,7 @@ type EvidenceSection = {
 };
 
 export type AiCommitteeEvidencePack = {
+  assetClass?: "public_equity" | "digital_asset" | "other";
   candidateAlertId: string;
   rawSignalIds: string[];
   ticker: string | null;
@@ -55,7 +56,7 @@ export type EvidencePackResult = {
   error?: string;
 };
 
-const REQUIRED_EVIDENCE = ["raw signal linkage", "source links", "source health", "proof bundle", "score"];
+const REQUIRED_EVIDENCE = ["raw signal linkage", "source links", "source health", "proof bundle", "score", "live scoring inputs"];
 const FRESH_HOURS = 48;
 const STALE_HOURS = 168;
 
@@ -156,6 +157,7 @@ export async function buildAiCommitteeEvidencePack(candidateAlertId: string): Pr
   const outcomeItems = alert.patternMatches.flatMap((match) => match.historicalEvent ? [{ historicalEventId: match.historicalEvent.id, ticker: match.historicalEvent.ticker, eventDate: match.historicalEvent.eventDate.toISOString(), outcomeLabel: match.historicalEvent.outcomeLabel, maxGain: decimal(match.historicalEvent.maxGain), maxDrawdown: decimal(match.historicalEvent.maxDrawdown), forwardReturns: match.historicalEvent.forwardReturns }] : []);
 
   const evidencePack: AiCommitteeEvidencePack = {
+    assetClass: "public_equity",
     candidateAlertId: alert.id,
     rawSignalIds,
     ticker: alert.ticker || null,
@@ -185,7 +187,18 @@ export async function buildAiCommitteeEvidencePack(candidateAlertId: string): Pr
     wikidataRippleRelationships: sectionFromPayload(rawSignals, ["wikidata", "ripple", "relationships", "relatedEntities"], "Wikidata/ripple relationship"),
     historicalPatternMatch: { available: historicalItems.length > 0, strength: historicalItems.some((item) => item.strength === "strong") ? "strong" : historicalItems.some((item) => item.strength === "medium") ? "medium" : historicalItems.length ? "weak" : "missing", summary: historicalItems.length ? `${historicalItems.length} stored historical pattern match(es) available.` : "Historical pattern match not available.", items: historicalItems },
     previousSimilarOutcomes: { available: outcomeItems.length > 0, strength: outcomeItems.length ? "medium" : "missing", summary: outcomeItems.length ? `${outcomeItems.length} previous similar outcome(s) available.` : "Previous similar outcomes not available.", items: outcomeItems },
-    score: latestScore ? { profitPotential: latestScore.profitPotential, evidenceConfidence: latestScore.evidenceConfidence, riskLevel: latestScore.riskLevel, pricedInCheck: latestScore.pricedInCheck, createdAt: latestScore.createdAt.toISOString(), persisted: true } : null,
+    score: latestScore ? {
+      profitPotential: latestScore.profitPotential,
+      evidenceConfidence: latestScore.evidenceConfidence,
+      riskLevel: latestScore.riskLevel,
+      pricedInCheck: latestScore.pricedInCheck,
+      inputCompleteness: latestScore.inputCompleteness,
+      liveDataReady: latestScore.liveDataReady,
+      missingInputs: latestScore.missingInputs,
+      inputProvenance: latestScore.inputProvenance,
+      createdAt: latestScore.createdAt.toISOString(),
+      persisted: true,
+    } : null,
     currentRiskLabels: unique([latestScore?.riskLevel ? `risk:${latestScore.riskLevel}` : null, latestScore?.pricedInCheck ? `priced_in:${latestScore.pricedInCheck}` : null, ...sourceHealth.filter((health) => health.problem).map((health) => `source_health:${health.source}:${health.status}`), ...dataFreshnessWarnings.map((warning) => `freshness:${warning}`)]),
     missingEvidence: [],
     dataFreshnessWarnings,
@@ -198,6 +211,7 @@ export async function buildAiCommitteeEvidencePack(candidateAlertId: string): Pr
     ...(!sourceHealth.length ? ["source health"] : []),
     ...(!evidencePack.proofBundleSummary ? ["proof bundle"] : []),
     ...(!latestScore ? ["score"] : []),
+    ...(latestScore && !latestScore.liveDataReady ? ["live scoring inputs"] : []),
     ...(["filingEvidence", "newsEvidence", "priceVolumeEvidence", "fundamentalsEvidence", "macroEvidence", "fdaRegulatoryEvidence", "cryptoFxEvidence", "finraShortPressureEvidence", "wikidataRippleRelationships", "historicalPatternMatch", "previousSimilarOutcomes"] as const).filter((key) => !evidencePack[key].available),
   ];
   evidencePack.missingEvidence = missingEvidence;

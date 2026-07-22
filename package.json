@@ -16,7 +16,19 @@
     "db:studio": "prisma studio",
     "db:seed": "node prisma/seed.mjs",
     "smoke:routes": "node scripts/smoke-routes.mjs",
-    "smoke:production": "node scripts/production-smoke.mjs"
+    "smoke:production": "node scripts/production-smoke.mjs",
+    "smoke:branch-lab-security": "node scripts/branch-lab-security-smoke.mjs",
+    "smoke:branch-worker-process": "node scripts/branch-worker-process-smoke.mjs",
+    "smoke:equity-event-first-runner": "node scripts/equity-event-first-runner-smoke.mjs",
+    "smoke:equity-historical-analogs": "node scripts/equity-historical-analogs-smoke.mjs",
+    "smoke:equity-historical-bootstrap": "node scripts/equity-historical-bootstrap-smoke.mjs",
+    "smoke:equity-sec-filing-details": "node scripts/equity-sec-filing-details-smoke.mjs",
+    "smoke:equity-universe-fallback": "node scripts/equity-universe-fallback-smoke.mjs",
+    "smoke:equity-event-semantics": "node scripts/equity-event-semantics-smoke.mjs",
+    "smoke:equity-event-sources": "node scripts/equity-event-sources-smoke.mjs",
+    "smoke:ai-committee-crypto-policy": "node scripts/ai-committee-crypto-policy-smoke.mjs",
+    "smoke:ai-committee-provider-guardrails": "node scripts/ai-committee-provider-guardrails-smoke.mjs",
+    "smoke:branch-lab-policy": "node scripts/branch-signal-lab-policy-smoke.mjs"
   },
   "dependencies": {
     "next": "^15.1.3",

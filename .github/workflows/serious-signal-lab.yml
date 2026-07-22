@@ -1,0 +1,93 @@
+name: Serious Signal Branch Lab
+
+on:
+  push:
+    branches:
+      - "agent/**"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: serious-signal-lab-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    name: Branch-only code and safety checks (no simulated performance)
+    if: github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      SWING_UP_TEST_MODE: "true"
+      AI_COMMITTEE_DRY_RUN_DEFAULT: "true"
+      PUBLIC_LEDGER_TRACKING_ENABLED: "false"
+      PUBLIC_TRACKING_ENABLED: "false"
+
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+
+      - name: Refuse main branch execution
+        shell: bash
+        run: |
+          branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          if [[ "${branch}" == "main" ]]; then
+            echo "Serious Signal Lab is forbidden on main." >&2
+            exit 1
+          fi
+          echo "Testing isolated branch: ${branch}"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit --fund=false
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Verify live-lab evidence and provider policies
+        run: npm run smoke:branch-lab-policy && npm run smoke:equity-universe-fallback && npm run smoke:equity-event-semantics && npm run smoke:equity-event-sources && npm run smoke:equity-historical-analogs && npm run smoke:equity-historical-bootstrap && npm run smoke:equity-event-first-runner && npm run smoke:equity-sec-filing-details && npm run smoke:ai-committee-crypto-policy && npm run smoke:ai-committee-provider-guardrails
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Start isolated application
+        shell: bash
+        run: |
+          npm start -- --hostname 127.0.0.1 --port 3010 > /tmp/swing-up-branch.log 2>&1 &
+          echo $! > /tmp/swing-up-branch.pid
+
+      - name: Verify branch isolation and committee safety gates
+        env:
+          SWING_UP_EVAL_BASE_URL: http://127.0.0.1:3010
+        run: npm run smoke:branch-lab-security
+
+      - name: Verify dedicated five-minute alarm process mechanics
+        run: npm run smoke:branch-worker-process
+
+      - name: Optional branch preview smoke
+        if: ${{ vars.SWING_UP_BRANCH_TEST_URL != '' }}
+        env:
+          SWING_UP_BRANCH_TEST_URL: ${{ vars.SWING_UP_BRANCH_TEST_URL }}
+          SWING_UP_AUTOMATION_TOKEN: ${{ secrets.SWING_UP_AUTOMATION_TOKEN }}
+        run: node scripts/branch-preview-smoke.mjs
+
+      - name: Show server log on failure
+        if: failure()
+        run: tail -200 /tmp/swing-up-branch.log || true
+
+      - name: Stop isolated application
+        if: always()
+        run: kill "$(cat /tmp/swing-up-branch.pid)" 2>/dev/null || true

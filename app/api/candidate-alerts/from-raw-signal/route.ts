@@ -5,6 +5,7 @@ import { previewMiniAiScan, type MiniAiSourceReceipt } from "@/lib/mini-ai-scan"
 import { evaluateRawSignalQualityGate } from "@/lib/raw-signal-quality-gate";
 import { evaluateRuleFilter, type RuleFilterInput } from "@/lib/rule-filter";
 import { buildMarketSentimentImpact, loadLatestMarketSentimentSnapshot, scoreSwingUpAlert, type HistoricalPatternMatch, type ScorePreviewInput } from "@/lib/scoring-engine";
+import { buildLiveScoreInput } from "@/lib/live-score-evidence";
 
 const CANDIDATE_STATUSES = ["candidate", "needs_more_data", "rejected"];
 const SAFE_ACTIONS = new Set(["Buy Candidate", "Speculative Buy Candidate", "Watch", "Sell Review", "Avoid", "No Action"]);
@@ -180,31 +181,27 @@ export async function POST(request: NextRequest) {
     const ticker = text(ruleFilterResult.detectedTicker ?? rawSignal.ticker, "UNKNOWN").toUpperCase();
     const company = text(ruleFilterResult.detectedCompany ?? miniAiScanResult.company, ticker === "UNKNOWN" ? "Unknown company" : ticker);
     const eventSummary = text(rawSignal.summary, rawSignal.title);
-    const status = candidateStatus(ruleFilterResult.decision, miniAiScanResult.scanDecision);
-    const rejectionReasons = [...ruleFilterResult.rejectionReasons, ...(miniAiScanResult.scanDecision === "reject" ? ["mini_ai_scan_reject"] : []), ...(miniAiScanResult.scanDecision === "needs_more_data" ? ["mini_ai_scan_needs_more_data"] : [])];
-
-    const scoreInput: ScorePreviewInput = {
+    const initialStatus = candidateStatus(ruleFilterResult.decision, miniAiScanResult.scanDecision);
+    const score = scoreSwingUpAlert(buildLiveScoreInput({
       ticker,
       company,
-      expectedUpsidePercent: Math.max(4, Math.round(miniAiScanResult.marketRelevanceScore / 5)),
-      expectedDownsidePercent: status === "rejected" ? 12 : 8,
-      historicalPatternMatch: patternMatchLabel(patternScore),
-      valuationSupportScore: miniAiScanResult.marketRelevanceScore,
-      catalystStrengthScore: miniAiScanResult.seriousnessScore,
-      sectorSupportScore: 50,
-      macroSupportScore: sentiment.macroSupportScore,
-      sourceQuality: sourceQuality(ruleFilterResult.sourceReliability),
-      independentReceipts: receiptsCount,
-      hasConfirmedFilingOrExchangeSource: ruleFilterResult.sourceReliability === "strong",
-      priceVolumeConfirmationScore: miniAiScanResult.marketRelevanceScore,
-      financialSupportScore: miniAiScanResult.evidenceStrength,
-      verifiedRippleLinks: Math.min(receiptsCount, 3),
-      contradictionCount: 0,
-      isRumour: ruleFilterResult.sourceReliability === "weak",
-      sourceRiskScore: ruleFilterResult.sourceReliability === "strong" ? 15 : 35,
+      source: rawSignal.source,
       payload: rawSignal.payload,
-    };
-    const score = scoreSwingUpAlert(scoreInput, sentiment);
+      receivedAt: rawSignal.receivedAt,
+      sourceQuality: sourceQuality(ruleFilterResult.sourceReliability),
+      qualityScore: Math.max(qualityGateResult.qualityScore, miniAiScanResult.seriousnessScore),
+      receiptsCount,
+      proofTypes: [],
+      historicalPatternMatch: patternMatchLabel(patternScore),
+      sentiment,
+    }), sentiment);
+    const status = initialStatus === "candidate" && !score.liveDataReady ? "needs_more_data" : initialStatus;
+    const rejectionReasons = [
+      ...ruleFilterResult.rejectionReasons,
+      ...(miniAiScanResult.scanDecision === "reject" ? ["mini_ai_scan_reject"] : []),
+      ...(miniAiScanResult.scanDecision === "needs_more_data" ? ["mini_ai_scan_needs_more_data"] : []),
+      ...(!score.liveDataReady ? ["live_score_inputs_incomplete", ...score.missingInputs.map((item) => `missing_live_input:${item}`)] : []),
+    ];
     const action = SAFE_ACTIONS.has(score.suggestedAction) ? score.suggestedAction : "No Action";
     const simpleExplanation = buildExplanation(status, ticker, receiptsCount);
     const existing = await findDuplicate(ticker, eventSummary);
@@ -214,7 +211,19 @@ export async function POST(request: NextRequest) {
         ? await tx.alert.update({ where: { id: existing.id }, data: { company, action, event: eventSummary, status, publishedAt: null } })
         : await tx.alert.create({ data: { ticker, company, action, event: eventSummary, status, publishedAt: null } });
 
-      await tx.alertScore.create({ data: { alertId: alert.id, profitPotential: score.profitPotentialScore, evidenceConfidence: score.evidenceConfidenceScore, riskLevel: score.riskLevel, pricedInCheck: score.pricedInCheck } });
+      await tx.alertScore.create({
+        data: {
+          alertId: alert.id,
+          profitPotential: score.profitPotentialScore,
+          evidenceConfidence: score.evidenceConfidenceScore,
+          riskLevel: score.riskLevel,
+          pricedInCheck: score.pricedInCheck,
+          inputCompleteness: score.inputCompleteness,
+          liveDataReady: score.liveDataReady,
+          missingInputs: score.missingInputs,
+          inputProvenance: score.inputProvenance,
+        },
+      });
 
       for (const receipt of receipts) {
         const receiptUrl = text(receipt.url) || null;

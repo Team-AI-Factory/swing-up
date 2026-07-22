@@ -31,6 +31,8 @@ export type OpportunityAlertType =
   | "wait_for_proof"
   | "no_action";
 
+export type SeriousSignalAction = "buy" | "sell" | "watch_out" | "watch" | "no_action";
+export type ConfidenceKind = "evidence_only" | "historically_calibrated";
 export type PillarStatus = "confirming" | "neutral" | "warning" | "impaired" | "untested";
 export type EvidenceDirection = "confirming" | "disconfirming" | "neutral";
 export type EvidenceReliability = "official" | "high" | "medium" | "low" | "unknown";
@@ -62,6 +64,8 @@ export type ValuationMetrics = {
   priceToEarnings: number | null;
   freeCashFlowYield: number | null;
   forwardPriceToEarnings: number | null;
+  enterpriseValueToRevenue?: number | null;
+  priceToFreeCashFlow?: number | null;
 };
 
 export type MarketMetrics = {
@@ -71,18 +75,96 @@ export type MarketMetrics = {
   priceChange90d: number | null;
   volumeRatio: number | null;
   priceObservedAt: string | null;
+  secondSourcePrice?: number | null;
+  secondSourceObservedAt?: string | null;
+  priceSourceCount?: number;
+  priceAgreementPercent?: number | null;
+  benchmarkReturn20d?: number | null;
+  relativeStrength20d?: number | null;
+  volatility20d?: number | null;
+  drawdown90d?: number | null;
+  marketRegime?: "risk_on" | "neutral" | "risk_off" | "unknown";
 };
 
 export type ExpectationsMetrics = {
   analystRevisionScore: number | null;
   earningsSurprisePercent: number | null;
   consensusRevenueGrowthPercent: number | null;
+  consensusEpsGrowthPercent?: number | null;
+  targetPriceConsensus?: number | null;
+  targetPriceMedian?: number | null;
+  targetPriceHigh?: number | null;
+  targetPriceLow?: number | null;
+  analystCount?: number | null;
+  strongBuyCount?: number | null;
+  buyCount?: number | null;
+  holdCount?: number | null;
+  sellCount?: number | null;
+  strongSellCount?: number | null;
+  observedAt?: string | null;
+  sources?: string[];
+  providerAgreementScore?: number | null;
 };
 
 export type CatalystContext = {
   description: string | null;
   expectedAt: string | null;
   confidence: number | null;
+};
+
+export type DataQualityContext = {
+  marketAgeDays: number | null;
+  financialPeriodAgeDays: number | null;
+  filingAgeDays: number | null;
+  independentPriceSources: number;
+  independentFundamentalSources: number;
+  independentExpectationSources: number;
+  contradictionCount: number;
+  staleFields: string[];
+  providerErrors: string[];
+  sourceAgreementPercent: number | null;
+};
+
+export type CalibrationEvidence = {
+  horizonDays: 1 | 3 | 7 | 30 | 90;
+  sampleSize: number;
+  wins: number;
+  losses: number;
+  precision: number | null;
+  lowerConfidenceBound: number | null;
+  asOf: string | null;
+  source: string;
+  successDefinition: string;
+};
+
+export type PriceTargetScenario = {
+  currentPrice: number | null;
+  bearPrice: number | null;
+  basePrice: number | null;
+  bullPrice: number | null;
+  consensusPrice: number | null;
+  expectedPrice: number | null;
+  upsidePercent: number | null;
+  downsidePercent: number | null;
+  rewardRiskRatio: number | null;
+  horizonDays: number;
+  method: "provider_consensus" | "provider_and_fundamental_blend" | "fundamental_screen" | "unavailable";
+  sourcePosture: "source_derived" | "screen_grade" | "unavailable";
+  assumptions: string[];
+};
+
+export type ConfidenceBreakdown = {
+  dataQuality: number;
+  freshness: number;
+  sourceAgreement: number;
+  completeness: number;
+  calibration: number;
+  scenario: number;
+  overall: number;
+  kind: ConfidenceKind;
+  seriousSignalEligible: boolean;
+  calibrationSampleSize: number;
+  confidenceCaps: string[];
 };
 
 export type CompanyFoundationInput = {
@@ -100,6 +182,9 @@ export type CompanyFoundationInput = {
   receipts: SourceReceipt[];
   missingFields: string[];
   warnings: string[];
+  dataQuality?: DataQualityContext;
+  calibration?: CalibrationEvidence | null;
+  contradictions?: string[];
   raw?: Record<string, unknown>;
 };
 
@@ -147,8 +232,15 @@ export type FoundationDecision = {
   thesisStatus: ThesisStatus;
   securityReadiness: SecurityReadiness;
   alertType: OpportunityAlertType;
+  signalAction: SeriousSignalAction;
+  seriousSignal: boolean;
   userAlertEligible: boolean;
+  abstained: boolean;
+  horizonDays: number;
   scores: FoundationScoreBreakdown;
+  confidence: ConfidenceBreakdown;
+  priceTarget: PriceTargetScenario;
+  confidenceExplanation: string[];
   actionability: string;
   variantWedge: string;
   whyNow: string;
@@ -185,6 +277,8 @@ export type StoredThesisSnapshot = {
   opportunityScore: number;
   evidenceConfidence: number;
   riskScore: number;
+  signalAction?: SeriousSignalAction;
+  confidence?: ConfidenceBreakdown | null;
   originalUnderwriting: FoundationDecision | null;
   currentAssessment: FoundationDecision | EventDecision | null;
   updatedAt: string | null;
@@ -207,13 +301,19 @@ export type EventDecision = {
   company: string;
   evaluatedAt: string;
   alertType: OpportunityAlertType;
+  signalAction: SeriousSignalAction;
+  seriousSignal: boolean;
   userAlertEligible: boolean;
+  abstained: boolean;
+  horizonDays: number;
   candidateBucket: CandidateBucket;
   thesisStatusBefore: ThesisStatus;
   thesisStatusAfter: ThesisStatus;
   securityReadinessBefore: SecurityReadiness;
   securityReadinessAfter: SecurityReadiness;
   impact: EventImpact;
+  confidence: ConfidenceBreakdown;
+  confidenceExplanation: string[];
   thesisDelta: string;
   firstRejection: string;
   requiredFollowUp: string[];
@@ -256,6 +356,10 @@ export type CombinedEngineResult = {
     proofNeededCount: number;
     rejectedCount: number;
     alertEligibleCount: number;
+    seriousSignalCount: number;
+    buySignalCount: number;
+    sellSignalCount: number;
+    watchOutSignalCount: number;
     thesisStrengtheningCount: number;
     riskWarningCount: number;
     thesisBrokenCount: number;

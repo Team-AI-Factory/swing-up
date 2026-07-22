@@ -38,17 +38,15 @@ type JsonObject = Record<string, unknown>;
 type FactRow = {
   start?: string;
   end?: string;
-  val?: number;
+  val: number;
   accn?: string;
   fy?: number;
   fp?: string;
   form?: string;
   filed?: string;
-  frame?: string;
 };
 
 type PeriodSelection = {
-  namespace: string;
   concept: string;
   current: FactRow;
   prior: FactRow;
@@ -65,6 +63,12 @@ type Filing = {
   primaryDocument: string | null;
   primaryDocDescription: string | null;
   url: string;
+};
+
+type MarketRow = {
+  date: string;
+  close: number;
+  volume: number | null;
 };
 
 type MarketQuote = {
@@ -92,14 +96,15 @@ export const DEFAULT_LIVE_COMPANIES: LiveCompanyProfile[] = [
 const SEC_FACTS_BASE = "https://data.sec.gov/api/xbrl/companyfacts";
 const SEC_SUBMISSIONS_BASE = "https://data.sec.gov/submissions";
 const SEC_ARCHIVE_BASE = "https://www.sec.gov/Archives/edgar/data";
-const MATERIAL_FORMS = new Set(["10-Q", "10-K", "8-K", "6-K", "20-F", "40-F"]);
+const YAHOO_CHART_HOSTS = ["query1.finance.yahoo.com", "query2.finance.yahoo.com"];
+const FINANCIAL_FORMS = new Set(["10-Q", "10-K", "20-F", "40-F"]);
 const REVENUE_CONCEPTS = [
   "RevenueFromContractWithCustomerExcludingAssessedTax",
   "Revenues",
   "SalesRevenueNet",
   "SalesRevenueGoodsNet",
 ];
-const OPERATING_INCOME_CONCEPTS = ["OperatingIncomeLoss", "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest"];
+const OPERATING_INCOME_CONCEPTS = ["OperatingIncomeLoss"];
 const NET_INCOME_CONCEPTS = ["NetIncomeLoss", "ProfitLoss"];
 const CFO_CONCEPTS = ["NetCashProvidedByUsedInOperatingActivities", "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"];
 const CAPEX_CONCEPTS = ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsForAdditionsToPropertyPlantAndEquipment"];
@@ -108,7 +113,7 @@ const LIABILITY_CONCEPTS = ["Liabilities"];
 const CASH_CONCEPTS = ["CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"];
 const CURRENT_DEBT_CONCEPTS = ["DebtCurrent", "LongTermDebtCurrent", "ShortTermBorrowings", "CommercialPaper"];
 const NONCURRENT_DEBT_CONCEPTS = ["LongTermDebtNoncurrent", "LongTermDebtAndFinanceLeaseObligationsNoncurrent", "LongTermDebtAndCapitalLeaseObligations"];
-const SHARES_CONCEPTS = ["EntityCommonStockSharesOutstanding", "CommonStocksIncludingAdditionalPaidInCapitalMember"];
+const SHARES_CONCEPTS = ["EntityCommonStockSharesOutstanding"];
 const WEIGHTED_SHARES_CONCEPTS = ["WeightedAverageNumberOfDilutedSharesOutstanding", "WeightedAverageNumberOfSharesOutstandingBasic"];
 
 function object(value: unknown): JsonObject {
@@ -133,13 +138,6 @@ function isoDate(value: unknown): string | null {
   if (!raw) return null;
   const time = Date.parse(raw);
   return Number.isFinite(time) ? new Date(time).toISOString() : null;
-}
-
-function compactDate(date: Date): string {
-  const year = date.getUTCFullYear();
-  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(date.getUTCDate()).padStart(2, "0");
-  return `${year}${month}${day}`;
 }
 
 function percent(value: number | null): string {
@@ -169,7 +167,7 @@ function durationDays(row: FactRow): number | null {
 }
 
 function safeError(error: unknown): string {
-  return error instanceof Error ? error.message.replace(/\s+/g, " ").slice(0, 240) : "unknown_live_data_error";
+  return error instanceof Error ? error.message.replace(/\s+/g, " ").slice(0, 280) : "unknown_live_data_error";
 }
 
 function sleep(milliseconds: number) {
@@ -183,7 +181,7 @@ async function fetchWithRetry(url: string, headers: Record<string, string> = {},
     const timeout = setTimeout(() => controller.abort(), 25_000);
     try {
       const response = await fetch(url, {
-        headers: { Accept: "application/json,text/csv;q=0.9,*/*;q=0.8", ...headers },
+        headers: { Accept: "application/json,*/*;q=0.8", ...headers },
         cache: "no-store",
         signal: controller.signal,
       });
@@ -197,7 +195,7 @@ async function fetchWithRetry(url: string, headers: Record<string, string> = {},
     } finally {
       clearTimeout(timeout);
     }
-    await sleep(500 * 2 ** attempt);
+    await sleep(600 * 2 ** attempt);
   }
   throw lastError instanceof Error ? lastError : new Error(`live_fetch_failed:${url}`);
 }
@@ -207,30 +205,23 @@ async function fetchJson(url: string, headers: Record<string, string> = {}): Pro
   return object(await response.json());
 }
 
-async function fetchCsv(url: string): Promise<string> {
-  const response = await fetchWithRetry(url, { Accept: "text/csv,text/plain;q=0.9,*/*;q=0.8" });
-  return response.text();
-}
-
 function factRows(companyFacts: JsonObject, namespace: string, concept: string, acceptedUnits: string[]): FactRow[] {
-  const facts = object(companyFacts.facts);
-  const namespaceFacts = object(facts[namespace]);
-  const conceptFact = object(namespaceFacts[concept]);
+  const conceptFact = object(object(object(companyFacts.facts)[namespace])[concept]);
   const units = object(conceptFact.units);
   for (const unit of acceptedUnits) {
-    const rows = array(units[unit]).map((item) => object(item)).flatMap((item): FactRow[] => {
-      const val = finite(item.val);
+    const rows = array(units[unit]).flatMap((value): FactRow[] => {
+      const row = object(value);
+      const val = finite(row.val);
       if (val === null) return [];
       return [{
-        start: text(item.start) ?? undefined,
-        end: text(item.end) ?? undefined,
+        start: text(row.start) ?? undefined,
+        end: text(row.end) ?? undefined,
         val,
-        accn: text(item.accn) ?? undefined,
-        fy: finite(item.fy) ?? undefined,
-        fp: text(item.fp) ?? undefined,
-        form: text(item.form) ?? undefined,
-        filed: text(item.filed) ?? undefined,
-        frame: text(item.frame) ?? undefined,
+        accn: text(row.accn) ?? undefined,
+        fy: finite(row.fy) ?? undefined,
+        fp: text(row.fp) ?? undefined,
+        form: text(row.form) ?? undefined,
+        filed: text(row.filed) ?? undefined,
       }];
     });
     if (rows.length) return rows;
@@ -241,47 +232,42 @@ function factRows(companyFacts: JsonObject, namespace: string, concept: string, 
 function dedupePeriods(rows: FactRow[]): FactRow[] {
   const ordered = [...rows].sort((left, right) => `${right.filed ?? ""}:${right.end ?? ""}`.localeCompare(`${left.filed ?? ""}:${left.end ?? ""}`));
   const seen = new Set<string>();
-  const result: FactRow[] = [];
+  const unique: FactRow[] = [];
   for (const row of ordered) {
     const key = `${row.form ?? ""}|${row.fp ?? ""}|${row.start ?? ""}|${row.end ?? ""}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    result.push(row);
+    unique.push(row);
   }
-  return result.sort((left, right) => `${right.end ?? ""}:${right.filed ?? ""}`.localeCompare(`${left.end ?? ""}:${left.filed ?? ""}`));
+  return unique.sort((left, right) => `${right.end ?? ""}:${right.filed ?? ""}`.localeCompare(`${left.end ?? ""}:${left.filed ?? ""}`));
 }
 
 function comparablePrior(rows: FactRow[], current: FactRow): FactRow | null {
-  const currentEnd = current.end;
-  if (!currentEnd) return null;
-  const sameFiscalPeriod = rows.find((row) => {
-    if (!row.end || row.end === currentEnd) return false;
-    const difference = daysBetween(currentEnd, row.end);
-    return row.fp === current.fp && difference !== null && difference >= 250 && difference <= 500;
-  });
-  if (sameFiscalPeriod) return sameFiscalPeriod;
+  if (!current.end) return null;
   return rows.find((row) => {
-    if (!row.end || row.end === currentEnd) return false;
-    const difference = daysBetween(currentEnd, row.end);
-    return difference !== null && difference >= 250 && difference <= 500;
+    if (!row.end || row.end === current.end) return false;
+    const difference = daysBetween(current.end, row.end);
+    return row.fp === current.fp && difference !== null && difference >= 300 && difference <= 430;
+  }) ?? rows.find((row) => {
+    if (!row.end || row.end === current.end) return false;
+    const difference = daysBetween(current.end, row.end);
+    return difference !== null && difference >= 300 && difference <= 430;
   }) ?? null;
 }
 
 function selectTrend(companyFacts: JsonObject, concepts: string[], kind: "quarterly" | "annual"): PeriodSelection | null {
   for (const concept of concepts) {
-    const allRows = factRows(companyFacts, "us-gaap", concept, ["USD"]);
-    const rows = dedupePeriods(allRows.filter((row) => {
+    const rows = dedupePeriods(factRows(companyFacts, "us-gaap", concept, ["USD"]).filter((row) => {
       const duration = durationDays(row);
       if (duration === null) return false;
-      if (kind === "quarterly") return row.form === "10-Q" && duration >= 60 && duration <= 125;
-      return row.form === "10-K" && duration >= 250 && duration <= 430;
+      if (kind === "quarterly") return row.form === "10-Q" && duration >= 65 && duration <= 115;
+      return row.form === "10-K" && duration >= 300 && duration <= 400;
     }));
     const current = rows[0];
     if (!current) continue;
     const prior = comparablePrior(rows, current);
     if (!prior) continue;
-    const prior2 = comparablePrior(rows, prior);
-    return { namespace: "us-gaap", concept, current, prior, prior2, kind };
+    return { concept, current, prior, prior2: comparablePrior(rows, prior), kind };
   }
   return null;
 }
@@ -291,8 +277,7 @@ function matchingPeriodValue(companyFacts: JsonObject, concepts: string[], perio
     const rows = factRows(companyFacts, "us-gaap", concept, acceptedUnits)
       .filter((row) => row.start === period.start && row.end === period.end && row.form === period.form)
       .sort((left, right) => `${right.filed ?? ""}`.localeCompare(`${left.filed ?? ""}`));
-    const value = rows[0]?.val;
-    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (rows[0]) return rows[0].val;
   }
   return null;
 }
@@ -300,7 +285,7 @@ function matchingPeriodValue(companyFacts: JsonObject, concepts: string[], perio
 function latestInstant(companyFacts: JsonObject, namespace: string, concepts: string[], acceptedUnits: string[], endAtOrBefore?: string): FactRow | null {
   for (const concept of concepts) {
     const rows = factRows(companyFacts, namespace, concept, acceptedUnits)
-      .filter((row) => row.end && (!endAtOrBefore || row.end <= endAtOrBefore) && ["10-Q", "10-K", "20-F", "40-F"].includes(row.form ?? ""))
+      .filter((row) => row.end && (!endAtOrBefore || row.end <= endAtOrBefore) && FINANCIAL_FORMS.has(row.form ?? ""))
       .sort((left, right) => `${right.end ?? ""}:${right.filed ?? ""}`.localeCompare(`${left.end ?? ""}:${left.filed ?? ""}`));
     if (rows[0]) return rows[0];
   }
@@ -308,10 +293,11 @@ function latestInstant(companyFacts: JsonObject, namespace: string, concepts: st
 }
 
 function priorInstant(rows: FactRow[], current: FactRow): FactRow | null {
+  if (!current.end) return null;
   return rows.find((row) => {
-    if (!row.end || !current.end || row.end === current.end) return false;
+    if (!row.end || row.end === current.end) return false;
     const difference = daysBetween(current.end, row.end);
-    return difference !== null && difference >= 250 && difference <= 500;
+    return difference !== null && difference >= 300 && difference <= 430;
   }) ?? null;
 }
 
@@ -319,18 +305,17 @@ function sharesTrend(companyFacts: JsonObject, endAtOrBefore: string): { current
   for (const [namespace, concepts] of [["dei", SHARES_CONCEPTS], ["us-gaap", WEIGHTED_SHARES_CONCEPTS]] as const) {
     for (const concept of concepts) {
       const rows = factRows(companyFacts, namespace, concept, ["shares"])
-        .filter((row) => row.end && row.end <= endAtOrBefore && ["10-Q", "10-K", "20-F", "40-F"].includes(row.form ?? ""))
+        .filter((row) => row.end && row.end <= endAtOrBefore && FINANCIAL_FORMS.has(row.form ?? ""))
         .sort((left, right) => `${right.end ?? ""}:${right.filed ?? ""}`.localeCompare(`${left.end ?? ""}:${left.filed ?? ""}`));
       const current = rows[0];
-      if (!current || current.val === undefined) continue;
-      const prior = priorInstant(rows, current);
-      return { current: current.val, prior: prior?.val ?? null };
+      if (!current) continue;
+      return { current: current.val, prior: priorInstant(rows, current)?.val ?? null };
     }
   }
   return { current: null, prior: null };
 }
 
-function latestFiling(submissions: JsonObject, profile: LiveCompanyProfile): Filing {
+function latestFinancialFiling(submissions: JsonObject, profile: LiveCompanyProfile): Filing {
   const recent = object(object(submissions.filings).recent);
   const forms = array(recent.form);
   const accessions = array(recent.accessionNumber);
@@ -339,12 +324,11 @@ function latestFiling(submissions: JsonObject, profile: LiveCompanyProfile): Fil
   const acceptanceDates = array(recent.acceptanceDateTime);
   const primaryDocuments = array(recent.primaryDocument);
   const primaryDescriptions = array(recent.primaryDocDescription);
-
   for (let index = 0; index < forms.length; index += 1) {
     const form = text(forms[index]);
     const accessionNumber = text(accessions[index]);
     const filingDate = text(filingDates[index]);
-    if (!form || !accessionNumber || !filingDate || !MATERIAL_FORMS.has(form)) continue;
+    if (!form || !accessionNumber || !filingDate || !FINANCIAL_FORMS.has(form)) continue;
     const primaryDocument = text(primaryDocuments[index]);
     const cleanCik = String(Number(profile.cik));
     const cleanAccession = accessionNumber.replace(/-/g, "");
@@ -362,27 +346,26 @@ function latestFiling(submissions: JsonObject, profile: LiveCompanyProfile): Fil
       url,
     };
   }
-  throw new Error(`no_recent_material_sec_filing:${profile.ticker}`);
+  throw new Error(`no_recent_financial_sec_filing:${profile.ticker}`);
 }
 
-function parseStooq(csv: string, ticker: string, sourceUrl: string): MarketQuote {
-  const lines = csv.trim().split(/\r?\n/).filter(Boolean);
-  if (lines.length < 3 || /no data/i.test(csv)) throw new Error(`stooq_no_data:${ticker}`);
-  const headers = lines[0].split(",").map((value) => value.trim().toLowerCase());
-  const index = (name: string) => headers.indexOf(name);
-  const dateIndex = index("date");
-  const closeIndex = index("close");
-  const volumeIndex = index("volume");
-  if (dateIndex < 0 || closeIndex < 0) throw new Error(`stooq_columns_missing:${ticker}`);
-  const rows = lines.slice(1).flatMap((line) => {
-    const values = line.split(",");
-    const date = values[dateIndex]?.trim();
-    const close = finite(values[closeIndex]);
-    const volume = volumeIndex >= 0 ? finite(values[volumeIndex]) : null;
-    if (!date || close === null || close <= 0) return [];
-    return [{ date, close, volume }];
+function parseYahooChart(json: JsonObject, ticker: string, sourceUrl: string): MarketQuote {
+  const chart = object(json.chart);
+  const error = object(chart.error);
+  if (Object.keys(error).length) throw new Error(`yahoo_chart_error:${ticker}:${text(error.description) ?? text(error.code) ?? "unknown"}`);
+  const result = object(array(chart.result)[0]);
+  const timestamps = array(result.timestamp);
+  const indicators = object(result.indicators);
+  const quote = object(array(indicators.quote)[0]);
+  const closes = array(quote.close);
+  const volumes = array(quote.volume);
+  const rows: MarketRow[] = timestamps.flatMap((timestamp, index) => {
+    const seconds = finite(timestamp);
+    const close = finite(closes[index]);
+    if (seconds === null || close === null || close <= 0) return [];
+    return [{ date: new Date(seconds * 1000).toISOString().slice(0, 10), close, volume: finite(volumes[index]) }];
   }).sort((left, right) => left.date.localeCompare(right.date));
-  if (rows.length < 2) throw new Error(`stooq_insufficient_history:${ticker}`);
+  if (rows.length < 25) throw new Error(`yahoo_insufficient_history:${ticker}:${rows.length}`);
   const latest = rows.at(-1)!;
   const previous = rows.at(-2)!;
   const point20 = rows.length > 20 ? rows.at(-21)! : rows[0];
@@ -400,16 +383,28 @@ function parseStooq(csv: string, ticker: string, sourceUrl: string): MarketQuote
     volumeRatio: latest.volume !== null && averageVolume ? latest.volume / averageVolume : null,
     observedAt: `${latest.date}T00:00:00.000Z`,
     marketDate: latest.date,
-    source: "Stooq public daily market data",
+    source: "Yahoo Finance public chart API",
     sourceUrl,
   };
 }
 
 async function fetchMarketQuote(profile: LiveCompanyProfile, now: Date): Promise<MarketQuote> {
-  const start = new Date(now.getTime() - 220 * 86_400_000);
-  const symbol = `${profile.ticker.toLowerCase()}.us`;
-  const url = `https://stooq.com/q/d/l/?s=${encodeURIComponent(symbol)}&i=d&d1=${compactDate(start)}&d2=${compactDate(now)}`;
-  return parseStooq(await fetchCsv(url), profile.ticker, url);
+  const period1 = Math.floor((now.getTime() - 220 * 86_400_000) / 1000);
+  const period2 = Math.floor((now.getTime() + 86_400_000) / 1000);
+  const failures: string[] = [];
+  for (const host of YAHOO_CHART_HOSTS) {
+    const url = `https://${host}/v8/finance/chart/${encodeURIComponent(profile.ticker)}?period1=${period1}&period2=${period2}&interval=1d&events=history&includeAdjustedClose=true`;
+    try {
+      const json = await fetchJson(url, {
+        "User-Agent": "Mozilla/5.0 (compatible; SwingUpResearch/1.0)",
+        Referer: "https://finance.yahoo.com/",
+      });
+      return parseYahooChart(json, profile.ticker, url);
+    } catch (error) {
+      failures.push(`${host}:${safeError(error)}`);
+    }
+  }
+  throw new Error(`all_live_market_sources_failed:${profile.ticker}:${failures.join("|")}`);
 }
 
 function buildEvent(profile: LiveCompanyProfile, filing: Filing, foundation: CompanyFoundationInput): EventSignalInput {
@@ -428,22 +423,21 @@ function buildEvent(profile: LiveCompanyProfile, filing: Filing, foundation: Com
   else if (negativeGrowth) title = `Official SEC ${filing.form} shows revenue decline`;
   else if (marginExpansion) title = `Official SEC ${filing.form} shows margin expansion`;
   else if (marginPressure) title = `Official SEC ${filing.form} shows margin pressure`;
-  const summary = [
-    `${profile.company} filed ${filing.form} on ${filing.filingDate}.`,
-    `Comparable-period revenue growth was ${percent(revenueGrowth)}.`,
-    `Operating margin changed from ${percent(priorMargin)} to ${percent(margin)}.`,
-    `Accession ${filing.accessionNumber}.`,
-  ].join(" ");
   return {
     rawSignalId: `sec:${filing.accessionNumber}`,
     ticker: profile.ticker,
     signalType: filing.form,
     title,
-    summary,
+    summary: [
+      `${profile.company} filed ${filing.form} on ${filing.filingDate}.`,
+      `Comparable-period revenue growth was ${percent(revenueGrowth)}.`,
+      `Operating margin changed from ${percent(priorMargin)} to ${percent(margin)}.`,
+      `Accession ${filing.accessionNumber}.`,
+    ].join(" "),
     source: "SEC EDGAR",
     sourceUrl: filing.url,
     receivedAt: filing.acceptanceDateTime ?? `${filing.filingDate}T00:00:00.000Z`,
-    importanceHint: ["10-Q", "10-K", "20-F", "40-F"].includes(filing.form) ? "high" : "medium",
+    importanceHint: "high",
     payload: {
       sourceMode: "real_live_sec_and_market_data",
       accessionNumber: filing.accessionNumber,
@@ -471,30 +465,29 @@ export async function fetchLiveOpportunitySnapshot(profile: LiveCompanyProfile, 
     fetchJson(submissionsUrl, secHeaders),
     fetchMarketQuote(profile, now),
   ]);
-
   const period = selectTrend(companyFacts, REVENUE_CONCEPTS, "quarterly") ?? selectTrend(companyFacts, REVENUE_CONCEPTS, "annual");
   const annual = selectTrend(companyFacts, REVENUE_CONCEPTS, "annual");
   if (!period || !annual) throw new Error(`comparable_sec_revenue_periods_unavailable:${profile.ticker}`);
-  const filing = latestFiling(submissions, profile);
-  const currentRevenue = period.current.val ?? null;
-  const priorRevenue = period.prior.val ?? null;
+  const filing = latestFinancialFiling(submissions, profile);
+  const currentRevenue = period.current.val;
+  const priorRevenue = period.prior.val;
   const prior2Revenue = period.prior2?.val ?? null;
   const currentOperatingIncome = matchingPeriodValue(companyFacts, OPERATING_INCOME_CONCEPTS, period.current);
   const priorOperatingIncome = matchingPeriodValue(companyFacts, OPERATING_INCOME_CONCEPTS, period.prior);
   const currentNetIncome = matchingPeriodValue(companyFacts, NET_INCOME_CONCEPTS, period.current);
-  const annualRevenue = annual.current.val ?? null;
+  const annualRevenue = annual.current.val;
   const annualNetIncome = matchingPeriodValue(companyFacts, NET_INCOME_CONCEPTS, annual.current);
   const annualCfo = matchingPeriodValue(companyFacts, CFO_CONCEPTS, annual.current);
   const annualCapexRaw = matchingPeriodValue(companyFacts, CAPEX_CONCEPTS, annual.current);
   const annualCapex = annualCapexRaw === null ? null : Math.abs(annualCapexRaw);
   const freeCashFlow = annualCfo === null || annualCapex === null ? null : annualCfo - annualCapex;
-  const endAtOrBefore = period.current.end ?? annual.current.end ?? filing.reportDate ?? filing.filingDate;
-  const assets = latestInstant(companyFacts, "us-gaap", ASSET_CONCEPTS, ["USD"], endAtOrBefore)?.val ?? null;
-  const liabilities = latestInstant(companyFacts, "us-gaap", LIABILITY_CONCEPTS, ["USD"], endAtOrBefore)?.val ?? null;
-  const cash = latestInstant(companyFacts, "us-gaap", CASH_CONCEPTS, ["USD"], endAtOrBefore)?.val ?? null;
-  const currentDebt = latestInstant(companyFacts, "us-gaap", CURRENT_DEBT_CONCEPTS, ["USD"], endAtOrBefore)?.val ?? 0;
-  const noncurrentDebt = latestInstant(companyFacts, "us-gaap", NONCURRENT_DEBT_CONCEPTS, ["USD"], endAtOrBefore)?.val ?? 0;
-  const shares = sharesTrend(companyFacts, endAtOrBefore);
+  const periodEnd = period.current.end ?? annual.current.end ?? filing.reportDate ?? filing.filingDate;
+  const assets = latestInstant(companyFacts, "us-gaap", ASSET_CONCEPTS, ["USD"], periodEnd)?.val ?? null;
+  const liabilities = latestInstant(companyFacts, "us-gaap", LIABILITY_CONCEPTS, ["USD"], periodEnd)?.val ?? null;
+  const cash = latestInstant(companyFacts, "us-gaap", CASH_CONCEPTS, ["USD"], periodEnd)?.val ?? null;
+  const currentDebt = latestInstant(companyFacts, "us-gaap", CURRENT_DEBT_CONCEPTS, ["USD"], periodEnd)?.val ?? 0;
+  const noncurrentDebt = latestInstant(companyFacts, "us-gaap", NONCURRENT_DEBT_CONCEPTS, ["USD"], periodEnd)?.val ?? 0;
+  const shares = sharesTrend(companyFacts, periodEnd);
   const totalDebt = currentDebt + noncurrentDebt;
   const marketCap = shares.current === null ? null : market.price * shares.current;
   const trailingPe = marketCap !== null && annualNetIncome !== null && annualNetIncome > 0 ? marketCap / annualNetIncome : null;
@@ -511,12 +504,11 @@ export async function fetchLiveOpportunitySnapshot(profile: LiveCompanyProfile, 
     ["metrics.operatingMargin", operatingMargin],
     ["metrics.netMargin", netMargin],
     ["metrics.freeCashFlowMargin", freeCashFlowMargin],
-    ["metrics.debtToAssets", assets === null ? null : totalDebt / assets],
+    ["metrics.debtToAssets", ratio(totalDebt, assets)],
     ["valuation.marketCap", marketCap],
     ["valuation.priceToSales", priceToSales],
     ["market.currentPrice", market.price],
   ].filter((entry) => entry[1] === null).map((entry) => String(entry[0]));
-
   const foundation: CompanyFoundationInput = {
     ticker: profile.ticker,
     company: text(companyFacts.entityName) ?? profile.company,
@@ -583,7 +575,6 @@ export async function fetchLiveOpportunitySnapshot(profile: LiveCompanyProfile, 
       noSyntheticData: true,
     },
   };
-
   return {
     profile,
     foundation,
@@ -620,7 +611,7 @@ export async function fetchLiveOpportunityUniverse(tickers: string[], now = new 
     } catch (error) {
       errors.push({ ticker: profile.ticker, message: safeError(error) });
     }
-    await sleep(200);
+    await sleep(250);
   }
   return { snapshots, errors };
 }

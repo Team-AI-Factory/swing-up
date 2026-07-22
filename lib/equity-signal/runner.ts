@@ -208,8 +208,10 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
   const mode = "railway_branch_live_read_only";
   const startedAt = Date.now();
   try {
-    const [universeResult, eventResult, macroResult, historicalBootstrap] = await Promise.all([
-      loadEquityUniverse(fetchImpl, now),
+    // The universe is required for every downstream mapping. Resolve it first
+    // so a missing universe cannot consume news or price-history allowances.
+    const universeResult = await loadEquityUniverse(fetchImpl, now);
+    const [eventResult, macroResult, historicalBootstrap] = await Promise.all([
       collectEventSources(fetchImpl, now),
       fetchMacroContext(fetchImpl, now),
       bootstrapPublicHistoricalSignals(input.historicalSignals ?? [], fetchImpl, now),

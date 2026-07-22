@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import ts from "typescript";
 
 const source = readFileSync(new URL("../lib/equity-signal/universe.ts", import.meta.url), "utf8");
+const quotaSource = readFileSync(new URL("../lib/branch-signal-lab.ts", import.meta.url), "utf8");
+const runnerSource = readFileSync(new URL("../lib/equity-signal/runner.ts", import.meta.url), "utf8");
 const output = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
 }).outputText;
@@ -74,11 +76,18 @@ assert.equal(malformedSec.snapshot.constructionMode, "partial_nasdaq_plus_sec");
 assert.deepEqual(malformedSec.snapshot.entries.map((item) => item.ticker), ["NVDA"]);
 assert.equal(malformedSec.snapshot.sources.find((item) => item.name === "SEC company_tickers_exchange")?.error, "invalid_json_payload");
 
+assert.match(quotaSource, /quotaKey: "nasdaq_trader_equity_universe"[\s\S]{0,180}maximumCallsInWindow: 4, minimumIntervalMs: 4\.5 \* minute/);
+assert.match(quotaSource, /quotaKey: "sec_equity_universe"[\s\S]{0,180}maximumCallsInWindow: 2, minimumIntervalMs: 4\.5 \* minute/);
+assert.match(runnerSource, /const universeResult = await loadEquityUniverse\(fetchImpl, now\);[\s\S]{0,180}const \[eventResult, macroResult, historicalBootstrap\] = await Promise\.all/);
+assert.doesNotMatch(runnerSource, /const \[universeResult,[\s\S]{0,120}Promise\.all/);
+
 console.log(JSON.stringify({
   ok: true,
   secOfficialFallbackPreventsZeroUniverse: true,
   partialNasdaqDataPreserved: true,
   fundAndPreferredRowsRejected: true,
   malformedSecResponseIsolated: true,
+  boundedRetryCanUseRemainingDailyAllowance: true,
+  downstreamCallsWaitForRequiredUniverse: true,
   sourceFailuresRemainVisible: true,
 }, null, 2));

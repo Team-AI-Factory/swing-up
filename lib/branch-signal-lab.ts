@@ -29,10 +29,10 @@ function providerCallRequest(value: RequestInfo | URL, now: Date): BranchProvide
   const path = url.pathname.toLowerCase();
 
   if (host === "www.nasdaqtrader.com") {
-    return { ...base, provider: "nasdaq_trader", quotaKey: "nasdaq_trader_equity_universe", cadenceKey: `nasdaq_trader:${path}`, rollingWindowMs: day, maximumCallsInWindow: 4, minimumIntervalMs: 23 * 60 * minute };
+    return { ...base, provider: "nasdaq_trader", quotaKey: "nasdaq_trader_equity_universe", cadenceKey: `nasdaq_trader:${path}`, rollingWindowMs: day, maximumCallsInWindow: 4, minimumIntervalMs: 4.5 * minute };
   }
   if (host === "www.sec.gov" && path === "/files/company_tickers_exchange.json") {
-    return { ...base, provider: "sec_edgar", quotaKey: "sec_equity_universe", cadenceKey: "sec_equity_universe", rollingWindowMs: day, maximumCallsInWindow: 2, minimumIntervalMs: 23 * 60 * minute };
+    return { ...base, provider: "sec_edgar", quotaKey: "sec_equity_universe", cadenceKey: "sec_equity_universe", rollingWindowMs: day, maximumCallsInWindow: 2, minimumIntervalMs: 4.5 * minute };
   }
   if (host === "www.sec.gov" && path === "/cgi-bin/browse-edgar") {
     const form = (url.searchParams.get("type") ?? "unknown").toUpperCase();

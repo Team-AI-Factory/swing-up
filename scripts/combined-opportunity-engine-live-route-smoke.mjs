@@ -10,7 +10,7 @@ const tickers = ["AAPL", "MSFT", "NVDA", "KO"];
 async function request(path, options = {}) {
   const response = await fetch(`${baseUrl}${path}`, {
     redirect: "manual",
-    signal: AbortSignal.timeout(90_000),
+    signal: AbortSignal.timeout(120_000),
     ...options,
   });
   const text = await response.text();
@@ -38,11 +38,22 @@ function normalizedDecision(result) {
       thesisStatus: row.thesisStatus,
       securityReadiness: row.securityReadiness,
       alertType: row.alertType,
+      signalAction: row.signalAction,
+      seriousSignal: row.seriousSignal,
+      abstained: row.abstained,
+      confidence: row.confidence?.overall,
+      confidenceKind: row.confidence?.kind,
+      calibrationSampleSize: row.confidence?.calibrationSampleSize,
+      targetPrice: row.priceTarget?.basePrice,
       blockedReasons: row.blockedReasons,
     })).sort((left, right) => left.ticker.localeCompare(right.ticker)),
     events: events.map((row) => ({
       ticker: row.ticker,
       alertType: row.alertType,
+      signalAction: row.signalAction,
+      seriousSignal: row.seriousSignal,
+      abstained: row.abstained,
+      confidence: row.confidence?.overall,
       direction: row.impact?.direction,
       severity: row.impact?.severity,
       thesisStatusAfter: row.thesisStatusAfter,
@@ -57,6 +68,10 @@ function normalizedDecision(result) {
       marketSource: row.marketSource,
       marketDate: row.marketDate,
       realDataReceipts: row.realDataReceipts,
+      optionalProvidersUsed: row.optionalProvidersUsed,
+      expectationSources: row.expectationSources,
+      priceSourceCount: row.priceSourceCount,
+      contradictions: row.contradictions,
     })).sort((left, right) => left.ticker.localeCompare(right.ticker)),
   };
 }
@@ -69,6 +84,8 @@ const health = await request("/api/internal/combined-opportunity-engine");
 assert.equal(health.response.status, 200);
 assert.equal(health.json.ok, true);
 assert.equal(health.json.liveDataAvailable, true);
+assert.equal(health.json.confidencePolicy?.seriousSignalThreshold, 90);
+assert.equal(health.json.confidencePolicy?.abstainsWhenUncalibrated, true);
 assert.equal(health.json.safety?.databaseWrites, false);
 assert.equal(health.json.safety?.publishing, false);
 assert.equal(health.json.safety?.notifications, false);
@@ -77,11 +94,11 @@ async function liveRun() {
   const result = await request("/api/internal/combined-opportunity-engine", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ useLiveData: true, liveTickers: tickers }),
+    body: JSON.stringify({ useLiveData: true, useProviderEnrichment: true, liveTickers: tickers }),
   });
   assert.equal(result.response.status, 200);
   assert.equal(result.json.ok, true);
-  assert.equal(result.json.dataMode, "real_live_sec_and_market_data");
+  assert.equal(result.json.dataMode, "real_live_sec_market_and_configured_provider_data");
   assert.equal(result.json.summary?.foundationsChecked, tickers.length);
   assert.equal(result.json.summary?.eventsChecked, tickers.length);
   assert.equal(result.json.summary?.liveProviderErrors, 0);
@@ -91,6 +108,14 @@ async function liveRun() {
   assert.ok(result.json.liveData.snapshots.every((row) => row.sourceMode === "real_live_sec_and_market_data"));
   assert.ok(result.json.liveData.snapshots.every((row) => row.marketSource === "Yahoo Finance public chart API"));
   assert.ok(result.json.liveData.snapshots.every((row) => row.realDataReceipts >= 3));
+  assert.equal(result.json.summary?.seriousSignals, 0);
+  assert.equal(result.json.summary?.buySignals, 0);
+  assert.equal(result.json.summary?.sellSignals, 0);
+  assert.equal(result.json.summary?.watchOutSignals, 0);
+  assert.equal(result.json.summary?.abstentions, tickers.length * 2);
+  assert.ok(result.json.foundationDecisions.every((row) => row.seriousSignal === false && row.abstained === true));
+  assert.ok(result.json.foundationDecisions.every((row) => row.blockedReasons.includes("historical_calibration_sample_below_30")));
+  assert.ok(result.json.foundationDecisions.every((row) => row.confidence?.overall < 90));
   assert.equal(result.json.safety?.databaseWrites, false);
   assert.equal(result.json.safety?.publishing, false);
   assert.equal(result.json.safety?.notifications, false);
@@ -113,7 +138,10 @@ console.log(JSON.stringify({
   tickers,
   foundationsPerRun: first.summary.foundationsChecked,
   eventsPerRun: first.summary.eventsChecked,
+  seriousSignals: first.summary.seriousSignals,
+  abstentions: first.summary.abstentions,
   liveProviderErrors: first.summary.liveProviderErrors + second.summary.liveProviderErrors,
+  optionalProviderErrors: first.summary.optionalProviderErrors + second.summary.optionalProviderErrors,
   sameDecisionDigest: digest(firstNormalized) === digest(secondNormalized),
   decisionDigest: digest(firstNormalized),
   decisions: firstNormalized,

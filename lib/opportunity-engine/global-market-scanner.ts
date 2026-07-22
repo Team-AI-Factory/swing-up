@@ -22,7 +22,9 @@ export type GlobalQuote = {
   timestamp: number | null;
 };
 
-export type GlobalScanCandidate = GlobalStock & GlobalQuote & {
+export type GlobalScanCandidate = GlobalStock & Omit<GlobalQuote, "exchange"> & {
+  quoteExchange: string | null;
+  listingKey: string;
   liquidityScore: number;
   momentumScore: number;
   volatilityScore: number;
@@ -38,17 +40,20 @@ export type GlobalScanResult = {
     provider: "Financial Modeling Prep";
     stocksAvailable: number;
     stocksEligible: number;
+    uniqueSymbols: number;
     exchanges: number;
     countries: number;
     currencies: number;
   };
   scan: {
     requestedStocks: number;
+    requestedSymbols: number;
     quotedStocks: number;
     failedBatches: number;
     batches: number;
     batchSize: number;
     coveragePercent: number;
+    coverageComplete: boolean;
   };
   candidates: {
     opportunity: GlobalScanCandidate[];
@@ -73,7 +78,9 @@ const number = (value: unknown) => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 const clamp = (value: number) => Math.max(0, Math.min(100, Math.round(value)));
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const exchangeKey = (value: string | null | undefined) => (value ?? "UNKNOWN").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+const listingKey = (stock: Pick<GlobalStock, "exchangeShortName" | "symbol">) => `${exchangeKey(stock.exchangeShortName)}:${stock.symbol}`;
 
 function safeError(error: unknown) {
   return error instanceof Error ? error.message.replace(/\s+/g, " ").slice(0, 240) : "unknown_global_scan_error";
@@ -107,15 +114,19 @@ export function normalizeGlobalStockUniverse(payload: unknown): GlobalStock[] {
     const row = object(value);
     const symbol = text(row.symbol)?.toUpperCase();
     const exchangeShortName = text(row.exchangeShortName) ?? text(row.exchange) ?? "UNKNOWN";
-    if (!symbol || seen.has(`${exchangeShortName}:${symbol}`)) return [];
+    if (!symbol) return [];
+    const key = `${exchangeKey(exchangeShortName)}:${symbol}`;
+    if (seen.has(key)) return [];
     const type = text(row.type);
     const activelyTrading = row.isActivelyTrading !== false;
-    const isFund = /etf|fund|trust/i.test(type ?? "") || /ETF/i.test(text(row.name) ?? "");
-    if (!activelyTrading || isFund) return [];
-    seen.add(`${exchangeShortName}:${symbol}`);
+    const name = text(row.name) ?? symbol;
+    const isFund = /etf|fund|trust/i.test(type ?? "") || /\bETF\b/i.test(name);
+    const isOrdinaryShare = !type || /stock|common|ordinary|share|equity|adr|gdr/i.test(type);
+    if (!activelyTrading || isFund || !isOrdinaryShare) return [];
+    seen.add(key);
     return [{
       symbol,
-      name: text(row.name) ?? symbol,
+      name,
       exchange: text(row.exchange) ?? exchangeShortName,
       exchangeShortName,
       country: text(row.country),
@@ -146,8 +157,19 @@ export function normalizeGlobalQuotes(payload: unknown): GlobalQuote[] {
   });
 }
 
+function chooseListing(options: GlobalStock[], quote: GlobalQuote): GlobalStock | null {
+  if (!options.length) return null;
+  if (options.length === 1) return options[0];
+  const quoteExchange = exchangeKey(quote.exchange);
+  const exact = options.find((stock) => {
+    const keys = [exchangeKey(stock.exchange), exchangeKey(stock.exchangeShortName)];
+    return quoteExchange !== "UNKNOWN" && keys.includes(quoteExchange);
+  });
+  return exact ?? null;
+}
+
 function scoreCandidate(stock: GlobalStock, quote: GlobalQuote): GlobalScanCandidate {
-  const volumeRatio = quote.volume !== null && quote.averageVolume && quote.averageVolume > 0 ? quote.volume / quote.averageVolume : 0;
+  const volumeRatio = quote.volume !== null && quote.averageVolume !== null && quote.averageVolume > 0 ? quote.volume / quote.averageVolume : 0;
   const marketCapBillions = quote.marketCap !== null ? quote.marketCap / 1_000_000_000 : 0;
   const liquidityScore = clamp(Math.log10(Math.max(1, quote.volume ?? 0)) * 12 + Math.log10(Math.max(1, quote.marketCap ?? 0)) * 3 - 30);
   const momentumScore = clamp(50 + (quote.changePercent ?? 0) * 5);
@@ -174,7 +196,26 @@ function scoreCandidate(stock: GlobalStock, quote: GlobalQuote): GlobalScanCandi
     ...(rangePosition <= 0.15 ? ["Trading near its 52-week low"] : []),
     ...(rangePosition >= 0.9 ? ["Trading near its 52-week high"] : []),
   ];
-  return { ...stock, ...quote, liquidityScore, momentumScore, volatilityScore, opportunityPriority, riskPriority, reasons };
+  return {
+    ...stock,
+    symbol: quote.symbol,
+    price: quote.price,
+    changePercent: quote.changePercent,
+    volume: quote.volume,
+    averageVolume: quote.averageVolume,
+    marketCap: quote.marketCap,
+    yearHigh: quote.yearHigh,
+    yearLow: quote.yearLow,
+    timestamp: quote.timestamp,
+    quoteExchange: quote.exchange,
+    listingKey: listingKey(stock),
+    liquidityScore,
+    momentumScore,
+    volatilityScore,
+    opportunityPriority,
+    riskPriority,
+    reasons,
+  };
 }
 
 export async function scanAllGlobalStocks(options?: {
@@ -196,14 +237,16 @@ export async function scanAllGlobalStocks(options?: {
   const universePayload = await fmp("stock-list", apiKey);
   const allStocks = normalizeGlobalStockUniverse(universePayload).slice(0, maximumStocks);
   const eligible = allStocks.filter((stock) => stock.symbol.length <= 24);
-  const stockBySymbol = new Map(eligible.map((stock) => [stock.symbol, stock]));
+  const stocksBySymbol = new Map<string, GlobalStock[]>();
+  for (const stock of eligible) stocksBySymbol.set(stock.symbol, [...(stocksBySymbol.get(stock.symbol) ?? []), stock]);
+  const requestSymbols = [...stocksBySymbol.keys()];
   const quoteRows: GlobalQuote[] = [];
   let failedBatches = 0;
-  const batches = Array.from({ length: Math.ceil(eligible.length / batchSize) }, (_, index) => eligible.slice(index * batchSize, (index + 1) * batchSize));
+  const batches = Array.from({ length: Math.ceil(requestSymbols.length / batchSize) }, (_, index) => requestSymbols.slice(index * batchSize, (index + 1) * batchSize));
 
   for (const symbols of batches) {
     try {
-      const payload = await fmp(`batch-quote?symbols=${encodeURIComponent(symbols.map((stock) => stock.symbol).join(","))}`, apiKey);
+      const payload = await fmp(`batch-quote?symbols=${encodeURIComponent(symbols.join(","))}`, apiKey);
       quoteRows.push(...normalizeGlobalQuotes(payload));
     } catch (error) {
       failedBatches += 1;
@@ -212,36 +255,47 @@ export async function scanAllGlobalStocks(options?: {
     await sleep(250);
   }
 
+  const quotedSymbols = new Set<string>();
   const candidates = quoteRows.flatMap((quote): GlobalScanCandidate[] => {
-    const stock = stockBySymbol.get(quote.symbol);
-    if (!stock || quote.price === null || quote.price < minimumPrice || quote.marketCap === null || quote.marketCap < minimumMarketCap) return [];
+    const stock = chooseListing(stocksBySymbol.get(quote.symbol) ?? [], quote);
+    if (!stock) {
+      if ((stocksBySymbol.get(quote.symbol)?.length ?? 0) > 1) errors.push(`ambiguous_listing:${quote.symbol}:${quote.exchange ?? "unknown_exchange"}`);
+      return [];
+    }
+    quotedSymbols.add(quote.symbol);
+    if (quote.price === null || quote.price < minimumPrice || quote.marketCap === null || quote.marketCap < minimumMarketCap) return [];
     return [scoreCandidate(stock, quote)];
   });
-  const opportunity = [...candidates].sort((a, b) => b.opportunityPriority - a.opportunityPriority).slice(0, deepQueueSize);
-  const watchOut = [...candidates].sort((a, b) => b.riskPriority - a.riskPriority).slice(0, deepQueueSize);
+  const opportunity = [...candidates].sort((left, right) => right.opportunityPriority - left.opportunityPriority).slice(0, deepQueueSize);
+  const watchOut = [...candidates].sort((left, right) => right.riskPriority - left.riskPriority).slice(0, deepQueueSize);
   const deepAnalysisQueue = [...new Set([...opportunity, ...watchOut].map((row) => row.symbol))].slice(0, deepQueueSize * 2);
-  const countries = new Set(eligible.map((stock) => stock.country).filter(Boolean));
+  const countries = new Set(eligible.map((stock) => stock.country).filter((value): value is string => Boolean(value)));
   const exchanges = new Set(eligible.map((stock) => stock.exchangeShortName));
-  const currencies = new Set(eligible.map((stock) => stock.currency).filter(Boolean));
+  const currencies = new Set(eligible.map((stock) => stock.currency).filter((value): value is string => Boolean(value)));
+  const coveragePercent = requestSymbols.length ? Number(((quotedSymbols.size / requestSymbols.length) * 100).toFixed(2)) : 0;
+  const coverageComplete = failedBatches === 0 && coveragePercent >= 99;
 
   return {
-    ok: true,
+    ok: coverageComplete,
     checkedAt: new Date().toISOString(),
     universe: {
       provider: "Financial Modeling Prep",
       stocksAvailable: allStocks.length,
       stocksEligible: eligible.length,
+      uniqueSymbols: requestSymbols.length,
       exchanges: exchanges.size,
       countries: countries.size,
       currencies: currencies.size,
     },
     scan: {
       requestedStocks: eligible.length,
-      quotedStocks: quoteRows.length,
+      requestedSymbols: requestSymbols.length,
+      quotedStocks: quotedSymbols.size,
       failedBatches,
       batches: batches.length,
       batchSize,
-      coveragePercent: eligible.length ? Number(((quoteRows.length / eligible.length) * 100).toFixed(2)) : 0,
+      coveragePercent,
+      coverageComplete,
     },
     candidates: { opportunity, watchOut, deepAnalysisQueue },
     errors: [...new Set(errors)].slice(0, 50),

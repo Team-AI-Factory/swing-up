@@ -18,24 +18,11 @@ const defaultTickers = [
 const tickers = (process.env.TECHNICAL_RISK_TICKERS ?? defaultTickers.join(","))
   .split(",").map((ticker) => ticker.trim().toUpperCase()).filter(Boolean).slice(0, 150);
 const concurrency = Math.max(1, Math.min(Number.parseInt(process.env.TECHNICAL_RISK_CONCURRENCY ?? "4", 10) || 4, 8));
+const eventCooldownSessions = Math.max(90, Number.parseInt(process.env.TECHNICAL_RISK_EVENT_COOLDOWN ?? "100", 10) || 100);
 
 type Json = Record<string, unknown>;
-type PriceRow = {
-  date: string;
-  close: number;
-  open: number | null;
-  high: number | null;
-  low: number | null;
-  volume: number | null;
-};
-
-type TechnicalCase = {
-  ticker: string;
-  eventDate: string;
-  features: Record<string, number | string | null>;
-  outcomes: Record<string, number | null>;
-  sourceUrl: string;
-};
+type PriceRow = { date: string; close: number; open: number | null; high: number | null; low: number | null; volume: number | null };
+type TechnicalCase = { ticker: string; eventDate: string; features: Record<string, number | string | null>; outcomes: Record<string, number | null>; sourceUrl: string };
 
 const object = (value: unknown): Json => value && typeof value === "object" && !Array.isArray(value) ? value as Json : {};
 const array = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
@@ -93,12 +80,8 @@ function parseChart(payload: Json, ticker: string): PriceRow[] {
       return parsed === null ? null : parsed * adjustment;
     };
     return [{
-      date: new Date(seconds * 1000).toISOString().slice(0, 10),
-      close,
-      open: adjustedValue(opens[index]),
-      high: adjustedValue(highs[index]),
-      low: adjustedValue(lows[index]),
-      volume: finite(volumes[index]),
+      date: new Date(seconds * 1000).toISOString().slice(0, 10), close,
+      open: adjustedValue(opens[index]), high: adjustedValue(highs[index]), low: adjustedValue(lows[index]), volume: finite(volumes[index]),
     }];
   }).sort((left, right) => left.date.localeCompare(right.date));
   if (rows.length < 380) throw new Error(`insufficient_history:${ticker}:${rows.length}`);
@@ -118,43 +101,42 @@ async function priceHistory(ticker: string, start: number, end: number) {
   throw new Error(`all_yahoo_sources_failed:${ticker}:${errors.join("|")}`);
 }
 
-function change(from: number, to: number) {
-  return ((to / from) - 1) * 100;
-}
-
+function change(from: number, to: number) { return ((to / from) - 1) * 100; }
+function average(values: number[]) { return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null; }
 function standardDeviation(values: number[]) {
   if (values.length < 2) return null;
-  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+  const mean = average(values)!;
   const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (values.length - 1);
   return Math.sqrt(variance);
 }
-
-function trailingReturn(rows: PriceRow[], index: number, sessions: number) {
-  const prior = rows[index - sessions];
-  return prior ? change(prior.close, rows[index].close) : null;
+function covariance(left: number[], right: number[]) {
+  if (left.length !== right.length || left.length < 2) return null;
+  const leftMean = average(left)!;
+  const rightMean = average(right)!;
+  return left.reduce((sum, value, index) => sum + (value - leftMean) * (right[index] - rightMean), 0) / (left.length - 1);
 }
-
+function trailingReturn(rows: PriceRow[], index: number, sessions: number) { return rows[index - sessions] ? change(rows[index - sessions].close, rows[index].close) : null; }
 function trailingDrawdown(rows: PriceRow[], index: number, sessions: number) {
   const window = rows.slice(Math.max(0, index - sessions + 1), index + 1);
   if (!window.length) return null;
   const high = Math.max(...window.map((row) => row.high ?? row.close));
   return high > 0 ? change(high, rows[index].close) : null;
 }
-
 function trailingVolatility(rows: PriceRow[], index: number, sessions: number) {
-  const start = Math.max(1, index - sessions + 1);
   const returns: number[] = [];
-  for (let cursor = start; cursor <= index; cursor += 1) returns.push(change(rows[cursor - 1].close, rows[cursor].close));
+  for (let cursor = Math.max(1, index - sessions + 1); cursor <= index; cursor += 1) returns.push(change(rows[cursor - 1].close, rows[cursor].close));
   const deviation = standardDeviation(returns);
   return deviation === null ? null : deviation * Math.sqrt(252);
 }
-
-function averageVolume(rows: PriceRow[], index: number, sessions: number) {
-  const values = rows.slice(Math.max(0, index - sessions), index)
-    .map((row) => row.volume).filter((value): value is number => value !== null && value > 0);
-  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+function movingAverageDistance(rows: PriceRow[], index: number, sessions: number) {
+  const values = rows.slice(Math.max(0, index - sessions + 1), index + 1).map((row) => row.close);
+  const mean = average(values);
+  return mean && mean > 0 ? change(mean, rows[index].close) : null;
 }
-
+function averageVolume(rows: PriceRow[], index: number, sessions: number) {
+  const values = rows.slice(Math.max(0, index - sessions), index).map((row) => row.volume).filter((value): value is number => value !== null && value > 0);
+  return average(values);
+}
 function rangePosition(rows: PriceRow[], index: number, sessions: number) {
   const window = rows.slice(Math.max(0, index - sessions + 1), index + 1);
   if (!window.length) return null;
@@ -162,7 +144,40 @@ function rangePosition(rows: PriceRow[], index: number, sessions: number) {
   const low = Math.min(...window.map((row) => row.low ?? row.close));
   return high > low ? (rows[index].close - low) / (high - low) : 0.5;
 }
-
+function rsi(rows: PriceRow[], index: number, sessions = 14) {
+  if (index < sessions) return null;
+  const gains: number[] = [];
+  const losses: number[] = [];
+  for (let cursor = index - sessions + 1; cursor <= index; cursor += 1) {
+    const delta = rows[cursor].close - rows[cursor - 1].close;
+    gains.push(Math.max(0, delta));
+    losses.push(Math.max(0, -delta));
+  }
+  const gain = average(gains) ?? 0;
+  const loss = average(losses) ?? 0;
+  if (loss === 0) return 100;
+  const relativeStrength = gain / loss;
+  return 100 - 100 / (1 + relativeStrength);
+}
+function betaAndCorrelation(stockRows: PriceRow[], stockIndex: number, benchmarkByDate: Map<string, PriceRow>, sessions = 60) {
+  const stockReturns: number[] = [];
+  const marketReturns: number[] = [];
+  for (let cursor = Math.max(1, stockIndex - sessions + 1); cursor <= stockIndex; cursor += 1) {
+    const currentMarket = benchmarkByDate.get(stockRows[cursor].date);
+    const priorMarket = benchmarkByDate.get(stockRows[cursor - 1].date);
+    if (!currentMarket || !priorMarket) continue;
+    stockReturns.push(change(stockRows[cursor - 1].close, stockRows[cursor].close));
+    marketReturns.push(change(priorMarket.close, currentMarket.close));
+  }
+  const cov = covariance(stockReturns, marketReturns);
+  const marketDeviation = standardDeviation(marketReturns);
+  const stockDeviation = standardDeviation(stockReturns);
+  const marketVariance = marketDeviation === null ? null : marketDeviation ** 2;
+  return {
+    beta: cov !== null && marketVariance && marketVariance > 0 ? cov / marketVariance : null,
+    correlation: cov !== null && marketDeviation && stockDeviation && marketDeviation > 0 && stockDeviation > 0 ? cov / (marketDeviation * stockDeviation) : null,
+  };
+}
 function futureOutcome(rows: PriceRow[], benchmarkByDate: Map<string, PriceRow>, index: number, sessions: number) {
   const end = index + sessions;
   if (end >= rows.length) return null;
@@ -179,11 +194,20 @@ function futureOutcome(rows: PriceRow[], benchmarkByDate: Map<string, PriceRow>,
   return { stockReturn, excessReturn: benchmarkReturn === null ? null : stockReturn - benchmarkReturn, drawdown, maxGain };
 }
 
-function technicalCases(ticker: string, rows: PriceRow[], sourceUrl: string, benchmarkByDate: Map<string, PriceRow>): TechnicalCase[] {
+function technicalCases(
+  ticker: string,
+  rows: PriceRow[],
+  sourceUrl: string,
+  benchmarkRows: PriceRow[],
+  benchmarkByDate: Map<string, PriceRow>,
+  benchmarkIndexByDate: Map<string, number>,
+): TechnicalCase[] {
   const cases: TechnicalCase[] = [];
-  let lastSelected = -100;
+  let lastSelected = -eventCooldownSessions;
   for (let index = 252; index < rows.length - 90; index += 1) {
     const row = rows[index];
+    const benchmarkIndex = benchmarkIndexByDate.get(row.date);
+    if (benchmarkIndex === undefined || benchmarkIndex < 252) continue;
     const return1d = trailingReturn(rows, index, 1);
     const return5d = trailingReturn(rows, index, 5);
     const return20d = trailingReturn(rows, index, 20);
@@ -204,50 +228,51 @@ function technicalCases(ticker: string, rows: PriceRow[], sourceUrl: string, ben
       || (volumeRatio20d ?? 0) >= 2.5
       || (drawdown60d ?? 0) <= -15
       || (position252d ?? 0.5) <= 0.08;
-    if (!unusual || index - lastSelected < 10) continue;
+    if (!unusual || index - lastSelected < eventCooldownSessions) continue;
     const outcome30 = futureOutcome(rows, benchmarkByDate, index, 30);
     const outcome90 = futureOutcome(rows, benchmarkByDate, index, 90);
     if (!outcome30 || !outcome90) continue;
-    const benchmark = benchmarkByDate.get(row.date);
-    const benchmark20 = benchmark ? null : null;
+    const marketReturn20d = trailingReturn(benchmarkRows, benchmarkIndex, 20);
+    const marketReturn60d = trailingReturn(benchmarkRows, benchmarkIndex, 60);
+    const marketReturn120d = trailingReturn(benchmarkRows, benchmarkIndex, 120);
+    const marketReturn252d = trailingReturn(benchmarkRows, benchmarkIndex, 252);
+    const marketVolatility20d = trailingVolatility(benchmarkRows, benchmarkIndex, 20);
+    const marketVolatility60d = trailingVolatility(benchmarkRows, benchmarkIndex, 60);
+    const marketDrawdown60d = trailingDrawdown(benchmarkRows, benchmarkIndex, 60);
+    const marketDrawdown120d = trailingDrawdown(benchmarkRows, benchmarkIndex, 120);
+    const relationship = betaAndCorrelation(rows, index, benchmarkByDate, 60);
     const gapPercent = row.open !== null && index > 0 ? change(rows[index - 1].close, row.open) : null;
     const intradayRangePercent = row.high !== null && row.low !== null && row.open !== null && row.open > 0 ? ((row.high - row.low) / row.open) * 100 : null;
     const logDollarVolume = row.volume !== null && row.close > 0 ? Math.log(Math.max(1, row.volume * row.close)) : null;
-    const benchmarkIndex = benchmark ? null : null;
-    void benchmark20;
-    void benchmarkIndex;
+    const marketRegime = (marketReturn20d ?? 0) > 2 && (marketReturn120d ?? 0) > 5 ? 1
+      : (marketReturn20d ?? 0) < -2 && (marketReturn120d ?? 0) < -5 ? -1 : 0;
     cases.push({
       ticker,
       eventDate: row.date,
       features: {
-        return1d: round(return1d),
-        return5d: round(return5d),
-        return20d: round(return20d),
-        return60d: round(return60d),
-        return120d: round(return120d),
-        return252d: round(return252d),
-        drawdown20d: round(drawdown20d),
-        drawdown60d: round(drawdown60d),
-        drawdown120d: round(drawdown120d),
-        volatility20d: round(volatility20d),
-        volatility60d: round(volatility60d),
-        volumeRatio20d: round(volumeRatio20d),
-        rangePosition252d: round(position252d),
-        gapPercent: round(gapPercent),
-        intradayRangePercent: round(intradayRangePercent),
-        logDollarVolume: round(logDollarVolume),
-        month: Number(row.date.slice(5, 7)),
-        year: Number(row.date.slice(0, 4)),
+        return1d: round(return1d), return5d: round(return5d), return20d: round(return20d), return60d: round(return60d),
+        return120d: round(return120d), return252d: round(return252d),
+        drawdown20d: round(drawdown20d), drawdown60d: round(drawdown60d), drawdown120d: round(drawdown120d),
+        volatility20d: round(volatility20d), volatility60d: round(volatility60d),
+        volumeRatio20d: round(volumeRatio20d), rangePosition252d: round(position252d),
+        distanceFrom50dAverage: round(movingAverageDistance(rows, index, 50)),
+        distanceFrom200dAverage: round(movingAverageDistance(rows, index, 200)),
+        rsi14: round(rsi(rows, index, 14)),
+        gapPercent: round(gapPercent), intradayRangePercent: round(intradayRangePercent), logDollarVolume: round(logDollarVolume),
+        marketReturn20d: round(marketReturn20d), marketReturn60d: round(marketReturn60d), marketReturn120d: round(marketReturn120d), marketReturn252d: round(marketReturn252d),
+        relativeStrength20d: return20d !== null && marketReturn20d !== null ? round(return20d - marketReturn20d) : null,
+        relativeStrength60d: return60d !== null && marketReturn60d !== null ? round(return60d - marketReturn60d) : null,
+        relativeStrength120d: return120d !== null && marketReturn120d !== null ? round(return120d - marketReturn120d) : null,
+        relativeStrength252d: return252d !== null && marketReturn252d !== null ? round(return252d - marketReturn252d) : null,
+        marketVolatility20d: round(marketVolatility20d), marketVolatility60d: round(marketVolatility60d),
+        relativeVolatility20d: volatility20d !== null && marketVolatility20d && marketVolatility20d > 0 ? round(volatility20d / marketVolatility20d) : null,
+        marketDrawdown60d: round(marketDrawdown60d), marketDrawdown120d: round(marketDrawdown120d),
+        beta60d: round(relationship.beta), correlation60d: round(relationship.correlation), marketRegime,
+        month: Number(row.date.slice(5, 7)), year: Number(row.date.slice(0, 4)),
       },
       outcomes: {
-        return30d: round(outcome30.stockReturn),
-        excess30d: round(outcome30.excessReturn),
-        drawdown30d: round(outcome30.drawdown),
-        maxGain30d: round(outcome30.maxGain),
-        return90d: round(outcome90.stockReturn),
-        excess90d: round(outcome90.excessReturn),
-        drawdown90d: round(outcome90.drawdown),
-        maxGain90d: round(outcome90.maxGain),
+        return30d: round(outcome30.stockReturn), excess30d: round(outcome30.excessReturn), drawdown30d: round(outcome30.drawdown), maxGain30d: round(outcome30.maxGain),
+        return90d: round(outcome90.stockReturn), excess90d: round(outcome90.excessReturn), drawdown90d: round(outcome90.drawdown), maxGain90d: round(outcome90.maxGain),
       },
       sourceUrl,
     });
@@ -276,11 +301,12 @@ async function main() {
   const end = Math.floor((Date.now() + 2 * 86_400_000) / 1000);
   const benchmark = await priceHistory("SPY", start, end);
   const benchmarkByDate = new Map(benchmark.rows.map((row) => [row.date, row]));
+  const benchmarkIndexByDate = new Map(benchmark.rows.map((row, index) => [row.date, index]));
   const errors: Array<{ ticker: string; error: string }> = [];
   const perTicker = await mapLimit(tickers, concurrency, async (ticker) => {
     try {
       const history = await priceHistory(ticker, start, end);
-      return technicalCases(ticker, history.rows, history.url, benchmarkByDate);
+      return technicalCases(ticker, history.rows, history.url, benchmark.rows, benchmarkByDate, benchmarkIndexByDate);
     } catch (error) {
       errors.push({ ticker, error: safe(error) });
       return [];
@@ -288,26 +314,27 @@ async function main() {
   });
   const rows = perTicker.flat().sort((left, right) => `${left.eventDate}:${left.ticker}`.localeCompare(`${right.eventDate}:${right.ticker}`));
   const dataset = {
-    version: 1,
+    version: 2,
     checkedAt: new Date().toISOString(),
-    sourceMode: "real_point_in_time_yahoo_adjusted_price_and_volume",
+    sourceMode: "real_point_in_time_yahoo_adjusted_price_volume_and_spy_regime",
     earliestDate,
     requestedTickers: tickers,
     requestedTickerCount: tickers.length,
     tickersWithCases: [...new Set(rows.map((row) => row.ticker))],
     rows,
     sourceErrors: errors,
-    selectionRule: "Unusual price, volume, drawdown, or 52-week-range event; features use only information known at the event close; minimum ten-session cooldown.",
+    eventCooldownSessions,
+    selectionRule: "Unusual price, volume, drawdown, or 52-week-range event; features use only information known at the event close; one event per security per cooldown window.",
     noSyntheticData: true,
     safety: { databaseWrites: false, r2Writes: false, publishing: false, notifications: false, payments: false, openAiCalls: false },
   };
   await mkdir(outputPath.split("/").slice(0, -1).join("/") || ".", { recursive: true });
   await writeFile(outputPath, `${JSON.stringify(dataset, null, 2)}\n`, "utf8");
-  console.log(JSON.stringify({ ok: true, rows: rows.length, requestedTickers: tickers.length, tickersWithCases: dataset.tickersWithCases.length, errors: errors.length, outputPath }, null, 2));
+  console.log(JSON.stringify({ ok: true, rows: rows.length, requestedTickers: tickers.length, tickersWithCases: dataset.tickersWithCases.length, errors: errors.length, eventCooldownSessions, outputPath }, null, 2));
 }
 
 main().catch(async (error) => {
-  const report = { version: 1, ok: false, checkedAt: new Date().toISOString(), fatalError: safe(error) };
+  const report = { version: 2, ok: false, checkedAt: new Date().toISOString(), fatalError: safe(error) };
   await mkdir(outputPath.split("/").slice(0, -1).join("/") || ".", { recursive: true });
   await writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
   console.error(JSON.stringify(report, null, 2));

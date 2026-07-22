@@ -15,11 +15,6 @@ function intervalMs(raw, fallbackSeconds, maximumMs) {
 const normalPollMs = intervalMs(process.env.SWING_UP_BRANCH_LAB_INTERVAL_SECONDS, 300, 3_600_000);
 const technicalRetryMs = intervalMs(process.env.SWING_UP_BRANCH_LAB_TECHNICAL_RETRY_SECONDS, 60, normalPollMs);
 let child = null;
-let labRunInFlight = false;
-let labStopped = false;
-let nextLabRunAt = 0;
-let labTimer = null;
-let watchdogTimer = null;
 
 function isolatedBranchEnvironment() {
   const env = {
@@ -37,6 +32,7 @@ function isolatedBranchEnvironment() {
     AI_COMMITTEE_REQUEST_TIMEOUT_MS: "12000",
     PUBLIC_LEDGER_TRACKING_ENABLED: "false",
     PUBLIC_TRACKING_ENABLED: "false",
+    SWING_UP_BRANCH_LAB_SCHEDULER_OWNER: "next_server",
     SWING_UP_BRANCH_LAB_EFFECTIVE_INTERVAL_SECONDS: `${Math.round(normalPollMs / 1000)}`,
     SWING_UP_BRANCH_LAB_EFFECTIVE_TECHNICAL_RETRY_SECONDS: `${Math.round(technicalRetryMs / 1000)}`,
   };
@@ -69,90 +65,12 @@ function stop(signal) {
 process.on("SIGTERM", () => stop("SIGTERM"));
 process.on("SIGINT", () => stop("SIGINT"));
 
-async function waitForHealth() {
-  const deadline = Date.now() + 120_000;
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(5_000) });
-      if (response.ok) return true;
-    } catch {}
-    await new Promise((resolve) => setTimeout(resolve, 2_000));
-  }
-  return false;
-}
-
-async function runLab() {
-  try {
-    const response = await fetch(`http://127.0.0.1:${port}/api/internal/railway-branch-signal-lab`, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-swing-up-branch-lab-token": runtimeToken },
-      body: "{}",
-      signal: AbortSignal.timeout(240_000),
-    });
-    const text = await response.text();
-    let report = null;
-    try { report = JSON.parse(text); } catch {}
-    console.log(`[swing-up-branch-lab] status=${response.status} ${text.slice(0, 12000)}`);
-    if (response.status === 409 || report?.stopped === true) return { keepRunning: false, delayMs: normalPollMs };
-    const technicalFailure = !response.ok || (report?.status === "technical_failure" && report?.repairEligible === true);
-    return { keepRunning: true, delayMs: technicalFailure ? technicalRetryMs : normalPollMs };
-  } catch (error) {
-    console.error(`[swing-up-branch-lab] ${error instanceof Error ? error.message : "run_failed"}`);
-    return { keepRunning: true, delayMs: technicalRetryMs };
-  }
-}
-
-function clearLabTimers() {
-  if (labTimer) clearTimeout(labTimer);
-  if (watchdogTimer) clearInterval(watchdogTimer);
-  labTimer = null;
-  watchdogTimer = null;
-}
-
-function scheduleLabRun(delayMs) {
-  if (labStopped) return;
-  const safeDelayMs = Math.max(0, delayMs);
-  nextLabRunAt = Date.now() + safeDelayMs;
-  if (labTimer) clearTimeout(labTimer);
-  labTimer = setTimeout(() => void executeScheduledLabRun(), safeDelayMs);
-}
-
-async function executeScheduledLabRun() {
-  if (labStopped || labRunInFlight) return;
-  labRunInFlight = true;
-  try {
-    const next = await runLab();
-    if (!next.keepRunning) {
-      labStopped = true;
-      clearLabTimers();
-      return;
-    }
-    scheduleLabRun(next.delayMs);
-  } finally {
-    labRunInFlight = false;
-  }
-}
-
 if (branchLab) {
-  console.log(`[swing-up-branch-lab] enabled for ${branch} in ${environment}; live polling=${Math.round(normalPollMs / 1000)}s, technical retry=${Math.round(technicalRetryMs / 1000)}s; branch state uses isolated Cloudflare R2 while PostgreSQL, production publishing, and notifications remain disabled.`);
-  void (async () => {
-    if (!(await waitForHealth())) {
-      console.error("[swing-up-branch-lab] app health timeout; no experiment ran.");
-      return;
-    }
-    scheduleLabRun(0);
-    watchdogTimer = setInterval(() => {
-      if (!labStopped && !labRunInFlight && nextLabRunAt > 0 && Date.now() > nextLabRunAt + 30_000) {
-        console.warn("[swing-up-branch-lab] watchdog recovered an overdue scan.");
-        scheduleLabRun(0);
-      }
-    }, 60_000);
-  })();
+  console.log(`[swing-up-branch-lab] enabled for ${branch} in ${environment}; the healthy Next.js server owns the ${Math.round(normalPollMs / 1000)}s R2-backed scheduler and ${Math.round(technicalRetryMs / 1000)}s technical retry.`);
 } else {
   console.log("[swing-up-branch-lab] disabled; normal application start.");
 }
 
 child.on("exit", (code, signal) => {
-  clearLabTimers();
   process.exitCode = code ?? (signal ? 1 : 0);
 });

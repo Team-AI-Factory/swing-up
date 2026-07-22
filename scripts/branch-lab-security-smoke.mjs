@@ -43,8 +43,14 @@ const startScript = await readFile(new URL("./railway-branch-start.mjs", import.
 const strippedVariables = startScript.match(/for \(const key of \[([\s\S]*?)\]\) delete env\[key\];/)?.[1] ?? "";
 if (!strippedVariables.includes("DATABASE_URL") || !strippedVariables.includes("TELEGRAM_BOT_TOKEN")) throw new Error("Branch startup no longer strips database or notification credentials.");
 if (strippedVariables.includes("R2_ACCESS_KEY_ID") || strippedVariables.includes("R2_SECRET_ACCESS_KEY") || strippedVariables.includes("CLOUDFLARE_R2_ACCESS_KEY_ID") || strippedVariables.includes("CLOUDFLARE_R2_SECRET_ACCESS_KEY")) throw new Error("Branch startup strips the Cloudflare R2 state credentials.");
-for (const marker of ["labRunInFlight", "watchdog recovered an overdue scan", "SWING_UP_BRANCH_LAB_EFFECTIVE_INTERVAL_SECONDS"]) {
-  if (!startScript.includes(marker)) throw new Error(`Branch scanner watchdog policy is missing: ${marker}`);
+for (const marker of [`SWING_UP_BRANCH_LAB_SCHEDULER_OWNER: "next_server"`, "SWING_UP_BRANCH_LAB_EFFECTIVE_INTERVAL_SECONDS"]) {
+  if (!startScript.includes(marker)) throw new Error(`Branch startup does not delegate scanning to the healthy Next.js server: ${marker}`);
+}
+const instrumentationSource = await readFile(new URL("../instrumentation.ts", import.meta.url), "utf8");
+if (!instrumentationSource.includes("startBranchSignalLabRuntimeScheduler")) throw new Error("Next.js instrumentation does not start the branch scanner.");
+const schedulerSource = await readFile(new URL("../lib/branch-signal-lab-runtime-scheduler.ts", import.meta.url), "utf8");
+for (const marker of ["state.inFlight", "Next.js watchdog recovered an overdue scan", "SWING_UP_BRANCH_LAB_RUNTIME_TOKEN", "state=Cloudflare R2"]) {
+  if (!schedulerSource.includes(marker)) throw new Error(`Next.js branch scanner watchdog policy is missing: ${marker}`);
 }
 
 const routeSource = await readFile(new URL("../app/api/internal/railway-branch-signal-lab/route.ts", import.meta.url), "utf8");

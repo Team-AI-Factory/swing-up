@@ -8,6 +8,8 @@ on:
       - "lib/opportunity-engine/**"
       - "scripts/build-opportunity-calibration-dataset.ts"
       - "scripts/calibrate_opportunity_conformal.py"
+      - "scripts/build-technical-risk-dataset.ts"
+      - "scripts/calibrate_technical_risk.py"
       - "package.json"
       - ".github/workflows/opportunity-calibration-lab.yml"
   pull_request:
@@ -17,6 +19,8 @@ on:
       - "lib/opportunity-engine/**"
       - "scripts/build-opportunity-calibration-dataset.ts"
       - "scripts/calibrate_opportunity_conformal.py"
+      - "scripts/build-technical-risk-dataset.ts"
+      - "scripts/calibrate_technical_risk.py"
       - "package.json"
       - ".github/workflows/opportunity-calibration-lab.yml"
   workflow_dispatch:
@@ -33,7 +37,7 @@ jobs:
     name: Build and calibrate real point-in-time signals
     if: github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 70
+    timeout-minutes: 90
     env:
       SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
       CALIBRATION_EARLIEST_DATE: "2012-01-01"
@@ -44,6 +48,16 @@ jobs:
       CALIBRATION_TICKERS: "AAPL,MSFT,NVDA,GOOGL,AMZN,META,AVGO,AMD,TSLA,WMT,JPM,BAC,XOM,CVX,KO,PEP,UNH,HD,COST,CRM,ORCL,NFLX,UBER,ADBE,INTC,QCOM,CSCO,MCD,NKE,DIS,IBM,TXN,AMAT,LRCX,MU,ADI,KLAC,INTU,ADP,ABT,TMO,DHR,LLY,MRK,PFE,AMGN,GILD,JNJ,PG,CL,PM,MO,SBUX,LOW,TGT,GS,MS,C,BLK,SCHW,CAT,DE,GE,HON,UPS,FDX,COP,SLB,EOG,NEE,DUK,SO,LIN,APD"
       CALIBRATION_DATASET_PATH: "artifacts/combined-opportunity-engine-calibration-dataset.json"
       CALIBRATION_REPORT_PATH: "artifacts/combined-opportunity-engine-calibration.json"
+      TECHNICAL_RISK_EARLIEST_DATE: "2012-01-01"
+      TECHNICAL_RISK_CONCURRENCY: "4"
+      TECHNICAL_RISK_MIN_VALIDATION_SIGNALS: "30"
+      TECHNICAL_RISK_MIN_CALIBRATION_SIGNALS: "25"
+      TECHNICAL_RISK_MIN_FINAL_SIGNALS: "30"
+      TECHNICAL_RISK_TARGET_ERROR: "0.10"
+      TECHNICAL_RISK_CERTIFICATE_CONFIDENCE: "0.90"
+      TECHNICAL_RISK_EMBARGO_DAYS: "100"
+      TECHNICAL_RISK_DATASET_PATH: "artifacts/technical-risk-calibration-dataset.json"
+      TECHNICAL_RISK_REPORT_PATH: "artifacts/technical-risk-calibration-report.json"
 
     steps:
       - name: Check out isolated branch
@@ -65,15 +79,27 @@ jobs:
       - name: Install application dependencies
         run: npm ci --prefer-offline --no-audit --fund=false
 
-      - name: Build clean real point-in-time dataset
+      - name: Build clean fundamental point-in-time dataset
         run: npm run build:combined-opportunity-engine-calibration-dataset
 
-      - name: Upload point-in-time dataset
+      - name: Upload fundamental point-in-time dataset
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: opportunity-calibration-dataset
           path: artifacts/combined-opportunity-engine-calibration-dataset.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Build technical shock point-in-time dataset
+        run: npm run build:technical-risk-calibration-dataset
+
+      - name: Upload technical shock dataset
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: technical-risk-calibration-dataset
+          path: artifacts/technical-risk-calibration-dataset.json
           if-no-files-found: error
           retention-days: 14
 
@@ -85,17 +111,31 @@ jobs:
       - name: Install calibration libraries
         run: python -m pip install --disable-pip-version-check --no-input numpy pandas scipy scikit-learn
 
-      - name: Run strict chronological calibration
-        id: calibration
+      - name: Run strict fundamental calibration
+        id: fundamental_calibration
         continue-on-error: true
         run: python scripts/calibrate_opportunity_conformal.py
 
-      - name: Upload calibration report
+      - name: Run strict technical-risk calibration
+        id: technical_calibration
+        continue-on-error: true
+        run: python scripts/calibrate_technical_risk.py
+
+      - name: Upload fundamental calibration report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: opportunity-calibration-report
           path: artifacts/combined-opportunity-engine-calibration.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload technical-risk calibration report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: technical-risk-calibration-report
+          path: artifacts/technical-risk-calibration-report.json
           if-no-files-found: error
           retention-days: 14
 
@@ -105,9 +145,16 @@ jobs:
           python - <<'PY'
           import json
           from pathlib import Path
-          path = Path("artifacts/combined-opportunity-engine-calibration.json")
-          report = json.loads(path.read_text())
-          if not report.get("passed"):
+          reports = []
+          for path in [
+              Path("artifacts/combined-opportunity-engine-calibration.json"),
+              Path("artifacts/technical-risk-calibration-report.json"),
+          ]:
+              if path.exists():
+                  reports.append((path.name, json.loads(path.read_text())))
+          passed = [(name, report) for name, report in reports if report.get("passed")]
+          if not passed:
               raise SystemExit("No serious-signal definition has earned the strict 90% certificate.")
-          print("Certified definitions:", report.get("summary", {}).get("certifiedDefinitions", []))
+          for name, report in passed:
+              print(name, report.get("summary", {}).get("certifiedDefinitions", []))
           PY

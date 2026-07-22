@@ -17,6 +17,8 @@ type MappedEvent = { receipt: EventReceipt; classification: ClassifiedEvent; equ
 
 const NOISE = /\b(price target|technical analysis|stock picks?|stocks? to buy|should you buy|prediction|opinion|sponsored|top \d+ stocks?)\b/i;
 const RUMOUR = /\b(rumou?r|reportedly considering|unconfirmed|sources? say|may be planning|could announce|speculation)\b/i;
+const GENERIC_COMPANY_TOKENS = new Set(["american", "capital", "company", "corp", "digital", "energy", "financial", "first", "freedom", "general", "global", "group", "health", "holding", "holdings", "international", "national", "resources", "royal", "services", "systems", "technology", "technologies", "trust", "united", "world"]);
+const ACTIVE_CONFLICT = /\b(military strikes?|airstrikes?|missile (?:attack|launch|strike)|invasion|armed conflict|shipping attack|red sea attack|hostilities|troops? (?:invade|deploy|mobilize)|war (?:erupts|escalates|breaks out|begins|widens|intensifies)|(?:declares?|declaration of) war|ceasefire (?:breaks|collapses)|conflict (?:erupts|escalates|widens|intensifies))\b/i;
 
 function classify(receipt: EventReceipt): ClassifiedEvent {
   const value = `${receipt.title} ${receipt.summary ?? ""} ${receipt.rawEventType ?? ""}`.toLowerCase();
@@ -43,7 +45,7 @@ function classify(receipt: EventReceipt): ClassifiedEvent {
     return { family: "macro_inflation", direction, materiality: 78, transmission: 73, rumour, terms: ["inflation surprise", "policy-rate repricing"] };
   }
   if (hit(/\b(payrolls?|jobs report|unemployment|jobless claims?|employment report)\b/)) return { family: "macro_employment", direction: "unknown", materiality: 72, transmission: 65, rumour, terms: ["growth and policy expectations"] };
-  if (hit(/\b(war|military strike|missile|invasion|armed conflict|shipping attack|strait of hormuz|red sea attack)\b/)) return { family: "geopolitical_conflict", direction: "downside", materiality: 88, transmission: 82, rumour, terms: ["risk-off shock", "energy and logistics disruption"] };
+  if (hit(ACTIVE_CONFLICT)) return { family: "geopolitical_conflict", direction: "downside", materiality: 88, transmission: 82, rumour, terms: ["risk-off shock", "energy and logistics disruption"] };
   if (hit(/\b(sanctions?|export controls?|tariffs?|trade restrictions?|import ban|capital controls?)\b/)) return { family: "sanctions_trade", direction: "downside", materiality: 83, transmission: 80, rumour, terms: ["market-access or supply-chain restriction"] };
   if (hit(/\b(oil|crude|opec|natural gas|lng|pipeline)\b.*\b(surge|spike|cut|disruption|embargo|shortage)\b/)) return { family: "energy_commodity", direction: "upside", materiality: 80, transmission: 82, rumour, terms: ["commodity price and input-cost shock"] };
   if (receipt.official && ["white_house", "treasury", "federal_register"].includes(receipt.channel)) return { family: "government_announcement", direction: "unknown", materiality: 65, transmission: 60, rumour: false, terms: ["official government action"] };
@@ -55,6 +57,16 @@ function normalized(value: string) {
   return value.toLowerCase().replace(/\b(?:incorporated|inc|corporation|corp|company|co|limited|ltd|plc|holdings?|group)\b/g, " ").replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
+function normalizedExact(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function companyKeys(value: string) {
+  return [...new Set([normalizedExact(value), normalized(value)])]
+    .filter((key) => key.length >= 5)
+    .filter((key) => key.includes(" ") || !GENERIC_COMPANY_TOKENS.has(key));
+}
+
 function buildIndex(entries: EquityUniverseEntry[]) {
   const ticker = new Map(entries.map((entry) => [entry.ticker, entry]));
   const cik = new Map(entries.flatMap((entry) => entry.cik ? [[entry.cik, entry] as const] : []));
@@ -62,10 +74,8 @@ function buildIndex(entries: EquityUniverseEntry[]) {
   const tokens = new Map<string, EquityUniverseEntry[]>();
   for (const entry of entries) {
     for (const alias of [entry.name, ...entry.aliases]) {
-      const clean = normalized(alias);
-      if (clean.length < 5) continue;
-      aliases.set(clean, [...(aliases.get(clean) ?? []), entry]);
-      const first = clean.split(" ").find((token) => token.length >= 4 && !["global", "american", "international", "national", "financial", "technology"].includes(token));
+      for (const key of companyKeys(alias)) aliases.set(key, [...(aliases.get(key) ?? []), entry]);
+      const first = normalizedExact(alias).split(" ").find((token) => token.length >= 4 && !GENERIC_COMPANY_TOKENS.has(token));
       if (first) tokens.set(first, [...(tokens.get(first) ?? []), entry]);
     }
   }
@@ -83,7 +93,7 @@ function mapDirect(receipt: EventReceipt, index: ReturnType<typeof buildIndex>) 
     const cikMatch = hint.match(/^CIK(\d{10})$/i)?.[1];
     const byCik = cikMatch ? index.cik.get(cikMatch) : null;
     if (byCik) mapped.set(byCik.ticker, { equity: byCik, confidence: 100 });
-    for (const equity of index.aliases.get(normalized(hint)) ?? []) mapped.set(equity.ticker, { equity, confidence: 98 });
+    for (const key of companyKeys(hint)) for (const equity of index.aliases.get(key) ?? []) mapped.set(equity.ticker, { equity, confidence: 98 });
   }
   const sourceText = `${receipt.title} ${receipt.summary ?? ""}`;
   const sourceTokens = new Set(normalized(sourceText).split(" ").filter((token) => token.length >= 4));

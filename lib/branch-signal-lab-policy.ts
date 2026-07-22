@@ -30,6 +30,7 @@ function clamp(value: number) {
 const HEADLINE_STOP_WORDS = new Set(["a", "an", "and", "as", "at", "by", "for", "from", "in", "is", "of", "on", "or", "the", "to", "with"]);
 const COMPANY_SUFFIXES = /\b(?:incorporated|inc|corporation|corp|company|co|limited|ltd|plc|holdings?|group|class [a-z])\b/gi;
 const AMBIGUOUS_EQUITY_TICKERS = new Set(["A", "AI", "ALL", "ARE", "ARM", "CAN", "CAT", "CAR", "COST", "FOR", "IT", "LIFE", "LOVE", "ON", "OPEN", "OR", "SEE", "SO", "T", "UP", "W"]);
+const AMBIGUOUS_COMPANY_NAMES = new Set(["american", "capital", "digital", "energy", "financial", "first", "freedom", "general", "global", "health", "international", "national", "new", "resources", "royal", "services", "systems", "technology", "technologies", "trust", "united", "world"]);
 
 function escaped(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -64,7 +65,7 @@ export function matchesEquityText(text: string, equity: { name: string; ticker: 
   const lower = padded.toLowerCase();
   const names = [equity.name, ...(equity.aliases ?? [])]
     .map(normalizedCompanyName)
-    .filter((name) => name.length >= 5 && !/^(?:the|group|holdings?|company)$/.test(name));
+    .filter((name) => name.length >= 5 && !/^(?:the|group|holdings?|company)$/.test(name) && !AMBIGUOUS_COMPANY_NAMES.has(name));
   if (names.some((name) => lower.includes(` ${name} `))) return true;
   const escapedTicker = escaped(ticker);
   if (new RegExp(`\\$${escapedTicker}(?:\\b|(?=[.-]))`).test(padded)) return true;

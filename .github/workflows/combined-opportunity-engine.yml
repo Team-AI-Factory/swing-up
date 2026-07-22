@@ -10,7 +10,7 @@ on:
     paths:
       - "lib/opportunity-engine/**"
       - "app/api/internal/combined-opportunity-engine/**"
-      - "scripts/combined-opportunity-engine-smoke.ts"
+      - "scripts/combined-opportunity-engine-*.ts"
       - "package.json"
       - ".github/workflows/combined-opportunity-engine.yml"
   workflow_dispatch:
@@ -27,12 +27,17 @@ jobs:
     name: Validate isolated two-path engine
     if: github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     env:
       DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/swing_up_ci
       SWING_UP_TEST_MODE: "true"
       PUBLIC_LEDGER_TRACKING_ENABLED: "false"
       PUBLIC_TRACKING_ENABLED: "false"
+      SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+      LIVE_TEST_ROUNDS: "3"
+      LIVE_TEST_MIN_TICKERS: "3"
+      LIVE_TEST_TICKERS: "AAPL,MSFT,NVDA,XOM,KO"
+      LIVE_TEST_REPORT_PATH: "artifacts/combined-opportunity-engine-live-report.json"
 
     steps:
       - name: Check out branch
@@ -66,5 +71,17 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Test both connected paths
+      - name: Test controlled foundation and event paths
         run: npm run smoke:combined-opportunity-engine
+
+      - name: Test repeated workflow with real SEC and market data
+        run: npm run smoke:combined-opportunity-engine-live
+
+      - name: Upload real-data consistency report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: combined-opportunity-engine-live-report
+          path: artifacts/combined-opportunity-engine-live-report.json
+          if-no-files-found: warn
+          retention-days: 14

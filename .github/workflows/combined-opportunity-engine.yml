@@ -10,7 +10,7 @@ on:
     paths:
       - "lib/opportunity-engine/**"
       - "app/api/internal/combined-opportunity-engine/**"
-      - "scripts/combined-opportunity-engine-*.ts"
+      - "scripts/combined-opportunity-engine-*"
       - "package.json"
       - ".github/workflows/combined-opportunity-engine.yml"
   workflow_dispatch:
@@ -76,6 +76,35 @@ jobs:
 
       - name: Test repeated workflow with real SEC and market data
         run: npm run smoke:combined-opportunity-engine-live
+
+      - name: Start isolated branch application
+        shell: bash
+        env:
+          SWING_UP_COMBINED_ENGINE_ALLOW_LOCAL: "true"
+        run: |
+          npm start -- --hostname 127.0.0.1 --port 3015 > /tmp/combined-opportunity-engine.log 2>&1 &
+          echo $! > /tmp/combined-opportunity-engine.pid
+          for attempt in $(seq 1 45); do
+            if curl --fail --silent http://127.0.0.1:3015/api/internal/combined-opportunity-engine > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/combined-opportunity-engine.log
+          exit 1
+
+      - name: Test repeated real-data branch API workflow
+        env:
+          COMBINED_ENGINE_BASE_URL: http://127.0.0.1:3015
+        run: node scripts/combined-opportunity-engine-live-route-smoke.mjs
+
+      - name: Show isolated application log on failure
+        if: failure()
+        run: tail -250 /tmp/combined-opportunity-engine.log || true
+
+      - name: Stop isolated branch application
+        if: always()
+        run: kill "$(cat /tmp/combined-opportunity-engine.pid)" 2>/dev/null || true
 
       - name: Upload real-data consistency report
         if: always()

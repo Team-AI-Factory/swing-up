@@ -1,0 +1,112 @@
+name: External Volatility Watch Certification V2
+
+on:
+  push:
+    branches:
+      - "agent/combined-opportunity-engine"
+    paths:
+      - "scripts/build-technical-risk-dataset.ts"
+      - "scripts/certify_external_volatility_watch_v2.py"
+      - "package.json"
+      - ".github/workflows/external-volatility-watch-certification-v2.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "scripts/build-technical-risk-dataset.ts"
+      - "scripts/certify_external_volatility_watch_v2.py"
+      - "package.json"
+      - ".github/workflows/external-volatility-watch-certification-v2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: external-volatility-watch-certification-v2-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  certify:
+    name: Certify 12 percent extreme-volatility Watch Out on unused stocks
+    if: github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    env:
+      TECHNICAL_RISK_EARLIEST_DATE: "2012-01-01"
+      TECHNICAL_RISK_CONCURRENCY: "4"
+      TECHNICAL_RISK_EVENT_COOLDOWN: "100"
+      TECHNICAL_RISK_TICKERS: "PFSI,RILY,SEIC,SLM,UPBD,VC,WT,BRX,CBRE,COLD,CUZ,DEI,DLR,ELS,FR,GLPI,HST,IRM,KIM,NNN,REG,STAG,VICI,AU,GOLD,HMY,IMPUY,LYG,NWG,BCS,SAN,BBVA,BMO,RY,TD,BNS,CM,CNI,CP,SU,CNQ,TRP,BCE,TU,WCN,ACM,ATI,AXON,BDC,BG,BLDR,BRC,CACI,CRS,CSL,FIX,GATX,GTLS,HII,HWM,IESC,KBR,LECO,LII,MIDD,MLI,MSA,MRCY,MSM,OC,PCAR,RBC,RLI,RRX,RUSHA,TGI,THR,TNC,TREX,TRN,WMS,WWD,ACHC,ALGN,AMN,AVAH,BEAT,CPRX,CRL,CYH,ENSG,GKOS,HCAT,INCY,INSP,IRTC,ITGR,LFST,MEDP,NEO,OPCH,OSCR,PEN,PRCT,SEM,SGRY,THC,USPH,VCEL,AAOI,ACMR,ACIW,ADTN,ALKT,ALRM,AMPL,API,APLD,ARQQ,ATEN,ATEX,AVDX,BAND,BIGC,BL,BLKB,CALX,CLFD,CWAN,DOCN,DOMO,DSP,FIVN,FRSH,GDYN,GRND,HLIT,INOD,JAMF,LSPD,MNDY,NICE,OS,PAR,POWI,PRO,QTWO,RELY,RNG,SEMR"
+      TECHNICAL_RISK_DATASET_PATH: "artifacts/external-volatility-watch-v2-dataset.json"
+      EXTERNAL_VOLATILITY_V2_DATASET_PATH: "artifacts/external-volatility-watch-v2-dataset.json"
+      EXTERNAL_VOLATILITY_V2_REPORT_PATH: "artifacts/external-volatility-watch-v2-certificate.json"
+      EXTERNAL_VOLATILITY_V2_MIN_SIGNALS: "30"
+      EXTERNAL_VOLATILITY_V2_MIN_UNIQUE_TICKERS: "20"
+      EXTERNAL_VOLATILITY_V2_TARGET_ERROR: "0.10"
+      EXTERNAL_VOLATILITY_V2_CERTIFICATE_CONFIDENCE: "0.90"
+
+    steps:
+      - name: Check out isolated branch
+        uses: actions/checkout@v4
+
+      - name: Refuse main branch execution
+        shell: bash
+        run: |
+          branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          test "${branch}" != "main"
+          echo "Testing frozen 12 percent extreme-volatility Watch Out on ${branch}"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install application dependencies
+        run: npm ci --prefer-offline --no-audit --fund=false
+
+      - name: Build unused-stock point-in-time dataset
+        run: npm run build:technical-risk-calibration-dataset
+
+      - name: Upload burned second volatility holdout dataset
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: external-volatility-watch-v2-dataset
+          path: artifacts/external-volatility-watch-v2-dataset.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install certification libraries
+        run: python -m pip install --disable-pip-version-check --no-input pandas scipy
+
+      - name: Apply frozen V2 volatility rule once
+        id: certificate
+        continue-on-error: true
+        run: python scripts/certify_external_volatility_watch_v2.py
+
+      - name: Upload second external volatility certificate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: external-volatility-watch-v2-certificate
+          path: artifacts/external-volatility-watch-v2-certificate.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce second external volatility certificate
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path("artifacts/external-volatility-watch-v2-certificate.json").read_text())
+          if not report.get("passed"):
+              raise SystemExit("The 12 percent extreme-volatility Watch Out did not pass the external 90% certificate.")
+          print(report["rule"]["id"], report["overall"])
+          PY

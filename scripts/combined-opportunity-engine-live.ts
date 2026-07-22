@@ -163,146 +163,153 @@ function evaluate(snapshot: LiveOpportunitySnapshot, round: number): EvaluatedSn
   };
 }
 
-const rounds: RoundResult[] = [];
-for (let round = 1; round <= roundsRequested; round += 1) {
-  const startedAt = new Date().toISOString();
-  const live = await fetchLiveOpportunityUniverse(tickersRequested, new Date());
-  rounds.push({
-    round,
-    startedAt,
-    completedAt: new Date().toISOString(),
-    snapshots: live.snapshots.map((snapshot) => evaluate(snapshot, round)),
-    errors: live.errors,
+async function main() {
+  const rounds: RoundResult[] = [];
+  for (let round = 1; round <= roundsRequested; round += 1) {
+    const startedAt = new Date().toISOString();
+    const live = await fetchLiveOpportunityUniverse(tickersRequested, new Date());
+    rounds.push({
+      round,
+      startedAt,
+      completedAt: new Date().toISOString(),
+      snapshots: live.snapshots.map((snapshot) => evaluate(snapshot, round)),
+      errors: live.errors,
+    });
+    if (round < roundsRequested) await sleep(1_000);
+  }
+
+  const records = rounds.flatMap((round) => round.snapshots);
+  const consistencyByTicker = tickersRequested.map((ticker) => {
+    const tickerRecords = records.filter((record) => record.ticker === ticker);
+    const scores = tickerRecords.map((record) => record.foundationDecision.scores.opportunityScore);
+    const prices = tickerRecords.map((record) => record.foundationInput.market.currentPrice).filter((value): value is number => typeof value === "number");
+    const scoreRange = scores.length ? Math.max(...scores) - Math.min(...scores) : null;
+    const priceRangePercent = prices.length && Math.min(...prices) > 0
+      ? ((Math.max(...prices) - Math.min(...prices)) / Math.min(...prices)) * 100
+      : null;
+    const classificationSignatures = [...new Set(tickerRecords.map((record) => record.classificationSignature))];
+    const fundamentalFingerprints = [...new Set(tickerRecords.map((record) => record.fundamentalFingerprint))];
+    const allSourceChecksPass = tickerRecords.every((record) =>
+      record.sourceChecks.secCompanyFacts
+      && record.sourceChecks.secFiling
+      && record.sourceChecks.realMarketData
+      && record.sourceChecks.noSyntheticData
+      && record.sourceChecks.currentPricePositive
+      && record.sourceChecks.officialReceipts >= 2
+      && record.sourceChecks.marketAgeDays !== null
+      && record.sourceChecks.marketAgeDays <= 10
+      && record.sourceChecks.filingAgeDays !== null
+      && record.sourceChecks.filingAgeDays <= 550
+    );
+    const consistent = tickerRecords.length === roundsRequested
+      && classificationSignatures.length === 1
+      && fundamentalFingerprints.length === 1
+      && scoreRange !== null
+      && scoreRange <= 2
+      && priceRangePercent !== null
+      && priceRangePercent <= 2.5
+      && allSourceChecksPass;
+    const latest = tickerRecords.at(-1);
+    return {
+      ticker,
+      roundsCompleted: tickerRecords.length,
+      consistent,
+      scoreRange,
+      priceRangePercent: priceRangePercent === null ? null : Number(priceRangePercent.toFixed(4)),
+      classificationSignatures,
+      fundamentalFingerprints,
+      allSourceChecksPass,
+      latestResult: latest ? {
+        company: latest.company,
+        fiscalPeriod: latest.metadata.fiscalPeriod,
+        latestFiling: `${latest.metadata.latestFilingForm} ${latest.metadata.latestFilingDate} ${latest.metadata.latestFilingAccession}`,
+        marketDate: latest.metadata.marketDate,
+        opportunityScore: latest.foundationDecision.scores.opportunityScore,
+        evidenceConfidence: latest.foundationDecision.scores.evidenceConfidence,
+        riskScore: latest.foundationDecision.scores.riskScore,
+        candidateBucket: latest.foundationDecision.candidateBucket,
+        userAlertEligible: latest.foundationDecision.userAlertEligible,
+        foundationBlockedReasons: latest.foundationDecision.blockedReasons,
+        eventDirection: latest.eventDecision.impact.direction,
+        eventAlertType: latest.eventDecision.alertType,
+        eventUserAlertEligible: latest.eventDecision.userAlertEligible,
+        sourceChecks: latest.sourceChecks,
+      } : null,
+    };
   });
-  if (round < roundsRequested) await sleep(1_000);
+
+  const stable = consistencyByTicker.filter((row) => row.consistent);
+  const latestStableRecords = stable.flatMap((row) => {
+    const record = records.filter((candidate) => candidate.ticker === row.ticker).at(-1);
+    return record ? [record] : [];
+  });
+  const nonNeutralEventCount = latestStableRecords.filter((record) => record.eventDecision.impact.direction !== "neutral").length;
+  const allRoundsMeetMinimum = rounds.every((round) => round.snapshots.length >= minimumStableTickers);
+  const allStableSourcesReal = latestStableRecords.every((record) => record.sourceChecks.noSyntheticData && record.sourceChecks.secCompanyFacts && record.sourceChecks.secFiling && record.sourceChecks.realMarketData);
+  const failureReasons = [
+    ...(stable.length < minimumStableTickers ? [`only_${stable.length}_stable_tickers_minimum_${minimumStableTickers}`] : []),
+    ...(!allRoundsMeetMinimum ? ["one_or_more_rounds_below_minimum_live_ticker_coverage"] : []),
+    ...(!allStableSourcesReal ? ["one_or_more_stable_results_failed_real_source_checks"] : []),
+    ...(nonNeutralEventCount < 1 ? ["no_real_filing_changed_any_thesis"] : []),
+  ];
+  const passed = failureReasons.length === 0;
+  const report = {
+    version: 1,
+    passed,
+    checkedAt: new Date().toISOString(),
+    sourceMode: "real_live_sec_and_market_data",
+    methodology: {
+      roundsRequested,
+      minimumStableTickers,
+      tickersRequested,
+      officialFoundationSource: "SEC Company Facts API",
+      officialEventSource: "SEC Submissions and filing archives",
+      marketSource: "Stooq public daily market CSV",
+      classificationConsistency: "Same fiscal period, SEC accession, normalized fundamentals, candidate bucket, thesis state, and event result in every round.",
+      numericTolerance: { opportunityScorePoints: 2, priceRangePercent: 2.5 },
+      noMockFixtures: true,
+    },
+    summary: {
+      roundsCompleted: rounds.length,
+      stableTickerCount: stable.length,
+      stableTickers: stable.map((row) => row.ticker),
+      nonNeutralRealFilingEvents: nonNeutralEventCount,
+      allRoundsMeetMinimum,
+      allStableSourcesReal,
+      totalLiveSnapshots: records.length,
+      totalProviderErrors: rounds.reduce((sum, round) => sum + round.errors.length, 0),
+      failureReasons,
+    },
+    consistencyByTicker,
+    rounds,
+    safety: {
+      databaseWrites: false,
+      alertPublishing: false,
+      notifications: false,
+      payments: false,
+      openAiCalls: false,
+    },
+  };
+
+  await mkdir(outputPath.split("/").slice(0, -1).join("/") || ".", { recursive: true });
+  await writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  console.log(JSON.stringify({
+    passed,
+    sourceMode: report.sourceMode,
+    roundsCompleted: report.summary.roundsCompleted,
+    stableTickerCount: report.summary.stableTickerCount,
+    stableTickers: report.summary.stableTickers,
+    nonNeutralRealFilingEvents: report.summary.nonNeutralRealFilingEvents,
+    totalProviderErrors: report.summary.totalProviderErrors,
+    failureReasons,
+    reportPath: outputPath,
+    latestResults: consistencyByTicker.map((row) => row.latestResult).filter(Boolean),
+    safety: report.safety,
+  }, null, 2));
+  assert.equal(passed, true, `Live consistency test failed: ${failureReasons.join(", ")}`);
 }
 
-const records = rounds.flatMap((round) => round.snapshots);
-const consistencyByTicker = tickersRequested.map((ticker) => {
-  const tickerRecords = records.filter((record) => record.ticker === ticker);
-  const scores = tickerRecords.map((record) => record.foundationDecision.scores.opportunityScore);
-  const prices = tickerRecords.map((record) => record.foundationInput.market.currentPrice).filter((value): value is number => typeof value === "number");
-  const scoreRange = scores.length ? Math.max(...scores) - Math.min(...scores) : null;
-  const priceRangePercent = prices.length && Math.min(...prices) > 0
-    ? ((Math.max(...prices) - Math.min(...prices)) / Math.min(...prices)) * 100
-    : null;
-  const classificationSignatures = [...new Set(tickerRecords.map((record) => record.classificationSignature))];
-  const fundamentalFingerprints = [...new Set(tickerRecords.map((record) => record.fundamentalFingerprint))];
-  const allSourceChecksPass = tickerRecords.every((record) =>
-    record.sourceChecks.secCompanyFacts
-    && record.sourceChecks.secFiling
-    && record.sourceChecks.realMarketData
-    && record.sourceChecks.noSyntheticData
-    && record.sourceChecks.currentPricePositive
-    && record.sourceChecks.officialReceipts >= 2
-    && record.sourceChecks.marketAgeDays !== null
-    && record.sourceChecks.marketAgeDays <= 10
-    && record.sourceChecks.filingAgeDays !== null
-    && record.sourceChecks.filingAgeDays <= 550
-  );
-  const consistent = tickerRecords.length === roundsRequested
-    && classificationSignatures.length === 1
-    && fundamentalFingerprints.length === 1
-    && scoreRange !== null
-    && scoreRange <= 2
-    && priceRangePercent !== null
-    && priceRangePercent <= 2.5
-    && allSourceChecksPass;
-  const latest = tickerRecords.at(-1);
-  return {
-    ticker,
-    roundsCompleted: tickerRecords.length,
-    consistent,
-    scoreRange,
-    priceRangePercent: priceRangePercent === null ? null : Number(priceRangePercent.toFixed(4)),
-    classificationSignatures,
-    fundamentalFingerprints,
-    allSourceChecksPass,
-    latestResult: latest ? {
-      company: latest.company,
-      fiscalPeriod: latest.metadata.fiscalPeriod,
-      latestFiling: `${latest.metadata.latestFilingForm} ${latest.metadata.latestFilingDate} ${latest.metadata.latestFilingAccession}`,
-      marketDate: latest.metadata.marketDate,
-      opportunityScore: latest.foundationDecision.scores.opportunityScore,
-      evidenceConfidence: latest.foundationDecision.scores.evidenceConfidence,
-      riskScore: latest.foundationDecision.scores.riskScore,
-      candidateBucket: latest.foundationDecision.candidateBucket,
-      userAlertEligible: latest.foundationDecision.userAlertEligible,
-      foundationBlockedReasons: latest.foundationDecision.blockedReasons,
-      eventDirection: latest.eventDecision.impact.direction,
-      eventAlertType: latest.eventDecision.alertType,
-      eventUserAlertEligible: latest.eventDecision.userAlertEligible,
-      sourceChecks: latest.sourceChecks,
-    } : null,
-  };
+void main().catch((error) => {
+  console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+  process.exitCode = 1;
 });
-
-const stable = consistencyByTicker.filter((row) => row.consistent);
-const latestStableRecords = stable.flatMap((row) => {
-  const record = records.filter((candidate) => candidate.ticker === row.ticker).at(-1);
-  return record ? [record] : [];
-});
-const nonNeutralEventCount = latestStableRecords.filter((record) => record.eventDecision.impact.direction !== "neutral").length;
-const allRoundsMeetMinimum = rounds.every((round) => round.snapshots.length >= minimumStableTickers);
-const allStableSourcesReal = latestStableRecords.every((record) => record.sourceChecks.noSyntheticData && record.sourceChecks.secCompanyFacts && record.sourceChecks.secFiling && record.sourceChecks.realMarketData);
-const failureReasons = [
-  ...(stable.length < minimumStableTickers ? [`only_${stable.length}_stable_tickers_minimum_${minimumStableTickers}`] : []),
-  ...(!allRoundsMeetMinimum ? ["one_or_more_rounds_below_minimum_live_ticker_coverage"] : []),
-  ...(!allStableSourcesReal ? ["one_or_more_stable_results_failed_real_source_checks"] : []),
-  ...(nonNeutralEventCount < 1 ? ["no_real_filing_changed_any_thesis"] : []),
-];
-const passed = failureReasons.length === 0;
-const report = {
-  version: 1,
-  passed,
-  checkedAt: new Date().toISOString(),
-  sourceMode: "real_live_sec_and_market_data",
-  methodology: {
-    roundsRequested,
-    minimumStableTickers,
-    tickersRequested,
-    officialFoundationSource: "SEC Company Facts API",
-    officialEventSource: "SEC Submissions and filing archives",
-    marketSource: "Stooq public daily market CSV",
-    classificationConsistency: "Same fiscal period, SEC accession, normalized fundamentals, candidate bucket, thesis state, and event result in every round.",
-    numericTolerance: { opportunityScorePoints: 2, priceRangePercent: 2.5 },
-    noMockFixtures: true,
-  },
-  summary: {
-    roundsCompleted: rounds.length,
-    stableTickerCount: stable.length,
-    stableTickers: stable.map((row) => row.ticker),
-    nonNeutralRealFilingEvents: nonNeutralEventCount,
-    allRoundsMeetMinimum,
-    allStableSourcesReal,
-    totalLiveSnapshots: records.length,
-    totalProviderErrors: rounds.reduce((sum, round) => sum + round.errors.length, 0),
-    failureReasons,
-  },
-  consistencyByTicker,
-  rounds,
-  safety: {
-    databaseWrites: false,
-    alertPublishing: false,
-    notifications: false,
-    payments: false,
-    openAiCalls: false,
-  },
-};
-
-await mkdir(outputPath.split("/").slice(0, -1).join("/") || ".", { recursive: true });
-await writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
-console.log(JSON.stringify({
-  passed,
-  sourceMode: report.sourceMode,
-  roundsCompleted: report.summary.roundsCompleted,
-  stableTickerCount: report.summary.stableTickerCount,
-  stableTickers: report.summary.stableTickers,
-  nonNeutralRealFilingEvents: report.summary.nonNeutralRealFilingEvents,
-  totalProviderErrors: report.summary.totalProviderErrors,
-  failureReasons,
-  reportPath: outputPath,
-  latestResults: consistencyByTicker.map((row) => row.latestResult).filter(Boolean),
-  safety: report.safety,
-}, null, 2));
-assert.equal(passed, true, `Live consistency test failed: ${failureReasons.join(", ")}`);

@@ -10,7 +10,9 @@ In the branch preview, the startup wrapper removes database, Telegram, payment, 
 
 ## What runs
 
-The preview process runs immediately at startup and then every five minutes by default. CoinGecko and Google News RSS refresh on that cycle. GDELT refreshes no more often than every fifteen minutes, Marketaux every twenty minutes, FMP Crypto News every thirty minutes, Alpha Vantage every two hours, and FRED/Frankfurter once per hour. In addition to the in-process caches, every quota-limited call is reserved in the durable branch ledger before it runs. The ledger enforces provider-specific minimum intervals and rolling free-plan budgets across restarts. CoinGecko is capped below its Demo monthly credit allowance, and each historical event anchor is fetched once and then combined with the current five-minute market row. A real provider rate limit or temporary outage starts bounded exponential cooldown without substituting stale, neutral, mock, or invented evidence. Only an explicitly repair-eligible application failure gets the one-minute technical retry; upstream outages remain on the normal quota-safe loop.
+The startup wrapper launches two separate processes: the Next.js website and a dedicated scanner worker. The worker runs immediately after the website becomes healthy and then every five minutes by default. The wrapper receives a worker heartbeat every thirty seconds and replaces the worker if the heartbeat is missing for ninety seconds. This keeps the alarm independent from Next.js instrumentation and request lifecycles while leaving the website available.
+
+CoinGecko and Google News RSS refresh on the five-minute cycle. GDELT refreshes no more often than every fifteen minutes, Marketaux every twenty minutes, FMP Crypto News every thirty minutes, Alpha Vantage every two hours, and FRED/Frankfurter once per hour. In addition to the in-process caches, every quota-limited call is reserved in the durable branch ledger before it runs. The ledger enforces provider-specific minimum intervals and rolling free-plan budgets across restarts. CoinGecko is capped below its Demo monthly allowance, and each historical event anchor is fetched once and then combined with the current five-minute market row. A real provider rate limit or temporary outage starts bounded exponential cooldown without substituting stale, neutral, mock, or invented evidence. Only an explicitly repair-eligible application failure gets the one-minute technical retry; upstream outages remain on the normal quota-safe loop.
 
 Each performance run reads live CoinGecko price, volume, market-cap, FDV, supply, range, and 24-hour/7-day data for ten major digital assets. It searches the five largest movers through the available real news channels. GDELT remains active, but a shared-network GDELT limit cannot stop otherwise valid analysis. A candidate reaches the 14-agent OpenAI committee only when it has:
 
@@ -61,7 +63,7 @@ The redacted report is available from:
 
 `GET /api/internal/railway-branch-signal-lab`
 
-The POST trigger requires a random runtime-only token generated inside the preview container. It is not a repository or Railway secret.
+The POST trigger requires a random runtime-only token generated inside the preview container plus the dedicated worker identity headers. The worker calls the route over `127.0.0.1`, so the alarm does not depend on Railway's public edge routing. Each stored run records the worker start time and monotonic sequence number. These values prove which worker invoked a run without exposing the runtime token. The token is not a repository or Railway secret.
 
 ## Railway requirement
 

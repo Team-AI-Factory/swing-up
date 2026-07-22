@@ -20,6 +20,7 @@ if (lab.latest && !Array.isArray(lab.providerQuotaUsage)) throw new Error("The p
 if (lab.latest?.candidateFunnel && typeof lab.latest.candidateFunnel.candidatesPassingEvidenceGate !== "number") throw new Error("The preview candidate funnel is incomplete.");
 if (lab.stateStorage?.backend !== "cloudflare_r2" || lab.stateStorage?.primary !== "cloudflare_r2" || lab.stateStorage?.durable !== true || lab.stateStorage?.writable !== true) throw new Error("The preview is not using writable Cloudflare R2 as its primary durable state store.");
 if (lab.stateStorage?.postgresUsed !== false || lab.stateStorage?.railwayVolumeUsedAsPrimary !== false) throw new Error("The preview is using PostgreSQL or a Railway Volume as primary branch-lab state.");
+if (lab.pollingPolicy?.schedulerOwner !== "dedicated_worker" || lab.pollingPolicy?.schedulerTransport !== "loopback" || lab.pollingPolicy?.supervisedProcess !== true) throw new Error("The preview is not using the supervised dedicated five-minute worker.");
 const serializedLab = JSON.stringify(lab).toLowerCase();
 if (serializedLab.includes("api_token=") || serializedLab.includes("apikey=")) throw new Error("A provider credential appeared in a reported URL.");
 const outcomeStatus = await check("/api/internal/live-outcome-evaluator");

@@ -74,6 +74,9 @@ jobs:
           SWING_UP_EVAL_BASE_URL: http://127.0.0.1:3010
         run: npm run smoke:branch-lab-security
 
+      - name: Verify dedicated five-minute alarm process mechanics
+        run: npm run smoke:branch-worker-process
+
       - name: Optional branch preview smoke
         if: ${{ vars.SWING_UP_BRANCH_TEST_URL != '' }}
         env:

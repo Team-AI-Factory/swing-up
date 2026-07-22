@@ -32,6 +32,12 @@ type OpenAiReservation = {
   completedAt?: string;
 };
 type ProviderCallReservation = Omit<BranchProviderCallRequest, "checkedAt"> & { reservedAt: string };
+type SchedulerInvocation = {
+  owner: "dedicated_worker";
+  transport: "loopback";
+  workerStartedAt: string;
+  sequence: number;
+};
 type History = { version: number; branch: string; deploymentId: string | null; stopped: boolean; stopReason: string | null; totalRunCount: number; runs: JsonRecord[]; openAiReservations: OpenAiReservation[]; providerCallReservations: ProviderCallReservation[]; updatedAt: string };
 type LegacyFileStorage = {
   path: string;
@@ -166,6 +172,14 @@ function r2StateBlocker(storage: StateStorage) {
 
 function suppliedToken(request: NextRequest) {
   return request.headers.get("x-swing-up-branch-lab-token")?.trim() || request.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
+}
+
+function schedulerInvocation(request: NextRequest): SchedulerInvocation | null {
+  if (request.headers.get("x-swing-up-branch-lab-scheduler") !== "dedicated_worker") return null;
+  const workerStartedAt = request.headers.get("x-swing-up-branch-lab-worker-started-at")?.trim() || "";
+  const sequence = Number(request.headers.get("x-swing-up-branch-lab-worker-sequence"));
+  if (!Number.isFinite(Date.parse(workerStartedAt)) || !Number.isInteger(sequence) || sequence < 1) return null;
+  return { owner: "dedicated_worker", transport: "loopback", workerStartedAt, sequence };
 }
 
 function safeRun(run: JsonRecord) {
@@ -351,6 +365,16 @@ export async function GET() {
   const validatedSeriousSignals = [...new Map(validatedSeriousSignalRuns.map((run) => [String(run.candidateFingerprint), run])).values()];
   const usefulValidatedSignals = validatedSeriousSignals.filter((run) => validOneDayOutcome(run)?.usefulAtCheckpoint === true);
   const consistentSeriousSignals = consistentSafeBehavior && validatedSeriousSignals.length >= 3 && usefulValidatedSignals.length / validatedSeriousSignals.length >= 2 / 3;
+  const latestRun = history.runs.at(-1) ?? null;
+  const latestSchedulerInvocation = record(latestRun?.schedulerInvocation);
+  const effectiveIntervalSeconds = positiveEnvironmentNumber(process.env.SWING_UP_BRANCH_LAB_EFFECTIVE_INTERVAL_SECONDS, 300);
+  const latestRunAt = Date.parse(String(latestRun?.checkedAt ?? ""));
+  const lastRunAgeSeconds = Number.isFinite(latestRunAt) ? Math.max(0, Math.round((Date.now() - latestRunAt) / 1000)) : null;
+  const schedulerHealthy = !history.stopped
+    && latestSchedulerInvocation?.owner === "dedicated_worker"
+    && latestSchedulerInvocation?.transport === "loopback"
+    && lastRunAgeSeconds !== null
+    && lastRunAgeSeconds <= effectiveIntervalSeconds + 120;
   return NextResponse.json({
     ok: true,
     mode: "railway_branch_live_read_only",
@@ -371,18 +395,22 @@ export async function GET() {
     consistentSeriousSignals,
     outcomeEvaluationPolicy: { provider: "CoinGecko live snapshot", checkpoints: OUTCOME_CHECKPOINTS.map((checkpoint) => checkpoint.label), maximumDelayMinutes: OUTCOME_EVALUATION_TOLERANCE_MS / 60_000, lateSnapshotReuseAllowed: false },
     pollingPolicy: {
-      schedulerOwner: process.env.SWING_UP_BRANCH_LAB_SCHEDULER_OWNER === "next_server" ? "next_server" : "unavailable",
-      schedulerTransport: process.env.RAILWAY_PUBLIC_DOMAIN?.trim() ? "railway_https_domain" : "loopback",
-      liveIntervalSeconds: positiveEnvironmentNumber(process.env.SWING_UP_BRANCH_LAB_EFFECTIVE_INTERVAL_SECONDS, 300),
+      schedulerOwner: process.env.SWING_UP_BRANCH_LAB_SCHEDULER_OWNER === "dedicated_worker" ? "dedicated_worker" : "unavailable",
+      schedulerTransport: "loopback",
+      supervisedProcess: true,
+      workerHeartbeatTimeoutSeconds: 90,
+      liveIntervalSeconds: effectiveIntervalSeconds,
       technicalRetrySeconds: positiveEnvironmentNumber(process.env.SWING_UP_BRANCH_LAB_EFFECTIVE_TECHNICAL_RETRY_SECONDS, 60),
       watchdogEnabled: true,
-      maximumOverdueSecondsBeforeRecovery: 30,
+      lastWorkerInvocation: latestSchedulerInvocation,
+      lastRunAgeSeconds,
+      schedulerHealthy,
     },
     stateStorage: storageMetadata(storage),
     openAiReservationPolicy: { durableStateRequired: true, durableStateAvailable: r2StateReady(storage), stateBlocker: r2StateBlocker(storage), maxAttemptsPerRolling24Hours: MAX_OPENAI_RUNS_PER_24_HOURS, sameEvidenceCooldownHours: OPENAI_EVIDENCE_COOLDOWN_MS / (60 * 60 * 1000), consumedReservationCount: history.openAiReservations.filter(reservationConsumed).length },
     providerQuotaStorageDurable: r2StateReady(storage),
     providerQuotaUsage: providerQuotaUsage(history, Date.now()),
-    latest: history.runs.at(-1) ?? null,
+    latest: latestRun,
     runs: history.runs.slice(-6),
     updatedAt: history.updatedAt,
   });
@@ -392,6 +420,8 @@ export async function POST(request: NextRequest) {
   if (!branchAllowed()) return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
   const expected = process.env.SWING_UP_BRANCH_LAB_RUNTIME_TOKEN?.trim();
   if (!expected || suppliedToken(request) !== expected) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  const invocation = schedulerInvocation(request);
+  if (!invocation) return NextResponse.json({ ok: false, error: "invalid_scheduler" }, { status: 403 });
   const loaded = await loadHistory();
   const history = loaded.history;
   let storage = loaded.storage;
@@ -474,7 +504,7 @@ export async function POST(request: NextRequest) {
   }
   history.totalRunCount += 1;
   const runNumber = history.totalRunCount;
-  history.runs.push({ ...report, runNumber, repairAttemptNumber, ...(activeReservationId ? { openAiReservationId: activeReservationId } : {}) });
+  history.runs.push({ ...report, runNumber, repairAttemptNumber, schedulerInvocation: invocation, ...(activeReservationId ? { openAiReservationId: activeReservationId } : {}) });
   if (repairFailure && repairAttemptNumber >= 3) {
     history.stopped = true;
     history.stopReason = `Stopped after the same repair-eligible ${repairFailure.scope} failure produced no measurable gain three times: ${repairFailure.fingerprint}`;
@@ -482,5 +512,5 @@ export async function POST(request: NextRequest) {
   pruneHistory(history, Date.now());
   storage = await saveHistory(history, storage);
   const openAiRunsLast24Hours = openAiAttemptsInWindow(history, Date.now(), 24 * 60 * 60 * 1000);
-  return NextResponse.json({ ...report, runNumber, retainedRunCount: history.runs.length, repairAttemptNumber, stopped: history.stopped, stopReason: history.stopReason, openAiRunsLast24Hours, openAiAttemptsLast24Hours: openAiRunsLast24Hours, maxOpenAiRunsPer24Hours: MAX_OPENAI_RUNS_PER_24_HOURS, openAiReservationId: activeReservationId, openAiRequiresDurableState: true, openAiAllowedAtRunStart: allowOpenAi, openAiStateBlocker: r2StateBlocker(storage), stateStorage: storageMetadata(storage), stateWritesToR2: true, productionR2DataWrites: false });
+  return NextResponse.json({ ...report, runNumber, retainedRunCount: history.runs.length, repairAttemptNumber, schedulerInvocation: invocation, stopped: history.stopped, stopReason: history.stopReason, openAiRunsLast24Hours, openAiAttemptsLast24Hours: openAiRunsLast24Hours, maxOpenAiRunsPer24Hours: MAX_OPENAI_RUNS_PER_24_HOURS, openAiReservationId: activeReservationId, openAiRequiresDurableState: true, openAiAllowedAtRunStart: allowOpenAi, openAiStateBlocker: r2StateBlocker(storage), stateStorage: storageMetadata(storage), stateWritesToR2: true, productionR2DataWrites: false });
 }

@@ -15,6 +15,10 @@ function intervalMs(raw, fallbackSeconds, maximumMs) {
 const normalPollMs = intervalMs(process.env.SWING_UP_BRANCH_LAB_INTERVAL_SECONDS, 300, 3_600_000);
 const technicalRetryMs = intervalMs(process.env.SWING_UP_BRANCH_LAB_TECHNICAL_RETRY_SECONDS, 60, normalPollMs);
 let child = null;
+let worker = null;
+let workerRestartTimer = null;
+let workerLastHeartbeatAt = 0;
+let workerStoppedByLab = false;
 
 function isolatedBranchEnvironment() {
   const env = {
@@ -32,7 +36,7 @@ function isolatedBranchEnvironment() {
     AI_COMMITTEE_REQUEST_TIMEOUT_MS: "12000",
     PUBLIC_LEDGER_TRACKING_ENABLED: "false",
     PUBLIC_TRACKING_ENABLED: "false",
-    SWING_UP_BRANCH_LAB_SCHEDULER_OWNER: "next_server",
+    SWING_UP_BRANCH_LAB_SCHEDULER_OWNER: "dedicated_worker",
     SWING_UP_BRANCH_LAB_EFFECTIVE_INTERVAL_SECONDS: `${Math.round(normalPollMs / 1000)}`,
     SWING_UP_BRANCH_LAB_EFFECTIVE_TECHNICAL_RETRY_SECONDS: `${Math.round(technicalRetryMs / 1000)}`,
   };
@@ -44,8 +48,8 @@ function isolatedBranchEnvironment() {
   return env;
 }
 
-function launch(command, args, env = process.env) {
-  return spawn(command, args, { stdio: "inherit", env });
+function launch(command, args, env = process.env, stdio = "inherit") {
+  return spawn(command, args, { stdio, env });
 }
 
 if (!branchLab) {
@@ -57,20 +61,60 @@ if (!branchLab) {
   console.log("[swing-up-branch-lab] database migrations skipped for isolated branch preview.");
 }
 
-child = launch("npm", ["run", "start", "--", "--hostname", "0.0.0.0", "--port", port], branchLab ? isolatedBranchEnvironment() : process.env);
+const applicationEnvironment = branchLab ? isolatedBranchEnvironment() : process.env;
+child = launch("npm", ["run", "start", "--", "--hostname", "0.0.0.0", "--port", port], applicationEnvironment);
+
+function clearWorkerRestart() {
+  if (workerRestartTimer) clearTimeout(workerRestartTimer);
+  workerRestartTimer = null;
+}
+
+function startWorker() {
+  if (!branchLab || worker || workerStoppedByLab || !child || child.killed) return;
+  workerLastHeartbeatAt = Date.now();
+  worker = launch(process.execPath, ["scripts/railway-branch-worker.mjs"], applicationEnvironment, ["ignore", "inherit", "inherit", "ipc"]);
+  worker.on("message", (message) => {
+    workerLastHeartbeatAt = Date.now();
+    if (message?.type === "stopped_by_lab") workerStoppedByLab = true;
+  });
+  worker.on("exit", (code, signal) => {
+    console.warn(`[swing-up-branch-lab] dedicated worker exited code=${code ?? "null"} signal=${signal ?? "none"}.`);
+    worker = null;
+    if (!workerStoppedByLab && child && !child.killed) {
+      clearWorkerRestart();
+      workerRestartTimer = setTimeout(startWorker, 5_000);
+    }
+  });
+}
+
+const workerWatchdog = branchLab ? setInterval(() => {
+  if (worker && workerLastHeartbeatAt > 0 && Date.now() - workerLastHeartbeatAt > 90_000) {
+    console.error("[swing-up-branch-lab] dedicated worker heartbeat overdue; restarting worker process.");
+    worker.kill("SIGKILL");
+  } else if (!worker && !workerRestartTimer && !workerStoppedByLab && child && !child.killed) {
+    startWorker();
+  }
+}, 30_000) : null;
+
+if (branchLab) startWorker();
 
 function stop(signal) {
+  clearWorkerRestart();
+  if (worker && !worker.killed) worker.kill(signal);
   if (child && !child.killed) child.kill(signal);
 }
 process.on("SIGTERM", () => stop("SIGTERM"));
 process.on("SIGINT", () => stop("SIGINT"));
 
 if (branchLab) {
-  console.log(`[swing-up-branch-lab] enabled for ${branch} in ${environment}; the healthy Next.js server owns the ${Math.round(normalPollMs / 1000)}s R2-backed scheduler and ${Math.round(technicalRetryMs / 1000)}s technical retry.`);
+  console.log(`[swing-up-branch-lab] enabled for ${branch} in ${environment}; a supervised worker process owns the ${Math.round(normalPollMs / 1000)}s R2-backed scheduler and ${Math.round(technicalRetryMs / 1000)}s technical retry.`);
 } else {
   console.log("[swing-up-branch-lab] disabled; normal application start.");
 }
 
 child.on("exit", (code, signal) => {
+  clearWorkerRestart();
+  if (workerWatchdog) clearInterval(workerWatchdog);
+  if (worker && !worker.killed) worker.kill("SIGTERM");
   process.exitCode = code ?? (signal ? 1 : 0);
 });

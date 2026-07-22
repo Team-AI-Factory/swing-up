@@ -57,7 +57,6 @@ export async function GET(request: NextRequest) {
     alerts,
     publishedAlerts,
     priceSnapshots,
-    marketPriceSnapshots,
     committeeRuns,
     completedCommitteeRuns,
     sourceHealth,
@@ -77,7 +76,6 @@ export async function GET(request: NextRequest) {
     safeQuery("alerts", prisma.alert.count(), 0, errors),
     safeQuery("publishedAlerts", prisma.alert.count({ where: { publishedAt: { not: null } } }), 0, errors),
     safeQuery("priceSnapshots", prisma.priceSnapshot.count(), 0, errors),
-    safeQuery("marketPriceSnapshots", prisma.marketPriceSnapshot.count(), 0, errors),
     safeQuery("committeeRuns", prisma.aiCommitteeRun.count(), 0, errors),
     safeQuery("completedCommitteeRuns", prisma.aiCommitteeRun.count({ where: { status: { in: ["completed", "approved", "rejected", "needs_more_data"] } } }), 0, errors),
     safeQuery("sourceHealth", prisma.sourceHealth.count(), 0, errors),
@@ -131,7 +129,6 @@ export async function GET(request: NextRequest) {
       alerts,
       publishedAlerts,
       priceSnapshots,
-      marketPriceSnapshots,
       committeeRuns,
       completedCommitteeRuns,
       sourceHealth,
@@ -150,7 +147,7 @@ export async function GET(request: NextRequest) {
       maxDrawdown: row.maxDrawdown?.toString() ?? null,
     })),
     queryErrors: errors,
-    optionalTablesUnavailable: errors.map((error) => error.query),
+    optionalQueriesUnavailable: errors.map((error) => error.query),
     calibrationPosture: usableOutcomeRows >= 200
       ? "database_has_material_real_outcome_history"
       : usableOutcomeRows >= 30

@@ -70,7 +70,7 @@ for (const marker of [
   if (!routeSource.includes(marker)) throw new Error(`Cloudflare R2 branch-state policy is missing: ${marker}`);
 }
 const r2Source = await readFile(new URL("../lib/r2-warehouse.ts", import.meta.url), "utf8");
-for (const marker of [`"if-match"`, `"if-none-match"`, `res.status === 412`, `readVersionedTextFromR2`, `writeVersionedJsonToR2`]) {
+for (const marker of [`"if-match"`, `"if-none-match"`, `res.status === 412`, `normalizeR2Etag`, `readVersionedTextFromR2`, `writeVersionedJsonToR2`]) {
   if (!r2Source.includes(marker)) throw new Error(`Cloudflare R2 conditional-write guard is missing: ${marker}`);
 }
 

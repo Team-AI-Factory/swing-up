@@ -332,11 +332,22 @@ export type VersionedR2Object = {
   etag: string | null;
 };
 
+// R2's S3 conditional PutObject API expects the HTTP form of an ETag, including
+// double quotes. Some fetch/proxy implementations expose the response ETag
+// without those quotes, so canonicalize it before reusing it in If-Match.
+export function normalizeR2Etag(value: string | null | undefined) {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  const strong = trimmed.replace(/^W\//i, "");
+  if (strong.startsWith('"') && strong.endsWith('"')) return strong;
+  return `"${strong.replace(/^"|"$/g, "")}"`;
+}
+
 export async function readVersionedTextFromR2(r2Key: string): Promise<VersionedR2Object> {
   const res = await signedFetch("GET", r2Key);
   if (res.status === 404) return { found: false, text: null, etag: null };
   if (!res.ok) throw new Error(`r2_state_read_http_${res.status}`);
-  return { found: true, text: await res.text(), etag: res.headers.get("etag") };
+  return { found: true, text: await res.text(), etag: normalizeR2Etag(res.headers.get("etag")) };
 }
 
 export async function writeVersionedJsonToR2(
@@ -346,13 +357,13 @@ export async function writeVersionedJsonToR2(
 ) {
   if (options.expectedEtag && options.createOnly) throw new Error("r2_state_invalid_write_condition");
   const condition: Record<string, string> = {};
-  if (options.expectedEtag) condition["if-match"] = options.expectedEtag;
+  if (options.expectedEtag) condition["if-match"] = normalizeR2Etag(options.expectedEtag) ?? options.expectedEtag;
   else if (options.createOnly) condition["if-none-match"] = "*";
   const body = `${JSON.stringify(redactSecrets(payload), null, 2)}\n`;
   const res = await signedFetch("PUT", r2Key, body, "application/json", undefined, condition);
   if (res.status === 412) return { written: false, conflict: true, etag: null };
   if (!res.ok) throw new Error(`r2_state_write_http_${res.status}`);
-  let etag = res.headers.get("etag");
+  let etag = normalizeR2Etag(res.headers.get("etag"));
   if (!etag) {
     const verified = await readVersionedTextFromR2(r2Key);
     if (!verified.found || !verified.etag) throw new Error("r2_state_write_missing_etag");

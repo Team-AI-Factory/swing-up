@@ -40,6 +40,7 @@ type EvaluatedSnapshot = {
     officialReceipts: number;
     marketAgeDays: number | null;
     filingAgeDays: number | null;
+    financialPeriodAgeDays: number | null;
   };
   fundamentalFingerprint: string;
   classificationSignature: string;
@@ -57,6 +58,12 @@ function ageDays(value: string): number | null {
   const time = Date.parse(value);
   if (!Number.isFinite(time)) return null;
   return Math.max(0, (Date.now() - time) / 86_400_000);
+}
+
+function fiscalPeriodEnd(value: string | null): string | null {
+  if (!value) return null;
+  const candidate = value.split(":").at(-1) ?? null;
+  return candidate && /^\d{4}-\d{2}-\d{2}$/.test(candidate) ? candidate : null;
 }
 
 function thesisFrom(decision: FoundationDecision): StoredThesisSnapshot {
@@ -93,6 +100,7 @@ function evaluate(snapshot: LiveOpportunitySnapshot, round: number): EvaluatedSn
   const eventDecision = evaluateEvent(snapshot.event, thesisFrom(foundationDecision));
   const officialReceipts = snapshot.foundation.receipts.filter((receipt) => receipt.reliability === "official").length;
   const raw = snapshot.foundation.raw ?? {};
+  const periodEnd = fiscalPeriodEnd(snapshot.foundation.fiscalPeriod);
   const sourceChecks = {
     secCompanyFacts: snapshot.metadata.companyFactsUrl.startsWith("https://data.sec.gov/api/xbrl/companyfacts/"),
     secFiling: snapshot.metadata.filingUrl.startsWith("https://www.sec.gov/Archives/edgar/data/"),
@@ -102,6 +110,7 @@ function evaluate(snapshot: LiveOpportunitySnapshot, round: number): EvaluatedSn
     officialReceipts,
     marketAgeDays: ageDays(`${snapshot.metadata.marketDate}T00:00:00.000Z`),
     filingAgeDays: ageDays(`${snapshot.metadata.latestFilingDate}T00:00:00.000Z`),
+    financialPeriodAgeDays: periodEnd ? ageDays(`${periodEnd}T00:00:00.000Z`) : null,
   };
   const fundamentalState = {
     ticker: snapshot.foundation.ticker,
@@ -184,6 +193,8 @@ async function main() {
       && record.sourceChecks.marketAgeDays <= 10
       && record.sourceChecks.filingAgeDays !== null
       && record.sourceChecks.filingAgeDays <= 550
+      && record.sourceChecks.financialPeriodAgeDays !== null
+      && record.sourceChecks.financialPeriodAgeDays <= 550
     );
     const consistent = tickerRecords.length === roundsRequested
       && classificationSignatures.length === 1
@@ -239,7 +250,7 @@ async function main() {
   ];
   const passed = failureReasons.length === 0;
   const report = {
-    version: 2,
+    version: 3,
     passed,
     checkedAt: new Date().toISOString(),
     sourceMode: "real_live_sec_and_market_data",
@@ -250,14 +261,15 @@ async function main() {
       officialFoundationSource: "SEC Company Facts API",
       officialEventSource: "SEC Submissions and filing archives",
       marketSource: "Yahoo Finance public chart API",
-      classificationConsistency: "Same fiscal period, SEC accession, normalized fundamentals, candidate bucket, thesis state, and event result in every round.",
-      numericTolerance: { opportunityScorePoints: 2, priceRangePercent: 2.5 },
+      classificationConsistency: "Same fresh fiscal period, SEC accession, normalized fundamentals, candidate bucket, thesis state, and event result in every round.",
+      numericTolerance: { opportunityScorePoints: 2, priceRangePercent: 2.5, maximumFinancialPeriodAgeDays: 550 },
       noMockFixtures: true,
     },
     summary: {
       roundsCompleted: rounds.length,
       stableTickerCount: stable.length,
       stableTickers: stable.map((row) => row.ticker),
+      excludedTickers: consistencyByTicker.filter((row) => !row.consistent).map((row) => row.ticker),
       nonNeutralRealFilingEvents: nonNeutralEventCount,
       allRoundsMeetMinimum,
       allStableSourcesReal,
@@ -278,6 +290,7 @@ async function main() {
     roundsCompleted: report.summary.roundsCompleted,
     stableTickerCount: report.summary.stableTickerCount,
     stableTickers: report.summary.stableTickers,
+    excludedTickers: report.summary.excludedTickers,
     nonNeutralRealFilingEvents: report.summary.nonNeutralRealFilingEvents,
     totalProviderErrors: report.summary.totalProviderErrors,
     failureReasons,

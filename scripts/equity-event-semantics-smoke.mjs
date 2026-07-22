@@ -32,9 +32,10 @@ const universe = {
   refreshedAt: "2026-07-22T13:00:00.000Z",
   entries: [
     entry("FRHC", "Freedom Holding Corp.", ["Freedom Holding Corp.", "Freedom"]),
+    entry("EML", "EASTERN CO", ["Eastern"]),
     entry("XOM", "Exxon Mobil Corporation", ["Exxon Mobil"]),
   ],
-  coverage: { nasdaqRows: 2, otherExchangeRows: 0, eligibleEquities: 2, cikMapped: 0, cikMappedPercent: 0, adrCount: 0, excludedByReason: {} },
+  coverage: { nasdaqRows: 3, otherExchangeRows: 0, eligibleEquities: 3, cikMapped: 0, cikMappedPercent: 0, adrCount: 0, excludedByReason: {} },
   sources: [],
 };
 const macro = { checkedAt: "2026-07-22T13:00:00.000Z", status: "connected", series: [], regime: ["normal"], historicalComparisonAvailable: false, errors: [] };
@@ -74,6 +75,13 @@ const genericFreedom = build([receipt({
 })]);
 assert.equal(genericFreedom.candidates.some((item) => item.ticker === "FRHC"), false);
 
+const easternTime = build([receipt({
+  title: "National Construction Safety Team Advisory Committee Meeting",
+  summary: "The virtual meeting begins at 1:00 p.m. Eastern Time and reviews a building-collapse investigation.",
+  channel: "federal_register",
+})]);
+assert.equal(easternTime.candidates.some((item) => item.ticker === "EML"), false);
+
 const activeConflict = build([receipt({
   title: "Military strikes close a Red Sea shipping route as conflict escalates",
   channel: "defense_department",
@@ -93,6 +101,7 @@ console.log(JSON.stringify({
   warAnniversaryRejected: true,
   departmentNameNotConflict: true,
   genericCompanyWordRejected: true,
+  timeZoneWordNotIssuer: true,
   activeConflictStillMapped: true,
   exactTickerAndCompanyStillMapped: true,
 }, null, 2));

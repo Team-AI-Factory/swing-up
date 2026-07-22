@@ -92,6 +92,8 @@ assert.equal(policy.matchesEquityText("AI is changing the software industry", { 
 assert.equal(policy.matchesEquityText("$AI shares react to new guidance", { name: "C3.ai, Inc.", ticker: "AI" }), true);
 assert.equal(policy.matchesEquityText("ARM architecture powers many devices", { name: "Arm Holdings plc", ticker: "ARM" }), false);
 assert.equal(policy.matchesEquityText("$ARM files a new earnings release", { name: "Arm Holdings plc", ticker: "ARM" }), true);
+assert.equal(policy.matchesEquityText("The meeting begins at 1:00 p.m. Eastern Time", { name: "EASTERN CO", ticker: "EML", aliases: ["Eastern"] }), false);
+assert.equal(policy.matchesEquityText("$EML shares react to the issuer announcement", { name: "EASTERN CO", ticker: "EML", aliases: ["Eastern"] }), true);
 
 const eventReceipt = { title: "Microsoft signs major cloud agreement", publisher: "sec.gov", publishedAt: "2026-07-19T00:14:00.000Z", channel: "sec_current_filings", url: "https://www.sec.gov/Archives/example.htm?tracking=one" };
 const sameEventReceipt = { ...eventReceipt, publishedAt: "2026-07-19T00:58:00.000Z", url: "https://www.sec.gov/Archives/example.htm?tracking=two" };

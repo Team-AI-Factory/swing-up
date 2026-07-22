@@ -1,0 +1,112 @@
+name: External Watch Out Certification V2
+
+on:
+  push:
+    branches:
+      - "agent/combined-opportunity-engine"
+    paths:
+      - "scripts/build-technical-risk-dataset.ts"
+      - "scripts/certify_external_watch_out_rule_v2.py"
+      - "package.json"
+      - ".github/workflows/external-watch-out-certification-v2.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "scripts/build-technical-risk-dataset.ts"
+      - "scripts/certify_external_watch_out_rule_v2.py"
+      - "package.json"
+      - ".github/workflows/external-watch-out-certification-v2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: external-watch-out-certification-v2-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  certify:
+    name: Test rebound-aware Watch Out rule on second unseen universe
+    if: github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    env:
+      TECHNICAL_RISK_EARLIEST_DATE: "2012-01-01"
+      TECHNICAL_RISK_CONCURRENCY: "4"
+      TECHNICAL_RISK_EVENT_COOLDOWN: "100"
+      TECHNICAL_RISK_TICKERS: "RCL,NCLH,LC,MQ,FOUR,PSFE,PAYO,ARM,ACLS,AEHR,COHR,LSCC,MTSI,WOLF,SITM,ALGM,CRDO,MRVL,SWKS,TIGR,FUTU,BILI,IQ,TAL,EDU,YMM,V,MA,AXP,USB,PNC,TFC,BK,STT,ICE,CME,SPGI,MCO,CB,PGR,ALL,MET,PRU,AIG,MMC,AON,ACN,NOW,SAP,SONY,TM,HMC,NVS,AZN,GSK,SNY,UL,DEO,BP,SHEL,RIO,BHP,VALE,BTI,HSBC,UBS,DB,ING,RELX,INFY,WIT,HDB,IBN,TTE,EQNR,KHC,MDLZ,GIS,KMB,EL,LULU,ROST,TJX,ORLY,AZO,CMG,YUM,DPZ,MAR,HLT,BKNG,UBER,NOC,LMT,RTX,GD,BA,ETN,EMR,PH,ROK,MMM,WM,RSG,CCI,AMT,PLD,EQIX,O,PSA,SPG,WELL,CVS,CI,HUM,CNC,ELV,MCK,CAH,COR,ISRG,SYK,BSX,MDT,EW,ZBH,DXCM,PODD,IDXX,IQV,VRTX,REGN,F,GM,STLA,KMX,ANF,URBN,BBY,DHI,LEN,PHM,TOL,NVR,OXY,MPC,VLO,PSX,DVN,FANG"
+      TECHNICAL_RISK_DATASET_PATH: "artifacts/external-watch-out-v2-dataset.json"
+      EXTERNAL_WATCH_OUT_V2_DATASET_PATH: "artifacts/external-watch-out-v2-dataset.json"
+      EXTERNAL_WATCH_OUT_V2_REPORT_PATH: "artifacts/external-watch-out-v2-certificate.json"
+      EXTERNAL_WATCH_OUT_V2_MIN_SIGNALS: "30"
+      EXTERNAL_WATCH_OUT_V2_MIN_UNIQUE_TICKERS: "20"
+      EXTERNAL_WATCH_OUT_V2_TARGET_ERROR: "0.10"
+      EXTERNAL_WATCH_OUT_V2_CERTIFICATE_CONFIDENCE: "0.90"
+
+    steps:
+      - name: Check out isolated branch
+        uses: actions/checkout@v4
+
+      - name: Refuse main branch execution
+        shell: bash
+        run: |
+          branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          test "${branch}" != "main"
+          echo "Testing frozen rebound-aware Watch Out rule on ${branch}"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install application dependencies
+        run: npm ci --prefer-offline --no-audit --fund=false
+
+      - name: Build second unseen-stock dataset
+        run: npm run build:technical-risk-calibration-dataset
+
+      - name: Upload burned second holdout dataset
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: external-watch-out-v2-dataset
+          path: artifacts/external-watch-out-v2-dataset.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install certification libraries
+        run: python -m pip install --disable-pip-version-check --no-input pandas scipy
+
+      - name: Apply frozen V2 rule once
+        id: certificate
+        continue-on-error: true
+        run: python scripts/certify_external_watch_out_rule_v2.py
+
+      - name: Upload second external certificate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: external-watch-out-v2-certificate
+          path: artifacts/external-watch-out-v2-certificate.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce second external certificate
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path("artifacts/external-watch-out-v2-certificate.json").read_text())
+          if not report.get("passed"):
+              raise SystemExit("The rebound-aware Watch Out rule did not pass the second unseen-stock 90% certificate.")
+          print(report["rule"]["id"], report["overall"])
+          PY

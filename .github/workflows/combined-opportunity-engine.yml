@@ -11,6 +11,8 @@ on:
       - "lib/opportunity-engine/**"
       - "app/api/internal/combined-opportunity-engine/**"
       - "scripts/combined-opportunity-engine-*"
+      - "scripts/build-opportunity-calibration-dataset.ts"
+      - "scripts/calibrate_opportunity_conformal.py"
       - "package.json"
       - ".github/workflows/combined-opportunity-engine.yml"
   workflow_dispatch:
@@ -27,7 +29,7 @@ jobs:
     name: Validate isolated two-path engine
     if: github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 70
     env:
       DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/swing_up_ci
       SWING_UP_TEST_MODE: "true"
@@ -40,7 +42,11 @@ jobs:
       LIVE_TEST_REPORT_PATH: "artifacts/combined-opportunity-engine-live-report.json"
       CALIBRATION_EARLIEST_DATE: "2016-01-01"
       CALIBRATION_MIN_HOLDOUT_SAMPLES: "30"
+      CALIBRATION_MIN_CERTIFICATE_SAMPLES: "20"
+      CALIBRATION_TARGET_ERROR: "0.10"
+      CALIBRATION_CERTIFICATE_CONFIDENCE: "0.90"
       CALIBRATION_TICKERS: "AAPL,MSFT,NVDA,GOOGL,AMZN,META,AVGO,AMD,TSLA,WMT,JPM,BAC,XOM,CVX,KO,PEP,UNH,HD,COST,CRM,ORCL,NFLX,UBER,ADBE,INTC,QCOM,CSCO,MCD,NKE,DIS"
+      CALIBRATION_DATASET_PATH: "/tmp/combined-opportunity-engine-calibration-dataset.json"
       CALIBRATION_REPORT_PATH: "artifacts/combined-opportunity-engine-calibration.json"
 
     steps:
@@ -110,15 +116,26 @@ jobs:
         if: always()
         run: kill "$(cat /tmp/combined-opportunity-engine.pid)" 2>/dev/null || true
 
-      - name: Calibrate on chronological real historical outcomes
-        id: calibration
-        run: npm run test:combined-opportunity-engine-calibration
+      - name: Build clean point-in-time calibration dataset
+        run: npm run build:combined-opportunity-engine-calibration-dataset
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install calibration libraries
+        run: python -m pip install --disable-pip-version-check --no-input numpy pandas scipy scikit-learn
+
+      - name: Calibrate selective serious-signal risk
+        run: python scripts/calibrate_opportunity_conformal.py
 
       - name: Audit deployed Railway provider capabilities
-        if: always() && github.event_name == 'push'
+        if: always()
         env:
           COMBINED_ENGINE_RAILWAY_URL: https://swing-up-swing-up-pr-262.up.railway.app
-          EXPECTED_BRANCH_COMMIT: ${{ github.sha }}
+          EXPECTED_BRANCH_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
           SWING_UP_AUTOMATION_TOKEN: ${{ secrets.SWING_UP_AUTOMATION_TOKEN }}
           RAILWAY_PROVIDER_REPORT_PATH: artifacts/combined-opportunity-engine-railway-providers.json
         run: node scripts/combined-opportunity-engine-railway-provider-audit.mjs
@@ -132,7 +149,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Upload chronological calibration report
+      - name: Upload conformal calibration report
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -142,7 +159,7 @@ jobs:
           retention-days: 14
 
       - name: Upload Railway provider audit
-        if: always() && github.event_name == 'push'
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: combined-opportunity-engine-railway-provider-audit

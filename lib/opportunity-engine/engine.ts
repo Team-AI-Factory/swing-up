@@ -17,7 +17,7 @@ import type {
 } from "./types";
 
 const clamp = (value: number) => Math.max(0, Math.min(100, Math.round(value)));
-const known = (value: number | null | undefined): value is number => typeof value === "number" && Number.isFinite(value);
+const known = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 const score = (value: number | null, low: number, high: number) => !known(value) ? 45 : clamp(((value - low) / (high - low)) * 100);
 
 function quality(input: CompanyFoundationInput) {
@@ -263,7 +263,7 @@ export function evaluateEvent(event: EventSignalInput, thesis: StoredThesisSnaps
   const independentReceipts = known(event.payload.independentReceipts) ? Math.max(0, Math.floor(event.payload.independentReceipts)) : event.sourceUrl ? 1 : 0;
   const scoreValue = clamp(45 + positives.length * 18 - negatives.length * 22 + (event.importanceHint === "high" ? 12 : 0));
   const direction = negatives.length > positives.length ? "disconfirming" : positives.length > negatives.length ? "confirming" : "neutral";
-  const severity = negatives.some((term) => ["fraud", "default", "bankruptcy"].includes(term)) ? "critical" : Math.max(positives.length, negatives.length) >= 2 ? "high" : positives.length || negatives.length ? "medium" : "low";
+  const severity: EventImpact["severity"] = negatives.some((term) => ["fraud", "default", "bankruptcy"].includes(term)) ? "critical" : Math.max(positives.length, negatives.length) >= 2 ? "high" : positives.length || negatives.length ? "medium" : "low";
   let thesisStatusAfter: ThesisStatus = thesis.companyStatus;
   if (direction === "confirming" && thesis.companyStatus !== "broken") thesisStatusAfter = "strengthening";
   if (direction === "disconfirming") thesisStatusAfter = severity === "critical" ? "broken" : "impaired";

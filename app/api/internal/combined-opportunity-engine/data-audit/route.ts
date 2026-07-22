@@ -79,8 +79,18 @@ export async function GET(request: NextRequest) {
     safeQuery("committeeRuns", prisma.aiCommitteeRun.count(), 0, errors),
     safeQuery("completedCommitteeRuns", prisma.aiCommitteeRun.count({ where: { status: { in: ["completed", "approved", "rejected", "needs_more_data"] } } }), 0, errors),
     safeQuery("sourceHealth", prisma.sourceHealth.count(), 0, errors),
-    safeQuery("eventTypeGroups", prisma.historicalEvent.groupBy({ by: ["eventType"], _count: { _all: true }, take: 50 }), [], errors),
-    safeQuery("outcomeGroups", prisma.historicalEvent.groupBy({ by: ["outcomeLabel"], _count: { _all: true }, take: 50 }), [], errors),
+    safeQuery("eventTypeGroups", prisma.historicalEvent.groupBy({
+      by: ["eventType"],
+      _count: { _all: true },
+      orderBy: { _count: { eventType: "desc" } },
+      take: 50,
+    }), [], errors),
+    safeQuery("outcomeGroups", prisma.historicalEvent.groupBy({
+      by: ["outcomeLabel"],
+      _count: { _all: true },
+      orderBy: { _count: { outcomeLabel: "desc" } },
+      take: 50,
+    }), [], errors),
     safeQuery("latestEvents", prisma.historicalEvent.findMany({
       where: { OR: [{ priceAfter30d: { not: null } }, { priceAfter90d: { not: null } }] },
       orderBy: { eventDate: "desc" },

@@ -7,7 +7,8 @@ const baseUrl = (process.env.COMBINED_ENGINE_RAILWAY_URL || "https://swing-up-sw
 const expectedCommit = (process.env.EXPECTED_BRANCH_COMMIT || "").trim();
 const outputPath = process.env.RAILWAY_PROVIDER_REPORT_PATH || "artifacts/combined-opportunity-engine-railway-providers.json";
 const token = (process.env.SWING_UP_AUTOMATION_TOKEN || "").trim();
-const timeoutMs = 12 * 60 * 1000;
+const requestedTimeout = Number.parseInt(process.env.RAILWAY_AUDIT_TIMEOUT_MS || "", 10);
+const timeoutMs = Number.isFinite(requestedTimeout) ? Math.max(30_000, Math.min(requestedTimeout, 12 * 60 * 1000)) : 3 * 60 * 1000;
 const startedAt = Date.now();
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -78,6 +79,7 @@ const report = {
   baseUrl,
   expectedCommit: expectedCommit || null,
   deploymentAttempts: attempts,
+  timeoutMs,
   runtime: health.runtime,
   providerAudit: providerAudit.json,
   databaseOutcomeAudit: dataAudit.json,
@@ -134,6 +136,7 @@ console.log(JSON.stringify({
   expectedCommit: report.expectedCommit,
   runtimeCommit: report.runtime?.commitSha,
   deploymentAttempts: attempts,
+  timeoutMs,
   connectedProviders: report.providerAudit?.connectedProviders,
   missingProviders: report.providerAudit?.missingProviders,
   usableDatabaseOutcomeRows: report.databaseOutcomeAudit?.counts?.usableOutcomeRows ?? 0,

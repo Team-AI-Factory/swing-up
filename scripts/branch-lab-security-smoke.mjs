@@ -64,6 +64,8 @@ for (const marker of [
   `ephemeralDiagnosticsOnly: true`,
   `persistentSignalState: "cloudflare_r2"`,
   `technicalFailureFingerprint = \`branch_route_\${category}\``,
+  `status: "scan_already_in_progress"`,
+  `storage: "cloudflare_r2"`,
 ]) {
   if (!routeSource.includes(marker)) throw new Error(`Cloudflare R2 branch-state policy is missing: ${marker}`);
 }

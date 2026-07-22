@@ -1,8 +1,10 @@
+import crypto from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 
 const port = (process.env.PORT || "3000").trim();
 const runtimeToken = (process.env.SWING_UP_BRANCH_LAB_RUNTIME_TOKEN || "").trim();
 const workerStartedAt = new Date().toISOString();
+const workerId = crypto.randomUUID();
 const fastSmoke = process.env.SWING_UP_BRANCH_LAB_WORKER_SMOKE === "true";
 const minimumDelayMs = fastSmoke ? 50 : 60_000;
 
@@ -25,7 +27,7 @@ const shutdown = new AbortController();
 
 function tellSupervisor(message) {
   if (typeof process.send !== "function") return;
-  try { process.send({ at: new Date().toISOString(), workerStartedAt, ...message }); } catch {}
+  try { process.send({ at: new Date().toISOString(), workerId, workerStartedAt, ...message }); } catch {}
 }
 
 function stop() {
@@ -63,6 +65,7 @@ async function triggerRun() {
       "x-swing-up-branch-lab-token": runtimeToken,
       "x-swing-up-branch-lab-scheduler": "dedicated_worker",
       "x-swing-up-branch-lab-worker-started-at": workerStartedAt,
+      "x-swing-up-branch-lab-worker-id": workerId,
       "x-swing-up-branch-lab-worker-sequence": String(sequence),
     },
     body: "{}",

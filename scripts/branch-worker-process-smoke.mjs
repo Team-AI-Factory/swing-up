@@ -16,6 +16,7 @@ const server = createServer((request, response) => {
   if (request.url === "/api/internal/railway-branch-signal-lab" && request.method === "POST") {
     if (request.headers["x-swing-up-branch-lab-token"] !== token) throw new Error("Dedicated worker did not send the runtime token.");
     if (request.headers["x-swing-up-branch-lab-scheduler"] !== "dedicated_worker") throw new Error("Dedicated worker identity header is missing.");
+    if (!/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(String(request.headers["x-swing-up-branch-lab-worker-id"] || ""))) throw new Error("Dedicated worker ID is missing.");
     workerStartedAt ??= request.headers["x-swing-up-branch-lab-worker-started-at"];
     if (request.headers["x-swing-up-branch-lab-worker-started-at"] !== workerStartedAt) throw new Error("Worker identity changed during one process run.");
     sequences.push(Number(request.headers["x-swing-up-branch-lab-worker-sequence"]));

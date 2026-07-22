@@ -90,6 +90,7 @@ function startWorker() {
     if (message?.type === "stopped_by_lab") workerStoppedByLab = true;
     recordWorkerStatus(typeof message?.type === "string" ? message.type : "worker_message", {
       workerStartedAt: typeof message?.workerStartedAt === "string" ? message.workerStartedAt : null,
+      workerId: typeof message?.workerId === "string" ? message.workerId : null,
       sequence: Number.isFinite(message?.sequence) ? message.sequence : 0,
       httpStatus: Number.isFinite(message?.status) ? message.status : null,
       reportStatus: typeof message?.reportStatus === "string" ? message.reportStatus : null,

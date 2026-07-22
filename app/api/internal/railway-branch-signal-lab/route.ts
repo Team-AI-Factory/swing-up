@@ -12,6 +12,7 @@ const WORKER_RUNTIME_STATUS_PATH = "/tmp/swing-up-branch-worker-runtime.json";
 const R2_STATE_KEY = "branch-labs/pr-261/serious-signal/state.json";
 const LAB_BRANCH = "agent/live-signal-evaluation-automation";
 const MAX_OPENAI_RUNS_PER_24_HOURS = 3;
+const SCAN_LEASE_MS = 7 * 60 * 1000;
 const OPENAI_EVIDENCE_COOLDOWN_MS = 12 * 60 * 60 * 1000;
 const OUTCOME_EVALUATION_TOLERANCE_MS = 30 * 60 * 1000;
 const OUTCOME_CHECKPOINTS = [
@@ -36,10 +37,12 @@ type ProviderCallReservation = Omit<BranchProviderCallRequest, "checkedAt"> & { 
 type SchedulerInvocation = {
   owner: "dedicated_worker";
   transport: "loopback";
+  workerId: string;
   workerStartedAt: string;
   sequence: number;
 };
-type History = { version: number; branch: string; deploymentId: string | null; stopped: boolean; stopReason: string | null; totalRunCount: number; runs: JsonRecord[]; openAiReservations: OpenAiReservation[]; providerCallReservations: ProviderCallReservation[]; updatedAt: string };
+type ScanLease = { ownerId: string; acquiredAt: string; expiresAt: string };
+type History = { version: number; branch: string; deploymentId: string | null; stopped: boolean; stopReason: string | null; scanLease: ScanLease | null; totalRunCount: number; runs: JsonRecord[]; openAiReservations: OpenAiReservation[]; providerCallReservations: ProviderCallReservation[]; updatedAt: string };
 type LegacyFileStorage = {
   path: string;
   backend: "railway_volume" | "configured_path";
@@ -61,7 +64,7 @@ function branchAllowed() {
 }
 
 function emptyHistory(): History {
-  return { version: 5, branch: process.env.RAILWAY_GIT_BRANCH?.trim() || LAB_BRANCH, deploymentId: process.env.RAILWAY_DEPLOYMENT_ID?.trim() || null, stopped: false, stopReason: null, totalRunCount: 0, runs: [], openAiReservations: [], providerCallReservations: [], updatedAt: new Date().toISOString() };
+  return { version: 6, branch: process.env.RAILWAY_GIT_BRANCH?.trim() || LAB_BRANCH, deploymentId: process.env.RAILWAY_DEPLOYMENT_ID?.trim() || null, stopped: false, stopReason: null, scanLease: null, totalRunCount: 0, runs: [], openAiReservations: [], providerCallReservations: [], updatedAt: new Date().toISOString() };
 }
 
 function errorCode(error: unknown) {
@@ -95,10 +98,11 @@ function legacyStorage(): LegacyFileStorage | null {
 
 function normalizeHistory(parsed: History) {
   if (!parsed || !Array.isArray(parsed.runs)) return emptyHistory();
-  parsed.version = 5;
+  parsed.version = 6;
   if (!Number.isFinite(parsed.totalRunCount)) parsed.totalRunCount = Math.max(parsed.runs.length, ...parsed.runs.map((run) => finiteNumber(run.runNumber) ?? 0));
   if (!Array.isArray(parsed.openAiReservations)) parsed.openAiReservations = [];
   if (!Array.isArray(parsed.providerCallReservations)) parsed.providerCallReservations = [];
+  if (!parsed.scanLease || typeof parsed.scanLease.ownerId !== "string" || !Number.isFinite(Date.parse(parsed.scanLease.expiresAt))) parsed.scanLease = null;
   if (parsed.stopped && isLegacyExternalStopReason(parsed.stopReason)) {
     parsed.stopped = false;
     parsed.stopReason = null;
@@ -177,10 +181,34 @@ function suppliedToken(request: NextRequest) {
 
 function schedulerInvocation(request: NextRequest): SchedulerInvocation | null {
   if (request.headers.get("x-swing-up-branch-lab-scheduler") !== "dedicated_worker") return null;
+  const workerId = request.headers.get("x-swing-up-branch-lab-worker-id")?.trim() || "";
   const workerStartedAt = request.headers.get("x-swing-up-branch-lab-worker-started-at")?.trim() || "";
   const sequence = Number(request.headers.get("x-swing-up-branch-lab-worker-sequence"));
-  if (!Number.isFinite(Date.parse(workerStartedAt)) || !Number.isInteger(sequence) || sequence < 1) return null;
-  return { owner: "dedicated_worker", transport: "loopback", workerStartedAt, sequence };
+  if (!/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(workerId) || !Number.isFinite(Date.parse(workerStartedAt)) || !Number.isInteger(sequence) || sequence < 1) return null;
+  return { owner: "dedicated_worker", transport: "loopback", workerId, workerStartedAt, sequence };
+}
+
+function activeScanLease(history: History, now: number) {
+  if (!history.scanLease) return null;
+  return Date.parse(history.scanLease.expiresAt) > now ? history.scanLease : null;
+}
+
+function scanLeaseResponse(reason: "active_scan_lease" | "lease_race_lost", lease: ScanLease | null = null) {
+  return NextResponse.json({
+    ok: true,
+    mode: "railway_branch_live_read_only",
+    status: "scan_already_in_progress",
+    reason,
+    leaseExpiresAt: lease?.expiresAt ?? null,
+    seriousSignalFound: false,
+    openAiCalled: false,
+    realProviderResponsesOnly: true,
+    databaseWrites: false,
+    publishing: false,
+    notifications: false,
+    repairEligible: false,
+    technicalFailureFingerprint: null,
+  }, { status: 202 });
 }
 
 async function runtimeWorkerStatus() {
@@ -190,6 +218,7 @@ async function runtimeWorkerStatus() {
       stage: typeof parsed.stage === "string" ? parsed.stage : "unknown",
       at: typeof parsed.at === "string" ? parsed.at : null,
       workerStartedAt: typeof parsed.workerStartedAt === "string" ? parsed.workerStartedAt : null,
+      workerId: typeof parsed.workerId === "string" ? parsed.workerId : null,
       sequence: finiteNumber(parsed.sequence) ?? 0,
       httpStatus: finiteNumber(parsed.httpStatus),
       exitCode: finiteNumber(parsed.exitCode),
@@ -406,6 +435,7 @@ export async function GET() {
     && lastRunAgeSeconds !== null
     && lastRunAgeSeconds <= effectiveIntervalSeconds + 120;
   const runtimeWorker = await runtimeWorkerStatus();
+  const scanLease = activeScanLease(history, Date.now());
   return NextResponse.json({
     ok: true,
     mode: "railway_branch_live_read_only",
@@ -437,6 +467,7 @@ export async function GET() {
       runtimeWorker,
       lastRunAgeSeconds,
       schedulerHealthy,
+      distributedLease: { active: Boolean(scanLease), expiresAt: scanLease?.expiresAt ?? null, storage: "cloudflare_r2" },
     },
     stateStorage: storageMetadata(storage),
     openAiReservationPolicy: { durableStateRequired: true, durableStateAvailable: r2StateReady(storage), stateBlocker: r2StateBlocker(storage), maxAttemptsPerRolling24Hours: MAX_OPENAI_RUNS_PER_24_HOURS, sameEvidenceCooldownHours: OPENAI_EVIDENCE_COOLDOWN_MS / (60 * 60 * 1000), consumedReservationCount: history.openAiReservations.filter(reservationConsumed).length },
@@ -474,6 +505,20 @@ async function executePost(request: NextRequest) {
       stateStorage: storageMetadata(storage),
       blocker: r2StateBlocker(storage),
     }, { status: 503 });
+  }
+  const leaseNow = Date.now();
+  const existingLease = activeScanLease(history, leaseNow);
+  if (existingLease) return scanLeaseResponse("active_scan_lease", existingLease);
+  history.scanLease = {
+    ownerId: `${invocation.workerId}:${invocation.sequence}`,
+    acquiredAt: new Date(leaseNow).toISOString(),
+    expiresAt: new Date(leaseNow + SCAN_LEASE_MS).toISOString(),
+  };
+  try {
+    storage = await saveHistory(history, storage);
+  } catch (error) {
+    if (errorCode(error) === "r2_state_write_conflict") return scanLeaseResponse("lease_race_lost");
+    throw error;
   }
   const now = Date.now();
   const openAiAttempts = openAiAttemptsInWindow(history, now, 24 * 60 * 60 * 1000);
@@ -542,6 +587,7 @@ async function executePost(request: NextRequest) {
     history.stopReason = `Stopped after the same repair-eligible ${repairFailure.scope} failure produced no measurable gain three times: ${repairFailure.fingerprint}`;
   }
   pruneHistory(history, Date.now());
+  history.scanLease = null;
   storage = await saveHistory(history, storage);
   const openAiRunsLast24Hours = openAiAttemptsInWindow(history, Date.now(), 24 * 60 * 60 * 1000);
   return NextResponse.json({ ...report, runNumber, retainedRunCount: history.runs.length, repairAttemptNumber, schedulerInvocation: invocation, stopped: history.stopped, stopReason: history.stopReason, openAiRunsLast24Hours, openAiAttemptsLast24Hours: openAiRunsLast24Hours, maxOpenAiRunsPer24Hours: MAX_OPENAI_RUNS_PER_24_HOURS, openAiReservationId: activeReservationId, openAiRequiresDurableState: true, openAiAllowedAtRunStart: allowOpenAi, openAiStateBlocker: r2StateBlocker(storage), stateStorage: storageMetadata(storage), stateWritesToR2: true, productionR2DataWrites: false });

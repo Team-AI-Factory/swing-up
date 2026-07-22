@@ -58,16 +58,55 @@ function latestByTicker(foundations: CompanyFoundationInput[]) {
   return [...rows.values()];
 }
 
+function runtimeDiagnostics() {
+  const configured = (name: string) => Boolean(process.env[name]?.trim());
+  return {
+    branch: process.env.RAILWAY_GIT_BRANCH?.trim() || "agent/combined-opportunity-engine",
+    environmentName: process.env.RAILWAY_ENVIRONMENT_NAME?.trim() || (process.env.SWING_UP_COMBINED_ENGINE_ALLOW_LOCAL === "true" ? "local_test" : null),
+    deploymentId: process.env.RAILWAY_DEPLOYMENT_ID?.trim() || null,
+    commitSha: process.env.RAILWAY_GIT_COMMIT_SHA?.trim() || process.env.GITHUB_SHA?.trim() || null,
+    providerConfiguration: {
+      database: configured("DATABASE_URL"),
+      r2: configured("R2_ACCOUNT_ID") && configured("R2_ACCESS_KEY_ID") && configured("R2_SECRET_ACCESS_KEY") && configured("R2_BUCKET_NAME"),
+      fmp: configured("FMP_API_KEY"),
+      marketaux: configured("MARKETAUX_API_KEY"),
+      alphaVantage: configured("ALPHA_VANTAGE_API_KEY"),
+      polygon: configured("POLYGON_API_KEY"),
+      fred: configured("FRED_API_KEY"),
+      openFda: configured("OPENFDA_API_KEY"),
+      openAi: configured("OPENAI_API_KEY"),
+    },
+    secretsRedacted: true,
+  };
+}
+
+function thesisFromDecision(decision: ReturnType<typeof evaluateFoundation>): StoredThesisSnapshot {
+  return {
+    id: null,
+    ticker: decision.ticker,
+    company: decision.company,
+    companyStatus: decision.thesisStatus,
+    securityReadiness: decision.securityReadiness,
+    candidateBucket: decision.candidateBucket,
+    opportunityScore: decision.scores.opportunityScore,
+    evidenceConfidence: decision.scores.evidenceConfidence,
+    riskScore: decision.scores.riskScore,
+    originalUnderwriting: decision,
+    currentAssessment: decision,
+    updatedAt: decision.evaluatedAt,
+  };
+}
+
 export async function GET() {
   if (!branchAllowed()) return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
   return NextResponse.json({
     ok: true,
     engine: "combined_opportunity_engine",
-    branch: "agent/combined-opportunity-engine",
     paths: ["foundation", "event"],
     liveDataAvailable: true,
     liveDataSources: ["SEC Company Facts", "SEC filing archives", "Yahoo Finance public chart API"],
     mode: "isolated_preview_only",
+    runtime: runtimeDiagnostics(),
     safety: { databaseWrites: false, publishing: false, notifications: false, payments: false, openAiCalls: false },
   });
 }
@@ -91,22 +130,7 @@ export async function POST(request: NextRequest) {
   const thesisByTicker = new Map(theses.map((item) => [item.ticker.toUpperCase(), item]));
 
   const foundationDecisions = foundations.map(evaluateFoundation);
-  for (const decision of foundationDecisions) {
-    thesisByTicker.set(decision.ticker, {
-      id: null,
-      ticker: decision.ticker,
-      company: decision.company,
-      companyStatus: decision.thesisStatus,
-      securityReadiness: decision.securityReadiness,
-      candidateBucket: decision.candidateBucket,
-      opportunityScore: decision.scores.opportunityScore,
-      evidenceConfidence: decision.scores.evidenceConfidence,
-      riskScore: decision.scores.riskScore,
-      originalUnderwriting: decision,
-      currentAssessment: decision,
-      updatedAt: decision.evaluatedAt,
-    });
-  }
+  for (const decision of foundationDecisions) thesisByTicker.set(decision.ticker, thesisFromDecision(decision));
 
   const eventDecisions = eventRows.flatMap((event) => {
     const thesis = thesisByTicker.get(event.ticker.toUpperCase());
@@ -117,8 +141,8 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({
     ok: true,
     dryRun: true,
-    branch: "agent/combined-opportunity-engine",
     dataMode: useLiveData ? "real_live_sec_and_market_data" : "provided_input_only",
+    runtime: runtimeDiagnostics(),
     foundationDecisions,
     eventDecisions,
     unmatchedEventTickers,
@@ -150,6 +174,6 @@ export async function POST(request: NextRequest) {
       liveProviderErrors: live.errors.length,
     },
     safety: { databaseWrites: false, publishing: false, notifications: false, payments: false, openAiCalls: false },
-    nextStep: "Keep live results in research review until verified market expectations and scenario analysis are connected. No user alerts are published by this branch.",
+    nextStep: "Use the redacted runtime provider diagnostics to connect estimates, targets, second-source market data, and calibrated outcome history before permitting a 90% serious signal.",
   });
 }

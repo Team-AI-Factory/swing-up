@@ -72,7 +72,14 @@ async function triggerRun() {
   let report = null;
   try { report = JSON.parse(responseText); } catch {}
   console.log(`[swing-up-branch-worker] status=${response.status} sequence=${sequence} ${responseText.slice(0, 12000)}`);
-  tellSupervisor({ type: "run_finished", sequence, status: response.status });
+  tellSupervisor({
+    type: "run_finished",
+    sequence,
+    status: response.status,
+    reportStatus: typeof report?.status === "string" ? report.status : null,
+    failureScope: typeof report?.failureScope === "string" ? report.failureScope : null,
+    technicalFailureFingerprint: typeof report?.technicalFailureFingerprint === "string" ? report.technicalFailureFingerprint : null,
+  });
 
   if (response.status === 409 || report?.stopped === true) return { keepRunning: false, delayMs: normalPollMs };
   if (response.status === 401 || response.status === 403 || response.status === 404) {

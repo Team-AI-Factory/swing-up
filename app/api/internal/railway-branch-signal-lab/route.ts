@@ -195,6 +195,9 @@ async function runtimeWorkerStatus() {
       exitCode: finiteNumber(parsed.exitCode),
       signal: typeof parsed.signal === "string" ? parsed.signal : null,
       errorCategory: typeof parsed.errorCategory === "string" ? parsed.errorCategory : null,
+      reportStatus: typeof parsed.reportStatus === "string" ? parsed.reportStatus : null,
+      failureScope: typeof parsed.failureScope === "string" ? parsed.failureScope : null,
+      technicalFailureFingerprint: typeof parsed.technicalFailureFingerprint === "string" ? parsed.technicalFailureFingerprint : null,
       ephemeralDiagnosticsOnly: true,
       persistentSignalState: "cloudflare_r2",
     };
@@ -445,7 +448,7 @@ export async function GET() {
   });
 }
 
-export async function POST(request: NextRequest) {
+async function executePost(request: NextRequest) {
   if (!branchAllowed()) return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
   const expected = process.env.SWING_UP_BRANCH_LAB_RUNTIME_TOKEN?.trim();
   if (!expected || suppliedToken(request) !== expected) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
@@ -542,4 +545,28 @@ export async function POST(request: NextRequest) {
   storage = await saveHistory(history, storage);
   const openAiRunsLast24Hours = openAiAttemptsInWindow(history, Date.now(), 24 * 60 * 60 * 1000);
   return NextResponse.json({ ...report, runNumber, retainedRunCount: history.runs.length, repairAttemptNumber, schedulerInvocation: invocation, stopped: history.stopped, stopReason: history.stopReason, openAiRunsLast24Hours, openAiAttemptsLast24Hours: openAiRunsLast24Hours, maxOpenAiRunsPer24Hours: MAX_OPENAI_RUNS_PER_24_HOURS, openAiReservationId: activeReservationId, openAiRequiresDurableState: true, openAiAllowedAtRunStart: allowOpenAi, openAiStateBlocker: r2StateBlocker(storage), stateStorage: storageMetadata(storage), stateWritesToR2: true, productionR2DataWrites: false });
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    return await executePost(request);
+  } catch (error) {
+    const category = errorCode(error);
+    const technicalFailureFingerprint = `branch_route_${category}`;
+    console.error(`[swing-up-branch-lab] ${technicalFailureFingerprint}`);
+    return NextResponse.json({
+      ok: false,
+      mode: "railway_branch_live_read_only",
+      status: "technical_failure",
+      failureScope: "branch_route",
+      repairEligible: true,
+      technicalFailureFingerprint,
+      errorCategory: category,
+      realProviderResponsesOnly: true,
+      databaseWrites: false,
+      publishing: false,
+      notifications: false,
+      openAiCalled: false,
+    }, { status: 500 });
+  }
 }

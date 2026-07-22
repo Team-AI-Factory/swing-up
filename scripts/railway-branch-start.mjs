@@ -92,6 +92,9 @@ function startWorker() {
       workerStartedAt: typeof message?.workerStartedAt === "string" ? message.workerStartedAt : null,
       sequence: Number.isFinite(message?.sequence) ? message.sequence : 0,
       httpStatus: Number.isFinite(message?.status) ? message.status : null,
+      reportStatus: typeof message?.reportStatus === "string" ? message.reportStatus : null,
+      failureScope: typeof message?.failureScope === "string" ? message.failureScope : null,
+      technicalFailureFingerprint: typeof message?.technicalFailureFingerprint === "string" ? message.technicalFailureFingerprint : null,
     });
   });
   worker.on("error", (error) => {

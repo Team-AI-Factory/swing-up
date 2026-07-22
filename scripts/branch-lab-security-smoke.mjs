@@ -63,6 +63,7 @@ for (const marker of [
   `schedulerInvocation: invocation`,
   `ephemeralDiagnosticsOnly: true`,
   `persistentSignalState: "cloudflare_r2"`,
+  `technicalFailureFingerprint = \`branch_route_\${category}\``,
 ]) {
   if (!routeSource.includes(marker)) throw new Error(`Cloudflare R2 branch-state policy is missing: ${marker}`);
 }

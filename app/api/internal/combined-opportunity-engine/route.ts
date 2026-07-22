@@ -1,6 +1,6 @@
-/* eslint-disable */
 import { NextRequest, NextResponse } from "next/server";
 import { evaluateEvent, evaluateFoundation } from "@/lib/opportunity-engine/engine";
+import { fetchLiveOpportunityUniverse } from "@/lib/opportunity-engine/live-data";
 import type { CompanyFoundationInput, EventSignalInput, StoredThesisSnapshot } from "@/lib/opportunity-engine/types";
 
 export const dynamic = "force-dynamic";
@@ -14,9 +14,10 @@ function branchAllowed() {
   const branch = process.env.RAILWAY_GIT_BRANCH?.trim();
   const environment = process.env.RAILWAY_ENVIRONMENT_NAME?.trim().toLowerCase();
   return Boolean(
-    process.env.RAILWAY_PROJECT_ID &&
-    branch === "agent/combined-opportunity-engine" &&
-    environment && environment !== "production"
+    process.env.RAILWAY_PROJECT_ID
+    && branch === "agent/combined-opportunity-engine"
+    && environment
+    && environment !== "production"
   );
 }
 
@@ -46,6 +47,17 @@ function validThesis(value: unknown): value is StoredThesisSnapshot {
     && typeof row.candidateBucket === "string";
 }
 
+function tickerList(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map(String).map((ticker) => ticker.trim().toUpperCase()).filter((ticker) => /^[A-Z.]{1,8}$/.test(ticker)))].slice(0, 5);
+}
+
+function latestByTicker(foundations: CompanyFoundationInput[]) {
+  const rows = new Map<string, CompanyFoundationInput>();
+  for (const foundation of foundations) rows.set(foundation.ticker.toUpperCase(), foundation);
+  return [...rows.values()];
+}
+
 export async function GET() {
   if (!branchAllowed()) return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
   return NextResponse.json({
@@ -53,6 +65,8 @@ export async function GET() {
     engine: "combined_opportunity_engine",
     branch: "agent/combined-opportunity-engine",
     paths: ["foundation", "event"],
+    liveDataAvailable: true,
+    liveDataSources: ["SEC Company Facts", "SEC filing archives", "Yahoo Finance public chart API"],
     mode: "isolated_preview_only",
     safety: { databaseWrites: false, publishing: false, notifications: false, payments: false, openAiCalls: false },
   });
@@ -64,8 +78,15 @@ export async function POST(request: NextRequest) {
   if (expected && token(request) !== expected) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 
   const body = object(await request.json().catch(() => ({})));
-  const foundations = Array.isArray(body.foundations) ? body.foundations.filter(validFoundation).slice(0, 25) : [];
-  const eventRows = Array.isArray(body.events) ? body.events : [];
+  const useLiveData = body.useLiveData === true;
+  const requestedLiveTickers = tickerList(body.liveTickers);
+  const live = useLiveData
+    ? await fetchLiveOpportunityUniverse(requestedLiveTickers.length ? requestedLiveTickers : ["AAPL", "MSFT", "NVDA", "KO"])
+    : { snapshots: [], errors: [] };
+  const providedFoundations = Array.isArray(body.foundations) ? body.foundations.filter(validFoundation).slice(0, 25) : [];
+  const foundations = latestByTicker([...providedFoundations, ...live.snapshots.map((snapshot) => snapshot.foundation)]);
+  const providedEvents = Array.isArray(body.events) ? body.events.filter(validEvent).slice(0, 50) : [];
+  const eventRows = [...providedEvents, ...live.snapshots.map((snapshot) => snapshot.event)].slice(0, 50);
   const theses = Array.isArray(body.theses) ? body.theses.filter(validThesis).slice(0, 50) : [];
   const thesisByTicker = new Map(theses.map((item) => [item.ticker.toUpperCase(), item]));
 
@@ -87,18 +108,37 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  const eventDecisions = eventRows.filter(validEvent).slice(0, 50).flatMap((event) => {
+  const eventDecisions = eventRows.flatMap((event) => {
     const thesis = thesisByTicker.get(event.ticker.toUpperCase());
     return thesis ? [evaluateEvent(event, thesis)] : [];
   });
+  const unmatchedEventTickers = eventRows.map((event) => event.ticker.toUpperCase()).filter((ticker) => !thesisByTicker.has(ticker));
 
   return NextResponse.json({
     ok: true,
     dryRun: true,
     branch: "agent/combined-opportunity-engine",
+    dataMode: useLiveData ? "real_live_sec_and_market_data" : "provided_input_only",
     foundationDecisions,
     eventDecisions,
-    unmatchedEventTickers: eventRows.filter(validEvent).map((event) => event.ticker.toUpperCase()).filter((ticker) => !thesisByTicker.has(ticker)),
+    unmatchedEventTickers,
+    liveData: {
+      requested: useLiveData,
+      tickersRequested: requestedLiveTickers,
+      snapshots: live.snapshots.map((snapshot) => ({
+        ticker: snapshot.foundation.ticker,
+        sourceMode: snapshot.metadata.sourceMode,
+        fiscalPeriod: snapshot.metadata.fiscalPeriod,
+        latestFilingForm: snapshot.metadata.latestFilingForm,
+        latestFilingDate: snapshot.metadata.latestFilingDate,
+        latestFilingAccession: snapshot.metadata.latestFilingAccession,
+        marketSource: snapshot.metadata.marketSource,
+        marketDate: snapshot.metadata.marketDate,
+        realDataReceipts: snapshot.metadata.realDataReceipts,
+      })),
+      errors: live.errors,
+      noSyntheticData: live.snapshots.every((snapshot) => snapshot.foundation.raw?.noSyntheticData === true),
+    },
     summary: {
       foundationsChecked: foundationDecisions.length,
       eventsChecked: eventDecisions.length,
@@ -107,8 +147,9 @@ export async function POST(request: NextRequest) {
       thesisStrengthening: eventDecisions.filter((item) => item.alertType === "thesis_strengthening" || item.alertType === "catalyst_alert").length,
       riskWarnings: eventDecisions.filter((item) => item.alertType === "risk_warning").length,
       brokenTheses: eventDecisions.filter((item) => item.alertType === "thesis_broken").length,
+      liveProviderErrors: live.errors.length,
     },
     safety: { databaseWrites: false, publishing: false, notifications: false, payments: false, openAiCalls: false },
-    nextStep: "Connect verified SEC fundamentals and stored raw signals after preview validation. No user alerts are published by this branch.",
+    nextStep: "Keep live results in research review until verified market expectations and scenario analysis are connected. No user alerts are published by this branch.",
   });
 }

@@ -11,6 +11,7 @@ on:
       - "lib/opportunity-engine/**"
       - "app/api/internal/combined-opportunity-engine/**"
       - "scripts/combined-opportunity-engine-*"
+      - "scripts/global-market-scanner-smoke.ts"
       - "scripts/build-opportunity-calibration-dataset.ts"
       - "scripts/calibrate_opportunity_conformal.py"
       - "package.json"
@@ -83,6 +84,9 @@ jobs:
 
       - name: Test controlled foundation and event paths
         run: npm run smoke:combined-opportunity-engine
+
+      - name: Test global stock universe normalization and filtering
+        run: npm run smoke:global-market-scanner
 
       - name: Test repeated workflow with real SEC and market data
         run: npm run smoke:combined-opportunity-engine-live

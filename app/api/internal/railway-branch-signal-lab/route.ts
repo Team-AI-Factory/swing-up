@@ -3,6 +3,8 @@ import { isAbsolute, join } from "node:path";
 import { NextRequest, NextResponse } from "next/server";
 import { runBranchSignalLab, type BranchProviderCallDecision, type BranchProviderCallRequest } from "@/lib/branch-signal-lab";
 import { isLegacyExternalStopReason, noGainRepairAttempts, providerCallBudgetDecision, repairEligibleFailure } from "@/lib/branch-signal-lab-policy";
+import type { HistoricalAnalogHorizon, HistoricalSignalRecord } from "@/lib/equity-signal/historical-analogs";
+import { mergeHistoricalSignals } from "@/lib/equity-signal/historical-bootstrap";
 import { getR2Config, readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 
 export const dynamic = "force-dynamic";
@@ -10,18 +12,20 @@ export const dynamic = "force-dynamic";
 const REPORT_FILENAME = "swing-up-railway-branch-signal-lab.json";
 const WORKER_RUNTIME_STATUS_PATH = "/tmp/swing-up-branch-worker-runtime.json";
 const R2_STATE_KEY = "branch-labs/pr-261/serious-signal/state.json";
+const R2_EQUITY_HISTORY_KEY = "branch-labs/pr-261/serious-signal/equity-history-v1.json";
 const LAB_BRANCH = "agent/live-signal-evaluation-automation";
+const MAX_HISTORICAL_SIGNAL_RECORDS = 50_000;
 const MAX_OPENAI_RUNS_PER_24_HOURS = 3;
 const SCAN_LEASE_MS = 7 * 60 * 1000;
 const OPENAI_EVIDENCE_COOLDOWN_MS = 12 * 60 * 60 * 1000;
-const OUTCOME_EVALUATION_TOLERANCE_MS = 30 * 60 * 1000;
 const OUTCOME_CHECKPOINTS = [
-  { label: "1D", milliseconds: 24 * 60 * 60 * 1000 },
-  { label: "3D", milliseconds: 3 * 24 * 60 * 60 * 1000 },
-  { label: "7D", milliseconds: 7 * 24 * 60 * 60 * 1000 },
-  { label: "30D", milliseconds: 30 * 24 * 60 * 60 * 1000 },
-  { label: "90D", milliseconds: 90 * 24 * 60 * 60 * 1000 },
+  { label: "1D", milliseconds: 24 * 60 * 60 * 1000, maximumDelayMs: 72 * 60 * 60 * 1000 },
+  { label: "3D", milliseconds: 3 * 24 * 60 * 60 * 1000, maximumDelayMs: 72 * 60 * 60 * 1000 },
+  { label: "7D", milliseconds: 7 * 24 * 60 * 60 * 1000, maximumDelayMs: 72 * 60 * 60 * 1000 },
+  { label: "30D", milliseconds: 30 * 24 * 60 * 60 * 1000, maximumDelayMs: 96 * 60 * 60 * 1000 },
+  { label: "90D", milliseconds: 90 * 24 * 60 * 60 * 1000, maximumDelayMs: 96 * 60 * 60 * 1000 },
 ] as const;
+const MINIMUM_DIRECTIONAL_MOVE_AFTER_COSTS_PERCENT = 0.5;
 
 type JsonRecord = Record<string, unknown>;
 type OpenAiReservation = {
@@ -43,6 +47,8 @@ type SchedulerInvocation = {
 };
 type ScanLease = { ownerId: string; acquiredAt: string; expiresAt: string };
 type History = { version: number; branch: string; deploymentId: string | null; stopped: boolean; stopReason: string | null; scanLease: ScanLease | null; totalRunCount: number; runs: JsonRecord[]; openAiReservations: OpenAiReservation[]; providerCallReservations: ProviderCallReservation[]; updatedAt: string };
+type HistoricalSignalLibrary = { version: 1; records: HistoricalSignalRecord[]; updatedAt: string };
+type HistoricalSignalLibraryLoad = { library: HistoricalSignalLibrary; etag: string | null; error: string | null };
 type LegacyFileStorage = {
   path: string;
   backend: "railway_volume" | "configured_path";
@@ -69,7 +75,7 @@ function emptyHistory(): History {
 
 function errorCode(error: unknown) {
   if (error && typeof error === "object" && "code" in error && typeof error.code === "string") return error.code.toLowerCase();
-  if (error instanceof Error && /^r2_state_[a-z0-9_]+$/i.test(error.message)) return error.message.toLowerCase();
+  if (error instanceof Error && /^r2_(?:state|equity_history)_[a-z0-9_]+$/i.test(error.message)) return error.message.toLowerCase();
   return error instanceof SyntaxError ? "invalid_json" : "state_storage_error";
 }
 
@@ -139,6 +145,80 @@ async function loadHistory(): Promise<{ history: History; storage: StateStorage 
     return { history: legacy.history, storage: r2Storage(initialized.etag, legacy.source) };
   } catch (error) {
     return { history: legacy.history, storage: r2Unavailable(errorCode(error), legacy.source) };
+  }
+}
+
+function emptyHistoricalSignalLibrary(): HistoricalSignalLibrary {
+  return { version: 1, records: [], updatedAt: new Date(0).toISOString() };
+}
+
+function isHistoricalSignalRecord(value: unknown): value is HistoricalSignalRecord {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const item = value as Record<string, unknown>;
+  return typeof item.id === "string"
+    && typeof item.eventKey === "string"
+    && typeof item.ticker === "string"
+    && typeof item.eventFamily === "string"
+    && (item.direction === "upside" || item.direction === "downside")
+    && (item.relationship === "direct" || item.relationship === "second_order" || item.relationship === "third_order")
+    && Array.isArray(item.causalChain)
+    && Array.isArray(item.macroRegime)
+    && typeof item.signalObservedAt === "string"
+    && Number.isFinite(Date.parse(item.signalObservedAt))
+    && typeof item.featuresAsOf === "string"
+    && Number.isFinite(Date.parse(item.featuresAsOf))
+    && ["real", "mock", "synthetic", "unknown"].includes(String(item.dataQuality))
+    && Boolean(item.checkpoints)
+    && typeof item.checkpoints === "object"
+    && !Array.isArray(item.checkpoints);
+}
+
+function normalizeHistoricalSignalLibrary(value: unknown): HistoricalSignalLibrary {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return emptyHistoricalSignalLibrary();
+  const parsed = value as Record<string, unknown>;
+  const records = Array.isArray(parsed.records) ? parsed.records.filter(isHistoricalSignalRecord) : [];
+  return {
+    version: 1,
+    records: mergeHistoricalSignals(records).slice(-MAX_HISTORICAL_SIGNAL_RECORDS),
+    updatedAt: typeof parsed.updatedAt === "string" && Number.isFinite(Date.parse(parsed.updatedAt)) ? parsed.updatedAt : new Date(0).toISOString(),
+  };
+}
+
+async function loadHistoricalSignalLibrary(): Promise<HistoricalSignalLibraryLoad> {
+  if (!getR2Config().configured) return { library: emptyHistoricalSignalLibrary(), etag: null, error: "cloudflare_r2_not_configured" };
+  try {
+    const current = await readVersionedTextFromR2(R2_EQUITY_HISTORY_KEY);
+    if (!current.found) return { library: emptyHistoricalSignalLibrary(), etag: null, error: null };
+    if (!current.text || !current.etag) throw new Error("r2_equity_history_invalid_object");
+    return { library: normalizeHistoricalSignalLibrary(JSON.parse(current.text)), etag: current.etag, error: null };
+  } catch (error) {
+    return { library: emptyHistoricalSignalLibrary(), etag: null, error: errorCode(error) };
+  }
+}
+
+function sameHistoricalSignals(left: HistoricalSignalRecord[], right: HistoricalSignalRecord[]) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+async function persistHistoricalSignalLibrary(
+  loaded: HistoricalSignalLibraryLoad,
+  additions: HistoricalSignalRecord[],
+): Promise<HistoricalSignalLibraryLoad> {
+  const merged = mergeHistoricalSignals(loaded.library.records, additions).slice(-MAX_HISTORICAL_SIGNAL_RECORDS);
+  if (!additions.length || sameHistoricalSignals(loaded.library.records, merged)) return { ...loaded, library: { ...loaded.library, records: merged } };
+  const payload: HistoricalSignalLibrary = { version: 1, records: merged, updatedAt: new Date().toISOString() };
+  try {
+    const written = await writeVersionedJsonToR2(R2_EQUITY_HISTORY_KEY, payload, loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true });
+    if (!written.conflict && written.etag) return { library: payload, etag: written.etag, error: null };
+    const winner = await loadHistoricalSignalLibrary();
+    if (winner.error) return winner;
+    const retryRecords = mergeHistoricalSignals(winner.library.records, additions).slice(-MAX_HISTORICAL_SIGNAL_RECORDS);
+    const retryPayload: HistoricalSignalLibrary = { version: 1, records: retryRecords, updatedAt: new Date().toISOString() };
+    const retried = await writeVersionedJsonToR2(R2_EQUITY_HISTORY_KEY, retryPayload, winner.etag ? { expectedEtag: winner.etag } : { createOnly: true });
+    if (retried.conflict || !retried.etag) throw new Error("r2_equity_history_write_conflict");
+    return { library: retryPayload, etag: retried.etag, error: null };
+  } catch (error) {
+    return { library: { ...loaded.library, records: merged }, etag: loaded.etag, error: errorCode(error) };
   }
 }
 
@@ -246,11 +326,41 @@ function safeRun(run: JsonRecord) {
 }
 
 function realBranchPerformanceRun(run: JsonRecord) {
-  return run.mode === "railway_branch_live_read_only" && run.realProviderResponsesOnly === true;
+  return run.mode === "railway_branch_live_read_only"
+    && run.assetClass === "public_equity"
+    && run.realProviderResponsesOnly === true;
 }
 
 function countablePerformanceRun(run: JsonRecord) {
   return realBranchPerformanceRun(run) && safeRun(run);
+}
+
+type OutcomeTrackingEntry = { run: JsonRecord; candidate: JsonRecord; fingerprint: string; outcomeOwner: JsonRecord };
+
+function outcomeTrackingEntries(history: History): OutcomeTrackingEntry[] {
+  const seen = new Set<string>();
+  const entries: OutcomeTrackingEntry[] = [];
+  for (const run of history.runs) {
+    if (!countablePerformanceRun(run)) continue;
+    const selected = record(run.selectedCandidate);
+    const trackers = Array.isArray(run.outcomeTrackingCandidates)
+      ? run.outcomeTrackingCandidates.map(record).filter((item): item is JsonRecord => Boolean(item))
+      : [];
+    const candidates = trackers.length ? trackers : selected ? [selected] : [];
+    for (const candidate of candidates) {
+      const fallbackFingerprint = candidate === selected && typeof run.candidateFingerprint === "string" ? run.candidateFingerprint : "";
+      const fingerprint = typeof candidate.evidenceFingerprint === "string" ? candidate.evidenceFingerprint.trim() : fallbackFingerprint.trim();
+      const ticker = typeof candidate.ticker === "string" ? candidate.ticker.trim().toUpperCase() : "";
+      const price = finiteNumber(candidate.price);
+      const benchmarkPrice = finiteNumber(candidate.benchmarkPrice);
+      const direction = candidate.direction;
+      if (!fingerprint || !ticker || price === null || price <= 0 || benchmarkPrice === null || benchmarkPrice <= 0 || (direction !== "upside" && direction !== "downside") || seen.has(fingerprint)) continue;
+      seen.add(fingerprint);
+      const outcomeOwner = typeof run.candidateFingerprint === "string" && run.candidateFingerprint === fingerprint ? run : candidate;
+      entries.push({ run, candidate, fingerprint, outcomeOwner });
+    }
+  }
+  return entries;
 }
 
 function record(value: unknown): JsonRecord | null {
@@ -264,6 +374,15 @@ function finiteNumber(value: unknown) {
 function positiveEnvironmentNumber(value: string | undefined, fallback: number) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function wilsonLowerBound(successes: number, total: number, z = 1.96) {
+  if (total <= 0) return 0;
+  const rate = successes / total;
+  const denominator = 1 + (z * z) / total;
+  const centre = rate + (z * z) / (2 * total);
+  const margin = z * Math.sqrt((rate * (1 - rate) + (z * z) / (4 * total)) / total);
+  return Math.max(0, (centre - margin) / denominator);
 }
 
 function reservationConsumed(reservation: OpenAiReservation) {
@@ -306,7 +425,7 @@ function providerQuotaUsage(history: History, now: number) {
 
 function pruneHistory(history: History, now: number) {
   const recentQuietRunStart = Math.max(0, history.runs.length - 576);
-  const outcomeRetentionMs = 91 * 24 * 60 * 60 * 1000;
+  const outcomeRetentionMs = 100 * 24 * 60 * 60 * 1000;
   history.runs = history.runs.filter((run, index) => {
     if (index >= recentQuietRunStart) return true;
     const checkedAt = Date.parse(String(run.checkedAt ?? ""));
@@ -325,25 +444,34 @@ function validOneDayOutcome(run: JsonRecord) {
   if (!Number.isFinite(startedAt) || !direction) return null;
   for (const value of run.outcomeEvaluations) {
     const outcome = record(value);
-    if (!outcome || outcome.checkpoint !== "1D" || outcome.source !== "CoinGecko live snapshot") continue;
+    if (!outcome || outcome.checkpoint !== "1D" || typeof outcome.source !== "string" || !outcome.source.trim()) continue;
     const targetAt = Date.parse(String(outcome.targetAt ?? ""));
     const evaluatedAt = Date.parse(String(outcome.evaluatedAt ?? ""));
     const evaluationPollCheckedAt = Date.parse(String(outcome.evaluationPollCheckedAt ?? ""));
     const delayMs = finiteNumber(outcome.evaluationDelayMs);
     const pollDelayMs = finiteNumber(outcome.evaluationPollDelayMs);
     const maximumDelayMs = finiteNumber(outcome.maximumEvaluationDelayMs);
-    if (!Number.isFinite(targetAt) || !Number.isFinite(evaluatedAt) || !Number.isFinite(evaluationPollCheckedAt) || delayMs === null || pollDelayMs === null || maximumDelayMs !== OUTCOME_EVALUATION_TOLERANCE_MS) continue;
-    if (Math.abs(targetAt - (startedAt + OUTCOME_CHECKPOINTS[0].milliseconds)) > 1_000 || delayMs < 0 || delayMs > OUTCOME_EVALUATION_TOLERANCE_MS || pollDelayMs < 0 || pollDelayMs > OUTCOME_EVALUATION_TOLERANCE_MS) continue;
+    if (!Number.isFinite(targetAt) || !Number.isFinite(evaluatedAt) || !Number.isFinite(evaluationPollCheckedAt) || delayMs === null || pollDelayMs === null || maximumDelayMs !== OUTCOME_CHECKPOINTS[0].maximumDelayMs) continue;
+    if (Math.abs(targetAt - (startedAt + OUTCOME_CHECKPOINTS[0].milliseconds)) > 1_000 || delayMs < 0 || delayMs > maximumDelayMs || pollDelayMs < 0 || pollDelayMs > maximumDelayMs) continue;
     if (Math.abs((evaluatedAt - targetAt) - delayMs) > 1_000 || Math.abs((evaluationPollCheckedAt - targetAt) - pollDelayMs) > 1_000) continue;
-    if (evaluatedAt > evaluationPollCheckedAt + 60_000 || evaluationPollCheckedAt - evaluatedAt > OUTCOME_EVALUATION_TOLERANCE_MS) continue;
+    if (evaluatedAt > evaluationPollCheckedAt + 60_000 || evaluationPollCheckedAt - evaluatedAt > maximumDelayMs) continue;
     const priceAtSignal = finiteNumber(outcome.priceAtSignal);
     const evaluationPrice = finiteNumber(outcome.evaluationPrice);
+    const benchmarkPriceAtSignal = finiteNumber(outcome.benchmarkPriceAtSignal);
+    const benchmarkEvaluationPrice = finiteNumber(outcome.benchmarkEvaluationPrice);
     const forwardReturnPercent = finiteNumber(outcome.forwardReturnPercent);
     const directionAdjustedReturnPercent = finiteNumber(outcome.directionAdjustedReturnPercent);
-    if (priceAtSignal === null || priceAtSignal <= 0 || evaluationPrice === null || evaluationPrice <= 0 || forwardReturnPercent === null || directionAdjustedReturnPercent === null || typeof outcome.usefulAtCheckpoint !== "boolean") continue;
+    const benchmarkReturnPercent = finiteNumber(outcome.benchmarkReturnPercent);
+    const marketRelativeReturnPercent = finiteNumber(outcome.marketRelativeReturnPercent);
+    const directionAdjustedMarketRelativeReturnPercent = finiteNumber(outcome.directionAdjustedMarketRelativeReturnPercent);
+    if (priceAtSignal === null || priceAtSignal <= 0 || evaluationPrice === null || evaluationPrice <= 0 || benchmarkPriceAtSignal === null || benchmarkPriceAtSignal <= 0 || benchmarkEvaluationPrice === null || benchmarkEvaluationPrice <= 0 || forwardReturnPercent === null || directionAdjustedReturnPercent === null || benchmarkReturnPercent === null || marketRelativeReturnPercent === null || directionAdjustedMarketRelativeReturnPercent === null || typeof outcome.usefulAtCheckpoint !== "boolean") continue;
     const calculatedForwardReturn = ((evaluationPrice - priceAtSignal) / priceAtSignal) * 100;
     const calculatedDirectionAdjustedReturn = direction === "downside" ? -calculatedForwardReturn : calculatedForwardReturn;
-    if (Math.abs(calculatedForwardReturn - forwardReturnPercent) > 0.02 || Math.abs(calculatedDirectionAdjustedReturn - directionAdjustedReturnPercent) > 0.02 || outcome.usefulAtCheckpoint !== (calculatedDirectionAdjustedReturn >= 2)) continue;
+    const calculatedBenchmarkReturn = ((benchmarkEvaluationPrice - benchmarkPriceAtSignal) / benchmarkPriceAtSignal) * 100;
+    const calculatedMarketRelativeReturn = calculatedForwardReturn - calculatedBenchmarkReturn;
+    const calculatedDirectionAdjustedMarketRelativeReturn = direction === "downside" ? -calculatedMarketRelativeReturn : calculatedMarketRelativeReturn;
+    const useful = calculatedDirectionAdjustedReturn >= MINIMUM_DIRECTIONAL_MOVE_AFTER_COSTS_PERCENT && calculatedDirectionAdjustedMarketRelativeReturn > 0;
+    if (Math.abs(calculatedForwardReturn - forwardReturnPercent) > 0.02 || Math.abs(calculatedDirectionAdjustedReturn - directionAdjustedReturnPercent) > 0.02 || Math.abs(calculatedBenchmarkReturn - benchmarkReturnPercent) > 0.02 || Math.abs(calculatedMarketRelativeReturn - marketRelativeReturnPercent) > 0.02 || Math.abs(calculatedDirectionAdjustedMarketRelativeReturn - directionAdjustedMarketRelativeReturnPercent) > 0.02 || outcome.usefulAtCheckpoint !== useful) continue;
     return outcome;
   }
   return null;
@@ -353,18 +481,22 @@ function updateForwardOutcomes(history: History, currentReport: JsonRecord) {
   const checkedAt = Date.parse(String(currentReport.checkedAt ?? ""));
   const snapshot = Array.isArray(currentReport.marketSnapshot) ? currentReport.marketSnapshot.map(record).filter((item): item is JsonRecord => Boolean(item)) : [];
   if (!countablePerformanceRun(currentReport) || !Number.isFinite(checkedAt) || !snapshot.length) return;
-  for (const run of history.runs) {
-    if (run.openAiCalled !== true || !countablePerformanceRun(run)) continue;
-    const selected = record(run.selectedCandidate);
+  for (const entry of outcomeTrackingEntries(history)) {
+    const { run, candidate: selected, outcomeOwner } = entry;
     const ticker = typeof selected?.ticker === "string" ? selected.ticker : null;
     const entryPrice = finiteNumber(selected?.price);
+    const benchmarkTicker = typeof selected?.benchmarkTicker === "string" ? selected.benchmarkTicker.trim().toUpperCase() : "SPY";
+    const benchmarkEntryPrice = finiteNumber(selected?.benchmarkPrice);
     const direction = selected?.direction === "downside" ? "downside" : "upside";
     const startedAt = Date.parse(String(run.checkedAt ?? ""));
     if (!ticker || !entryPrice || !Number.isFinite(startedAt)) continue;
     const current = snapshot.find((item) => item.ticker === ticker);
+    const currentBenchmark = snapshot.find((item) => item.ticker === benchmarkTicker);
     const currentPrice = finiteNumber(current?.price);
+    const currentBenchmarkPrice = finiteNumber(currentBenchmark?.price);
     const sourceObservedAt = Date.parse(String(current?.observedAt ?? ""));
-    const previousOutcomes = Array.isArray(run.outcomeEvaluations) ? run.outcomeEvaluations.map(record).filter((item): item is JsonRecord => Boolean(item)) : [];
+    const benchmarkObservedAt = Date.parse(String(currentBenchmark?.observedAt ?? ""));
+    const previousOutcomes = Array.isArray(outcomeOwner.outcomeEvaluations) ? outcomeOwner.outcomeEvaluations.map(record).filter((item): item is JsonRecord => Boolean(item)) : [];
     const outcomes = previousOutcomes.filter((outcome) => {
       const checkpoint = OUTCOME_CHECKPOINTS.find((item) => item.label === outcome.checkpoint);
       const targetAt = Date.parse(String(outcome.targetAt ?? ""));
@@ -373,48 +505,130 @@ function updateForwardOutcomes(history: History, currentReport: JsonRecord) {
       const delayMs = finiteNumber(outcome.evaluationDelayMs);
       const pollDelayMs = finiteNumber(outcome.evaluationPollDelayMs);
       if (!checkpoint) return false;
-      return outcome.source === "CoinGecko live snapshot"
+      return typeof outcome.source === "string"
+        && outcome.source.trim().length > 0
         && Number.isFinite(targetAt)
         && Math.abs(targetAt - (startedAt + checkpoint.milliseconds)) <= 1_000
         && Number.isFinite(evaluatedAt)
         && Number.isFinite(evaluationPollCheckedAt)
         && delayMs !== null
         && delayMs >= 0
-        && delayMs <= OUTCOME_EVALUATION_TOLERANCE_MS
+        && delayMs <= checkpoint.maximumDelayMs
         && pollDelayMs !== null
         && pollDelayMs >= 0
-        && pollDelayMs <= OUTCOME_EVALUATION_TOLERANCE_MS
+        && pollDelayMs <= checkpoint.maximumDelayMs
         && Math.abs((evaluatedAt - targetAt) - delayMs) <= 1_000
         && Math.abs((evaluationPollCheckedAt - targetAt) - pollDelayMs) <= 1_000;
     });
-    if (previousOutcomes.length > outcomes.length) run.discardedLegacyOutcomeEvaluationCount = previousOutcomes.length - outcomes.length;
+    if (previousOutcomes.length > outcomes.length) outcomeOwner.discardedLegacyOutcomeEvaluationCount = previousOutcomes.length - outcomes.length;
     const existing = new Set(outcomes.map((outcome) => outcome.checkpoint));
     let snapshotUsedForCheckpoint = false;
     for (const checkpoint of OUTCOME_CHECKPOINTS) {
       const targetAt = startedAt + checkpoint.milliseconds;
       const evaluationDelayMs = sourceObservedAt - targetAt;
       const evaluationPollDelayMs = checkedAt - targetAt;
-      if (snapshotUsedForCheckpoint || !currentPrice || !Number.isFinite(sourceObservedAt) || sourceObservedAt > checkedAt + 60_000 || checkedAt - sourceObservedAt > OUTCOME_EVALUATION_TOLERANCE_MS || evaluationDelayMs < 0 || evaluationDelayMs > OUTCOME_EVALUATION_TOLERANCE_MS || evaluationPollDelayMs < 0 || evaluationPollDelayMs > OUTCOME_EVALUATION_TOLERANCE_MS || existing.has(checkpoint.label)) continue;
+      if (snapshotUsedForCheckpoint || !currentPrice || !benchmarkEntryPrice || !currentBenchmarkPrice || !Number.isFinite(sourceObservedAt) || !Number.isFinite(benchmarkObservedAt) || Math.abs(sourceObservedAt - benchmarkObservedAt) > 30 * 60 * 1000 || sourceObservedAt > checkedAt + 60_000 || checkedAt - sourceObservedAt > checkpoint.maximumDelayMs || evaluationDelayMs < 0 || evaluationDelayMs > checkpoint.maximumDelayMs || evaluationPollDelayMs < 0 || evaluationPollDelayMs > checkpoint.maximumDelayMs || existing.has(checkpoint.label)) continue;
       const forwardReturnPercent = ((currentPrice - entryPrice) / entryPrice) * 100;
       const directionAdjustedReturnPercent = direction === "downside" ? -forwardReturnPercent : forwardReturnPercent;
-      outcomes.push({ checkpoint: checkpoint.label, targetAt: new Date(targetAt).toISOString(), evaluatedAt: new Date(sourceObservedAt).toISOString(), evaluationPollCheckedAt: new Date(checkedAt).toISOString(), evaluationDelayMs, evaluationPollDelayMs, maximumEvaluationDelayMs: OUTCOME_EVALUATION_TOLERANCE_MS, priceAtSignal: entryPrice, evaluationPrice: currentPrice, forwardReturnPercent: Math.round(forwardReturnPercent * 100) / 100, directionAdjustedReturnPercent: Math.round(directionAdjustedReturnPercent * 100) / 100, usefulAtCheckpoint: directionAdjustedReturnPercent >= 2, source: "CoinGecko live snapshot" });
+      const benchmarkReturnPercent = ((currentBenchmarkPrice - benchmarkEntryPrice) / benchmarkEntryPrice) * 100;
+      const marketRelativeReturnPercent = forwardReturnPercent - benchmarkReturnPercent;
+      const directionAdjustedMarketRelativeReturnPercent = direction === "downside" ? -marketRelativeReturnPercent : marketRelativeReturnPercent;
+      const usefulAtCheckpoint = directionAdjustedReturnPercent >= MINIMUM_DIRECTIONAL_MOVE_AFTER_COSTS_PERCENT && directionAdjustedMarketRelativeReturnPercent > 0;
+      const quoteSource = typeof current?.source === "string" && current.source.trim() ? current.source.trim() : "live public-equity market snapshot";
+      const benchmarkSource = typeof currentBenchmark?.source === "string" && currentBenchmark.source.trim() ? currentBenchmark.source.trim() : "live SPY benchmark snapshot";
+      outcomes.push({ checkpoint: checkpoint.label, targetAt: new Date(targetAt).toISOString(), evaluatedAt: new Date(sourceObservedAt).toISOString(), evaluationPollCheckedAt: new Date(checkedAt).toISOString(), evaluationDelayMs, evaluationPollDelayMs, maximumEvaluationDelayMs: checkpoint.maximumDelayMs, priceAtSignal: entryPrice, evaluationPrice: currentPrice, forwardReturnPercent: Math.round(forwardReturnPercent * 100) / 100, directionAdjustedReturnPercent: Math.round(directionAdjustedReturnPercent * 100) / 100, benchmarkTicker, benchmarkPriceAtSignal: benchmarkEntryPrice, benchmarkEvaluationPrice: currentBenchmarkPrice, benchmarkObservedAt: new Date(benchmarkObservedAt).toISOString(), benchmarkReturnPercent: Math.round(benchmarkReturnPercent * 100) / 100, marketRelativeReturnPercent: Math.round(marketRelativeReturnPercent * 100) / 100, directionAdjustedMarketRelativeReturnPercent: Math.round(directionAdjustedMarketRelativeReturnPercent * 100) / 100, usefulAtCheckpoint, source: quoteSource, benchmarkSource });
       snapshotUsedForCheckpoint = true;
     }
-    run.outcomeEvaluations = outcomes;
-    run.outcomeCheckpointStatus = OUTCOME_CHECKPOINTS.map((checkpoint) => {
+    outcomeOwner.outcomeEvaluations = outcomes;
+    outcomeOwner.outcomeCheckpointStatus = OUTCOME_CHECKPOINTS.map((checkpoint) => {
       const targetAt = startedAt + checkpoint.milliseconds;
       const outcome = outcomes.find((item) => item.checkpoint === checkpoint.label);
-      if (outcome) return { checkpoint: checkpoint.label, targetAt: new Date(targetAt).toISOString(), status: "evaluated", evaluatedAt: outcome.evaluatedAt, evaluationDelayMs: outcome.evaluationDelayMs, evaluationPollDelayMs: outcome.evaluationPollDelayMs, maximumEvaluationDelayMs: OUTCOME_EVALUATION_TOLERANCE_MS };
-      if (checkedAt < targetAt) return { checkpoint: checkpoint.label, targetAt: new Date(targetAt).toISOString(), status: "pending", maximumEvaluationDelayMs: OUTCOME_EVALUATION_TOLERANCE_MS };
-      if (checkedAt <= targetAt + OUTCOME_EVALUATION_TOLERANCE_MS) return { checkpoint: checkpoint.label, targetAt: new Date(targetAt).toISOString(), status: "evaluation_window_open", maximumEvaluationDelayMs: OUTCOME_EVALUATION_TOLERANCE_MS };
-      return { checkpoint: checkpoint.label, targetAt: new Date(targetAt).toISOString(), status: "missed_evaluation_window", missedByMs: checkedAt - targetAt - OUTCOME_EVALUATION_TOLERANCE_MS, maximumEvaluationDelayMs: OUTCOME_EVALUATION_TOLERANCE_MS };
+      if (outcome) return { checkpoint: checkpoint.label, targetAt: new Date(targetAt).toISOString(), status: "evaluated", evaluatedAt: outcome.evaluatedAt, evaluationDelayMs: outcome.evaluationDelayMs, evaluationPollDelayMs: outcome.evaluationPollDelayMs, maximumEvaluationDelayMs: checkpoint.maximumDelayMs };
+      if (checkedAt < targetAt) return { checkpoint: checkpoint.label, targetAt: new Date(targetAt).toISOString(), status: "pending", maximumEvaluationDelayMs: checkpoint.maximumDelayMs };
+      if (checkedAt <= targetAt + checkpoint.maximumDelayMs) return { checkpoint: checkpoint.label, targetAt: new Date(targetAt).toISOString(), status: "evaluation_window_open", maximumEvaluationDelayMs: checkpoint.maximumDelayMs };
+      return { checkpoint: checkpoint.label, targetAt: new Date(targetAt).toISOString(), status: "missed_evaluation_window", missedByMs: checkedAt - targetAt - checkpoint.maximumDelayMs, maximumEvaluationDelayMs: checkpoint.maximumDelayMs };
     });
   }
 }
 
+function outcomeTickersDue(history: History, now: number) {
+  const due = new Set<string>();
+  for (const { run, candidate: selected, outcomeOwner } of outcomeTrackingEntries(history)) {
+    const ticker = typeof selected?.ticker === "string" ? selected.ticker.trim().toUpperCase() : "";
+    const startedAt = Date.parse(String(run.checkedAt ?? ""));
+    if (!ticker || !Number.isFinite(startedAt)) continue;
+    const completed = new Set(
+      (Array.isArray(outcomeOwner.outcomeEvaluations) ? outcomeOwner.outcomeEvaluations : [])
+        .map(record)
+        .filter((item): item is JsonRecord => Boolean(item))
+        .map((item) => String(item.checkpoint ?? "")),
+    );
+    for (const checkpoint of OUTCOME_CHECKPOINTS) {
+      if (completed.has(checkpoint.label)) continue;
+      const targetAt = startedAt + checkpoint.milliseconds;
+      if (now >= targetAt - 5 * 60 * 1000 && now <= targetAt + checkpoint.maximumDelayMs) due.add(ticker);
+    }
+  }
+  return [...due].slice(0, 6);
+}
+
+function historicalSignalRecords(history: History): HistoricalSignalRecord[] {
+  const validHorizons = new Set<HistoricalAnalogHorizon>(OUTCOME_CHECKPOINTS.map((checkpoint) => checkpoint.label));
+  return outcomeTrackingEntries(history).flatMap(({ run, candidate, fingerprint, outcomeOwner }) => {
+    const ticker = typeof candidate.ticker === "string" ? candidate.ticker.trim().toUpperCase() : "";
+    const direction = candidate.direction === "downside" ? "downside" : candidate.direction === "upside" ? "upside" : null;
+    const relationship = candidate.relationship === "direct" || candidate.relationship === "second_order" || candidate.relationship === "third_order" ? candidate.relationship : null;
+    const eventFamily = typeof candidate.eventFamily === "string" ? candidate.eventFamily.trim() : "";
+    const signalObservedAt = typeof run.checkedAt === "string" ? run.checkedAt : "";
+    const featuresAsOf = typeof candidate.featuresAsOf === "string" && Number.isFinite(Date.parse(candidate.featuresAsOf)) ? candidate.featuresAsOf : signalObservedAt;
+    const causalChain = Array.isArray(candidate.causalChain) ? candidate.causalChain.filter((value): value is string => typeof value === "string" && value.trim().length > 0) : [];
+    const candidateMacro = Array.isArray(candidate.macroRegime) ? candidate.macroRegime : [];
+    const runMacro = record(run.macroContext);
+    const runMacroRegime = Array.isArray(runMacro?.regime) ? runMacro.regime : [];
+    const macroRegime = (candidateMacro.length ? candidateMacro : runMacroRegime).filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+    if (!ticker || !direction || !relationship || !eventFamily || !Number.isFinite(Date.parse(signalObservedAt))) return [];
+    const checkpoints: HistoricalSignalRecord["checkpoints"] = {};
+    for (const raw of Array.isArray(outcomeOwner.outcomeEvaluations) ? outcomeOwner.outcomeEvaluations : []) {
+      const outcome = record(raw);
+      const horizon = typeof outcome?.checkpoint === "string" && validHorizons.has(outcome.checkpoint as HistoricalAnalogHorizon) ? outcome.checkpoint as HistoricalAnalogHorizon : null;
+      const returnPercent = finiteNumber(outcome?.forwardReturnPercent);
+      const benchmarkReturnPercent = finiteNumber(outcome?.benchmarkReturnPercent);
+      const observedAt = typeof outcome?.evaluatedAt === "string" ? outcome.evaluatedAt : "";
+      const source = typeof outcome?.source === "string" ? outcome.source.trim() : "";
+      if (!horizon || returnPercent === null || !Number.isFinite(Date.parse(observedAt)) || !source) continue;
+      checkpoints[horizon] = { returnPercent, benchmarkReturnPercent, observedAt, source };
+    }
+    const receipts = Array.isArray(candidate.receipts) ? candidate.receipts.map(record).filter((item): item is JsonRecord => Boolean(item)) : [];
+    const eventReceipt = receipts.find((item) => item.primarySource === true) ?? receipts[0] ?? null;
+    const firstCheckpoint = Object.values(checkpoints).find(Boolean);
+    return [{
+      id: `${fingerprint}:${signalObservedAt}`,
+      eventKey: fingerprint,
+      ticker,
+      eventFamily,
+      direction,
+      relationship,
+      causalChain,
+      macroRegime,
+      signalObservedAt,
+      featuresAsOf,
+      dataQuality: "real" as const,
+      provenance: {
+        origin: "swing_up_forward_outcome",
+        eventPublisher: typeof eventReceipt?.publisher === "string" ? eventReceipt.publisher : "Swing Up verified event receipts",
+        eventSourceUrl: typeof eventReceipt?.url === "string" ? eventReceipt.url : "r2://branch-labs/pr-261/serious-signal/state.json",
+        priceSource: firstCheckpoint?.source ?? "live public-equity market snapshot",
+        benchmarkSource: firstCheckpoint?.source ?? "live SPY benchmark snapshot",
+        methodologyVersion: "swing-up-forward-outcomes-v1",
+      },
+      checkpoints,
+    }];
+  });
+}
+
 export async function GET() {
   if (!branchAllowed()) return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
-  const { history, storage } = await loadHistory();
+  const [{ history, storage }, historicalLibrary] = await Promise.all([loadHistory(), loadHistoricalSignalLibrary()]);
   const recent = history.runs.slice(-3);
   const testedPerformanceRuns = history.runs.filter(realBranchPerformanceRun);
   const countedPerformanceRuns = testedPerformanceRuns.filter(safeRun);
@@ -423,7 +637,10 @@ export async function GET() {
   const validatedSeriousSignalRuns = countedPerformanceRuns.filter((run) => run.seriousSignalFound === true && typeof run.candidateFingerprint === "string" && run.candidateFingerprint.length > 0 && validOneDayOutcome(run));
   const validatedSeriousSignals = [...new Map(validatedSeriousSignalRuns.map((run) => [String(run.candidateFingerprint), run])).values()];
   const usefulValidatedSignals = validatedSeriousSignals.filter((run) => validOneDayOutcome(run)?.usefulAtCheckpoint === true);
-  const consistentSeriousSignals = consistentSafeBehavior && validatedSeriousSignals.length >= 3 && usefulValidatedSignals.length / validatedSeriousSignals.length >= 2 / 3;
+  const usefulRate = validatedSeriousSignals.length ? usefulValidatedSignals.length / validatedSeriousSignals.length : 0;
+  const usefulRateLower95 = wilsonLowerBound(usefulValidatedSignals.length, validatedSeriousSignals.length);
+  const threeSignalPipelineMilestone = consistentSafeBehavior && validatedSeriousSignals.length >= 3 && usefulRate >= 2 / 3;
+  const consistentSeriousSignals = consistentSafeBehavior && validatedSeriousSignals.length >= 30 && usefulRate >= 0.75 && usefulRateLower95 >= 0.55;
   const latestRun = history.runs.at(-1) ?? null;
   const latestSchedulerInvocation = record(latestRun?.schedulerInvocation);
   const effectiveIntervalSeconds = positiveEnvironmentNumber(process.env.SWING_UP_BRANCH_LAB_EFFECTIVE_INTERVAL_SECONDS, 300);
@@ -453,8 +670,12 @@ export async function GET() {
     validatedSeriousSignalCount: validatedSeriousSignals.length,
     distinctValidatedEvidenceCount: validatedSeriousSignals.length,
     usefulValidatedSeriousSignalCount: usefulValidatedSignals.length,
+    firstValidatedSeriousSignal: validatedSeriousSignals.length > 0,
+    threeSignalPipelineMilestone,
+    usefulValidatedSignalRate: Math.round(usefulRate * 10_000) / 100,
+    usefulValidatedSignalRateLower95: Math.round(usefulRateLower95 * 10_000) / 100,
     consistentSeriousSignals,
-    outcomeEvaluationPolicy: { provider: "CoinGecko live snapshot", checkpoints: OUTCOME_CHECKPOINTS.map((checkpoint) => checkpoint.label), maximumDelayMinutes: OUTCOME_EVALUATION_TOLERANCE_MS / 60_000, lateSnapshotReuseAllowed: false },
+    outcomeEvaluationPolicy: { provider: "event-qualified public-equity market snapshots", checkpoints: OUTCOME_CHECKPOINTS.map((checkpoint) => ({ label: checkpoint.label, maximumDelayHours: checkpoint.maximumDelayMs / (60 * 60 * 1000) })), tracksEveryUniqueQualifiedEvent: true, openAiReviewRequiredForTracking: false, alertWaitsForOutcomes: false, minimumDirectionalMoveAfterCostsPercent: MINIMUM_DIRECTIONAL_MOVE_AFTER_COSTS_PERCENT, lateSnapshotReuseAllowed: false, consistencyMinimumIndependentSignals: 30 },
     pollingPolicy: {
       schedulerOwner: process.env.SWING_UP_BRANCH_LAB_SCHEDULER_OWNER === "dedicated_worker" ? "dedicated_worker" : "unavailable",
       schedulerTransport: "loopback",
@@ -470,6 +691,19 @@ export async function GET() {
       distributedLease: { active: Boolean(scanLease), expiresAt: scanLease?.expiresAt ?? null, storage: "cloudflare_r2" },
     },
     stateStorage: storageMetadata(storage),
+    historicalOutcomeLibrary: {
+      backend: "cloudflare_r2",
+      objectKey: R2_EQUITY_HISTORY_KEY,
+      durable: historicalLibrary.error === null && getR2Config().configured,
+      realRecordCount: historicalLibrary.library.records.filter((item) => item.dataQuality === "real").length,
+      publicBootstrapRecordCount: historicalLibrary.library.records.filter((item) => item.provenance?.origin === "public_historical_bootstrap").length,
+      swingUpForwardOutcomeRecordCount: historicalLibrary.library.records.filter((item) => item.provenance?.origin === "swing_up_forward_outcome" || !item.provenance).length,
+      earliestSignalObservedAt: historicalLibrary.library.records[0]?.signalObservedAt ?? null,
+      latestSignalObservedAt: historicalLibrary.library.records.at(-1)?.signalObservedAt ?? null,
+      updatedAt: historicalLibrary.library.updatedAt,
+      error: historicalLibrary.error,
+      mockOrSyntheticRecordCount: historicalLibrary.library.records.filter((item) => item.dataQuality !== "real").length,
+    },
     openAiReservationPolicy: { durableStateRequired: true, durableStateAvailable: r2StateReady(storage), stateBlocker: r2StateBlocker(storage), maxAttemptsPerRolling24Hours: MAX_OPENAI_RUNS_PER_24_HOURS, sameEvidenceCooldownHours: OPENAI_EVIDENCE_COOLDOWN_MS / (60 * 60 * 1000), consumedReservationCount: history.openAiReservations.filter(reservationConsumed).length },
     providerQuotaStorageDurable: r2StateReady(storage),
     providerQuotaUsage: providerQuotaUsage(history, Date.now()),
@@ -525,6 +759,7 @@ async function executePost(request: NextRequest) {
   const reviewedFingerprints = reviewedFingerprintsInWindow(history, now, OPENAI_EVIDENCE_COOLDOWN_MS);
   const allowOpenAi = r2StateReady(storage) && openAiAttempts < MAX_OPENAI_RUNS_PER_24_HOURS;
   let activeReservationId: string | null = null;
+  let historicalLibrary = await loadHistoricalSignalLibrary();
   let providerReservationQueue: Promise<void> = Promise.resolve();
   const reserveProviderCall = (request: BranchProviderCallRequest): Promise<BranchProviderCallDecision> => {
     let release!: () => void;
@@ -547,6 +782,8 @@ async function executePost(request: NextRequest) {
   };
   const report = await runBranchSignalLab({
     allowOpenAi,
+    outcomeTickers: outcomeTickersDue(history, Date.now()),
+    historicalSignals: mergeHistoricalSignals(historicalLibrary.library.records, historicalSignalRecords(history)),
     skipOpenAiCandidateFingerprints: reviewedFingerprints,
     beforeOpenAiCall: async (candidate) => {
       const reservationNow = Date.now();
@@ -571,7 +808,34 @@ async function executePost(request: NextRequest) {
     },
     beforeProviderCall: reserveProviderCall,
   }) as JsonRecord;
+  const publicHistoricalAdditions = Array.isArray(report._historicalSignalLibraryAdditions)
+    ? report._historicalSignalLibraryAdditions.filter(isHistoricalSignalRecord)
+    : [];
+  delete report._historicalSignalLibraryAdditions;
   updateForwardOutcomes(history, report);
+  const forwardOutcomeAdditions = historicalSignalRecords(history).map((item): HistoricalSignalRecord => ({
+    ...item,
+    provenance: item.provenance ?? {
+      origin: "swing_up_forward_outcome",
+      eventPublisher: "Swing Up verified event receipts",
+      eventSourceUrl: "r2://branch-labs/pr-261/serious-signal/state.json",
+      priceSource: Object.values(item.checkpoints).find(Boolean)?.source ?? "live public-equity market snapshot",
+      benchmarkSource: Object.values(item.checkpoints).find(Boolean)?.source ?? "live SPY benchmark snapshot",
+      methodologyVersion: "swing-up-forward-outcomes-v1",
+    },
+  }));
+  historicalLibrary = await persistHistoricalSignalLibrary(historicalLibrary, mergeHistoricalSignals(publicHistoricalAdditions, forwardOutcomeAdditions));
+  const learning = record(report.historicalLearning) ?? {};
+  report.historicalLearning = {
+    ...learning,
+    r2LibraryObject: R2_EQUITY_HISTORY_KEY,
+    r2LibraryDurable: historicalLibrary.error === null,
+    r2LibraryRealRecordCount: historicalLibrary.library.records.filter((item) => item.dataQuality === "real").length,
+    r2LibraryPublicBootstrapRecordCount: historicalLibrary.library.records.filter((item) => item.provenance?.origin === "public_historical_bootstrap").length,
+    r2LibrarySwingUpForwardRecordCount: historicalLibrary.library.records.filter((item) => item.provenance?.origin === "swing_up_forward_outcome").length,
+    r2LibraryMockOrSyntheticRecordCount: historicalLibrary.library.records.filter((item) => item.dataQuality !== "real").length,
+    r2LibraryError: historicalLibrary.error,
+  };
   const repairFailure = repairEligibleFailure(report);
   const repairAttemptNumber = noGainRepairAttempts(history.runs, report);
   const activeReservation = activeReservationId ? history.openAiReservations.find((reservation) => reservation.id === activeReservationId) : null;

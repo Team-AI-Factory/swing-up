@@ -14,6 +14,7 @@ type EvidenceSection = {
 };
 
 export type AiCommitteeEvidencePack = {
+  assetClass?: "public_equity" | "digital_asset" | "other";
   candidateAlertId: string;
   rawSignalIds: string[];
   ticker: string | null;
@@ -156,6 +157,7 @@ export async function buildAiCommitteeEvidencePack(candidateAlertId: string): Pr
   const outcomeItems = alert.patternMatches.flatMap((match) => match.historicalEvent ? [{ historicalEventId: match.historicalEvent.id, ticker: match.historicalEvent.ticker, eventDate: match.historicalEvent.eventDate.toISOString(), outcomeLabel: match.historicalEvent.outcomeLabel, maxGain: decimal(match.historicalEvent.maxGain), maxDrawdown: decimal(match.historicalEvent.maxDrawdown), forwardReturns: match.historicalEvent.forwardReturns }] : []);
 
   const evidencePack: AiCommitteeEvidencePack = {
+    assetClass: "public_equity",
     candidateAlertId: alert.id,
     rawSignalIds,
     ticker: alert.ticker || null,

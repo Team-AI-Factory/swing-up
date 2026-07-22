@@ -137,7 +137,7 @@ const OPTIONAL_DISCOVERY_PROVIDER_MARKERS: Array<[string, RegExp]> = [
 const PROVIDER_UNAVAILABLE_MARKERS = /\b(unavailable|missing|failed|failure|timeout|timed out|rate[- ]?limit(?:ed)?|cooldown|not responding|not connected)\b/i;
 
 type CommitteeEvidencePolicy = {
-  assetClass: "digital_asset" | "company_or_other";
+  assetClass: "public_equity" | "digital_asset" | "company_or_other";
   blockingMissingEvidence: string[];
   nonBlockingFollowUps: string[];
   nonApplicableAgentIds: Set<string>;
@@ -175,6 +175,30 @@ function isDigitalAssetEvidence(pack: AiCommitteeEvidencePack) {
 
 function committeeEvidencePolicy(pack: AiCommitteeEvidencePack): CommitteeEvidencePolicy {
   const diversity = newsEvidenceDiversity(pack);
+  if (pack.assetClass === "public_equity") {
+    const context = [pack.eventHeadline, pack.whatHappened, pack.newsEvidence.summary, ...pack.newsEvidence.items.map((item) => text(item.summary ?? item.title))].filter(Boolean).join(" ");
+    const filingRelevant = /\b(filing|8-k|10-k|10-q|s-[13]|offering|insider|earnings|guidance|merger|acquisition)\b/i.test(context);
+    const fundamentalsRelevant = /\b(earnings|revenue|margin|guidance|offering|dilution|debt|acquisition|merger)\b/i.test(context);
+    const medicalRelevant = /\b(fda|drug|device|clinical|biotech|pharma|recall)\b/i.test(context);
+    const macroRelevant = /\b(federal reserve|fomc|rates?|inflation|cpi|pce|jobs?|payroll|unemployment|oil|sanctions?|war|tariff)\b/i.test(context);
+    const alwaysFollowUp = new Set(["priceVolumeEvidence", "finraShortPressureEvidence", "wikidataRippleRelationships", "historicalPatternMatch", "previousSimilarOutcomes", "cryptoFxEvidence"]);
+    const conditionallyFollowUp = new Set([
+      ...(!filingRelevant ? ["filingEvidence"] : []),
+      ...(!fundamentalsRelevant ? ["fundamentalsEvidence"] : []),
+      ...(!medicalRelevant ? ["fdaRegulatoryEvidence"] : []),
+      ...(!macroRelevant ? ["macroEvidence"] : []),
+    ]);
+    const nonBlockingFollowUps = pack.missingEvidence.filter((item) => alwaysFollowUp.has(item) || conditionallyFollowUp.has(item) || Boolean(optionalDiscoveryProviderName(item)));
+    return {
+      assetClass: "public_equity",
+      blockingMissingEvidence: pack.missingEvidence.filter((item) => !alwaysFollowUp.has(item) && !conditionallyFollowUp.has(item) && !optionalDiscoveryProviderName(item)),
+      nonBlockingFollowUps,
+      nonApplicableAgentIds: new Set<string>([...(!filingRelevant ? ["filing_agent"] : []), ...(!fundamentalsRelevant ? ["accountant_agent", "valuation_dcf_agent"] : [])]),
+      newsDiscoveryChannels: diversity.channels,
+      newsPublishers: diversity.publishers,
+      newsDiscoveryQuorumMet: diversity.quorumMet,
+    };
+  }
   if (!isDigitalAssetEvidence(pack)) {
     return { assetClass: "company_or_other", blockingMissingEvidence: pack.missingEvidence, nonBlockingFollowUps: [], nonApplicableAgentIds: new Set(), newsDiscoveryChannels: diversity.channels, newsPublishers: diversity.publishers, newsDiscoveryQuorumMet: diversity.quorumMet };
   }
@@ -255,7 +279,7 @@ function summarizeEvidence(pack: AiCommitteeEvidencePack) {
     score: pack.score,
     assetContext: {
       assetClass: policy.assetClass,
-      primaryAnalysis: policy.assetClass === "digital_asset" ? ["verified event evidence", "token market structure", "price/volume reaction", "liquidity and supply structure", "macro/FX context when relevant"] : ["verified event evidence", "company fundamentals", "price/volume reaction"],
+      primaryAnalysis: policy.assetClass === "digital_asset" ? ["verified event evidence", "token market structure", "price/volume reaction", "liquidity and supply structure", "macro/FX context when relevant"] : policy.assetClass === "public_equity" ? ["verified event truth", "issuer mapping", "materiality", "causal transmission", "historical context", "contradictions and priced-in risk"] : ["verified event evidence", "company fundamentals", "price/volume reaction"],
       nonApplicableUnlessEventSpecific: policy.assetClass === "digital_asset" ? ["corporate filings", "accounting metrics", "DCF", "FDA", "FINRA short data"] : [],
     },
     evidenceDiversity: { discoveryChannels: policy.newsDiscoveryChannels, uniquePublishers: policy.newsPublishers, multiChannelPublisherQuorumMet: policy.newsDiscoveryQuorumMet },
@@ -291,25 +315,37 @@ function summarizeEvidence(pack: AiCommitteeEvidencePack) {
 
 function buildAgentPrompt(agent: AiCommitteeAgentDefinition, evidencePack: AiCommitteeEvidencePack, previousResults: AiCommitteeAgentResult[], mode: AiCommitteeMode) {
   const policy = committeeEvidencePolicy(evidencePack);
-  const digitalAssetInstructions = policy.assetClass === "digital_asset"
+  const assetInstructions = policy.assetClass === "digital_asset"
     ? "This candidate is a digital asset. Treat verified event receipts, token market structure, price/volume reaction, liquidity, circulating/max supply, dilution/FDV, volatility and macro/FX context as the primary evidence. Corporate filings, accounting metrics, DCF, FDA evidence and FINRA short data are N/A unless the supplied event is specifically about one of them. Never penalize the candidate or request data merely because an N/A corporate section is absent."
-    : "Apply the supplied company/asset evidence according to the agent role.";
-  const discoveryProviderInstructions = policy.newsDiscoveryQuorumMet
-    ? `The supplied evidence already contains receipts from ${policy.newsDiscoveryChannels} discovery channels and ${policy.newsPublishers} unique publishers. One unavailable optional discovery provider (GDELT, Marketaux, Alpha Vantage, or FMP Crypto News) is a non-blocking follow-up; two or more unavailable providers, or missing receipt diversity itself, may still be blocking.`
-    : "Do not waive missing discovery evidence: the supplied receipts do not yet prove a two-channel, three-publisher quorum.";
+    : policy.assetClass === "public_equity"
+      ? "This is an event-first public-equity prediction. Judge the verified event, exact issuer mapping, materiality, causal chain, historical context, contradictions, valuation/risk transmission, and whether the opportunity is already priced in. A prior 2% move or 1% post-event move is neither required nor proof. Missing intraday price is a trade-readiness limitation, not a reason to ignore a verified early warning."
+      : "Apply the supplied company/asset evidence according to the agent role.";
+  const hasPrimaryEquityReceipt = policy.assetClass === "public_equity" && evidencePack.newsEvidence.items.some((item) => item.primarySource === true || item.official === true);
+  const discoveryProviderInstructions = hasPrimaryEquityReceipt
+    ? "A linked issuer, regulator, exchange, or government primary source may establish that the event occurred without waiting for the price to move or for secondary websites to repeat it. Still test exact issuer mapping, materiality, causal direction, contradictions, and execution readiness; official status alone does not prove the predicted stock impact."
+    : policy.assetClass === "public_equity"
+      ? `No primary event receipt is present. Require at least two genuinely independent origin publishers that support the same event and direction; syndicated copies count once. Current evidence has ${policy.newsPublishers} publisher(s) across ${policy.newsDiscoveryChannels} discovery channel(s).`
+      : policy.newsDiscoveryQuorumMet
+        ? `The supplied evidence already contains receipts from ${policy.newsDiscoveryChannels} discovery channels and ${policy.newsPublishers} unique publishers. One unavailable optional discovery provider (GDELT, Marketaux, Alpha Vantage, or FMP Crypto News) is a non-blocking follow-up; two or more unavailable providers, or missing receipt diversity itself, may still be blocking.`
+        : "Do not waive missing discovery evidence: the supplied receipts do not yet prove a two-channel, three-publisher quorum.";
   const finalJudgeInstructions = agent.id === "final_judge"
-    ? "As Final Judge, explicitly confirm that whatHappened, the proposed direction, direction-aligned catalyst receipts, and price/volume reaction tell a consistent story. Prioritize supplied aligned evidence and explicit contradictions. Return positive only when that direction and catalyst context are supported; mixed votes, silence, provider connectivity, and absent contradictions are not proof."
+    ? policy.assetClass === "public_equity"
+      ? "As Final Judge, explicitly confirm event truth, exact issuer mapping, materiality, causal direction, contradiction handling, and whether a safe executable price anchor exists. The quote anchors entry and future measurement; a prior price move is not required and must never be treated as proof. Return positive only when the event-to-company transmission is evidence-backed and the opportunity is not merely a generic theme association."
+      : "As Final Judge, explicitly confirm that whatHappened, the proposed direction, direction-aligned catalyst receipts, and price/volume reaction tell a consistent story. Prioritize supplied aligned evidence and explicit contradictions. Return positive only when that direction and catalyst context are supported; mixed votes, silence, provider connectivity, and absent contradictions are not proof."
     : "Evaluate the proposed direction against the supplied aligned evidence and explicit contradictions that apply to your role.";
+  const directionRule = policy.assetClass === "public_equity"
+    ? "Confirm the proposed direction against verified event truth, exact issuer mapping, materiality, causal transmission, explicit contradictions, and priced-in risk. A market quote is an entry/outcome anchor, not a prerequisite price move or proof of correctness."
+    : "Confirm the proposed direction against whatHappened, aligned catalyst receipts, price/volume confirmation, and explicit contradictions. Never infer proof from an empty list.";
   return {
-    system: `You are ${agent.displayName} for Swing Up's internal AI Committee. Use only supplied evidence. No investment advice, no publishing, no hype, no fake proof. ${digitalAssetInstructions} ${discoveryProviderInstructions} ${finalJudgeInstructions} Put only evidence that is truly required to validate or reject this candidate in missingData. Put optional, nice-to-have, N/A, or future confirmation work in followUpChecks; those items must not cause needs_more_data. A negative verdict must be based on an actual adverse or contradictory finding in the supplied evidence, never on an irrelevant section being absent. Return strict JSON only.`,
-    user: JSON.stringify({ mode, agent: { id: agent.id, purpose: agent.purpose, requiredInputs: agent.inputRequirements, applicability: policy.nonApplicableAgentIds.has(agent.id) ? "n/a_unless_event_specific" : "applicable" }, decisionRules: { directionAndCatalyst: "Confirm the proposed direction against whatHappened, aligned catalyst receipts, price/volume confirmation, and explicit contradictions. Never infer proof from an empty list.", discoveryProviderGap: "Exactly one unavailable optional discovery provider is non-blocking only when the supplied evidence itself proves at least two discovery channels and three unique publishers.", missingData: "Only truly blocking evidence absent from the current candidate. Use [] for N/A or optional evidence.", followUpChecks: "Non-blocking checks that may improve confidence later.", needsMoreData: "Use only when missingData contains at least one genuinely blocking item.", negative: "Use only for an actual adverse or contradictory finding supported by supplied evidence." }, expectedSchema: { agentId: agent.id, verdict: "positive|negative|mixed|needs_more_data", confidence: "0-100", keyFindings: [], supportingEvidence: [], concerns: [], missingData: [], suggestedActionLabel: "safe plain-English label", riskNotes: [], followUpChecks: [] }, evidencePack: summarizeEvidence(evidencePack), previousResults }, null, 2),
+    system: `You are ${agent.displayName} for Swing Up's internal AI Committee. Use only supplied evidence. No investment advice, no publishing, no hype, no fake proof. ${assetInstructions} ${discoveryProviderInstructions} ${finalJudgeInstructions} Put only evidence that is truly required to validate or reject this candidate in missingData. Put optional, nice-to-have, N/A, or future confirmation work in followUpChecks; those items must not cause needs_more_data. A negative verdict must be based on an actual adverse or contradictory finding in the supplied evidence, never on an irrelevant section being absent. Return strict JSON only.`,
+    user: JSON.stringify({ mode, agent: { id: agent.id, purpose: agent.purpose, requiredInputs: agent.inputRequirements, applicability: policy.nonApplicableAgentIds.has(agent.id) ? "n/a_unless_event_specific" : "applicable" }, decisionRules: { directionAndCatalyst: directionRule, discoveryProviderGap: policy.assetClass === "public_equity" ? "A verified primary source may establish event truth. Without one, require two independent origin publishers; never count syndicated copies or provider connectivity as evidence." : "Exactly one unavailable optional discovery provider is non-blocking only when the supplied evidence itself proves at least two discovery channels and three unique publishers.", missingData: "Only truly blocking evidence absent from the current candidate. Use [] for N/A or optional evidence.", followUpChecks: "Non-blocking checks that may improve confidence later.", needsMoreData: "Use only when missingData contains at least one genuinely blocking item.", negative: "Use only for an actual adverse or contradictory finding supported by supplied evidence." }, expectedSchema: { agentId: agent.id, verdict: "positive|negative|mixed|needs_more_data", confidence: "0-100", keyFindings: [], supportingEvidence: [], concerns: [], missingData: [], suggestedActionLabel: "safe plain-English label", riskNotes: [], followUpChecks: [] }, evidencePack: summarizeEvidence(evidencePack), previousResults }, null, 2),
   };
 }
 
 function plannedResult(agent: AiCommitteeAgentDefinition, evidencePack: AiCommitteeEvidencePack, mode: AiCommitteeMode): AiCommitteeAgentResult {
   const policy = committeeEvidencePolicy(evidencePack);
   const nonApplicable = policy.nonApplicableAgentIds.has(agent.id);
-  return { agentId: agent.id, status: "planned", verdict: policy.blockingMissingEvidence.length && !nonApplicable ? "needs_more_data" : "mixed", confidence: 0, keyFindings: [nonApplicable ? `${agent.purpose} N/A for this digital-asset event unless event-specific evidence appears.` : `Would review ${agent.purpose}`], supportingEvidence: evidencePack.sourceLinks.slice(0, 3), concerns: evidencePack.currentRiskLabels, missingData: nonApplicable ? [] : policy.blockingMissingEvidence, suggestedActionLabel: evidencePack.actionLabel ?? "Internal review only", riskNotes: evidencePack.dataFreshnessWarnings, followUpChecks: [...agent.inputRequirements, ...policy.nonBlockingFollowUps], promptSummary: `${agent.displayName}: ${agent.purpose} Mode=${mode}. Asset class=${policy.assetClass}. Uses candidate ${evidencePack.candidateAlertId} evidence pack; no OpenAI call in dry run.` };
+  return { agentId: agent.id, status: "planned", verdict: policy.blockingMissingEvidence.length && !nonApplicable ? "needs_more_data" : "mixed", confidence: 0, keyFindings: [nonApplicable ? `${agent.purpose} is N/A for this ${policy.assetClass} event unless event-specific evidence appears.` : `Would review ${agent.purpose}`], supportingEvidence: evidencePack.sourceLinks.slice(0, 3), concerns: evidencePack.currentRiskLabels, missingData: nonApplicable ? [] : policy.blockingMissingEvidence, suggestedActionLabel: evidencePack.actionLabel ?? "Internal review only", riskNotes: evidencePack.dataFreshnessWarnings, followUpChecks: [...agent.inputRequirements, ...policy.nonBlockingFollowUps], promptSummary: `${agent.displayName}: ${agent.purpose} Mode=${mode}. Asset class=${policy.assetClass}. Uses candidate ${evidencePack.candidateAlertId} evidence pack; no OpenAI call in dry run.` };
 }
 
 function normalizeAgentResult(agent: AiCommitteeAgentDefinition, parsed: Record<string, unknown>, evidencePack: AiCommitteeEvidencePack): AiCommitteeAgentResult {
@@ -349,11 +385,11 @@ export function committeeConsensusDecision(
   const needsData = agentResults.filter((result) => result.verdict === "needs_more_data" || result.missingData.length > 0);
   const finalJudge = agentResults.find((result) => result.agentId === "final_judge");
   const finalJudgeConfidence = finalJudge?.confidence ?? 0;
-  const finalJudgePositive = finalJudge?.status === "completed" && finalJudge.verdict === "positive" && finalJudgeConfidence >= 70;
+  const finalJudgePositive = finalJudge?.status === "completed" && finalJudge.verdict === "positive" && finalJudgeConfidence >= 80;
   const applicableCompleted = agentResults.filter((result) => result.agentId !== "final_judge" && result.status === "completed" && !nonApplicableAgentIds.has(result.agentId));
-  const positiveConsensusCount = applicableCompleted.filter((result) => result.verdict === "positive" && result.confidence >= 60).length;
-  const requiredPositiveCount = Math.max(4, Math.ceil(applicableCompleted.length * 0.4));
-  const meaningfulPositiveConsensus = applicableCompleted.length >= 4 && positiveConsensusCount >= requiredPositiveCount;
+  const positiveConsensusCount = applicableCompleted.filter((result) => result.verdict === "positive" && result.confidence >= 70).length;
+  const requiredPositiveCount = Math.max(6, Math.ceil(applicableCompleted.length * 0.6));
+  const meaningfulPositiveConsensus = applicableCompleted.length >= 6 && positiveConsensusCount >= requiredPositiveCount;
   const reasons: string[] = [];
 
   if (unsafeWords.length) reasons.push("unsafe_wording");
@@ -361,7 +397,7 @@ export function committeeConsensusDecision(
   if (failedOrBlocked.length) reasons.push("agent_failed_or_blocked");
   if (needsData.length) reasons.push("blocking_agent_missing_data");
   if (blockingMissingEvidence.length) reasons.push("blocking_pack_missing_evidence");
-  if (!finalJudgePositive) reasons.push("final_judge_not_positive_at_70");
+  if (!finalJudgePositive) reasons.push("final_judge_not_positive_at_80");
   if (!meaningfulPositiveConsensus) reasons.push("insufficient_positive_consensus");
 
   const overallRecommendation: OverallRecommendation = unsafeWords.length || negatives.length

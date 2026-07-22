@@ -10,37 +10,98 @@ vm.runInNewContext(`(function (exports, module) { ${compiled}\n})(cjsModule.expo
 const policy = cjsModule.exports;
 
 const at = "2026-07-19T00:00:00.000Z";
-const manyGoogle = Array.from({ length: 16 }, (_, index) => ({ title: `Google ${index}`, publisher: `g${index}.example`, publishedAt: at, channel: "google_news_rss" }));
+const manyGoogle = Array.from({ length: 16 }, (_, index) => ({ title: `Company event ${index}`, publisher: `g${index}.example`, publishedAt: at, channel: "google_news_rss" }));
 const otherChannels = [
-  { title: "GDELT one", publisher: "gdelt-one.example", publishedAt: at, channel: "gdelt" },
-  { title: "GDELT two", publisher: "gdelt-two.example", publishedAt: at, channel: "gdelt" },
-  { title: "Marketaux one", publisher: "marketaux-one.example", publishedAt: at, channel: "marketaux" },
-  { title: "Marketaux two", publisher: "marketaux-two.example", publishedAt: at, channel: "marketaux" },
-  { title: "Google 0", publisher: "syndicated-copy.example", publishedAt: at, channel: "marketaux" },
+  { title: "Federal Reserve announces policy decision", publisher: "federalreserve.gov", publishedAt: at, channel: "federal_reserve" },
+  { title: "Issuer files material agreement", publisher: "sec.gov", publishedAt: at, channel: "sec_current_filings" },
+  { title: "Independent report confirms material agreement", publisher: "reuters.com", publishedAt: at, channel: "marketaux" },
+  { title: "Second report confirms material agreement", publisher: "apnews.com", publishedAt: at, channel: "gdelt" },
+  { title: "Company event 0", publisher: "syndicated-copy.example", publishedAt: at, channel: "marketaux" },
 ];
 const balanced = policy.selectBalancedReceipts([...manyGoogle, ...otherChannels], 16);
 assert.equal(balanced.length, 16);
-assert.deepEqual([...new Set(balanced.map((item) => item.channel))].sort(), ["gdelt", "google_news_rss", "marketaux"]);
-assert.equal(balanced.filter((item) => item.title === "Google 0").length, 1);
+assert.deepEqual([...new Set(balanced.map((item) => item.channel))].sort(), ["federal_reserve", "gdelt", "google_news_rss", "marketaux", "sec_current_filings"]);
+assert.equal(balanced.filter((item) => item.title === "Company event 0").length, 1);
 
-const alignedBase = { catalystStrength: 78, priceVolumeConfirmation: 75, evidenceConfidence: 68, absoluteMovePercent: 3.5, alignedChannelCount: 2, alignedPublisherCount: 3, alignedKeywordCount: 2 };
-assert.ok(policy.computeActionStrength(alignedBase) >= 60);
-assert.ok(policy.computeActionStrength({ ...alignedBase, absoluteMovePercent: 1.2 }) < 60);
-assert.ok(policy.computeActionStrength({ ...alignedBase, alignedChannelCount: 1 }) < 60);
-assert.ok(policy.computeActionStrength({ ...alignedBase, alignedKeywordCount: 0 }) < 60);
+const verifiedEarlyEvent = {
+  eventTruth: 94,
+  mappingConfidence: 98,
+  materiality: 86,
+  transmissionConfidence: 84,
+  historicalSupport: 72,
+  evidenceIndependence: 88,
+  contradictionPenalty: 0,
+  pricedInPenalty: 0,
+  rumour: false,
+  priceMovePercent: 0,
+  postEventMovePercent: 0,
+};
+assert.ok(policy.computeEventFirstStrength(verifiedEarlyEvent) >= 60);
+assert.doesNotMatch(policy.computeEventFirstStrength.toString(), /absoluteMove|post.?event.?move|priceVolumeConfirmation/i);
+assert.doesNotMatch(policy.eventFirstGate.toString(), /absoluteMove|post.?event.?move|priceVolumeConfirmation/i);
 
-const eventIdentity = "exchange hack confirmed|official.example|official.example/story|2026-07-19T00";
-const firstFingerprint = policy.candidateFingerprintInput({ ticker: "BTC", direction: "downside", alignedKeywords: ["hack", "breach"], eventIdentity });
-const reorderedFingerprint = policy.candidateFingerprintInput({ ticker: "btc", direction: "downside", alignedKeywords: ["breach", "hack", "hack"], eventIdentity });
+const officialEvidenceGate = policy.eventFirstGate({
+  eventTruth: 94,
+  mappingConfidence: 98,
+  materiality: 86,
+  transmissionConfidence: 84,
+  fresh: true,
+  primarySource: true,
+  independentPublishers: 0,
+  unresolvedSevereContradiction: false,
+  rumour: false,
+  priceMovePercent: 0,
+  postEventMovePercent: 0,
+});
+assert.equal(officialEvidenceGate.passed, true);
+const independentEvidenceGate = policy.eventFirstGate({
+  eventTruth: 90,
+  mappingConfidence: 97,
+  materiality: 80,
+  transmissionConfidence: 78,
+  fresh: true,
+  primarySource: false,
+  independentPublishers: 2,
+  unresolvedSevereContradiction: false,
+  rumour: false,
+});
+assert.equal(independentEvidenceGate.passed, true);
+assert.equal(policy.eventFirstGate({
+  eventTruth: 90,
+  mappingConfidence: 97,
+  materiality: 80,
+  transmissionConfidence: 78,
+  fresh: true,
+  primarySource: false,
+  independentPublishers: 1,
+  unresolvedSevereContradiction: false,
+  rumour: false,
+}).passed, false);
+
+assert.ok(policy.computeEventFirstStrength({ ...verifiedEarlyEvent, rumour: true }) <= 59);
+assert.ok(policy.computeEventFirstStrength({ ...verifiedEarlyEvent, eventTruth: 64 }) <= 59);
+assert.ok(policy.computeEventFirstStrength({ ...verifiedEarlyEvent, mappingConfidence: 69 }) <= 59);
+
+assert.equal(policy.normalizeEquitySymbol(" $msft "), "MSFT");
+assert.equal(policy.normalizeEquitySymbol("brk/b"), "BRK.B");
+assert.equal(policy.normalizeEquitySymbol("not a ticker"), null);
+assert.equal(policy.matchesEquityText("Microsoft announces a new Azure product", { name: "Microsoft Corporation", ticker: "MSFT" }), true);
+assert.equal(policy.matchesEquityText("MSFT stock rises after the product announcement", { name: "Microsoft Corporation", ticker: "MSFT" }), true);
+assert.equal(policy.matchesEquityText("MSFT is an internal warehouse code", { name: "Microsoft Corporation", ticker: "MSFT" }), false);
+assert.equal(policy.matchesEquityText("AI is changing the software industry", { name: "C3.ai, Inc.", ticker: "AI" }), false);
+assert.equal(policy.matchesEquityText("$AI shares react to new guidance", { name: "C3.ai, Inc.", ticker: "AI" }), true);
+assert.equal(policy.matchesEquityText("ARM architecture powers many devices", { name: "Arm Holdings plc", ticker: "ARM" }), false);
+assert.equal(policy.matchesEquityText("$ARM files a new earnings release", { name: "Arm Holdings plc", ticker: "ARM" }), true);
+
+const eventReceipt = { title: "Microsoft signs major cloud agreement", publisher: "sec.gov", publishedAt: "2026-07-19T00:14:00.000Z", channel: "sec_current_filings", url: "https://www.sec.gov/Archives/example.htm?tracking=one" };
+const sameEventReceipt = { ...eventReceipt, publishedAt: "2026-07-19T00:58:00.000Z", url: "https://www.sec.gov/Archives/example.htm?tracking=two" };
+const eventIdentity = policy.canonicalEventIdentity(eventReceipt);
+assert.equal(eventIdentity, policy.canonicalEventIdentity(sameEventReceipt));
+const firstFingerprint = policy.candidateFingerprintInput({ ticker: "MSFT", direction: "upside", eventFamily: "Product Launch", eventIdentity });
+const reorderedFingerprint = policy.candidateFingerprintInput({ ticker: "msft", direction: "upside", eventFamily: " product launch ", eventIdentity });
 assert.equal(firstFingerprint, reorderedFingerprint);
-assert.notEqual(firstFingerprint, policy.candidateFingerprintInput({ ticker: "BTC", direction: "upside", alignedKeywords: ["breach", "hack"], eventIdentity }));
-assert.equal(policy.matchesAssetText("Follow this link for more crypto news", { name: "Chainlink", ticker: "LINK" }), false);
-assert.equal(policy.matchesAssetText("Chainlink announces a protocol upgrade", { name: "Chainlink", ticker: "LINK" }), true);
-assert.equal(policy.matchesAssetText("$LINK token rises after upgrade", { name: "Chainlink", ticker: "LINK" }), true);
-assert.equal(policy.matchesAssetText("Ada Lovelace history in a blockchain article", { name: "Cardano", ticker: "ADA" }), false);
-assert.equal(policy.matchesAssetText("ADA token faces a network outage", { name: "Cardano", ticker: "ADA" }), true);
-assert.equal(policy.normalizeProviderCryptoSymbol("BTCUSD"), "BTC");
-assert.equal(policy.normalizeProviderCryptoSymbol("CRYPTO:ETH"), "ETH");
+assert.notEqual(firstFingerprint, policy.candidateFingerprintInput({ ticker: "MSFT", direction: "downside", eventFamily: "Product Launch", eventIdentity }));
+assert.notEqual(firstFingerprint, policy.candidateFingerprintInput({ ticker: "MSFT", direction: "upside", eventFamily: "Regulatory Action", eventIdentity }));
 
 for (const failure of [
   policy.providerFailurePolicy({ httpStatus: 429 }),
@@ -69,4 +130,15 @@ assert.equal(policy.noGainRepairAttempts([applicationFailure, applicationFailure
 assert.equal(policy.noGainRepairAttempts([applicationFailure, { status: "no_qualified_signal", repairEligible: false }], applicationFailure), 1);
 assert.equal(policy.noGainRepairAttempts([applicationFailure, applicationFailure], { ...applicationFailure, measurableGain: true }), 0);
 
-console.log(JSON.stringify({ ok: true, balancedEvidenceChannels: true, strictDirectionAwareStrength: true, stableFingerprint: true, durableProviderBudgetPolicy: true, externalFailuresNotRepairEligible: true, applicationFailureStopPolicy: true }, null, 2));
+console.log(JSON.stringify({
+  ok: true,
+  eventFirstWithoutPriceMove: officialEvidenceGate.passed,
+  strictIssuerMatching: true,
+  officialOrIndependentEvidenceRequired: true,
+  rumourScoreCappedBelowSerious: true,
+  balancedEvidenceChannels: true,
+  stableEventFingerprint: true,
+  durableProviderBudgetPolicy: true,
+  externalFailuresNotRepairEligible: true,
+  applicationFailureStopPolicy: true,
+}, null, 2));

@@ -1,74 +1,93 @@
 # Railway Branch Signal Lab
 
-This experiment is deliberately isolated from `main` and Railway production. It activates only when all of these are true:
+This experiment is isolated from `main` and Railway production. It activates only when:
 
-- `RAILWAY_GIT_BRANCH` is exactly `agent/live-signal-evaluation-automation`.
-- `RAILWAY_ENVIRONMENT_NAME` exists and is not `production`.
-- Railway has supplied `RAILWAY_PROJECT_ID`.
+- `RAILWAY_GIT_BRANCH` is `agent/live-signal-evaluation-automation`;
+- `RAILWAY_ENVIRONMENT_NAME` exists and is not `production`; and
+- Railway supplies `RAILWAY_PROJECT_ID`.
 
-In the branch preview, the startup wrapper removes database, Telegram, payment, and uncontrolled paid-market credentials from the application process. It also skips Prisma migrations. It retains `OPENAI_API_KEY`, the configured free-tier provider keys, and only the Cloudflare R2 credentials needed for the branch lab's isolated state object. Provider calls remain bounded by branch-specific cadence and never write to PostgreSQL.
+The preview startup wrapper removes database, publishing, Telegram, payment, and unrelated paid-market credentials. It skips Prisma migrations and keeps only the credentials required for the read-only stock-intelligence lab, OpenAI review, and its isolated Cloudflare R2 state object. The lab never writes to PostgreSQL.
 
 ## What runs
 
-The startup wrapper launches two separate processes: the Next.js website and a dedicated scanner worker. The worker runs immediately after the website becomes healthy and then every five minutes by default. The wrapper receives a worker heartbeat every thirty seconds and replaces the worker if the heartbeat is missing for ninety seconds. This keeps the alarm independent from Next.js instrumentation and request lifecycles while leaving the website available.
+The wrapper supervises the Next.js website and a separate scanner worker. The worker runs after the website becomes healthy and then every five minutes. It emits a heartbeat every 30 seconds and is restarted after a missing heartbeat. When Railway briefly has multiple replicas, an R2-backed seven-minute lease lets one worker scan while the others stand down without spending provider or OpenAI quota.
 
-If Railway runs more than one preview replica, every worker first competes for a seven-minute scan lease stored in the same isolated R2 state object. One worker wins and performs the live scan; the others return without calling providers or OpenAI. R2 conditional writes decide the winner, so replicas cannot overwrite one another's quota or outcome records. A crashed winner's lease expires automatically.
+The live path is event-first and public-equity-only:
 
-CoinGecko and Google News RSS refresh on the five-minute cycle. GDELT refreshes no more often than every fifteen minutes, Marketaux every twenty minutes, FMP Crypto News every thirty minutes, Alpha Vantage every two hours, and FRED/Frankfurter once per hour. In addition to the in-process caches, every quota-limited call is reserved in the durable branch ledger before it runs. The ledger enforces provider-specific minimum intervals and rolling free-plan budgets across restarts. CoinGecko is capped below its Demo monthly allowance, and each historical event anchor is fetched once and then combined with the current five-minute market row. A real provider rate limit or temporary outage starts bounded exponential cooldown without substituting stale, neutral, mock, or invented evidence. Only an explicitly repair-eligible application failure gets the one-minute technical retry; upstream outages remain on the normal quota-safe loop.
+1. Refresh the active US-listed common-stock and ADR universe from Nasdaq Trader, joined to SEC CIK identifiers. The universe is cached for one day.
+2. Collect new official filings, government and regulator announcements, macro releases, scheduled earnings, and broad news before looking for a price move.
+3. Classify the event, map directly affected issuers across the full universe, and add limited sector or supply-chain knock-on effects.
+4. Require a verified event, material causal path, fresh evidence, and either a primary source or independent corroboration.
+5. Fetch price data only for the short list that already passed the event gate. Price is an execution and later outcome anchor, never permission to begin analysis.
+6. Fetch SEC Company Facts for the strongest mapped issuer and send only a fully evidenced candidate to the 14-agent committee.
 
-Each performance run reads live CoinGecko price, volume, market-cap, FDV, supply, range, and 24-hour/7-day data for ten major digital assets. It searches the five largest movers through the available real news channels. GDELT remains active, but a shared-network GDELT limit cannot stop otherwise valid analysis. A candidate reaches the 14-agent OpenAI committee only when it has:
+Crypto scanning is disabled. There is no 2% daily-move gate and no 1% post-event-move gate. A verified event may qualify while the stock is unchanged. `No Action` remains a valid result, and the filters are never relaxed merely to produce alerts.
 
-- 100% live input provenance;
-- at least two matching live news discovery channels, three unique origin publishers, CoinGecko market proof, and connected FRED/Frankfurter context;
-- at least three origin publishers and two discovery channels carrying fresh (at most 12-hour-old) catalysts aligned with the observed upside or downside direction;
-- official regulator/exchange evidence when the claim concerns approval, enforcement, listing, or delisting;
-- a meaningful 24-hour move plus a real CoinGecko event-to-current price move in the same direction; and
-- at least 60 action strength and 60 evidence confidence.
+## Sources and cadence
 
-The filters are never relaxed merely to produce a signal. `No Action` is a valid result.
+Calls are reserved in the durable R2 quota ledger before they run. The scanner uses the fastest safe cadence allowed by each free source instead of making thousands of per-stock calls:
 
-Every live report includes a candidate funnel, explicit pass/fail evidence checks for each ranked asset, and provider cooldown details. Those diagnostics let the repair loop distinguish a real quiet market from a parsing, matching, freshness, or provider-integration defect without treating connectivity as evidence or lowering the serious-signal threshold.
+- Nasdaq Trader and SEC ticker/CIK universe: daily.
+- SEC 8-K/6-K current filings: about every five minutes; Form 4 every 14 minutes; other selected forms hourly.
+- Federal Reserve, White House, Commerce, CISA, State, Defense, BLS, BEA, SEC press releases, and other official feeds: every five minutes where the publisher updates that often.
+- Google News discovery: about every five minutes.
+- GDELT: every 14 minutes, matching its 15-minute data cycle.
+- Marketaux: every 14.5 minutes within its free daily allowance.
+- Alpha Vantage broad news: about every two hours; earnings calendar daily; quote fallback is per-symbol and quota-limited.
+- FRED macro series: hourly per series.
+- Federal Register: every 29 minutes.
+- Frankfurter FX reference rates: daily.
+- openFDA: every six hours.
+- Yahoo public chart data: five-minute short-list quote source, with Alpha Vantage and free FMP end-of-day data as fallbacks.
 
-CI does not fabricate a market, news event, or outcome. It verifies compilation, branch isolation, and side-effect guards only. A result counts toward signal quality only when it came from the Railway branch preview through real HTTP responses. Missing or unavailable sources are reported as failed or not configured; they are never replaced with mock or neutral values.
+No source is treated as evidence merely because it is reachable. One unavailable discovery provider cannot stop the full scan. Each collector reports its own status, bounded cooldown, and error category. Temporary failures may use a previously successful, still-fresh real response for discovery, clearly marked as cached; the system never substitutes mock, neutral, or invented evidence. Paid-only FMP news or real-time endpoints are not retried on a free plan.
 
-SEC EDGAR and openFDA remain active read-only ears for event-specific regulatory corroboration, but connectivity alone never counts toward a digital-asset score. FINRA short-sale files, Wikidata relationships, and corporate accounting/DCF evidence are marked not applicable unless the specific event makes them relevant. Keyed providers remain unavailable unless their own key and plan are configured; the lab reports `not_configured` or `not_entitled` and never invents a successful response. In particular, an FMP key does not prove that its Crypto News entitlement is included. Frankfurter supplies latest daily reference FX context, not intraday prices.
+## Evidence policy
 
-The free CoinGecko Demo credential can be supplied as `COINGECKO_DEMO_API_KEY`; the existing `COINGECKO_API_KEY` name remains a backwards-compatible Demo-key alias. The branch never guesses that this is a paid Pro key or sends it to the Pro hostname.
+An event may advance when all of the following are true:
 
-Once per 24 hours, the preview performs a tiny, real, read-only connectivity audit of SEC EDGAR and openFDA. SEC EDGAR uses its free public API with a built-in declared Swing Up contact header and needs no API key or Railway variable. openFDA remains context/connectivity-only and can never trigger or raise a serious-alert score. Marketaux, Alpha Vantage, and FMP are already exercised by the live crypto-news path, so they are not called a second time merely for auditing. The audit writes no source data to PostgreSQL or the production R2 warehouse, never publishes, and never sends notifications. The separate branch-state object is still updated to preserve quota reservations and run history. Audit connectivity itself never counts as serious-signal evidence. The report exposes missing variable names and provider status while redacting all secret values.
+- source truth score is at least 80;
+- issuer mapping confidence is at least 95;
+- estimated materiality is at least 65;
+- causal transmission strength is at least 70;
+- the event is fresh and not a rumor;
+- either a primary official/company source exists or at least two independent origin publishers corroborate it; and
+- no severe opposite-direction contradiction is present.
 
-## Cost and repetition controls
+Official filings and government announcements can establish that an event happened without being repeated by news sites, but they still must establish issuer identity, materiality, and a defensible causal link. Ten sites copying one wire report count as one origin. Provider availability, market movement, and generic macro context add no evidence score by themselves.
 
-- No more than three committee reviews can run in any rolling 24-hour period.
+The current causal mapper covers direct issuer events across the complete US universe and a bounded set of energy, defense, airline, semiconductor, bank, cybersecurity, and AI-infrastructure ripple paths. Unmapped official events remain visible in the report for later model expansion; they are not silently converted into trades. Historical macro regimes are included as context. An analogue counts only when its event receipt and public stock/SPY outcome have been measured without using information that became available after the original prediction time.
+
+The R2 historical library is bootstrapped gradually. Its first five seeds are previously documented official NVIDIA, Biogen, FDA/Pfizer, Meta, and FDIC/JPMorgan events. Their numeric returns are fetched from public adjusted daily history at runtime and are never hard-coded. A 1D result is enough to enter the library; later checkpoints add information. Fewer than three independent similar events cannot produce a numeric range, and fewer than twenty cannot produce a calibrated Buy/Sell range.
+
+## Committee and cost controls
+
+- No more than three committee reviews may run in a rolling 24-hour period.
 - The same evidence fingerprint cannot be reviewed twice within 12 hours.
-- Immediately before a committee call, the preview atomically writes a pending reservation for that evidence fingerprint to durable branch state. A timeout, process exit, or incomplete response still consumes the reservation, so it cannot evade the rolling budget or trigger an immediate duplicate paid call.
-- The preview pins every committee tier to the allowlisted `gpt-4.1-mini-2025-04-14` snapshot, limits each provider request to 12 seconds, and reports actual prompt/completion/cached token usage returned by OpenAI.
-- Paid committee calls are disabled unless durable branch state is available. Merely having `OPENAI_API_KEY` does not bypass this guard.
-- If the same explicitly repair-eligible application/code failure repeats three times without measurable improvement, the lab stops itself. Real provider outages, rate limits, and cooldowns never consume these repair attempts.
-- A quiet market or a correctly rejected weak candidate is not counted as a technical failure.
+- A pending reservation is written to R2 before the first paid call, so a timeout or restart cannot repeat paid work.
+- Every committee tier uses the allowlisted `gpt-4.1-mini-2025-04-14` snapshot, with request timeouts and token reporting.
+- Paid review is disabled unless durable R2 state is healthy.
+- All 14 roles must complete, the Final Judge must be positive with at least 80 confidence, and the minimum positive-vote consensus must pass.
+- A quiet market, correctly rejected candidate, or isolated upstream outage is not counted as a software-repair failure.
 
-## Durable branch state
+## Durable state and safety
 
-Cloudflare R2 is the primary and only writable state store for the branch lab. The lab uses the fixed, isolated object `branch-labs/pr-261/serious-signal/state.json`. This object contains only branch-lab reports, forward outcomes, provider-call quota reservations, and OpenAI attempt reservations. It does not use PostgreSQL, Prisma migrations, publishing credentials, or production alert objects.
+Cloudflare R2 is the only writable state store. The isolated object `branch-labs/pr-261/serious-signal/state.json` contains branch reports, provider and OpenAI reservations, selected candidates, and active forward outcomes. The separate object `branch-labs/pr-261/serious-signal/equity-history-v1.json` keeps compact real historical event outcomes after old scan logs are pruned. ETag conditions and the scan lease prevent concurrent workers from overwriting newer state.
 
-Writes use R2 ETag conditions. A save succeeds only when the object still has the exact version that the lab read; a competing writer receives a conflict instead of silently overwriting newer quota or outcome state. When the R2 object is first created, the lab imports the existing Railway-volume JSON once so the already collected real run history is not discarded. The Railway Volume is never used as the primary store and receives no new branch-lab writes after migration.
+If R2 is missing, unreadable, unwritable, or invalid, the cycle stops before provider or OpenAI calls. It never falls back to PostgreSQL, a Railway volume, or `/tmp`. The public report must show `backend=cloudflare_r2`, `postgresUsed=false`, and `railwayVolumeUsedAsPrimary=false` when healthy.
 
-If R2 is missing, unreadable, unwritable, or has invalid JSON, the live cycle stops before provider or OpenAI calls and reports a safe external-storage blocker. It does not fall back to PostgreSQL, Railway storage, or `/tmp`, because splitting quota and outcome history across stores could cause duplicate paid calls or lost results. `stateStorage` reports `backend=cloudflare_r2`, `primary=cloudflare_r2`, `postgresUsed=false`, and `railwayVolumeUsedAsPrimary=false` when healthy.
-
-## Outcome validation
-
-Reviewed candidates are kept in the branch-only state described above. Later five-minute snapshots can calculate real CoinGecko forward returns at the 1D, 3D, 7D, 30D, and 90D checkpoints. A snapshot is accepted only from the checkpoint target through 30 minutes after it. Each evaluation records its target time, provider observation time, polling time, delay, and maximum accepted delay. A late snapshot is marked as a missed evaluation window instead of being reused, and one market snapshot can never fill multiple horizons. Legacy outcomes without this timing proof are discarded from validation.
-
-A run can count toward validated signal quality only when it reports `mode=railway_branch_live_read_only`, `realProviderResponsesOnly=true`, and all three safety flags (`databaseWrites`, `publishing`, and `notifications`) are false. Safety consistency is calculated across every tested real branch performance run in durable history, not merely the most recent three. A consistent result requires at least three distinct serious-signal evidence fingerprints with an accepted 1D evaluation, at least a two-thirds useful rate, and no unsafe tested performance run. Repeating the same evidence cannot satisfy this target.
-
-The redacted report is available from:
+The lab performs no database writes, publishing, notifications, trades, or production changes. The public endpoint is redacted:
 
 `GET /api/internal/railway-branch-signal-lab`
 
-The POST trigger requires a random runtime-only token generated inside the preview container plus the dedicated worker identity headers. The worker calls the route over `127.0.0.1`, so the alarm does not depend on Railway's public edge routing. Each stored run records the worker start time and monotonic sequence number. These values prove which worker invoked a run without exposing the runtime token. The token is not a repository or Railway secret.
+The worker's POST route requires an in-container runtime token and worker identity headers and is called over `127.0.0.1`.
 
-The public redacted report also includes a small runtime diagnostic showing only the worker stage, timestamp, sequence, and safe exit/status category. This diagnostic is an ephemeral `/tmp` heartbeat, not signal history, quota state, evidence, or an R2 fallback. Cloudflare R2 remains the only persistent branch-lab state store.
+## Outcome validation
+
+Public-equity alerts are evaluated with real post-alert quote observations at 1D, 3D, 7D, 30D, and 90D. Yahoo chart data is preferred, with Alpha Vantage or free FMP end-of-day data used only when their timestamps meet the evaluation window. Each observation stores the actual source and timestamp. A late or unavailable quote becomes a missed checkpoint; it is not backfilled with an invented or unrelated value.
+
+Legacy crypto runs cannot count toward public-equity performance. Three distinct serious public-equity signals with accepted 1D evaluations and at least a two-thirds useful rate are an early pipeline milestone. A consistency claim requires at least 30 independent signals, at least a 75% useful rate, a conservative 95% lower confidence bound of at least 55%, and no unsafe live performance run. This is an evaluation target, not a guarantee of profit or absence of loss.
 
 ## Railway requirement
 
-Railway PR Environments must be enabled for the repository. Railway then creates an isolated preview deployment for the PR and supplies the branch/environment system variables used by the guard. The preview must inherit the configured Cloudflare R2 bucket, endpoint/account, access key, and secret key variables with Object Read and Object Write permission. A Railway Volume is not required after the one-time migration.
+Railway PR Environments must be enabled and the preview must inherit read/write credentials for the configured Cloudflare R2 object plus the provider keys included in the existing free packages. A Railway Volume is not required.

@@ -51,19 +51,21 @@ while (Date.now() - startedAt < timeoutMs) {
 
 assert.ok(health, `Railway preview did not expose expected commit ${expectedCommit || "(any)"} within ${timeoutMs / 1000}s.`);
 
-const [providerAudit, earConfig, readiness, liveRun] = await Promise.all([
+const [providerAudit, dataAudit, earConfig, readiness, liveRun] = await Promise.all([
   request("/api/internal/combined-opportunity-engine/provider-audit?ticker=MSFT"),
+  request("/api/internal/combined-opportunity-engine/data-audit"),
   request("/api/internal/ear-config-status"),
   request("/api/internal/engine-start-readiness"),
   request("/api/internal/combined-opportunity-engine", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ useLiveData: true, liveTickers: ["MSFT", "NVDA"] }),
+    body: JSON.stringify({ useLiveData: true, useProviderEnrichment: true, liveTickers: ["MSFT", "NVDA"] }),
   }),
 ]);
 
 assert.equal(providerAudit.status, 200);
 assert.equal(providerAudit.json?.ok, true);
+assert.equal(dataAudit.status, 200);
 assert.equal(liveRun.status, 200);
 assert.equal(liveRun.json?.ok, true);
 assert.equal(liveRun.json?.summary?.liveProviderErrors, 0);
@@ -78,6 +80,7 @@ const report = {
   deploymentAttempts: attempts,
   runtime: health.runtime,
   providerAudit: providerAudit.json,
+  databaseOutcomeAudit: dataAudit.json,
   configuredSourceSummary: sourceRows.map((source) => ({
     sourceName: source.sourceName,
     enabled: source.enabled,
@@ -102,12 +105,22 @@ const report = {
     foundationsChecked: liveRun.json?.summary?.foundationsChecked,
     eventsChecked: liveRun.json?.summary?.eventsChecked,
     liveProviderErrors: liveRun.json?.summary?.liveProviderErrors,
+    optionalProviderErrors: liveRun.json?.summary?.optionalProviderErrors,
+    seriousSignals: liveRun.json?.summary?.seriousSignals,
+    abstentions: liveRun.json?.summary?.abstentions,
     noSyntheticData: liveRun.json?.liveData?.noSyntheticData,
+    providerSummary: liveRun.json?.liveData?.providerSummary,
     decisions: (liveRun.json?.foundationDecisions || []).map((decision) => ({
       ticker: decision.ticker,
       opportunityScore: decision.scores?.opportunityScore,
       evidenceConfidence: decision.scores?.evidenceConfidence,
+      calibratedConfidence: decision.confidence?.overall,
+      confidenceKind: decision.confidence?.kind,
+      targetPrice: decision.priceTarget?.basePrice,
+      expectedUpsidePercent: decision.priceTarget?.upsidePercent,
       candidateBucket: decision.candidateBucket,
+      signalAction: decision.signalAction,
+      seriousSignal: decision.seriousSignal,
       blockedReasons: decision.blockedReasons,
     })),
   },
@@ -123,6 +136,7 @@ console.log(JSON.stringify({
   deploymentAttempts: attempts,
   connectedProviders: report.providerAudit?.connectedProviders,
   missingProviders: report.providerAudit?.missingProviders,
+  usableDatabaseOutcomeRows: report.databaseOutcomeAudit?.counts?.usableOutcomeRows ?? 0,
   liveWorkflow: report.liveWorkflow,
   reportPath: outputPath,
 }, null, 2));

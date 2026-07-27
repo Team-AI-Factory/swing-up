@@ -27,6 +27,7 @@
     "smoke:r2-preview-write-guard": "node scripts/r2-preview-write-guard-smoke.mjs",
     "smoke:branch-worker-process": "node scripts/branch-worker-process-smoke.mjs",
     "smoke:equity-event-first-runner": "node scripts/equity-event-first-runner-smoke.mjs",
+    "smoke:equity-five-case-pilot": "node scripts/equity-five-case-pilot-smoke.mjs",
     "smoke:equity-historical-analogs": "node scripts/equity-historical-analogs-smoke.mjs",
     "smoke:equity-historical-bootstrap": "node scripts/equity-historical-bootstrap-smoke.mjs",
     "smoke:equity-sec-filing-details": "node scripts/equity-sec-filing-details-smoke.mjs",

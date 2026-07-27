@@ -11,6 +11,16 @@ on:
       - "scripts/validate-us-five-case-pilot-history.ts"
       - "package.json"
       - ".github/workflows/us-five-case-pilot-history.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "lib/equity-signal/pilot-historical-bootstrap.ts"
+      - "lib/equity-signal/pilot-serious-signal-policy.ts"
+      - "lib/equity-signal/historical-analogs.ts"
+      - "scripts/validate-us-five-case-pilot-history.ts"
+      - "package.json"
+      - ".github/workflows/us-five-case-pilot-history.yml"
   workflow_dispatch:
 
 permissions:
@@ -33,7 +43,10 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Refuse main
-        run: test "${GITHUB_REF_NAME}" != "main"
+        shell: bash
+        run: |
+          branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          test "${branch}" != "main"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4

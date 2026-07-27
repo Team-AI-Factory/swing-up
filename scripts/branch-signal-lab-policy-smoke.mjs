@@ -4,6 +4,7 @@ import vm from "node:vm";
 import ts from "typescript";
 
 const source = readFileSync(new URL("../lib/branch-signal-lab-policy.ts", import.meta.url), "utf8");
+const routeSource = readFileSync(new URL("../app/api/internal/railway-branch-signal-lab/route.ts", import.meta.url), "utf8");
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
 const cjsModule = { exports: {} };
 vm.runInNewContext(`(function (exports, module) { ${compiled}\n})(cjsModule.exports, cjsModule);`, { cjsModule, URL });
@@ -135,6 +136,11 @@ const migratedMarketauxBudget = policy.providerCallBudgetDecision([
 ], { quotaKey: "marketaux_free_100_daily", cadenceKey: "marketaux_equity_news_v2", rollingWindowMs: 24 * 60 * 60_000, maximumCallsInWindow: 2, minimumIntervalMs: 0 }, Date.parse(at) + 60_000);
 assert.equal(migratedMarketauxBudget.reason, "rolling_quota_guard");
 
+assert.match(routeSource, /pendingProviderReservations/);
+assert.match(routeSource, /queueMicrotask\(flushProviderReservations\)/);
+assert.match(routeSource, /if \(addedReservation\) storage = await saveHistory\(history, storage\)/);
+assert.doesNotMatch(routeSource, /for \(const item of batch\)[\s\S]{0,1200}await saveHistory\(history, storage\)/);
+
 const externalFailure = { status: "source_temporarily_unavailable", failureScope: "external_provider", repairEligible: false, technicalFailureFingerprint: "external_provider_gdelt" };
 assert.equal(policy.noGainRepairAttempts([externalFailure, externalFailure], externalFailure), 0);
 const applicationFailure = { status: "technical_failure", failureScope: "application", repairEligible: true, technicalFailureFingerprint: "local_parser_invariant" };
@@ -151,6 +157,7 @@ console.log(JSON.stringify({
   balancedEvidenceChannels: true,
   stableEventFingerprint: true,
   durableProviderBudgetPolicy: true,
+  concurrentProviderReservationsPersistedInOneBatch: true,
   legacyMarketauxReservationsCountTowardCurrentPlan: true,
   externalFailuresNotRepairEligible: true,
   applicationFailureStopPolicy: true,

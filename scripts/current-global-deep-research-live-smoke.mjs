@@ -86,6 +86,9 @@ async function main() {
     assert.equal(research.json?.requested?.totalCandidates, 9);
     assert.equal(research.json?.summary?.researched, 9);
     assert.equal(research.json?.summary?.seriousSignals, 0);
+    assert.equal(research.json?.liveFundamentalCoverage?.requested, 9);
+    assert.equal(research.json?.liveFundamentalCoverage?.received, 9);
+    assert.equal(research.json?.liveFundamentalCoverage?.coveragePercent, 100);
     assert.equal(research.json?.safety?.seriousSignalsUnlocked, false);
     assert.equal(research.json?.safety?.databaseWrites, false);
     assert.equal(research.json?.safety?.publishing, false);
@@ -102,6 +105,11 @@ async function main() {
         assert.ok(item.providersAttempted.includes("TradingView"));
         assert.ok(typeof item.currentPrice === "number" && item.currentPrice > 0);
         assert.equal(item.currentPriceSource, "TradingView public stock scanner");
+        assert.ok(item.tradingViewFundamentals && typeof item.tradingViewFundamentals === "object");
+        assert.ok(typeof item.fundamentalSupportCount === "number");
+        assert.ok(typeof item.fundamentalWarningCount === "number");
+        assert.ok(Array.isArray(item.fundamentalReasons));
+        assert.ok(item.providersUsed.includes("TradingView fundamentals"));
         assert.ok(Array.isArray(item.blockedReasons) && item.blockedReasons.some((reason) => /certif/i.test(reason)));
         if (item.secondSourcePrice !== null) {
           assert.ok(item.secondSourcePrice > 0);
@@ -116,9 +124,10 @@ async function main() {
       expectedCommit: expectedCommit || null,
       runtimeCommit: health.runtime?.commitSha || null,
       deploymentAttempts,
-      dataMode: "current_worldwide_primary_listings_with_live_fmp_expectations_and_marketaux_news",
+      dataMode: "current_worldwide_primary_listings_with_tradingview_fundamentals_and_yahoo_price_confirmation",
       universe: research.json.universe,
       requested: research.json.requested,
+      liveFundamentalCoverage: research.json.liveFundamentalCoverage,
       summary: research.json.summary,
       results: research.json.results,
       safety: research.json.safety,
@@ -130,6 +139,7 @@ async function main() {
       primaryListingsFetched: report.universe.primaryListingsFetched,
       exchanges: report.universe.exchanges,
       countries: report.universe.countries,
+      fundamentalCoveragePercent: report.liveFundamentalCoverage.coveragePercent,
       researched: report.summary.researched,
       advanced: report.summary.advanced,
       watched: report.summary.watched,

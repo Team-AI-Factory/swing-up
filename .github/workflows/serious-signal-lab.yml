@@ -27,6 +27,10 @@ jobs:
       AI_COMMITTEE_DRY_RUN_DEFAULT: "true"
       PUBLIC_LEDGER_TRACKING_ENABLED: "false"
       PUBLIC_TRACKING_ENABLED: "false"
+      SWING_UP_EQUITY_MARKET_SCOPE: "US"
+      SWING_UP_MIN_PILOT_HISTORICAL_EVENTS: "5"
+      SWING_UP_PILOT_MIN_OBSERVED_HIT_RATE: "0.90"
+      SWING_UP_ANALYST_EXPECTATIONS_CAN_VETO_BUY: "false"
 
     steps:
       - name: Check out branch
@@ -55,7 +59,7 @@ jobs:
         run: npm run typecheck
 
       - name: Verify live-lab evidence and provider policies
-        run: npm run smoke:branch-lab-policy && npm run smoke:r2-preview-write-guard && npm run smoke:equity-universe-fallback && npm run smoke:equity-event-semantics && npm run smoke:equity-event-sources && npm run smoke:equity-historical-analogs && npm run smoke:equity-historical-bootstrap && npm run smoke:equity-event-first-runner && npm run smoke:equity-history-optional-pilot && npm run smoke:equity-sec-filing-details && npm run smoke:ai-committee-crypto-policy && npm run smoke:ai-committee-provider-guardrails
+        run: npm run smoke:branch-lab-policy && npm run smoke:r2-preview-write-guard && npm run smoke:equity-universe-fallback && npm run smoke:equity-event-semantics && npm run smoke:equity-event-sources && npm run smoke:equity-historical-analogs && npm run smoke:equity-historical-bootstrap && npm run smoke:equity-event-first-runner && npm run smoke:equity-five-case-pilot && npm run smoke:equity-sec-filing-details && npm run smoke:ai-committee-crypto-policy && npm run smoke:ai-committee-provider-guardrails
 
       - name: Lint
         run: npm run lint

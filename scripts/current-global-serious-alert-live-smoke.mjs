@@ -11,7 +11,7 @@ const timeoutMs = 15 * 60 * 1000;
 const startedAt = Date.now();
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
-const safeError = (error) => error instanceof Error ? error.message.replace(/\s+/g, " ").slice(0, 800) : "unknown_live_scan_failure";
+const safeError = (error) => error instanceof Error ? error.message.replace(/\s+/g, " ").slice(0, 1200) : "unknown_live_scan_failure";
 
 async function saveReport(report) {
   await mkdir(outputPath.split("/").slice(0, -1).join("/") || ".", { recursive: true });
@@ -32,7 +32,7 @@ async function request(path, options = {}) {
   try {
     json = JSON.parse(raw);
   } catch {
-    throw new Error(`Expected JSON from ${path}; status=${response.status}; body=${raw.slice(0, 600)}`);
+    throw new Error(`Expected JSON from ${path}; status=${response.status}; body=${raw.slice(0, 800)}`);
   }
   return { status: response.status, json };
 }
@@ -64,7 +64,7 @@ async function main() {
     scannerHealth = await request("/api/internal/combined-opportunity-engine/global-scan", { timeoutMs: 90_000 });
     assert.equal(scannerHealth.status, 200);
     assert.equal(scannerHealth.json?.ok, true);
-    assert.equal(scannerHealth.json?.providerConfigured, true);
+    assert.equal(scannerHealth.json?.scanner, "tradingview_entire_world_primary_listing_scanner");
     assert.equal(scannerHealth.json?.publishingEnabled, false);
     assert.equal(scannerHealth.json?.notificationsEnabled, false);
 
@@ -73,22 +73,23 @@ async function main() {
       headers: { "content-type": "application/json" },
       timeoutMs: 12 * 60 * 1000,
       body: JSON.stringify({
-        maximumStocks: 150000,
-        batchSize: 500,
+        maximumListings: 150000,
+        pageSize: 1000,
+        pageConcurrency: 8,
         deepQueueSize: 300,
         minimumPrice: 0.25,
         minimumMarketCap: 25000000,
         maximumCertifiedChecks: 5000,
-        certifiedCheckConcurrency: 10,
+        historyConcurrency: 10,
       }),
     });
 
     assert.ok([200, 206].includes(scan.status), `Unexpected global scan status: ${scan.status}`);
-    assert.ok(scan.json?.universe?.uniqueSymbols >= 1000, `Global provider universe unexpectedly small: ${scan.json?.universe?.uniqueSymbols}`);
+    assert.ok(scan.json?.universe?.primaryListingsFetched >= 1000, `Global provider universe unexpectedly small: ${scan.json?.universe?.primaryListingsFetched}`);
     assert.ok(scan.json?.universe?.exchanges >= 10, `Too few exchanges: ${scan.json?.universe?.exchanges}`);
     assert.ok(scan.json?.universe?.countries >= 10, `Too few countries: ${scan.json?.universe?.countries}`);
-    assert.ok(scan.json?.scan?.coveragePercent >= 99, `Quote coverage below 99%: ${scan.json?.scan?.coveragePercent}`);
-    assert.equal(scan.json?.scan?.coverageComplete, true, `Quote coverage incomplete: ${JSON.stringify(scan.json?.scan)}`);
+    assert.ok(scan.json?.universe?.coveragePercent >= 99, `Worldwide page coverage below 99%: ${scan.json?.universe?.coveragePercent}`);
+    assert.equal(scan.json?.universe?.coverageComplete, true, `Worldwide coverage incomplete: ${JSON.stringify(scan.json?.universe)}`);
     assert.equal(scan.json?.seriousAlerts?.verification?.coverageComplete, true, `Certified verification incomplete: ${JSON.stringify(scan.json?.seriousAlerts?.verification)}`);
     assert.ok(scan.json?.seriousAlerts?.certifiedRuleIds?.includes("watch_out_30d_extreme_volatility_after_60pct_drawdown_v2"));
     assert.deepEqual(scan.json?.seriousAlerts?.buy, []);
@@ -103,10 +104,11 @@ async function main() {
       assert.equal(alert.subtype, "extreme_volatility_direction_uncertain");
       assert.ok(alert.trailing120SessionDrawdownPercent <= -60);
       assert.ok(alert.evidence?.marketDataAgeDays <= 7);
+      assert.equal(alert.evidence?.primaryListing, true);
       assert.equal(alert.evidence?.noSyntheticData, true);
       assert.ok(alert.calibration?.sampleSize >= 30);
       assert.ok(alert.calibration?.lowerConfidenceBound90 >= 0.9);
-      assert.ok(alert.priceAgreementPercent === null || alert.priceAgreementPercent <= 5);
+      assert.ok(alert.independentPriceAgreementPercent <= 5);
       assert.equal(alert.notificationEligible, false);
       assert.equal(alert.publicationStatus, "review_only");
     }
@@ -117,13 +119,13 @@ async function main() {
       expectedCommit: expectedCommit || null,
       runtimeCommit: health.runtime?.commitSha || null,
       deploymentAttempts,
-      dataMode: "live_current_global_provider_and_adjusted_daily_prices",
+      dataMode: "live_current_tradingview_worldwide_primary_listings_and_yahoo_adjusted_history",
       universe: scan.json.universe,
-      scan: scan.json.scan,
       researchQueues: {
         buy: scan.json.candidates?.buyResearch?.length || 0,
         sell: scan.json.candidates?.sellResearch?.length || 0,
         watchOut: scan.json.candidates?.watchOutResearch?.length || 0,
+        deepAnalysis: scan.json.candidates?.deepAnalysisQueue?.length || 0,
       },
       seriousAlerts: {
         buy: 0,
@@ -140,10 +142,11 @@ async function main() {
     console.log(JSON.stringify({
       ok: true,
       runtimeCommit: report.runtimeCommit,
-      uniqueSymbols: report.universe.uniqueSymbols,
+      universeMode: report.universe.mode,
+      primaryListingsFetched: report.universe.primaryListingsFetched,
       exchanges: report.universe.exchanges,
       countries: report.universe.countries,
-      quoteCoveragePercent: report.scan.coveragePercent,
+      universeCoveragePercent: report.universe.coveragePercent,
       certifiedVerificationCoveragePercent: report.seriousAlerts.verification.coveragePercent,
       currentSeriousWatchOutAlerts: report.seriousAlerts.watchOut,
       reportPath: outputPath,

@@ -54,6 +54,7 @@ for (const marker of ["dedicated worker active", "x-swing-up-branch-lab-schedule
 const routeSource = await readFile(new URL("../app/api/internal/railway-branch-signal-lab/route.ts", import.meta.url), "utf8");
 for (const marker of [
   `const R2_STATE_KEY = "branch-labs/pr-261/serious-signal/state.json"`,
+  `const R2_RUN_ARCHIVE_PREFIX = "branch-labs/pr-261/serious-signal/runs"`,
   `backend: "cloudflare_r2"`,
   `primary: "cloudflare_r2"`,
   `postgresUsed: false`,
@@ -69,6 +70,10 @@ for (const marker of [
   `INVALIDATED_FALSE_MAPPING_EVENT_KEYS`,
   `rewriteRequired`,
   `INVALIDATED_FALSE_MAPPING_EVENT_KEYS.has(fingerprint)`,
+  `archiveCompletedRun(runNumber, invocation, completedRun)`,
+  `writeVersionedJsonToR2(objectKey, payload, { createOnly: true })`,
+  `oneObjectPerCompletedScan: true`,
+  `runArchiveImmutable: true`,
 ]) {
   if (!routeSource.includes(marker)) throw new Error(`Cloudflare R2 branch-state policy is missing: ${marker}`);
 }
@@ -77,4 +82,4 @@ for (const marker of [`"if-match"`, `"if-none-match"`, `res.status === 412`, `no
   if (!r2Source.includes(marker)) throw new Error(`Cloudflare R2 conditional-write guard is missing: ${marker}`);
 }
 
-console.log(JSON.stringify({ ok: true, performanceSimulationUsed: false, branchLabUnavailableOutsidePreview: true, untrustedEvidenceBlocked: true, cloudflareR2PrimaryState: true, railwayVolumePrimaryState: false, dedicatedWorkerSupervised: true, overdueScanWatchdog: true, openAiCalled: false, databaseWrites: false, publishing: false, notifications: false }, null, 2));
+console.log(JSON.stringify({ ok: true, performanceSimulationUsed: false, branchLabUnavailableOutsidePreview: true, untrustedEvidenceBlocked: true, cloudflareR2PrimaryState: true, immutableCompletedRunArchive: true, railwayVolumePrimaryState: false, dedicatedWorkerSupervised: true, overdueScanWatchdog: true, openAiCalled: false, databaseWrites: false, publishing: false, notifications: false }, null, 2));

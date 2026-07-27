@@ -13,6 +13,7 @@ const REPORT_FILENAME = "swing-up-railway-branch-signal-lab.json";
 const WORKER_RUNTIME_STATUS_PATH = "/tmp/swing-up-branch-worker-runtime.json";
 const R2_STATE_KEY = "branch-labs/pr-261/serious-signal/state.json";
 const R2_EQUITY_HISTORY_KEY = "branch-labs/pr-261/serious-signal/equity-history-v1.json";
+const R2_RUN_ARCHIVE_PREFIX = "branch-labs/pr-261/serious-signal/runs";
 const LAB_BRANCH = "agent/live-signal-evaluation-automation";
 const MAX_HISTORICAL_SIGNAL_RECORDS = 50_000;
 const INVALIDATED_FALSE_MAPPING_EVENT_KEYS = new Set(["81c417f4d7038faf99bd"]);
@@ -242,6 +243,40 @@ async function saveHistory(history: History, storage: StateStorage) {
   const written = await writeVersionedJsonToR2(R2_STATE_KEY, history, storage.etag ? { expectedEtag: storage.etag } : { createOnly: true });
   if (written.conflict || !written.etag) throw new Error("r2_state_write_conflict");
   return r2Storage(written.etag, storage.migratedFrom);
+}
+
+function completedRunArchiveKey(runNumber: number, invocation: SchedulerInvocation, checkedAt: unknown) {
+  const observedAt = typeof checkedAt === "string" && Number.isFinite(Date.parse(checkedAt))
+    ? new Date(checkedAt)
+    : new Date();
+  const date = observedAt.toISOString().slice(0, 10);
+  return `${R2_RUN_ARCHIVE_PREFIX}/${date}/run-${String(runNumber).padStart(8, "0")}-${invocation.workerId}-${invocation.sequence}.json`;
+}
+
+async function archiveCompletedRun(runNumber: number, invocation: SchedulerInvocation, run: JsonRecord) {
+  const objectKey = completedRunArchiveKey(runNumber, invocation, run.checkedAt);
+  const payload = {
+    version: 1,
+    branch: LAB_BRANCH,
+    immutable: true,
+    createOnly: true,
+    runNumber,
+    schedulerInvocation: invocation,
+    archivedAt: new Date().toISOString(),
+    run: { ...run, runArchiveObject: objectKey },
+  };
+  const written = await writeVersionedJsonToR2(objectKey, payload, { createOnly: true });
+  if (!written.conflict && written.etag) return objectKey;
+  const existing = await readVersionedTextFromR2(objectKey);
+  if (!existing.found || !existing.text) throw new Error("r2_run_archive_write_conflict");
+  const parsed = JSON.parse(existing.text) as Record<string, unknown>;
+  if (parsed.branch !== LAB_BRANCH
+    || parsed.runNumber !== runNumber
+    || JSON.stringify(parsed.schedulerInvocation) !== JSON.stringify(invocation)
+    || JSON.stringify(parsed.run) !== JSON.stringify(payload.run)) {
+    throw new Error("r2_run_archive_write_conflict");
+  }
+  return objectKey;
 }
 
 function storageMetadata(storage: StateStorage) {
@@ -714,6 +749,15 @@ export async function GET() {
       error: historicalLibrary.error,
       mockOrSyntheticRecordCount: historicalLibrary.library.records.filter((item) => item.dataQuality !== "real").length,
     },
+    runArchive: {
+      backend: "cloudflare_r2",
+      objectPrefix: R2_RUN_ARCHIVE_PREFIX,
+      immutable: true,
+      createOnly: true,
+      oneObjectPerCompletedScan: true,
+      latestObject: typeof latestRun?.runArchiveObject === "string" ? latestRun.runArchiveObject : null,
+      legacyRunsWithoutArchive: history.runs.filter((run) => typeof run.runArchiveObject !== "string").length,
+    },
     openAiReservationPolicy: { durableStateRequired: true, durableStateAvailable: r2StateReady(storage), stateBlocker: r2StateBlocker(storage), maxAttemptsPerRolling24Hours: MAX_OPENAI_RUNS_PER_24_HOURS, sameEvidenceCooldownHours: OPENAI_EVIDENCE_COOLDOWN_MS / (60 * 60 * 1000), consumedReservationCount: history.openAiReservations.filter(reservationConsumed).length },
     providerQuotaStorageDurable: r2StateReady(storage),
     providerQuotaUsage: providerQuotaUsage(history, Date.now()),
@@ -875,7 +919,9 @@ async function executePost(request: NextRequest) {
   }
   history.totalRunCount += 1;
   const runNumber = history.totalRunCount;
-  history.runs.push({ ...report, runNumber, repairAttemptNumber, schedulerInvocation: invocation, ...(activeReservationId ? { openAiReservationId: activeReservationId } : {}) });
+  const completedRun = { ...report, runNumber, repairAttemptNumber, schedulerInvocation: invocation, ...(activeReservationId ? { openAiReservationId: activeReservationId } : {}) };
+  const runArchiveObject = await archiveCompletedRun(runNumber, invocation, completedRun);
+  history.runs.push({ ...completedRun, runArchiveObject });
   if (repairFailure && repairAttemptNumber >= 3) {
     history.stopped = true;
     history.stopReason = `Stopped after the same repair-eligible ${repairFailure.scope} failure produced no measurable gain three times: ${repairFailure.fingerprint}`;
@@ -884,7 +930,7 @@ async function executePost(request: NextRequest) {
   history.scanLease = null;
   storage = await saveHistory(history, storage);
   const openAiRunsLast24Hours = openAiAttemptsInWindow(history, Date.now(), 24 * 60 * 60 * 1000);
-  return NextResponse.json({ ...report, runNumber, retainedRunCount: history.runs.length, repairAttemptNumber, schedulerInvocation: invocation, stopped: history.stopped, stopReason: history.stopReason, openAiRunsLast24Hours, openAiAttemptsLast24Hours: openAiRunsLast24Hours, maxOpenAiRunsPer24Hours: MAX_OPENAI_RUNS_PER_24_HOURS, openAiReservationId: activeReservationId, openAiRequiresDurableState: true, openAiAllowedAtRunStart: allowOpenAi, openAiStateBlocker: r2StateBlocker(storage), stateStorage: storageMetadata(storage), stateWritesToR2: true, productionR2DataWrites: false });
+  return NextResponse.json({ ...report, runNumber, retainedRunCount: history.runs.length, repairAttemptNumber, schedulerInvocation: invocation, runArchiveObject, runArchiveImmutable: true, runArchiveCreateOnly: true, stopped: history.stopped, stopReason: history.stopReason, openAiRunsLast24Hours, openAiAttemptsLast24Hours: openAiRunsLast24Hours, maxOpenAiRunsPer24Hours: MAX_OPENAI_RUNS_PER_24_HOURS, openAiReservationId: activeReservationId, openAiRequiresDurableState: true, openAiAllowedAtRunStart: allowOpenAi, openAiStateBlocker: r2StateBlocker(storage), stateStorage: storageMetadata(storage), stateWritesToR2: true, productionR2DataWrites: false });
 }
 
 export async function POST(request: NextRequest) {

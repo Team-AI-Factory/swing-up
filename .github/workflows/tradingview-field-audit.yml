@@ -1,0 +1,52 @@
+name: TradingView Fundamental Field Audit
+
+on:
+  push:
+    branches:
+      - "agent/combined-opportunity-engine"
+    paths:
+      - "app/api/internal/combined-opportunity-engine/tradingview-field-audit/route.ts"
+      - "scripts/tradingview-field-audit.mjs"
+      - ".github/workflows/tradingview-field-audit.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "app/api/internal/combined-opportunity-engine/tradingview-field-audit/route.ts"
+      - "scripts/tradingview-field-audit.mjs"
+      - ".github/workflows/tradingview-field-audit.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tradingview-field-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: Audit live worldwide fundamental fields
+    if: github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run field audit on exact Railway commit
+        env:
+          COMBINED_ENGINE_RAILWAY_URL: https://swing-up-swing-up-pr-262.up.railway.app
+          EXPECTED_BRANCH_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+          SWING_UP_AUTOMATION_TOKEN: ${{ secrets.SWING_UP_AUTOMATION_TOKEN }}
+          TRADINGVIEW_FIELD_AUDIT_PATH: artifacts/tradingview-field-audit.json
+        run: node scripts/tradingview-field-audit.mjs
+      - name: Upload field audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tradingview-field-audit
+          path: artifacts/tradingview-field-audit.json
+          if-no-files-found: warn
+          retention-days: 30

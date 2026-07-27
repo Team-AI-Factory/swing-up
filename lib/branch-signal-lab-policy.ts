@@ -32,6 +32,7 @@ const COMPANY_SUFFIXES = /\b(?:incorporated|inc|corporation|corp|company|co|limi
 const AMBIGUOUS_EQUITY_TICKERS = new Set(["A", "AI", "ALL", "ARE", "ARM", "CAN", "CAT", "CAR", "COST", "FOR", "IT", "LIFE", "LOVE", "ON", "OPEN", "OR", "SEE", "SO", "T", "UP", "W"]);
 const AMBIGUOUS_COMPANY_NAMES = new Set(["american", "capital", "central", "digital", "eastern", "energy", "financial", "first", "freedom", "general", "global", "health", "international", "national", "new", "northern", "pacific", "people", "resources", "royal", "services", "southern", "systems", "technology", "technologies", "trust", "united", "western", "world"]);
 const INTEL_ISSUER_CONTEXT = /\b(?:intel(?:['’]s)?(?:\s+(?:corp(?:oration)?))?\s+(?:announces?|launches?|unveils?|reports?|earnings|guidance|shares?|stock|chips?|semiconductors?|processors?|cpus?|foundry)|(?:shares?|stock|chips?|semiconductors?|processors?|cpus?|foundry)\s+(?:(?:from|of|at|by)\s+)?intel)\b/i;
+const SINGLE_TOKEN_ISSUER_ACTIONS = "announces?|appoints?|awards?|closes?|completes?|cuts?|declares?|expands?|files?|guidance|launches?|merges?|raises?|recalls?|reports?|resigns?|secures?|shares?|stock|unveils?|wins?";
 
 function escaped(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -44,6 +45,13 @@ function normalizedCompanyName(value: string) {
     .replace(/[^a-z0-9]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function hasSingleTokenIssuerContext(text: string, name: string) {
+  const token = escaped(name);
+  const issuerAction = new RegExp(`\\b${token}(?:['’]s)?\\s+(?:${SINGLE_TOKEN_ISSUER_ACTIONS})\\b`, "i");
+  const marketContext = new RegExp(`\\b(?:shares?|stock|equity|ticker|earnings|guidance|filing)\\s+(?:(?:from|of|at|by|for)\\s+)?${token}\\b`, "i");
+  return issuerAction.test(text) || marketContext.test(text);
 }
 
 function canonicalHeadline(receipt: BalancedReceipt) {
@@ -73,7 +81,11 @@ export function matchesEquityText(text: string, equity: { name: string; ticker: 
   const names = sourceNames
     .map(normalizedCompanyName)
     .filter((name) => name.length >= 5 && !/^(?:the|group|holdings?|company)$/.test(name) && !AMBIGUOUS_COMPANY_NAMES.has(name));
-  if (names.some((name) => lower.includes(` ${name} `) && (name !== "intel" || INTEL_ISSUER_CONTEXT.test(text)))) return true;
+  if (names.some((name) => {
+    if (!lower.includes(` ${name} `)) return false;
+    if (name === "intel" && !INTEL_ISSUER_CONTEXT.test(text)) return false;
+    return name.includes(" ") || hasSingleTokenIssuerContext(text, name);
+  })) return true;
   const escapedTicker = escaped(ticker);
   if (new RegExp(`\\$${escapedTicker}(?:\\b|(?=[.-]))`).test(padded)) return true;
   if (AMBIGUOUS_EQUITY_TICKERS.has(ticker) || ticker.length < 2) return false;

@@ -15,7 +15,7 @@ type ClassifiedEvent = {
 
 type MappedEvent = { receipt: EventReceipt; classification: ClassifiedEvent; equity: EquityUniverseEntry; relationship: "direct" | "second_order" | "third_order"; mappingConfidence: number; causalChain: string[] };
 
-const NOISE = /\b(price target|technical analysis|stock picks?|stocks? to buy|should you buy|prediction|opinion|sponsored|top \d+ stocks?)\b/i;
+const NOISE = /\b(price target|technical analysis|stock picks?|stocks? to buy|should you buy|prediction|opinion|sponsored|top \d+ stocks?|(?:increases?|decreases?|reduces?|raises?|cuts?) (?:its )?(?:stake|position) in)\b/i;
 const RUMOUR = /\b(rumou?r|reportedly considering|unconfirmed|sources? say|may be planning|could announce|speculation)\b/i;
 const GENERIC_COMPANY_TOKENS = new Set(["american", "capital", "company", "corp", "digital", "energy", "financial", "first", "freedom", "general", "global", "group", "health", "holding", "holdings", "international", "national", "resources", "royal", "services", "systems", "technology", "technologies", "trust", "united", "world"]);
 const ACTIVE_CONFLICT = /\b(military strikes?|airstrikes?|missile (?:attack|launch|strike)|invasion|armed conflict|shipping attack|red sea attack|hostilities|troops? (?:invade|deploy|mobilize)|war (?:erupts|escalates|breaks out|begins|widens|intensifies)|(?:declares?|declaration of) war|ceasefire (?:breaks|collapses)|conflict (?:erupts|escalates|widens|intensifies))\b/i;

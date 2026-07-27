@@ -36,8 +36,12 @@ const universe = {
     entry("INTC", "INTEL CORP", ["Intel"]),
     entry("PPLI", "People Inc", ["People"]),
     entry("XOM", "Exxon Mobil Corporation", ["Exxon Mobil"]),
+    entry("RS", "Reliance, Inc.", ["Reliance"]),
+    entry("AWX", "Avalon Holdings Corp.", ["Avalon"]),
+    entry("GOOGL", "Alphabet Inc.", ["Alphabet"]),
+    entry("AAPL", "Apple Inc.", ["Apple"]),
   ],
-  coverage: { nasdaqRows: 5, otherExchangeRows: 0, eligibleEquities: 5, cikMapped: 0, cikMappedPercent: 0, adrCount: 0, excludedByReason: {} },
+  coverage: { nasdaqRows: 9, otherExchangeRows: 0, eligibleEquities: 9, cikMapped: 0, cikMappedPercent: 0, adrCount: 0, excludedByReason: {} },
   sources: [],
 };
 const macro = { checkedAt: "2026-07-22T13:00:00.000Z", status: "connected", series: [], regime: ["normal"], historicalComparisonAvailable: false, errors: [] };
@@ -90,6 +94,26 @@ const declassifiedIntel = build([receipt({
 })]);
 assert.equal(declassifiedIntel.candidates.some((item) => item.ticker === "INTC" || item.ticker === "PPLI"), false);
 
+const unrelatedRelianceRecall = build([receipt({
+  title: "Reliance Life Sciences Private Limited FDA recall: Lack of Sterility Assurance",
+  summary: "The recall concerns products made by Reliance Life Sciences Private Limited.",
+  channel: "openfda",
+  companyHints: ["Reliance Life Sciences Private Limited"],
+  rawEventType: "recall",
+})]);
+assert.equal(unrelatedRelianceRecall.candidates.some((item) => item.ticker === "RS"), false);
+
+const passiveStakeArticle = build([receipt({
+  title: "Avalon Trust Co Decreases Stake in Alphabet Inc. $GOOGL after an earnings miss",
+  publisher: "Market article",
+  channel: "google_news_rss",
+  official: false,
+  primarySource: false,
+  symbolHints: ["GOOGL"],
+})]);
+assert.equal(passiveStakeArticle.candidates.length, 0);
+assert.equal(passiveStakeArticle.diagnostics.noiseRejected, 1);
+
 const activeConflict = build([receipt({
   title: "Military strikes close a Red Sea shipping route as conflict escalates",
   channel: "defense_department",
@@ -114,6 +138,11 @@ const exactIntelIssuer = build([receipt({
 })]);
 assert.equal(exactIntelIssuer.candidates.some((item) => item.ticker === "INTC" && item.relationship === "direct" && item.eventFamily === "product_launch"), true);
 
+const exactSingleTokenBrand = build([receipt({
+  title: "Apple launches a new product platform",
+})]);
+assert.equal(exactSingleTokenBrand.candidates.some((item) => item.ticker === "AAPL" && item.relationship === "direct" && item.eventFamily === "product_launch"), true);
+
 console.log(JSON.stringify({
   ok: true,
   warAnniversaryRejected: true,
@@ -121,8 +150,11 @@ console.log(JSON.stringify({
   genericCompanyWordRejected: true,
   timeZoneWordNotIssuer: true,
   wordSenseNotIssuer: true,
+  unrelatedSameFirstWordIssuerRejected: true,
+  passiveStakeArticleRejectedAsNoise: true,
   activeConflictStillMapped: true,
   knockOnCanQualifyWithoutHistory: true,
   exactTickerAndCompanyStillMapped: true,
   exactIntelIssuerStillMapped: true,
+  exactSingleTokenBrandStillMapped: true,
 }, null, 2));

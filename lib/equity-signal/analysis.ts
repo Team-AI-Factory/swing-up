@@ -171,10 +171,9 @@ function candidateFromCluster(cluster: MappedEvent[], macro: MacroContext, histo
     asOf: now.toISOString(),
     featuresAsOf: now.toISOString(),
   }, historicalSignals);
-  const historicalContradiction = historicalAnalog.available && historicalAnalog.conservativeHitProbabilityPercent < 45
-    ? Math.min(60, Math.round((45 - historicalAnalog.conservativeHitProbabilityPercent) * 4))
-    : 0;
-  const contradiction = historicalContradiction;
+  // Historical outcomes are optional supporting context. They must never block a
+  // current verified event or turn absence of history into contradictory evidence.
+  const contradiction = 0;
   const historicalSupport = historicalAnalog.historicalSupport;
   const pricedInPenalty = 0;
   const gate = eventFirstGate({ eventTruth, mappingConfidence, materiality, transmissionConfidence, fresh, primarySource, independentPublishers: publishers.size, unresolvedSevereContradiction: false, rumour });
@@ -206,8 +205,16 @@ function candidateFromCluster(cluster: MappedEvent[], macro: MacroContext, histo
     falsifiers: ["The official event is corrected, withdrawn, or shown to be immaterial.", "The stated causal link does not affect revenue, costs, financing, or valuation in the expected horizon.", "Fresh market data shows the opportunity was already fully repriced before a safe entry."],
     timeHorizon: anchor.relationship === "direct" ? "hours_to_10_trading_days" : "1_to_20_trading_days",
     score,
-    gateChecks: { ...gate.checks, historicallySupportedKnockOn: anchor.relationship === "direct" || (historicalAnalog.leakageSafe && historicalAnalog.sampleSize >= 3 && historicalAnalog.conservativeHitProbabilityPercent >= 52) },
-    gatePassed: gate.passed && score >= 72 && (anchor.relationship === "direct" || (historicalAnalog.leakageSafe && historicalAnalog.sampleSize >= 3 && historicalAnalog.conservativeHitProbabilityPercent >= 52)),
+    gateChecks: {
+      ...gate.checks,
+      knockOnCausalPathVerified: anchor.relationship === "direct"
+        || (mappingConfidence >= 95 && transmissionConfidence >= 75 && anchor.causalChain.length >= 3),
+      historicalComparisonRequired: false,
+    },
+    gatePassed: gate.passed
+      && score >= 72
+      && (anchor.relationship === "direct"
+        || (mappingConfidence >= 95 && transmissionConfidence >= 75 && anchor.causalChain.length >= 3)),
     quote: null,
     fundamentals: null,
     historicalAnalog: { ...historicalAnalog, source: "Cloudflare R2 point-in-time forward outcome memory" },

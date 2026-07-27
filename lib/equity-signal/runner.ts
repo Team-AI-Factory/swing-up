@@ -238,6 +238,34 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
     const fundamentalsResult = await enrichCandidateFundamentals(bestBeforeFundamentals, fetchImpl, now);
     const best = fundamentalsResult.candidate;
     const providers = [...eventResult.providers, historicalBootstrap.provider, quoted.provider, fundamentalsResult.provider];
+    const qualifiedFindings = qualifiedWithFingerprints.map(({ candidate, fingerprint }) => {
+      const priceAnchored = Boolean(candidate.quote && quoted.benchmarkQuote);
+      return {
+        ticker: candidate.ticker,
+        company: candidate.company,
+        cik: candidate.cik,
+        price: candidate.quote?.price ?? null,
+        marketObservedAt: candidate.quote?.observedAt ?? null,
+        marketSource: candidate.quote?.source ?? null,
+        benchmarkTicker: quoted.benchmarkTicker,
+        benchmarkPrice: quoted.benchmarkQuote?.price ?? null,
+        benchmarkObservedAt: quoted.benchmarkQuote?.observedAt ?? null,
+        benchmarkSource: quoted.benchmarkQuote?.source ?? null,
+        priceAnchorStatus: priceAnchored ? "anchored" as const : "awaiting_price_anchor" as const,
+        outcomeTrackingEligible: priceAnchored,
+        direction: candidate.direction,
+        eventFamily: candidate.eventFamily,
+        relationship: candidate.relationship,
+        eventHeadline: candidate.eventHeadline,
+        eventObservedAt: candidate.eventObservedAt,
+        evidenceFingerprint: fingerprint,
+        causalChain: candidate.causalChain,
+        macroRegime: macroResult.context.regime,
+        featuresAsOf: now.toISOString(),
+        receipts: candidate.receipts,
+        priceForecast: candidate.priceForecast,
+      };
+    });
     const common = {
       ok: true,
       mode,
@@ -269,7 +297,8 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
         actionableBuySellRequiresCalibratedHistory: false,
       },
       _historicalSignalLibraryAdditions: historicalBootstrap.records,
-      outcomeTrackingCandidates: quotedQualified.map(({ candidate, fingerprint }) => ({ ticker: candidate.ticker, company: candidate.company, cik: candidate.cik, price: candidate.quote?.price ?? null, marketObservedAt: candidate.quote?.observedAt ?? null, marketSource: candidate.quote?.source ?? null, benchmarkTicker: quoted.benchmarkTicker, benchmarkPrice: quoted.benchmarkQuote?.price ?? null, benchmarkObservedAt: quoted.benchmarkQuote?.observedAt ?? null, benchmarkSource: quoted.benchmarkQuote?.source ?? null, direction: candidate.direction, eventFamily: candidate.eventFamily, relationship: candidate.relationship, eventHeadline: candidate.eventHeadline, eventObservedAt: candidate.eventObservedAt, evidenceFingerprint: fingerprint, causalChain: candidate.causalChain, macroRegime: macroResult.context.regime, featuresAsOf: now.toISOString(), receipts: candidate.receipts, priceForecast: candidate.priceForecast })),
+      qualifiedFindings,
+      outcomeTrackingCandidates: qualifiedFindings.filter((finding) => finding.outcomeTrackingEligible),
       scheduledEventWatchlist: eventResult.receipts.filter((receipt) => receipt.scheduled).slice(0, 100).map((receipt) => ({ title: receipt.title, scheduledAt: receipt.publishedAt, tickerHints: receipt.symbolHints, companyHints: receipt.companyHints, publisher: receipt.publisher, sourceUrl: receipt.url, predictionStatus: "awaiting_verified_event_content_and_direction" })),
       unmappedOfficialEventWatchlist: eventResult.receipts.filter((receipt) => receipt.official && !receipt.symbolHints.length && !receipt.companyHints.length).slice(0, 100).map((receipt) => ({ title: receipt.title, summary: receipt.summary, observedAt: receipt.publishedAt, publisher: receipt.publisher, channel: receipt.channel, sourceUrl: receipt.url, predictionStatus: "global_event_seen_mapping_or_direction_not_yet_proven" })),
       macroContext: macroResult.context,

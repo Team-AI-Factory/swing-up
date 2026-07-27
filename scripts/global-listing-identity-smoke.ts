@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mapGlobalListingToYahoo } from "../lib/opportunity-engine/global-listing-identity";
-import { buildOverlappingPageStarts } from "../lib/opportunity-engine/global-market-scanner-v3";
+import { buildOverlappingPageStarts, summarizeGlobalUniverseRows } from "../lib/opportunity-engine/global-market-scanner-v3";
 
 assert.deepEqual(
   mapGlobalListingToYahoo({ symbol: "CEZ", exchange: "PSE", country: "Czech Republic" }),
@@ -30,10 +30,25 @@ assert.equal(pagination.starts[0], 900);
 assert.ok(pagination.starts.at(-1)! < 49_369);
 assert.ok(pagination.starts.every((start, index) => index === 0 || start - pagination.starts[index - 1] <= 1_000));
 
+const rowSummary = summarizeGlobalUniverseRows([
+  { rawRowCount: 3, rawListingIdentities: ["NASDAQ:A", "NASDAQ:A"] },
+  { rawRowCount: 1, rawListingIdentities: ["NYSE:B"] },
+], 2, 1, 2);
+assert.equal(rowSummary.rawProviderRowsFetched, 4);
+assert.equal(rowSummary.identifiedProviderRows, 3);
+assert.equal(rowSummary.unidentifiedProviderRows, 1);
+assert.equal(rowSummary.uniqueProviderListingIdentities, 2);
+assert.equal(rowSummary.duplicateProviderRowsDiscarded, 1);
+assert.equal(rowSummary.unusablePrimaryListings, 0);
+assert.equal(rowSummary.usableListingsExcludedByConfiguredLimit, 1);
+assert.equal(rowSummary.usableListingPercent, 100);
+assert.equal(rowSummary.coveragePercent, 100);
+
 console.log(JSON.stringify({
   ok: true,
   ambiguousExchangeResolvedByCountry: true,
   unknownAmbiguousExchangeBlocked: true,
   sharedByGlobalScannerAndDeepResearch: true,
   stableOverlappingPagination: true,
+  rawRowsSeparatedFromDuplicatesAndUsability: true,
 }, null, 2));

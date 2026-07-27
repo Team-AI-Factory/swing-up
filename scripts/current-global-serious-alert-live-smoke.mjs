@@ -91,15 +91,20 @@ async function main() {
     assert.ok(scan.json?.universe?.countries >= 10, `Too few countries: ${scan.json?.universe?.countries}`);
     assert.ok(scan.json?.universe?.coveragePercent >= 99, `Worldwide page coverage below 99%: ${scan.json?.universe?.coveragePercent}`);
     assert.equal(scan.json?.universe?.coverageComplete, true, `Worldwide coverage incomplete: ${JSON.stringify(scan.json?.universe)}`);
+    assert.ok(scan.json?.universe?.identifiedProviderRowPercent >= 99, `Provider identities degraded: ${JSON.stringify(scan.json?.universe)}`);
+    assert.ok(scan.json?.universe?.usableListingPercent >= 95, `Usable worldwide listings degraded: ${JSON.stringify(scan.json?.universe)}`);
 
     const verification = scan.json?.seriousAlerts?.verification;
     assert.equal(scan.json?.ok, true, `Global scan reported incomplete verification: ${JSON.stringify(verification)}`);
     assert.equal(scan.status, 200, `A complete global scan must return HTTP 200, received ${scan.status}.`);
-    assert.equal(verification?.coverageComplete, true, `Independent verification coverage incomplete: ${JSON.stringify(verification)}`);
+    assert.equal(verification?.coverageComplete, true, `Candidate processing/disposition coverage incomplete: ${JSON.stringify(verification)}`);
     assert.equal(verification?.checkedCandidates, verification?.mappedCandidates, `Not all mapped candidates were attempted: ${JSON.stringify(verification)}`);
     assert.equal(verification?.skippedCandidates, 0, `Candidates were skipped: ${JSON.stringify(verification)}`);
     assert.equal(verification?.allMappedCandidatesAttempted, true);
     assert.equal(verification?.unresolvedCandidatesAreBlockedNotPromoted, true);
+    assert.equal(verification?.executionComplete, true);
+    assert.equal(verification?.allCandidatesAccountedFor, true);
+    assert.equal(verification?.promotionSafetyComplete, true);
     assert.ok(scan.json?.seriousAlerts?.certifiedRuleIds?.includes("watch_out_30d_extreme_volatility_after_60pct_drawdown_v2"));
     assert.deepEqual(scan.json?.seriousAlerts?.buy, []);
     assert.deepEqual(scan.json?.seriousAlerts?.sell, []);
@@ -129,6 +134,7 @@ async function main() {
     const classifiedCandidates = (verification?.verifiedHistoryCandidates || 0)
       + (verification?.priceConflictsBlocked || 0)
       + (verification?.insufficientHistoryBlocked || 0)
+      + (verification?.staleHistoryBlocked || 0)
       + (verification?.providerFailures || 0);
     assert.equal(classifiedCandidates, verification?.checkedCandidates, `Attempted candidates were not assigned an honest verification result: ${JSON.stringify(verification)}`);
 
@@ -158,6 +164,7 @@ async function main() {
         unsupportedYahooMappings: verification?.unsupportedYahooMappings || 0,
         priceConflicts: verification?.priceConflictsBlocked || 0,
         insufficientHistory: verification?.insufficientHistoryBlocked || 0,
+        staleHistory: verification?.staleHistoryBlocked || 0,
         providerFailures: verification?.providerFailures || 0,
         globalCasesOutsideCertifiedListingScope: scan.json.seriousAlerts?.certificationScope?.researchOnlyOutsideCertifiedScope || 0,
       },
@@ -174,7 +181,7 @@ async function main() {
       exchanges: report.universe.exchanges,
       countries: report.universe.countries,
       universeCoveragePercent: report.universe.coveragePercent,
-      candidateAttemptCoveragePercent: verification?.coveragePercent,
+      candidateProcessingCoveragePercent: verification?.processingCoveragePercent,
       independentHistoryAvailablePercent: verification?.independentHistoryAvailablePercent,
       candidatesAccountedFor: accountedCandidates,
       currentScopedSeriousWatchOutAlerts: report.seriousAlerts.watchOut,

@@ -19,6 +19,7 @@ const R2_BRANCH_NAMESPACE = ACTIVE_BRANCH === COMBINED_BRANCH ? "pr-262" : "pr-2
 const R2_STATE_KEY = `branch-labs/${R2_BRANCH_NAMESPACE}/serious-signal/state.json`;
 const R2_EQUITY_HISTORY_KEY = `branch-labs/${R2_BRANCH_NAMESPACE}/serious-signal/equity-history-v1.json`;
 const R2_RUN_ARCHIVE_PREFIX = `branch-labs/${R2_BRANCH_NAMESPACE}/serious-signal/runs`;
+const R2_OUTCOME_ARCHIVE_PREFIX = `branch-labs/${R2_BRANCH_NAMESPACE}/serious-signal/outcomes`;
 const MAX_HISTORICAL_SIGNAL_RECORDS = 50_000;
 const INVALIDATED_FALSE_MAPPING_EVENT_KEYS = new Set(["81c417f4d7038faf99bd"]);
 const MAX_OPENAI_RUNS_PER_24_HOURS = 3;
@@ -55,6 +56,14 @@ type ScanLease = { ownerId: string; acquiredAt: string; expiresAt: string };
 type History = { version: number; branch: string; deploymentId: string | null; stopped: boolean; stopReason: string | null; scanLease: ScanLease | null; totalRunCount: number; runs: JsonRecord[]; openAiReservations: OpenAiReservation[]; providerCallReservations: ProviderCallReservation[]; updatedAt: string };
 type HistoricalSignalLibrary = { version: 1; records: HistoricalSignalRecord[]; updatedAt: string };
 type HistoricalSignalLibraryLoad = { library: HistoricalSignalLibrary; etag: string | null; error: string | null; rewriteRequired: boolean };
+type CompletedOutcomeCheckpoint = {
+  fingerprint: string;
+  ticker: string;
+  direction: "upside" | "downside";
+  signalObservedAt: string;
+  outcomeOwner: JsonRecord;
+  outcome: JsonRecord;
+};
 type LegacyFileStorage = {
   path: string;
   backend: "railway_volume" | "configured_path";
@@ -81,7 +90,7 @@ function emptyHistory(): History {
 
 function errorCode(error: unknown) {
   if (error && typeof error === "object" && "code" in error && typeof error.code === "string") return error.code.toLowerCase();
-  if (error instanceof Error && /^r2_(?:state|equity_history)_[a-z0-9_]+$/i.test(error.message)) return error.message.toLowerCase();
+  if (error instanceof Error && /^r2_(?:state|equity_history|outcome_archive)_[a-z0-9_]+$/i.test(error.message)) return error.message.toLowerCase();
   return error instanceof SyntaxError ? "invalid_json" : "state_storage_error";
 }
 
@@ -357,6 +366,7 @@ function countablePerformanceRun(run: JsonRecord) {
 }
 
 type OutcomeTrackingEntry = { run: JsonRecord; candidate: JsonRecord; fingerprint: string; outcomeOwner: JsonRecord };
+type QualifiedFindingEntry = { run: JsonRecord; candidate: JsonRecord; fingerprint: string };
 
 function outcomeTrackingEntries(history: History): OutcomeTrackingEntry[] {
   const seen = new Set<string>();
@@ -379,6 +389,32 @@ function outcomeTrackingEntries(history: History): OutcomeTrackingEntry[] {
       seen.add(fingerprint);
       const outcomeOwner = typeof run.candidateFingerprint === "string" && run.candidateFingerprint === fingerprint ? run : candidate;
       entries.push({ run, candidate, fingerprint, outcomeOwner });
+    }
+  }
+  return entries;
+}
+
+function qualifiedFindingEntries(history: History): QualifiedFindingEntry[] {
+  const seen = new Set<string>();
+  const entries: QualifiedFindingEntry[] = [];
+  for (const run of history.runs) {
+    if (!countablePerformanceRun(run)) continue;
+    const selected = record(run.selectedCandidate);
+    const explicitFindings = Array.isArray(run.qualifiedFindings)
+      ? run.qualifiedFindings.map(record).filter((item): item is JsonRecord => Boolean(item))
+      : [];
+    const legacyTrackers = Array.isArray(run.outcomeTrackingCandidates)
+      ? run.outcomeTrackingCandidates.map(record).filter((item): item is JsonRecord => Boolean(item))
+      : [];
+    const candidates = explicitFindings.length ? explicitFindings : legacyTrackers.length ? legacyTrackers : selected ? [selected] : [];
+    for (const candidate of candidates) {
+      const fallbackFingerprint = candidate === selected && typeof run.candidateFingerprint === "string" ? run.candidateFingerprint : "";
+      const fingerprint = typeof candidate.evidenceFingerprint === "string" ? candidate.evidenceFingerprint.trim() : fallbackFingerprint.trim();
+      const ticker = typeof candidate.ticker === "string" ? candidate.ticker.trim().toUpperCase() : "";
+      const direction = candidate.direction;
+      if (!fingerprint || INVALIDATED_FALSE_MAPPING_EVENT_KEYS.has(fingerprint) || !ticker || (direction !== "upside" && direction !== "downside") || seen.has(fingerprint)) continue;
+      seen.add(fingerprint);
+      entries.push({ run, candidate, fingerprint });
     }
   }
   return entries;
@@ -499,11 +535,12 @@ function validOneDayOutcome(run: JsonRecord) {
 }
 
 function updateForwardOutcomes(history: History, currentReport: JsonRecord) {
+  const completed: CompletedOutcomeCheckpoint[] = [];
   const checkedAt = Date.parse(String(currentReport.checkedAt ?? ""));
   const snapshot = Array.isArray(currentReport.marketSnapshot) ? currentReport.marketSnapshot.map(record).filter((item): item is JsonRecord => Boolean(item)) : [];
-  if (!countablePerformanceRun(currentReport) || !Number.isFinite(checkedAt) || !snapshot.length) return;
+  if (!countablePerformanceRun(currentReport) || !Number.isFinite(checkedAt) || !snapshot.length) return completed;
   for (const entry of outcomeTrackingEntries(history)) {
-    const { run, candidate: selected, outcomeOwner } = entry;
+    const { run, candidate: selected, fingerprint, outcomeOwner } = entry;
     const ticker = typeof selected?.ticker === "string" ? selected.ticker : null;
     const entryPrice = finiteNumber(selected?.price);
     const benchmarkTicker = typeof selected?.benchmarkTicker === "string" ? selected.benchmarkTicker.trim().toUpperCase() : "SPY";
@@ -557,7 +594,16 @@ function updateForwardOutcomes(history: History, currentReport: JsonRecord) {
       const usefulAtCheckpoint = directionAdjustedReturnPercent >= MINIMUM_DIRECTIONAL_MOVE_AFTER_COSTS_PERCENT && directionAdjustedMarketRelativeReturnPercent > 0;
       const quoteSource = typeof current?.source === "string" && current.source.trim() ? current.source.trim() : "live public-equity market snapshot";
       const benchmarkSource = typeof currentBenchmark?.source === "string" && currentBenchmark.source.trim() ? currentBenchmark.source.trim() : "live SPY benchmark snapshot";
-      outcomes.push({ checkpoint: checkpoint.label, targetAt: new Date(targetAt).toISOString(), evaluatedAt: new Date(sourceObservedAt).toISOString(), evaluationPollCheckedAt: new Date(checkedAt).toISOString(), evaluationDelayMs, evaluationPollDelayMs, maximumEvaluationDelayMs: checkpoint.maximumDelayMs, priceAtSignal: entryPrice, evaluationPrice: currentPrice, forwardReturnPercent: Math.round(forwardReturnPercent * 100) / 100, directionAdjustedReturnPercent: Math.round(directionAdjustedReturnPercent * 100) / 100, benchmarkTicker, benchmarkPriceAtSignal: benchmarkEntryPrice, benchmarkEvaluationPrice: currentBenchmarkPrice, benchmarkObservedAt: new Date(benchmarkObservedAt).toISOString(), benchmarkReturnPercent: Math.round(benchmarkReturnPercent * 100) / 100, marketRelativeReturnPercent: Math.round(marketRelativeReturnPercent * 100) / 100, directionAdjustedMarketRelativeReturnPercent: Math.round(directionAdjustedMarketRelativeReturnPercent * 100) / 100, usefulAtCheckpoint, source: quoteSource, benchmarkSource });
+      const outcome = { checkpoint: checkpoint.label, targetAt: new Date(targetAt).toISOString(), evaluatedAt: new Date(sourceObservedAt).toISOString(), evaluationPollCheckedAt: new Date(checkedAt).toISOString(), evaluationDelayMs, evaluationPollDelayMs, maximumEvaluationDelayMs: checkpoint.maximumDelayMs, priceAtSignal: entryPrice, evaluationPrice: currentPrice, forwardReturnPercent: Math.round(forwardReturnPercent * 100) / 100, directionAdjustedReturnPercent: Math.round(directionAdjustedReturnPercent * 100) / 100, benchmarkTicker, benchmarkPriceAtSignal: benchmarkEntryPrice, benchmarkEvaluationPrice: currentBenchmarkPrice, benchmarkObservedAt: new Date(benchmarkObservedAt).toISOString(), benchmarkReturnPercent: Math.round(benchmarkReturnPercent * 100) / 100, marketRelativeReturnPercent: Math.round(marketRelativeReturnPercent * 100) / 100, directionAdjustedMarketRelativeReturnPercent: Math.round(directionAdjustedMarketRelativeReturnPercent * 100) / 100, usefulAtCheckpoint, source: quoteSource, benchmarkSource };
+      outcomes.push(outcome);
+      completed.push({
+        fingerprint,
+        ticker: ticker.trim().toUpperCase(),
+        direction,
+        signalObservedAt: new Date(startedAt).toISOString(),
+        outcomeOwner,
+        outcome,
+      });
       snapshotUsedForCheckpoint = true;
     }
     outcomeOwner.outcomeEvaluations = outcomes;
@@ -570,6 +616,7 @@ function updateForwardOutcomes(history: History, currentReport: JsonRecord) {
       return { checkpoint: checkpoint.label, targetAt: new Date(targetAt).toISOString(), status: "missed_evaluation_window", missedByMs: checkedAt - targetAt - checkpoint.maximumDelayMs, maximumEvaluationDelayMs: checkpoint.maximumDelayMs };
     });
   }
+  return completed;
 }
 
 function outcomeTickersDue(history: History, now: number) {
@@ -595,7 +642,13 @@ function outcomeTickersDue(history: History, now: number) {
 
 function historicalSignalRecords(history: History): HistoricalSignalRecord[] {
   const validHorizons = new Set<HistoricalAnalogHorizon>(OUTCOME_CHECKPOINTS.map((checkpoint) => checkpoint.label));
-  return outcomeTrackingEntries(history).flatMap(({ run, candidate, fingerprint, outcomeOwner }) => {
+  const outcomeTrackers = new Map(outcomeTrackingEntries(history).map((entry) => [entry.fingerprint, entry]));
+  return qualifiedFindingEntries(history).flatMap((finding) => {
+    const tracker = outcomeTrackers.get(finding.fingerprint);
+    const run = tracker?.run ?? finding.run;
+    const candidate = tracker?.candidate ?? finding.candidate;
+    const fingerprint = finding.fingerprint;
+    const outcomeOwner = tracker?.outcomeOwner ?? finding.candidate;
     const ticker = typeof candidate.ticker === "string" ? candidate.ticker.trim().toUpperCase() : "";
     const direction = candidate.direction === "downside" ? "downside" : candidate.direction === "upside" ? "upside" : null;
     const relationship = candidate.relationship === "direct" || candidate.relationship === "second_order" || candidate.relationship === "third_order" ? candidate.relationship : null;
@@ -639,8 +692,8 @@ function historicalSignalRecords(history: History): HistoricalSignalRecord[] {
         origin,
         eventPublisher: typeof eventReceipt?.publisher === "string" ? eventReceipt.publisher : "Swing Up verified event receipts",
         eventSourceUrl: typeof eventReceipt?.url === "string" ? eventReceipt.url : `r2://branch-labs/${R2_BRANCH_NAMESPACE}/serious-signal/state.json`,
-        priceSource: firstCheckpoint?.source ?? "live public-equity market snapshot",
-        benchmarkSource: firstCheckpoint?.source ?? "live SPY benchmark snapshot",
+        priceSource: firstCheckpoint?.source ?? (candidate.priceAnchorStatus === "awaiting_price_anchor" ? "awaiting price anchor" : "live public-equity market snapshot"),
+        benchmarkSource: firstCheckpoint?.source ?? (candidate.priceAnchorStatus === "awaiting_price_anchor" ? "awaiting benchmark anchor" : "live SPY benchmark snapshot"),
         methodologyVersion: "swing-up-forward-outcomes-v1",
       },
       checkpoints,
@@ -659,6 +712,94 @@ function isSwingUpTrackedFinding(item: HistoricalSignalRecord) {
 
 function isSwingUpCompletedOutcome(item: HistoricalSignalRecord) {
   return item.provenance?.origin === "swing_up_forward_outcome" && hasCompletedCheckpoint(item);
+}
+
+function safeArchiveSegment(value: string, fallback: string) {
+  return value.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 100) || fallback;
+}
+
+function outcomeArchiveKey(completed: CompletedOutcomeCheckpoint) {
+  const checkpoint = safeArchiveSegment(String(completed.outcome.checkpoint ?? ""), "checkpoint");
+  const fingerprint = safeArchiveSegment(completed.fingerprint, "finding");
+  const ticker = safeArchiveSegment(completed.ticker, "ticker");
+  const date = completed.signalObservedAt.slice(0, 10);
+  return `${R2_OUTCOME_ARCHIVE_PREFIX}/${date}/${fingerprint}-${ticker}-${checkpoint}.json`;
+}
+
+function outcomeArchivePayload(completed: CompletedOutcomeCheckpoint) {
+  return {
+    version: 1,
+    kind: "swing_up_forward_outcome_checkpoint",
+    branch: ACTIVE_BRANCH,
+    namespace: R2_BRANCH_NAMESPACE,
+    evidenceFingerprint: completed.fingerprint,
+    ticker: completed.ticker,
+    direction: completed.direction,
+    signalObservedAt: completed.signalObservedAt,
+    checkpoint: completed.outcome.checkpoint,
+    outcome: completed.outcome,
+    immutable: true,
+    databaseWrites: false,
+    publishing: false,
+    notifications: false,
+    trading: false,
+  };
+}
+
+function restoreArchivedOutcome(completed: CompletedOutcomeCheckpoint, archivedOutcome: JsonRecord) {
+  const checkpoint = String(archivedOutcome.checkpoint ?? "");
+  const outcomes = (Array.isArray(completed.outcomeOwner.outcomeEvaluations) ? completed.outcomeOwner.outcomeEvaluations : [])
+    .map(record)
+    .filter((item): item is JsonRecord => item !== null)
+    .filter((item) => item.checkpoint !== checkpoint);
+  outcomes.push(archivedOutcome);
+  completed.outcomeOwner.outcomeEvaluations = outcomes;
+  completed.outcome = archivedOutcome;
+  const statuses = (Array.isArray(completed.outcomeOwner.outcomeCheckpointStatus) ? completed.outcomeOwner.outcomeCheckpointStatus : [])
+    .map(record)
+    .filter((item): item is JsonRecord => Boolean(item));
+  const status = statuses.find((item) => item.checkpoint === checkpoint);
+  if (status) {
+    status.status = "evaluated";
+    status.evaluatedAt = archivedOutcome.evaluatedAt;
+    status.evaluationDelayMs = archivedOutcome.evaluationDelayMs;
+    status.evaluationPollDelayMs = archivedOutcome.evaluationPollDelayMs;
+    status.maximumEvaluationDelayMs = archivedOutcome.maximumEvaluationDelayMs;
+    delete status.missedByMs;
+  }
+}
+
+async function archiveCompletedOutcomeCheckpoints(completedCheckpoints: CompletedOutcomeCheckpoint[]) {
+  const objectKeys: string[] = [];
+  for (const completed of completedCheckpoints) {
+    const objectKey = outcomeArchiveKey(completed);
+    const payload = outcomeArchivePayload(completed);
+    const written = await writeVersionedJsonToR2(objectKey, payload, { createOnly: true });
+    if (written.written) {
+      objectKeys.push(objectKey);
+      continue;
+    }
+    if (!written.conflict) throw new Error("r2_outcome_archive_write_failed");
+    const existing = await readVersionedTextFromR2(objectKey);
+    if (!existing.found || !existing.text) throw new Error("r2_outcome_archive_conflict_read_failed");
+    const parsed = record(JSON.parse(existing.text));
+    const archivedOutcome = record(parsed?.outcome);
+    if (
+      parsed?.kind !== "swing_up_forward_outcome_checkpoint"
+      || parsed.evidenceFingerprint !== completed.fingerprint
+      || parsed.ticker !== completed.ticker
+      || parsed.direction !== completed.direction
+      || parsed.signalObservedAt !== completed.signalObservedAt
+      || parsed.checkpoint !== completed.outcome.checkpoint
+      || !archivedOutcome
+      || archivedOutcome.checkpoint !== completed.outcome.checkpoint
+    ) {
+      throw new Error("r2_outcome_archive_content_conflict");
+    }
+    restoreArchivedOutcome(completed, archivedOutcome);
+    objectKeys.push(objectKey);
+  }
+  return objectKeys;
 }
 
 function runArchiveKey(report: JsonRecord, invocation: SchedulerInvocation) {
@@ -754,6 +895,13 @@ export async function GET() {
       backend: "cloudflare_r2",
       objectPrefix: R2_RUN_ARCHIVE_PREFIX,
       oneImmutableObjectPerCompletedScan: true,
+    },
+    outcomeArchive: {
+      backend: "cloudflare_r2",
+      objectPrefix: R2_OUTCOME_ARCHIVE_PREFIX,
+      oneImmutableObjectPerCompletedCheckpoint: true,
+      checkpoints: OUTCOME_CHECKPOINTS.map((checkpoint) => checkpoint.label),
+      idempotentCreateOnlyWrites: true,
     },
     openAiReservationPolicy: { durableStateRequired: true, durableStateAvailable: r2StateReady(storage), stateBlocker: r2StateBlocker(storage), maxAttemptsPerRolling24Hours: MAX_OPENAI_RUNS_PER_24_HOURS, sameEvidenceCooldownHours: OPENAI_EVIDENCE_COOLDOWN_MS / (60 * 60 * 1000), consumedReservationCount: history.openAiReservations.filter(reservationConsumed).length },
     providerQuotaStorageDurable: r2StateReady(storage),
@@ -883,8 +1031,28 @@ async function executePost(request: NextRequest) {
     ? report._historicalSignalLibraryAdditions.filter(isHistoricalSignalRecord)
     : [];
   delete report._historicalSignalLibraryAdditions;
-  updateForwardOutcomes(history, report);
-  const forwardOutcomeAdditions = historicalSignalRecords(history).map((item): HistoricalSignalRecord => ({
+  const selectedFingerprint = typeof report.candidateFingerprint === "string" ? report.candidateFingerprint : null;
+  const qualifiedFindings = Array.isArray(report.qualifiedFindings)
+    ? report.qualifiedFindings.map(record).filter((item): item is JsonRecord => Boolean(item))
+    : [];
+  report.qualifiedFindings = qualifiedFindings.map((finding) => ({
+    ...finding,
+    decisionStatus: finding.evidenceFingerprint === selectedFingerprint ? String(report.status ?? "selected_this_cycle") : "not_selected_this_cycle",
+  }));
+  const completedOutcomeCheckpoints = updateForwardOutcomes(history, report);
+  const outcomeArchiveObjects = await archiveCompletedOutcomeCheckpoints(completedOutcomeCheckpoints);
+  const repairFailure = repairEligibleFailure(report);
+  const repairAttemptNumber = noGainRepairAttempts(history.runs, report);
+  const activeReservation = activeReservationId ? history.openAiReservations.find((reservation) => reservation.id === activeReservationId) : null;
+  if (activeReservation) {
+    activeReservation.status = report.openAiCalled === true ? "completed" : "attempted_no_completion";
+    activeReservation.completedAt = new Date().toISOString();
+  }
+  history.totalRunCount += 1;
+  const runNumber = history.totalRunCount;
+  const provisionalRunRecord = { ...report, runNumber, repairAttemptNumber, schedulerInvocation: invocation, ...(activeReservationId ? { openAiReservationId: activeReservationId } : {}) };
+  const historyIncludingCurrentRun: History = { ...history, runs: [...history.runs, provisionalRunRecord] };
+  const forwardOutcomeAdditions = historicalSignalRecords(historyIncludingCurrentRun).map((item): HistoricalSignalRecord => ({
     ...item,
     provenance: item.provenance ?? {
       origin: hasCompletedCheckpoint(item) ? "swing_up_forward_outcome" : "swing_up_tracked_finding",
@@ -896,6 +1064,12 @@ async function executePost(request: NextRequest) {
     },
   }));
   historicalLibrary = await persistHistoricalSignalLibrary(historicalLibrary, mergeHistoricalSignals(publicHistoricalAdditions, forwardOutcomeAdditions));
+  const sameCycleFindingFingerprints = new Set(
+    qualifiedFindings
+      .map((finding) => typeof finding.evidenceFingerprint === "string" ? finding.evidenceFingerprint : "")
+      .filter(Boolean),
+  );
+  const sameCycleQualifiedFindingsRepresented = forwardOutcomeAdditions.filter((item) => sameCycleFindingFingerprints.has(item.eventKey)).length;
   const learning = record(report.historicalLearning) ?? {};
   report.historicalLearning = {
     ...learning,
@@ -907,16 +1081,12 @@ async function executePost(request: NextRequest) {
     r2LibrarySwingUpCompletedForwardOutcomeRecordCount: historicalLibrary.library.records.filter(isSwingUpCompletedOutcome).length,
     r2LibraryMockOrSyntheticRecordCount: historicalLibrary.library.records.filter((item) => item.dataQuality !== "real").length,
     r2LibraryError: historicalLibrary.error,
+    qualifiedFindingsRecordedThisCycle: qualifiedFindings.length,
+    qualifiedFindingsRepresentedInCompactHistoryThisCycle: sameCycleQualifiedFindingsRepresented,
+    currentCycleIncludedBeforeR2LibraryWrite: true,
+    newImmutableOutcomeCheckpointCount: outcomeArchiveObjects.length,
+    newImmutableOutcomeCheckpointObjects: outcomeArchiveObjects,
   };
-  const repairFailure = repairEligibleFailure(report);
-  const repairAttemptNumber = noGainRepairAttempts(history.runs, report);
-  const activeReservation = activeReservationId ? history.openAiReservations.find((reservation) => reservation.id === activeReservationId) : null;
-  if (activeReservation) {
-    activeReservation.status = report.openAiCalled === true ? "completed" : "attempted_no_completion";
-    activeReservation.completedAt = new Date().toISOString();
-  }
-  history.totalRunCount += 1;
-  const runNumber = history.totalRunCount;
   const runRecord = { ...report, runNumber, repairAttemptNumber, schedulerInvocation: invocation, ...(activeReservationId ? { openAiReservationId: activeReservationId } : {}) };
   const archiveObjectKey = runArchiveKey(report, invocation);
   const archived = await writeVersionedJsonToR2(archiveObjectKey, runRecord, { createOnly: true });
@@ -930,7 +1100,7 @@ async function executePost(request: NextRequest) {
   history.scanLease = null;
   storage = await saveHistory(history, storage);
   const openAiRunsLast24Hours = openAiAttemptsInWindow(history, Date.now(), 24 * 60 * 60 * 1000);
-  return NextResponse.json({ ...report, runNumber, retainedRunCount: history.runs.length, repairAttemptNumber, schedulerInvocation: invocation, stopped: history.stopped, stopReason: history.stopReason, openAiRunsLast24Hours, openAiAttemptsLast24Hours: openAiRunsLast24Hours, maxOpenAiRunsPer24Hours: MAX_OPENAI_RUNS_PER_24_HOURS, openAiReservationId: activeReservationId, openAiRequiresDurableState: true, openAiAllowedAtRunStart: allowOpenAi, openAiStateBlocker: r2StateBlocker(storage), stateStorage: storageMetadata(storage), stateWritesToR2: true, runArchiveObject: archiveObjectKey, runArchivedImmutably: true, productionR2DataWrites: false });
+  return NextResponse.json({ ...report, runNumber, retainedRunCount: history.runs.length, repairAttemptNumber, schedulerInvocation: invocation, stopped: history.stopped, stopReason: history.stopReason, openAiRunsLast24Hours, openAiAttemptsLast24Hours: openAiRunsLast24Hours, maxOpenAiRunsPer24Hours: MAX_OPENAI_RUNS_PER_24_HOURS, openAiReservationId: activeReservationId, openAiRequiresDurableState: true, openAiAllowedAtRunStart: allowOpenAi, openAiStateBlocker: r2StateBlocker(storage), stateStorage: storageMetadata(storage), stateWritesToR2: true, runArchiveObject: archiveObjectKey, runArchivedImmutably: true, newOutcomeCheckpointArchiveObjects: outcomeArchiveObjects, productionR2DataWrites: false });
 }
 
 export async function POST(request: NextRequest) {

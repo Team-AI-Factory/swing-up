@@ -1,0 +1,83 @@
+name: Current Global Deep Research Validation
+
+on:
+  push:
+    branches:
+      - "agent/combined-opportunity-engine"
+    paths:
+      - "lib/opportunity-engine/global-deep-research.ts"
+      - "lib/opportunity-engine/global-deep-research-v2.ts"
+      - "lib/opportunity-engine/global-deep-research-v3.ts"
+      - "lib/opportunity-engine/global-market-scanner-v3.ts"
+      - "lib/opportunity-engine/global-listing-identity.ts"
+      - "app/api/internal/combined-opportunity-engine/global-deep-research/route.ts"
+      - "scripts/current-global-deep-research-live-smoke.mjs"
+      - ".github/workflows/current-global-deep-research-validation.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "lib/opportunity-engine/global-deep-research.ts"
+      - "lib/opportunity-engine/global-deep-research-v2.ts"
+      - "lib/opportunity-engine/global-deep-research-v3.ts"
+      - "lib/opportunity-engine/global-market-scanner-v3.ts"
+      - "lib/opportunity-engine/global-listing-identity.ts"
+      - "app/api/internal/combined-opportunity-engine/global-deep-research/route.ts"
+      - "scripts/current-global-deep-research-live-smoke.mjs"
+      - ".github/workflows/current-global-deep-research-validation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: current-global-deep-research-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Research current Buy Sell and Watch Out candidates
+    if: github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out isolated branch
+        uses: actions/checkout@v4
+
+      - name: Refuse main branch execution
+        shell: bash
+        run: |
+          branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          test "${branch}" != "main"
+          echo "Testing current global deep research on ${branch}"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit --fund=false
+
+      - name: Typecheck and build
+        run: |
+          npm run typecheck
+          npm run build
+
+      - name: Run current Railway deep research
+        env:
+          COMBINED_ENGINE_RAILWAY_URL: https://swing-up-swing-up-pr-262.up.railway.app
+          EXPECTED_BRANCH_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+          SWING_UP_AUTOMATION_TOKEN: ${{ secrets.SWING_UP_AUTOMATION_TOKEN }}
+          CURRENT_GLOBAL_DEEP_RESEARCH_REPORT_PATH: artifacts/current-global-deep-research-report.json
+        run: node scripts/current-global-deep-research-live-smoke.mjs
+
+      - name: Upload current deep research report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: current-global-deep-research-report
+          path: artifacts/current-global-deep-research-report.json
+          if-no-files-found: warn
+          retention-days: 30

@@ -94,8 +94,11 @@ export type TradingViewGlobalScanResult = {
     countries: number;
     currencies: number;
     pageSize: number;
+    pageOverlapRows: number;
     pagesRequested: number;
     pagesFailed: number;
+    rawPrimaryRowsFetched: number;
+    duplicateProviderRowsDiscarded: number;
     coveragePercent: number;
     coverageComplete: boolean;
     sourceErrors: string[];
@@ -119,7 +122,12 @@ export type TradingViewGlobalScanResult = {
       qualifyingAlerts: number;
       unsupportedYahooMappings: number;
       failedHistoryChecks: number;
+      verifiedHistoryCandidates: number;
+      priceConflictsBlocked: number;
+      insufficientHistoryBlocked: number;
+      providerFailures: number;
       skippedCandidates: number;
+      independentHistoryAvailablePercent: number;
       coveragePercent: number;
       coverageComplete: boolean;
       errors: string[];
@@ -221,7 +229,9 @@ async function fetchTradingViewPage(market: string, start: number, pageSize: num
     markets: market === "global" ? [] : [market],
     symbols: { query: { types: [] }, tickers: [] },
     columns: [...TV_COLUMNS],
-    sort: { sortBy: "market_cap_basic", sortOrder: "desc" },
+    // A stable symbol sort plus overlapping page windows reduces omissions when
+    // live market-cap values change while the worldwide scan is paginating.
+    sort: { sortBy: "name", sortOrder: "asc" },
     range: [start, start + pageSize],
   };
   try {
@@ -261,16 +271,28 @@ async function mapWithConcurrency<T, R>(items: T[], concurrency: number, worker:
   return output;
 }
 
+export function buildOverlappingPageStarts(target: number, pageSize: number) {
+  const safePageSize = Math.max(1, Math.floor(pageSize));
+  const pageOverlapRows = Math.min(100, Math.max(1, Math.floor(safePageSize * 0.1)));
+  const pageStep = Math.max(1, safePageSize - pageOverlapRows);
+  const starts = Array.from(
+    { length: Math.max(0, Math.ceil(Math.max(0, target - safePageSize) / pageStep)) },
+    (_, index) => pageStep * (index + 1),
+  ).filter((start) => start < target);
+  return { pageOverlapRows, pageStep, starts };
+}
+
 async function fetchEntireWorld(maximumListings: number, pageSize: number, concurrency: number) {
   const errors: string[] = [];
+  const { pageOverlapRows, pageStep } = buildOverlappingPageStarts(maximumListings, pageSize);
   const first = await fetchTradingViewPage("global", 0, pageSize, true);
   if (!first.error && first.totalCount >= 1_000 && first.rows.length) {
     const target = Math.min(maximumListings, first.totalCount);
-    const starts = Array.from({ length: Math.max(0, Math.ceil(target / pageSize) - 1) }, (_, index) => (index + 1) * pageSize);
+    const { starts } = buildOverlappingPageStarts(target, pageSize);
     const remaining = await mapWithConcurrency(starts, concurrency, (start) => fetchTradingViewPage("global", start, pageSize, true));
     const pages = [first, ...remaining];
     for (const page of pages) if (page.error) errors.push(`global:${page.start}:${page.error}`);
-    return { mode: "entire_world_primary_listings" as const, marketsAttempted: ["global"], marketsSucceeded: pages.some((page) => page.rows.length) ? ["global"] : [], totalCount: first.totalCount, pages, errors };
+    return { mode: "entire_world_primary_listings" as const, marketsAttempted: ["global"], marketsSucceeded: pages.some((page) => page.rows.length) ? ["global"] : [], totalCount: first.totalCount, pages, errors, pageOverlapRows };
   }
   if (first.error) errors.push(`global:0:${first.error}`);
   else errors.push(`global:insufficient_rows:${first.rows.length}:total:${first.totalCount}`);
@@ -280,7 +302,7 @@ async function fetchEntireWorld(maximumListings: number, pageSize: number, concu
   for (const page of firstPages) {
     if (page.error) errors.push(`${page.market}:0:${page.error}`);
     const target = Math.min(maximumListings, page.totalCount);
-    for (let start = pageSize; start < target; start += pageSize) jobs.push({ market: page.market, start });
+    for (let start = pageStep; start < target; start += pageStep) jobs.push({ market: page.market, start });
   }
   const remaining = await mapWithConcurrency(jobs, concurrency, (job) => fetchTradingViewPage(job.market, job.start, pageSize, true));
   const pages = [...firstPages, ...remaining];
@@ -292,6 +314,7 @@ async function fetchEntireWorld(maximumListings: number, pageSize: number, concu
     totalCount: firstPages.reduce((sum, page) => sum + page.totalCount, 0),
     pages,
     errors,
+    pageOverlapRows,
   };
 }
 
@@ -451,23 +474,41 @@ export async function scanTradingViewGlobalStocks(options?: {
   });
   const selected = mapped.slice(0, maximumCertifiedChecks);
   const historyErrors: string[] = [];
-  const verified = await mapWithConcurrency(selected, historyConcurrency, async ({ candidate, mapping }) => {
+  const verificationOutcomes = await mapWithConcurrency(selected, historyConcurrency, async ({ candidate, mapping }) => {
     try {
-      return evaluateCertifiedAlert(candidate, mapping, await fetchYahooHistory(mapping, now), now);
+      return {
+        alert: evaluateCertifiedAlert(candidate, mapping, await fetchYahooHistory(mapping, now), now),
+        status: "verified_history" as const,
+        error: null,
+      };
     } catch (error) {
-      historyErrors.push(`${candidate.tradingViewSymbol}:${safeError(error)}`);
-      return null;
+      const message = safeError(error);
+      const status = message.includes("price_disagreement:")
+        ? "price_conflict" as const
+        : message.includes("insufficient_history:")
+          ? "insufficient_history" as const
+          : "provider_failure" as const;
+      const fullError = `${candidate.tradingViewSymbol}:${message}`;
+      historyErrors.push(fullError);
+      return { alert: null, status, error: fullError };
     }
   });
-  const alerts = verified.filter((row): row is CertifiedGlobalWatchOut => Boolean(row));
+  const alerts = verificationOutcomes.flatMap((row) => row.alert ? [row.alert] : []);
   const unsupportedYahooMappings = prefilter.length - mapped.length;
   const skippedCandidates = Math.max(0, mapped.length - selected.length);
-  const failedHistoryChecks = historyErrors.length;
-  const successfullyChecked = Math.max(0, selected.length - failedHistoryChecks);
-  const coveragePercent = prefilter.length ? Number(((successfullyChecked / prefilter.length) * 100).toFixed(2)) : 100;
+  const verifiedHistoryCandidates = verificationOutcomes.filter((row) => row.status === "verified_history").length;
+  const priceConflictsBlocked = verificationOutcomes.filter((row) => row.status === "price_conflict").length;
+  const insufficientHistoryBlocked = verificationOutcomes.filter((row) => row.status === "insufficient_history").length;
+  const providerFailures = verificationOutcomes.filter((row) => row.status === "provider_failure").length;
+  const failedHistoryChecks = providerFailures;
+  const independentHistoryAvailablePercent = prefilter.length ? Number(((verifiedHistoryCandidates / prefilter.length) * 100).toFixed(2)) : 100;
+  const attemptedOrUnsupported = selected.length + unsupportedYahooMappings;
+  const coveragePercent = prefilter.length ? Number(((attemptedOrUnsupported / prefilter.length) * 100).toFixed(2)) : 100;
   const coverageComplete = skippedCandidates === 0 && coveragePercent >= 99;
   const providerTarget = Math.min(maximumListings, world.totalCount || maximumListings);
   const pagesFailed = world.pages.filter((page) => page.error).length;
+  const rawPrimaryRowsFetched = world.pages.reduce((sum, page) => sum + page.rows.length, 0);
+  const duplicateProviderRowsDiscarded = Math.max(0, rawPrimaryRowsFetched - allRows.length);
   const universeCoverage = providerTarget ? Number(((allRows.length / providerTarget) * 100).toFixed(2)) : 0;
   const universeCoverageComplete = pagesFailed === 0 && universeCoverage >= 99 && (world.mode === "entire_world_primary_listings" || world.marketsSucceeded.length >= 40);
   const exchanges = new Set(eligible.map((row) => row.exchange));
@@ -477,9 +518,9 @@ export async function scanTradingViewGlobalStocks(options?: {
   return {
     ok: universeCoverageComplete && coverageComplete,
     checkedAt: now.toISOString(),
-    universe: { provider: "TradingView public stock scanner", mode: world.mode, marketsAttempted: world.marketsAttempted, marketsSucceeded: world.marketsSucceeded, totalProviderRows: world.totalCount, primaryListingsFetched: allRows.length, eligibleListings: eligible.length, exchanges: exchanges.size, countries: countries.size, currencies: currencies.size, pageSize, pagesRequested: world.pages.length, pagesFailed, coveragePercent: universeCoverage, coverageComplete: universeCoverageComplete, sourceErrors: [...new Set(world.errors)].slice(0, 100) },
+    universe: { provider: "TradingView public stock scanner", mode: world.mode, marketsAttempted: world.marketsAttempted, marketsSucceeded: world.marketsSucceeded, totalProviderRows: world.totalCount, primaryListingsFetched: allRows.length, eligibleListings: eligible.length, exchanges: exchanges.size, countries: countries.size, currencies: currencies.size, pageSize, pageOverlapRows: world.pageOverlapRows, pagesRequested: world.pages.length, pagesFailed, rawPrimaryRowsFetched, duplicateProviderRowsDiscarded, coveragePercent: universeCoverage, coverageComplete: universeCoverageComplete, sourceErrors: [...new Set(world.errors)].slice(0, 100) },
     candidates: { opportunity, buyResearch, sellResearch, watchOutResearch, deepAnalysisQueue },
-    seriousAlerts: { buy: [], sell: [], watchOut: alerts, certifiedRuleIds: [CERTIFIED_EXTREME_VOLATILITY_RULE.id], verification: { prefilterCandidates: prefilter.length, mappedCandidates: mapped.length, checkedCandidates: selected.length, qualifyingAlerts: alerts.length, unsupportedYahooMappings, failedHistoryChecks, skippedCandidates, coveragePercent, coverageComplete, errors: [...new Set(historyErrors)].slice(0, 150) } },
+    seriousAlerts: { buy: [], sell: [], watchOut: alerts, certifiedRuleIds: [CERTIFIED_EXTREME_VOLATILITY_RULE.id], verification: { prefilterCandidates: prefilter.length, mappedCandidates: mapped.length, checkedCandidates: selected.length, qualifyingAlerts: alerts.length, unsupportedYahooMappings, failedHistoryChecks, verifiedHistoryCandidates, priceConflictsBlocked, insufficientHistoryBlocked, providerFailures, skippedCandidates, independentHistoryAvailablePercent, coveragePercent, coverageComplete, errors: [...new Set(historyErrors)].slice(0, 150) } },
     opportunityCoverage: opportunityCoverageSummary(),
     safety: { databaseWrites: false, publishing: false, notifications: false, seriousSignalsUnlocked: alerts.length > 0, certifiedRuleEnabled: true },
   };

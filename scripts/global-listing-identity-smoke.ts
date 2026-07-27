@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mapGlobalListingToYahoo } from "../lib/opportunity-engine/global-listing-identity";
+import { buildOverlappingPageStarts } from "../lib/opportunity-engine/global-market-scanner-v3";
 
 assert.deepEqual(
   mapGlobalListingToYahoo({ symbol: "CEZ", exchange: "PSE", country: "Czech Republic" }),
@@ -22,9 +23,17 @@ assert.deepEqual(
   { symbol: "MC.PA", reason: "Euronext Paris" },
 );
 
+const pagination = buildOverlappingPageStarts(49_369, 1_000);
+assert.equal(pagination.pageOverlapRows, 100);
+assert.equal(pagination.pageStep, 900);
+assert.equal(pagination.starts[0], 900);
+assert.ok(pagination.starts.at(-1)! < 49_369);
+assert.ok(pagination.starts.every((start, index) => index === 0 || start - pagination.starts[index - 1] <= 1_000));
+
 console.log(JSON.stringify({
   ok: true,
   ambiguousExchangeResolvedByCountry: true,
   unknownAmbiguousExchangeBlocked: true,
   sharedByGlobalScannerAndDeepResearch: true,
+  stableOverlappingPagination: true,
 }, null, 2));

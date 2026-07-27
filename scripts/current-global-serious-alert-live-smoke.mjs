@@ -126,6 +126,11 @@ async function main() {
 
     const accountedCandidates = (verification?.checkedCandidates || 0) + (verification?.unsupportedYahooMappings || 0);
     assert.equal(accountedCandidates, verification?.prefilterCandidates, `Not every prefilter candidate was accounted for: ${JSON.stringify(verification)}`);
+    const classifiedCandidates = (verification?.verifiedHistoryCandidates || 0)
+      + (verification?.priceConflictsBlocked || 0)
+      + (verification?.insufficientHistoryBlocked || 0)
+      + (verification?.providerFailures || 0);
+    assert.equal(classifiedCandidates, verification?.checkedCandidates, `Attempted candidates were not assigned an honest verification result: ${JSON.stringify(verification)}`);
 
     const report = {
       ok: scan.json.ok === true,
@@ -151,7 +156,9 @@ async function main() {
       },
       blockedRatherThanPromoted: {
         unsupportedYahooMappings: verification?.unsupportedYahooMappings || 0,
-        failedIndependentHistoryChecks: verification?.failedHistoryChecks || 0,
+        priceConflicts: verification?.priceConflictsBlocked || 0,
+        insufficientHistory: verification?.insufficientHistoryBlocked || 0,
+        providerFailures: verification?.providerFailures || 0,
         globalCasesOutsideCertifiedListingScope: scan.json.seriousAlerts?.certificationScope?.researchOnlyOutsideCertifiedScope || 0,
       },
       opportunityCoverage: scan.json.opportunityCoverage,
@@ -167,7 +174,8 @@ async function main() {
       exchanges: report.universe.exchanges,
       countries: report.universe.countries,
       universeCoveragePercent: report.universe.coveragePercent,
-      independentHistoryVerifiedPercent: verification?.coveragePercent,
+      candidateAttemptCoveragePercent: verification?.coveragePercent,
+      independentHistoryAvailablePercent: verification?.independentHistoryAvailablePercent,
       candidatesAccountedFor: accountedCandidates,
       currentScopedSeriousWatchOutAlerts: report.seriousAlerts.watchOut,
       blockedRatherThanPromoted: report.blockedRatherThanPromoted,

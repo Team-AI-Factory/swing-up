@@ -1,3 +1,7 @@
+import {
+  bootstrapPilotHistoricalSignals,
+  mergePilotHistoricalSignals,
+} from "@/lib/equity-signal/pilot-historical-bootstrap";
 import { evaluateFiveCasePilotGate, US_SERIOUS_SIGNAL_PILOT_POLICY } from "@/lib/equity-signal/pilot-serious-signal-policy";
 import {
   runEquitySignalLab,
@@ -21,7 +25,12 @@ function strings(value: unknown) {
 }
 
 export async function runPilotEquitySignalLab(input: PilotEquitySignalLabInput = {}) {
-  const baseResult = await runEquitySignalLab(input);
+  const now = input.now ?? new Date();
+  const fetchImpl = input.fetchImpl ?? fetch;
+  const suppliedHistory = input.historicalSignals ?? [];
+  const pilotBootstrap = await bootstrapPilotHistoricalSignals(suppliedHistory, fetchImpl, now);
+  const historicalSignals = mergePilotHistoricalSignals(suppliedHistory, pilotBootstrap.records);
+  const baseResult = await runEquitySignalLab({ ...input, now, fetchImpl, historicalSignals });
   const base = baseResult as unknown as Json;
   const selectedCandidate = object(base.selectedCandidate);
   const pilotGate = evaluateFiveCasePilotGate(selectedCandidate);
@@ -32,6 +41,13 @@ export async function runPilotEquitySignalLab(input: PilotEquitySignalLabInput =
     marketScope: US_SERIOUS_SIGNAL_PILOT_POLICY.marketScope,
     confidenceTier: US_SERIOUS_SIGNAL_PILOT_POLICY.confidenceTier,
     pilotHistoricalGate: pilotGate,
+    pilotHistoricalBootstrap: {
+      requestedSeeds: pilotBootstrap.requestedSeeds,
+      builtSeeds: pilotBootstrap.builtSeeds,
+      errors: pilotBootstrap.errors,
+      priceSource: pilotBootstrap.priceSource,
+      noSyntheticData: pilotBootstrap.noSyntheticData,
+    },
     historicalLearning: {
       ...historicalLearning,
       minimumIndependentRealEventsForPilotSeriousBuySell: US_SERIOUS_SIGNAL_PILOT_POLICY.minimumIndependentHistoricalEvents,
@@ -39,6 +55,7 @@ export async function runPilotEquitySignalLab(input: PilotEquitySignalLabInput =
       historicalComparisonRequiredForSeriousSignal: true,
       actionableBuySellRequiresCalibratedHistory: true,
       statisticallyEquivalentToThirtySamples: false,
+      pilotPublicHistoricalSignalsAddedThisRun: pilotBootstrap.records.length,
     },
     liveSourcePolicy: {
       ...liveSourcePolicy,

@@ -16,9 +16,9 @@ export const CERTIFIED_EXTREME_VOLATILITY_RULE = {
   id: "watch_out_30d_extreme_volatility_after_60pct_drawdown_v2",
   action: "watch_out" as const,
   subtype: "extreme_volatility_direction_uncertain" as const,
-  horizonTradingDays: 30,
-  trailing120SessionDrawdownMaximumPercent: -60,
-  futureMoveThresholdPercent: 12,
+  horizonTradingDays: 30 as const,
+  trailing120SessionDrawdownMaximumPercent: -60 as const,
+  futureMoveThresholdPercent: 12 as const,
   successDefinition: "Within the following 30 trading sessions, the security rises at least 12% or falls at least 12% from the alert close.",
   userMeaning: "A large price swing is likely to continue. Direction is uncertain; this is a risk warning, not a Sell instruction.",
   certification: {

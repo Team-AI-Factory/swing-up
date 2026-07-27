@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { scanAllGlobalStocks } from "@/lib/opportunity-engine/global-market-scanner";
+import { scanAllGlobalStocks } from "@/lib/opportunity-engine/global-market-scanner-v2";
 import { CERTIFIED_EXTREME_VOLATILITY_RULE, opportunityCoverageSummary } from "@/lib/opportunity-engine/serious-alert-registry";
 
 export const dynamic = "force-dynamic";
@@ -33,9 +33,10 @@ export async function GET(request: NextRequest) {
   if (expected && suppliedToken(request) !== expected) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   return NextResponse.json({
     ok: true,
-    scanner: "global_two_stage_stock_scanner",
+    scanner: "global_two_stage_stock_scanner_v2",
     providerConfigured: Boolean(process.env.FMP_API_KEY?.trim()),
-    method: "Every available active stock is screened with batch quotes. Buy, Sell and Watch Out research queues are separated. Independently certified rules receive fresh adjusted-price verification before seriousSignal can be true.",
+    directoryFailover: ["stock-list", "actively-trading-list", "profile-bulk", "financial-statement-symbol-list", "key-metrics-ttm-bulk-symbols"],
+    method: "Every available active stock is screened with current batch quotes. Buy, Sell and Watch Out research queues are separated. Independently certified rules receive fresh adjusted-price verification before seriousSignal can be true.",
     certifiedRule: CERTIFIED_EXTREME_VOLATILITY_RULE,
     opportunityCoverage: opportunityCoverageSummary(),
     publishingEnabled: false,
@@ -64,7 +65,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       ok: false,
       error: "global_scan_failed",
-      errorMessageSafe: error instanceof Error ? error.message.slice(0, 260) : "unknown_error",
+      errorMessageSafe: error instanceof Error ? error.message.slice(0, 1000) : "unknown_error",
       safety: { databaseWrites: false, publishing: false, notifications: false, seriousSignalsUnlocked: false },
     }, { status: 502 });
   }

@@ -179,7 +179,9 @@ async function cachedSnapshot() {
 
 export async function loadEquityUniverse(fetchImpl: typeof fetch, now = new Date()) {
   const cached = await cachedSnapshot();
-  if (cached.snapshot && now.getTime() - Date.parse(cached.snapshot.refreshedAt) < CACHE_MAX_AGE_MS) {
+  if (cached.snapshot
+    && cached.snapshot.constructionMode === "nasdaq_plus_sec"
+    && now.getTime() - Date.parse(cached.snapshot.refreshedAt) < CACHE_MAX_AGE_MS) {
     return { snapshot: cached.snapshot, cache: "cloudflare_r2" as const, refreshed: false, r2Write: false };
   }
   const settled = await Promise.allSettled([
@@ -215,6 +217,11 @@ export async function loadEquityUniverse(fetchImpl: typeof fetch, now = new Date
     if (cached.snapshot) return { snapshot: cached.snapshot, cache: "cloudflare_r2_stale_fallback" as const, refreshed: false, r2Write: false };
     throw new Error("official_equity_universe_empty_after_security_filter");
   }
+  const completeNasdaqDirectories = nasdaq.entries.length > 0 && other.entries.length > 0;
+  if (cached.snapshot && !completeNasdaqDirectories && cached.snapshot.entries.length > entries.length) {
+    return { snapshot: cached.snapshot, cache: "cloudflare_r2_larger_fallback" as const, refreshed: false, r2Write: false };
+  }
+
   const excludedByReason = { ...nasdaq.excluded };
   for (const [reason, count] of Object.entries(other.excluded)) excludedByReason[reason] = (excludedByReason[reason] ?? 0) + count;
   const cikMapped = entries.filter((entry) => entry.cik).length;

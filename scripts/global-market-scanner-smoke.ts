@@ -4,7 +4,7 @@ import {
   normalizeGlobalQuotes,
   normalizeGlobalStockUniverse,
   type GlobalScanCandidate,
-} from "../lib/opportunity-engine/global-market-scanner";
+} from "../lib/opportunity-engine/global-market-scanner-v2";
 import { CERTIFIED_EXTREME_VOLATILITY_RULE, opportunityCoverageSummary } from "../lib/opportunity-engine/serious-alert-registry";
 
 const universe = normalizeGlobalStockUniverse([
@@ -21,8 +21,8 @@ assert.equal(new Set(universe.map((row) => row.exchangeShortName)).size, 3);
 assert.equal(new Set(universe.map((row) => row.country)).size, 3);
 
 const quotes = normalizeGlobalQuotes([
-  { symbol: "AAPL", price: 210.5, changePercentage: 2.1, volume: 1000000, avgVolume: 800000, marketCap: 3200000000000, yearHigh: 220, yearLow: 150, exchange: "NASDAQ", timestamp: 1 },
-  { symbol: "7203.T", price: "2800", changesPercentage: "-1.5", volume: "500000", averageVolume: "400000", marketCap: "300000000000", yearHigh: "3500", yearLow: "2200", exchangeShortName: "JPX", timestamp: "2" },
+  { symbol: "AAPL", name: "Apple Inc.", price: 210.5, changePercentage: 2.1, volume: 1000000, avgVolume: 800000, marketCap: 3200000000000, yearHigh: 220, yearLow: 150, exchange: "NASDAQ", country: "US", currency: "USD", timestamp: 1 },
+  { symbol: "7203.T", name: "Toyota Motor", price: "2800", changesPercentage: "-1.5", volume: "500000", averageVolume: "400000", marketCap: "300000000000", yearHigh: "3500", yearLow: "2200", exchangeShortName: "JPX", country: "JP", currency: "JPY", timestamp: "2" },
 ]);
 
 assert.equal(quotes.length, 2);

@@ -173,6 +173,7 @@ function enrichCase(item: GlobalDeepResearchCase, snapshot: TradingViewFundament
 export async function runGlobalDeepResearchV3(options?: { perAction?: number }): Promise<GlobalDeepResearchResultV3> {
   const base = await runGlobalDeepResearchV2(options);
   const sourceCases = [...base.results.buy, ...base.results.sell, ...base.results.watchOut];
+  const requestedSymbols = unique(sourceCases.map((item) => item.tradingViewSymbol).filter(Boolean));
   const fundamentals = await fetchTradingViewFundamentals(sourceCases);
   const mapCases = (cases: GlobalDeepResearchCase[]) => cases.map((item) => enrichCase(item, fundamentals.snapshots.get(item.tradingViewSymbol) ?? null));
   const buy = mapCases(base.results.buy);
@@ -192,9 +193,9 @@ export async function runGlobalDeepResearchV3(options?: { perAction?: number }):
       providerErrors: all.reduce((sum, row) => sum + row.providerErrors.length, 0),
     },
     liveFundamentalCoverage: {
-      requested: sourceCases.length,
+      requested: requestedSymbols.length,
       received: fundamentals.snapshots.size,
-      coveragePercent: sourceCases.length ? Number(((fundamentals.snapshots.size / sourceCases.length) * 100).toFixed(2)) : 100,
+      coveragePercent: requestedSymbols.length ? Number(((fundamentals.snapshots.size / requestedSymbols.length) * 100).toFixed(2)) : 100,
       errors: fundamentals.errors,
     },
   };

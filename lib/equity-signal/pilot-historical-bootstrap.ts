@@ -29,7 +29,7 @@ type PriceSeries = { ticker: string; bars: PriceBar[] };
 
 const BENCHMARK_TICKER = "SPY";
 const SOURCE = "Yahoo Finance public adjusted daily chart history" as const;
-const METHODOLOGY_VERSION = "us-five-case-pilot-official-events-adjusted-prices-v1";
+const METHODOLOGY_VERSION = "us-five-case-pilot-official-events-adjusted-prices-v2";
 const HORIZONS: Array<{ label: HistoricalAnalogHorizon; milliseconds: number }> = [
   { label: "1D", milliseconds: 24 * 60 * 60 * 1000 },
   { label: "3D", milliseconds: 3 * 24 * 60 * 60 * 1000 },
@@ -40,8 +40,19 @@ const HORIZONS: Array<{ label: HistoricalAnalogHorizon; milliseconds: number }> 
 
 // Official event facts only. Returns and benchmark-relative outcomes are rebuilt
 // from public adjusted daily price history at runtime; no performance values are
-// hard-coded in this catalog.
+// hard-coded in this catalog. This first pilot family deliberately contains five
+// positive and five negative earnings/guidance examples.
 const PILOT_SEEDS: PilotSeed[] = [
+  {
+    id: "nvda-2023-05-24-guidance-raise-pilot",
+    ticker: "NVDA",
+    eventFamily: "earnings_guidance",
+    direction: "upside",
+    eventObservedAt: "2023-05-24T23:59:59.000Z",
+    eventPublisher: "NVIDIA Newsroom",
+    eventSourceUrl: "https://nvidianews.nvidia.com/news/nvidia-announces-financial-results-for-first-quarter-fiscal-2024",
+    causalChain: ["material revenue outlook increase", "accelerated data-centre demand", "higher expected earnings and cash flow"],
+  },
   {
     id: "nvda-2024-02-21-record-results-outlook",
     ticker: "NVDA",
@@ -81,6 +92,16 @@ const PILOT_SEEDS: PilotSeed[] = [
     eventPublisher: "FedEx Investor Relations",
     eventSourceUrl: "https://investors.fedex.com/news-and-events/investor-news/investor-news-details/2023/FedEx-Reports-Higher-First-Quarter-Diluted-EPS-of-4.23-and-Adjusted-Diluted-EPS-of-4.55/default.aspx",
     causalChain: ["better-than-expected profitability", "full-year adjusted earnings outlook increased", "higher expected cash flow"],
+  },
+  {
+    id: "meta-2022-10-26-guidance-pressure-pilot",
+    ticker: "META",
+    eventFamily: "earnings_guidance",
+    direction: "downside",
+    eventObservedAt: "2022-10-26T23:59:59.000Z",
+    eventPublisher: "Meta Investor Relations",
+    eventSourceUrl: "https://investor.atmeta.com/investor-news/press-release-details/2022/Meta-Reports-Third-Quarter-2022-Results/default.aspx",
+    causalChain: ["slower growth and elevated expense outlook", "expected margins and cash flow reduced", "lower expected per-share value"],
   },
   {
     id: "wmt-2022-07-25-profit-outlook-cut",

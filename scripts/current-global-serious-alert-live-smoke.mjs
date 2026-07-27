@@ -9,6 +9,7 @@ const token = (process.env.SWING_UP_AUTOMATION_TOKEN || "").trim();
 const outputPath = process.env.CURRENT_GLOBAL_SCAN_REPORT_PATH || "artifacts/current-global-serious-alert-report.json";
 const timeoutMs = 15 * 60 * 1000;
 const startedAt = Date.now();
+const certifiedExchanges = new Set(["NASDAQ", "NYSE", "AMEX"]);
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const safeError = (error) => error instanceof Error ? error.message.replace(/\s+/g, " ").slice(0, 1200) : "unknown_live_scan_failure";
@@ -90,15 +91,22 @@ async function main() {
     assert.ok(scan.json?.universe?.countries >= 10, `Too few countries: ${scan.json?.universe?.countries}`);
     assert.ok(scan.json?.universe?.coveragePercent >= 99, `Worldwide page coverage below 99%: ${scan.json?.universe?.coveragePercent}`);
     assert.equal(scan.json?.universe?.coverageComplete, true, `Worldwide coverage incomplete: ${JSON.stringify(scan.json?.universe)}`);
-    assert.equal(scan.json?.seriousAlerts?.verification?.coverageComplete, true, `Certified verification incomplete: ${JSON.stringify(scan.json?.seriousAlerts?.verification)}`);
+
+    const verification = scan.json?.seriousAlerts?.verification;
+    assert.equal(verification?.checkedCandidates, verification?.mappedCandidates, `Not all mapped candidates were attempted: ${JSON.stringify(verification)}`);
+    assert.equal(verification?.skippedCandidates, 0, `Candidates were skipped: ${JSON.stringify(verification)}`);
+    assert.equal(verification?.allMappedCandidatesAttempted, true);
+    assert.equal(verification?.unresolvedCandidatesAreBlockedNotPromoted, true);
     assert.ok(scan.json?.seriousAlerts?.certifiedRuleIds?.includes("watch_out_30d_extreme_volatility_after_60pct_drawdown_v2"));
     assert.deepEqual(scan.json?.seriousAlerts?.buy, []);
     assert.deepEqual(scan.json?.seriousAlerts?.sell, []);
+    assert.deepEqual(new Set(scan.json?.seriousAlerts?.certificationScope?.exchanges), certifiedExchanges);
     assert.equal(scan.json?.safety?.publishing, false);
     assert.equal(scan.json?.safety?.notifications, false);
 
     const watchOutAlerts = Array.isArray(scan.json?.seriousAlerts?.watchOut) ? scan.json.seriousAlerts.watchOut : [];
     for (const alert of watchOutAlerts) {
+      assert.equal(certifiedExchanges.has(String(alert.exchange).toUpperCase()), true, `Alert escaped certified listing scope: ${alert.tradingViewSymbol}`);
       assert.equal(alert.seriousSignal, true);
       assert.equal(alert.action, "watch_out");
       assert.equal(alert.subtype, "extreme_volatility_direction_uncertain");
@@ -112,6 +120,9 @@ async function main() {
       assert.equal(alert.notificationEligible, false);
       assert.equal(alert.publicationStatus, "review_only");
     }
+
+    const accountedCandidates = (verification?.checkedCandidates || 0) + (verification?.unsupportedYahooMappings || 0);
+    assert.equal(accountedCandidates, verification?.prefilterCandidates, `Not every prefilter candidate was accounted for: ${JSON.stringify(verification)}`);
 
     const report = {
       ok: true,
@@ -131,8 +142,14 @@ async function main() {
         buy: 0,
         sell: 0,
         watchOut: watchOutAlerts.length,
-        verification: scan.json.seriousAlerts?.verification,
+        certificationScope: scan.json.seriousAlerts?.certificationScope,
+        verification,
         alerts: watchOutAlerts,
+      },
+      blockedRatherThanPromoted: {
+        unsupportedYahooMappings: verification?.unsupportedYahooMappings || 0,
+        failedIndependentHistoryChecks: verification?.failedHistoryChecks || 0,
+        globalCasesOutsideCertifiedListingScope: scan.json.seriousAlerts?.certificationScope?.researchOnlyOutsideCertifiedScope || 0,
       },
       opportunityCoverage: scan.json.opportunityCoverage,
       safety: scan.json.safety,
@@ -147,8 +164,10 @@ async function main() {
       exchanges: report.universe.exchanges,
       countries: report.universe.countries,
       universeCoveragePercent: report.universe.coveragePercent,
-      certifiedVerificationCoveragePercent: report.seriousAlerts.verification.coveragePercent,
-      currentSeriousWatchOutAlerts: report.seriousAlerts.watchOut,
+      independentHistoryVerifiedPercent: verification?.coveragePercent,
+      candidatesAccountedFor: accountedCandidates,
+      currentScopedSeriousWatchOutAlerts: report.seriousAlerts.watchOut,
+      blockedRatherThanPromoted: report.blockedRatherThanPromoted,
       reportPath: outputPath,
     }, null, 2));
   } catch (error) {

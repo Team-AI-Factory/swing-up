@@ -770,26 +770,46 @@ async function executePost(request: NextRequest) {
   const allowOpenAi = r2StateReady(storage) && openAiAttempts < MAX_OPENAI_RUNS_PER_24_HOURS;
   let activeReservationId: string | null = null;
   let historicalLibrary = await loadHistoricalSignalLibrary();
+  type PendingProviderReservation = {
+    request: BranchProviderCallRequest;
+    resolve: (decision: BranchProviderCallDecision) => void;
+    reject: (error: unknown) => void;
+  };
   let providerReservationQueue: Promise<void> = Promise.resolve();
-  const reserveProviderCall = (request: BranchProviderCallRequest): Promise<BranchProviderCallDecision> => {
-    let release!: () => void;
-    const previous = providerReservationQueue;
-    providerReservationQueue = new Promise<void>((resolve) => { release = resolve; });
-    return previous.then(async () => {
-      try {
-        const reservationNow = Date.parse(request.checkedAt);
+  let pendingProviderReservations: PendingProviderReservation[] = [];
+  let providerReservationFlushScheduled = false;
+
+  const flushProviderReservations = () => {
+    providerReservationFlushScheduled = false;
+    const batch = pendingProviderReservations;
+    pendingProviderReservations = [];
+    if (!batch.length) return;
+    providerReservationQueue = providerReservationQueue.then(async () => {
+      const decisions: BranchProviderCallDecision[] = [];
+      let addedReservation = false;
+      for (const item of batch) {
+        const reservationNow = Date.parse(item.request.checkedAt);
         const effectiveNow = Number.isFinite(reservationNow) ? reservationNow : Date.now();
         history.providerCallReservations = history.providerCallReservations.filter((reservation) => effectiveNow - Date.parse(reservation.reservedAt) < 31 * 24 * 60 * 60 * 1000);
-        const decision = providerCallBudgetDecision(history.providerCallReservations, request, effectiveNow);
-        if (!decision.allowed) return decision;
-        history.providerCallReservations.push({ provider: request.provider, quotaKey: request.quotaKey, cadenceKey: request.cadenceKey, reservedAt: new Date(effectiveNow).toISOString(), rollingWindowMs: request.rollingWindowMs, maximumCallsInWindow: request.maximumCallsInWindow, minimumIntervalMs: request.minimumIntervalMs });
-        storage = await saveHistory(history, storage);
-        return { allowed: true, nextRetryAt: null, reason: "reserved" };
-      } finally {
-        release();
+        const decision = providerCallBudgetDecision(history.providerCallReservations, item.request, effectiveNow);
+        decisions.push(decision);
+        if (!decision.allowed) continue;
+        history.providerCallReservations.push({ provider: item.request.provider, quotaKey: item.request.quotaKey, cadenceKey: item.request.cadenceKey, reservedAt: new Date(effectiveNow).toISOString(), rollingWindowMs: item.request.rollingWindowMs, maximumCallsInWindow: item.request.maximumCallsInWindow, minimumIntervalMs: item.request.minimumIntervalMs });
+        addedReservation = true;
       }
+      if (addedReservation) storage = await saveHistory(history, storage);
+      batch.forEach((item, index) => item.resolve(decisions[index]));
+    }).catch((error) => {
+      batch.forEach((item) => item.reject(error));
     });
   };
+
+  const reserveProviderCall = (request: BranchProviderCallRequest): Promise<BranchProviderCallDecision> => new Promise((resolve, reject) => {
+    pendingProviderReservations.push({ request, resolve, reject });
+    if (providerReservationFlushScheduled) return;
+    providerReservationFlushScheduled = true;
+    queueMicrotask(flushProviderReservations);
+  });
   const report = await runBranchSignalLab({
     allowOpenAi,
     outcomeTickers: outcomeTickersDue(history, Date.now()),

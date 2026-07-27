@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { scanAllGlobalStocks } from "@/lib/opportunity-engine/global-market-scanner";
+import { CERTIFIED_EXTREME_VOLATILITY_RULE, opportunityCoverageSummary } from "@/lib/opportunity-engine/serious-alert-registry";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -34,8 +35,11 @@ export async function GET(request: NextRequest) {
     ok: true,
     scanner: "global_two_stage_stock_scanner",
     providerConfigured: Boolean(process.env.FMP_API_KEY?.trim()),
-    method: "Every available active stock is screened with batch quotes; only the highest-priority opportunity and risk candidates enter expensive deep analysis.",
-    seriousSignalsUnlocked: false,
+    method: "Every available active stock is screened with batch quotes. Buy, Sell and Watch Out research queues are separated. Independently certified rules receive fresh adjusted-price verification before seriousSignal can be true.",
+    certifiedRule: CERTIFIED_EXTREME_VOLATILITY_RULE,
+    opportunityCoverage: opportunityCoverageSummary(),
+    publishingEnabled: false,
+    notificationsEnabled: false,
   });
 }
 
@@ -52,13 +56,15 @@ export async function POST(request: NextRequest) {
       deepQueueSize: integer(body.deepQueueSize, 250, 2_000),
       minimumPrice: numeric(body.minimumPrice, 0.25),
       minimumMarketCap: numeric(body.minimumMarketCap, 25_000_000),
+      maximumCertifiedChecks: integer(body.maximumCertifiedChecks, 2_000, 10_000),
+      certifiedCheckConcurrency: integer(body.certifiedCheckConcurrency, 8, 16),
     });
-    return NextResponse.json(result);
+    return NextResponse.json(result, { status: result.ok ? 200 : 206 });
   } catch (error) {
     return NextResponse.json({
       ok: false,
       error: "global_scan_failed",
-      errorMessageSafe: error instanceof Error ? error.message.slice(0, 240) : "unknown_error",
+      errorMessageSafe: error instanceof Error ? error.message.slice(0, 260) : "unknown_error",
       safety: { databaseWrites: false, publishing: false, notifications: false, seriousSignalsUnlocked: false },
     }, { status: 502 });
   }

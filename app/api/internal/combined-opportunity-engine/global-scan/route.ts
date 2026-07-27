@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { scanAllGlobalStocks } from "@/lib/opportunity-engine/global-market-scanner-v2";
+import { scanTradingViewGlobalStocks } from "@/lib/opportunity-engine/global-market-scanner-v3";
 import { CERTIFIED_EXTREME_VOLATILITY_RULE, opportunityCoverageSummary } from "@/lib/opportunity-engine/serious-alert-registry";
 
 export const dynamic = "force-dynamic";
@@ -33,10 +33,11 @@ export async function GET(request: NextRequest) {
   if (expected && suppliedToken(request) !== expected) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   return NextResponse.json({
     ok: true,
-    scanner: "global_two_stage_stock_scanner_v2",
-    providerConfigured: Boolean(process.env.FMP_API_KEY?.trim()),
-    directoryFailover: ["stock-list", "actively-trading-list", "profile-bulk", "financial-statement-symbol-list", "key-metrics-ttm-bulk-symbols"],
-    method: "Every available active stock is screened with current batch quotes. Buy, Sell and Watch Out research queues are separated. Independently certified rules receive fresh adjusted-price verification before seriousSignal can be true.",
+    scanner: "tradingview_entire_world_primary_listing_scanner",
+    universeProvider: "TradingView public stock scanner",
+    historyProvider: "Yahoo Finance public chart API",
+    optionalDeepResearchProviders: ["Financial Modeling Prep", "Alpha Vantage", "Marketaux", "SEC and official filings"],
+    method: "Scan current primary equity listings worldwide, separate Buy, Sell and Watch Out research queues, and verify any certified serious alert against fresh adjusted history from an independent provider.",
     certifiedRule: CERTIFIED_EXTREME_VOLATILITY_RULE,
     opportunityCoverage: opportunityCoverageSummary(),
     publishingEnabled: false,
@@ -48,17 +49,17 @@ export async function POST(request: NextRequest) {
   if (!branchAllowed()) return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
   const expected = process.env.SWING_UP_AUTOMATION_TOKEN?.trim();
   if (expected && suppliedToken(request) !== expected) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
-  if (!process.env.FMP_API_KEY?.trim()) return NextResponse.json({ ok: false, error: "fmp_not_configured" }, { status: 503 });
   const body = await request.json().catch(() => ({})) as Record<string, unknown>;
   try {
-    const result = await scanAllGlobalStocks({
-      maximumStocks: integer(body.maximumStocks, 100_000, 150_000),
-      batchSize: integer(body.batchSize, 250, 500),
-      deepQueueSize: integer(body.deepQueueSize, 250, 2_000),
+    const result = await scanTradingViewGlobalStocks({
+      maximumListings: integer(body.maximumStocks ?? body.maximumListings, 150_000, 200_000),
+      pageSize: integer(body.pageSize ?? body.batchSize, 1_000, 2_000),
+      pageConcurrency: integer(body.pageConcurrency, 8, 16),
+      deepQueueSize: integer(body.deepQueueSize, 300, 2_000),
       minimumPrice: numeric(body.minimumPrice, 0.25),
       minimumMarketCap: numeric(body.minimumMarketCap, 25_000_000),
-      maximumCertifiedChecks: integer(body.maximumCertifiedChecks, 2_000, 10_000),
-      certifiedCheckConcurrency: integer(body.certifiedCheckConcurrency, 8, 16),
+      maximumCertifiedChecks: integer(body.maximumCertifiedChecks, 5_000, 15_000),
+      historyConcurrency: integer(body.certifiedCheckConcurrency ?? body.historyConcurrency, 10, 20),
     });
     return NextResponse.json(result, { status: result.ok ? 200 : 206 });
   } catch (error) {

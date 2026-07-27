@@ -222,7 +222,7 @@ async function fetchTradingViewPage(market: string, start: number, pageSize: num
     symbols: { query: { types: [] }, tickers: [] },
     columns: [...TV_COLUMNS],
     sort: { sortBy: "market_cap_basic", sortOrder: "desc" },
-    range: [start, start + pageSize - 1],
+    range: [start, start + pageSize],
   };
   try {
     const response = await fetch(endpoint, {

@@ -1,0 +1,547 @@
+import {
+  CERTIFIED_EXTREME_VOLATILITY_RULE,
+  opportunityCoverageSummary,
+} from "./serious-alert-registry";
+
+export type TradingViewGlobalStock = {
+  symbol: string;
+  tradingViewSymbol: string;
+  name: string;
+  description: string;
+  exchange: string;
+  country: string | null;
+  currency: string | null;
+  market: string;
+  isPrimary: boolean;
+  type: string;
+  typeSpecs: string[];
+  price: number;
+  changePercent: number | null;
+  volume: number | null;
+  relativeVolume: number | null;
+  averageVolume: number | null;
+  marketCap: number | null;
+  yearHigh: number | null;
+  yearLow: number | null;
+  updateMode: string | null;
+};
+
+export type GlobalResearchCandidate = TradingViewGlobalStock & {
+  liquidityScore: number;
+  momentumScore: number;
+  volatilityScore: number;
+  opportunityPriority: number;
+  riskPriority: number;
+  buyResearchThemes: string[];
+  sellResearchThemes: string[];
+  watchOutResearchThemes: string[];
+  reasons: string[];
+};
+
+export type CertifiedGlobalWatchOut = {
+  ruleId: typeof CERTIFIED_EXTREME_VOLATILITY_RULE.id;
+  action: "watch_out";
+  subtype: "extreme_volatility_direction_uncertain";
+  seriousSignal: true;
+  publicationStatus: "review_only";
+  notificationEligible: false;
+  tradingViewSymbol: string;
+  symbol: string;
+  company: string;
+  exchange: string;
+  country: string | null;
+  currency: string | null;
+  currentPrice: number;
+  tradingViewPrice: number;
+  trailing120SessionHigh: number;
+  trailing120SessionDrawdownPercent: number;
+  independentPriceAgreementPercent: number;
+  observedAt: string;
+  horizonTradingDays: 30;
+  expectedMoveThresholdPercent: 12;
+  message: string;
+  reasons: string[];
+  alertKey: string;
+  evidence: {
+    primaryListing: true;
+    sessionsUsed: 120;
+    latestMarketDate: string;
+    marketDataAgeDays: number;
+    universeAndQuoteSource: "TradingView public stock scanner";
+    adjustedHistorySource: "Yahoo Finance public chart API";
+    tradingViewMarket: string;
+    tradingViewSymbol: string;
+    yahooSymbol: string;
+    historyUrl: string;
+    noSyntheticData: true;
+  };
+  calibration: typeof CERTIFIED_EXTREME_VOLATILITY_RULE.certification;
+};
+
+export type TradingViewGlobalScanResult = {
+  ok: boolean;
+  checkedAt: string;
+  universe: {
+    provider: "TradingView public stock scanner";
+    mode: "entire_world_primary_listings" | "regional_primary_listing_fallback";
+    marketsAttempted: string[];
+    marketsSucceeded: string[];
+    totalProviderRows: number;
+    primaryListingsFetched: number;
+    eligibleListings: number;
+    exchanges: number;
+    countries: number;
+    currencies: number;
+    pageSize: number;
+    pagesRequested: number;
+    pagesFailed: number;
+    coveragePercent: number;
+    coverageComplete: boolean;
+    sourceErrors: string[];
+  };
+  candidates: {
+    opportunity: GlobalResearchCandidate[];
+    buyResearch: GlobalResearchCandidate[];
+    sellResearch: GlobalResearchCandidate[];
+    watchOutResearch: GlobalResearchCandidate[];
+    deepAnalysisQueue: string[];
+  };
+  seriousAlerts: {
+    buy: [];
+    sell: [];
+    watchOut: CertifiedGlobalWatchOut[];
+    certifiedRuleIds: string[];
+    verification: {
+      prefilterCandidates: number;
+      mappedCandidates: number;
+      checkedCandidates: number;
+      qualifyingAlerts: number;
+      unsupportedYahooMappings: number;
+      failedHistoryChecks: number;
+      skippedCandidates: number;
+      coveragePercent: number;
+      coverageComplete: boolean;
+      errors: string[];
+    };
+  };
+  opportunityCoverage: ReturnType<typeof opportunityCoverageSummary>;
+  safety: {
+    databaseWrites: false;
+    publishing: false;
+    notifications: false;
+    seriousSignalsUnlocked: boolean;
+    certifiedRuleEnabled: true;
+  };
+};
+
+type Json = Record<string, unknown>;
+type TradingViewPage = {
+  market: string;
+  totalCount: number;
+  start: number;
+  rows: TradingViewGlobalStock[];
+  error: string | null;
+};
+type PriceHistoryRow = { date: string; close: number; high: number };
+type YahooMapping = { symbol: string; reason: string };
+
+const object = (value: unknown): Json => value && typeof value === "object" && !Array.isArray(value) ? value as Json : {};
+const array = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
+const text = (value: unknown) => typeof value === "string" && value.trim() ? value.trim() : null;
+const finite = (value: unknown): number | null => {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value.replace(/,/g, "")) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : null;
+};
+const boolean = (value: unknown) => value === true || value === 1 || value === "true";
+const clamp = (value: number) => Math.max(0, Math.min(100, Math.round(value)));
+const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const percentChange = (from: number, to: number) => ((to / from) - 1) * 100;
+const safeError = (error: unknown) => error instanceof Error ? error.message.replace(/\s+/g, " ").slice(0, 320) : "unknown_global_scan_error";
+
+const TV_COLUMNS = [
+  "name", "description", "exchange", "country", "currency", "type", "typespecs", "is_primary",
+  "close", "change", "volume", "relative_volume_10d_calc", "market_cap_basic",
+  "price_52_week_high", "price_52_week_low", "update_mode",
+] as const;
+
+const REGIONAL_FALLBACK_MARKETS = [
+  "america", "canada", "mexico", "brazil", "argentina", "chile", "colombia", "peru",
+  "uk", "germany", "france", "italy", "spain", "portugal", "netherlands", "belgium", "switzerland", "austria",
+  "denmark", "sweden", "norway", "finland", "iceland", "poland", "czech", "hungary", "romania", "greece", "turkey", "israel",
+  "japan", "china", "hongkong", "korea", "taiwan", "india", "singapore", "malaysia", "indonesia", "thailand", "vietnam", "philippines", "pakistan", "bangladesh", "srilanka",
+  "australia", "newzealand", "southafrica", "egypt", "nigeria", "saudiarabia", "uae", "qatar", "kuwait", "bahrain", "oman",
+];
+
+function parseTradingViewRow(value: unknown, market: string): TradingViewGlobalStock | null {
+  const row = object(value);
+  const tradingViewSymbol = text(row.s)?.toUpperCase();
+  const data = array(row.d);
+  if (!tradingViewSymbol || data.length < TV_COLUMNS.length) return null;
+  const split = tradingViewSymbol.indexOf(":");
+  const exchangeFromSymbol = split > 0 ? tradingViewSymbol.slice(0, split) : "UNKNOWN";
+  const symbol = split > 0 ? tradingViewSymbol.slice(split + 1) : tradingViewSymbol;
+  const type = text(data[5]) ?? "stock";
+  const specs = array(data[6]).flatMap((item) => text(item) ?? []);
+  const price = finite(data[8]);
+  const isPrimary = boolean(data[7]);
+  if (!price || price <= 0 || type !== "stock" || !isPrimary) return null;
+  const volume = finite(data[10]);
+  const relativeVolume = finite(data[11]);
+  return {
+    symbol,
+    tradingViewSymbol,
+    name: text(data[0]) ?? symbol,
+    description: text(data[1]) ?? text(data[0]) ?? symbol,
+    exchange: text(data[2]) ?? exchangeFromSymbol,
+    country: text(data[3]),
+    currency: text(data[4]),
+    market,
+    isPrimary,
+    type,
+    typeSpecs: specs,
+    price,
+    changePercent: finite(data[9]),
+    volume,
+    relativeVolume,
+    averageVolume: volume !== null && relativeVolume !== null && relativeVolume > 0 ? volume / relativeVolume : null,
+    marketCap: finite(data[12]),
+    yearHigh: finite(data[13]),
+    yearLow: finite(data[14]),
+    updateMode: text(data[15]),
+  };
+}
+
+async function fetchTradingViewPage(market: string, start: number, pageSize: number, primaryOnly = true): Promise<TradingViewPage> {
+  const endpoint = `https://scanner.tradingview.com/${market}/scan`;
+  const filters: Array<{ left: string; operation: string; right: unknown }> = [{ left: "type", operation: "equal", right: "stock" }];
+  if (primaryOnly) filters.push({ left: "is_primary", operation: "equal", right: true });
+  const body = {
+    filter: filters,
+    options: { lang: "en" },
+    markets: market === "global" ? [] : [market],
+    symbols: { query: { types: [] }, tickers: [] },
+    columns: [...TV_COLUMNS],
+    sort: { sortBy: "market_cap_basic", sortOrder: "desc" },
+    range: [start, start + pageSize - 1],
+  };
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      cache: "no-store",
+      headers: { accept: "application/json", "content-type": "application/json", origin: "https://www.tradingview.com", referer: "https://www.tradingview.com/", "user-agent": "Mozilla/5.0 (compatible; SwingUpGlobalScanner/4.0)" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(90_000),
+    });
+    const payload = await response.json().catch(async () => await response.text().catch(() => null));
+    if (!response.ok) throw new Error(`tradingview_http_${response.status}:${JSON.stringify(payload).slice(0, 140)}`);
+    const container = object(payload);
+    const rawRows = array(container.data);
+    return {
+      market,
+      totalCount: Math.max(rawRows.length, Math.floor(finite(container.totalCount) ?? rawRows.length)),
+      start,
+      rows: rawRows.flatMap((row) => parseTradingViewRow(row, market) ?? []),
+      error: null,
+    };
+  } catch (error) {
+    return { market, totalCount: 0, start, rows: [], error: safeError(error) };
+  }
+}
+
+async function mapWithConcurrency<T, R>(items: T[], concurrency: number, worker: (item: T) => Promise<R>): Promise<R[]> {
+  const output = new Array<R>(items.length);
+  let cursor = 0;
+  await Promise.all(Array.from({ length: Math.min(concurrency, Math.max(1, items.length)) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      output[index] = await worker(items[index]);
+    }
+  }));
+  return output;
+}
+
+async function fetchEntireWorld(maximumListings: number, pageSize: number, concurrency: number) {
+  const errors: string[] = [];
+  const first = await fetchTradingViewPage("global", 0, pageSize, true);
+  if (!first.error && first.totalCount >= 1_000 && first.rows.length) {
+    const target = Math.min(maximumListings, first.totalCount);
+    const starts = Array.from({ length: Math.max(0, Math.ceil(target / pageSize) - 1) }, (_, index) => (index + 1) * pageSize);
+    const remaining = await mapWithConcurrency(starts, concurrency, (start) => fetchTradingViewPage("global", start, pageSize, true));
+    const pages = [first, ...remaining];
+    for (const page of pages) if (page.error) errors.push(`global:${page.start}:${page.error}`);
+    return { mode: "entire_world_primary_listings" as const, marketsAttempted: ["global"], marketsSucceeded: pages.some((page) => page.rows.length) ? ["global"] : [], totalCount: first.totalCount, pages, errors };
+  }
+  if (first.error) errors.push(`global:0:${first.error}`);
+  else errors.push(`global:insufficient_rows:${first.rows.length}:total:${first.totalCount}`);
+
+  const firstPages = await mapWithConcurrency(REGIONAL_FALLBACK_MARKETS, Math.min(concurrency, 10), (market) => fetchTradingViewPage(market, 0, pageSize, true));
+  const jobs: Array<{ market: string; start: number }> = [];
+  for (const page of firstPages) {
+    if (page.error) errors.push(`${page.market}:0:${page.error}`);
+    const target = Math.min(maximumListings, page.totalCount);
+    for (let start = pageSize; start < target; start += pageSize) jobs.push({ market: page.market, start });
+  }
+  const remaining = await mapWithConcurrency(jobs, concurrency, (job) => fetchTradingViewPage(job.market, job.start, pageSize, true));
+  const pages = [...firstPages, ...remaining];
+  for (const page of remaining) if (page.error) errors.push(`${page.market}:${page.start}:${page.error}`);
+  return {
+    mode: "regional_primary_listing_fallback" as const,
+    marketsAttempted: [...REGIONAL_FALLBACK_MARKETS],
+    marketsSucceeded: [...new Set(pages.filter((page) => page.rows.length).map((page) => page.market))],
+    totalCount: firstPages.reduce((sum, page) => sum + page.totalCount, 0),
+    pages,
+    errors,
+  };
+}
+
+function scoreCandidate(stock: TradingViewGlobalStock): GlobalResearchCandidate {
+  const volumeRatio = stock.relativeVolume ?? 0;
+  const liquidityScore = clamp(Math.log10(Math.max(1, stock.volume ?? 0)) * 12 + Math.log10(Math.max(1, stock.marketCap ?? 0)) * 3 - 30);
+  const momentumScore = clamp(50 + (stock.changePercent ?? 0) * 5);
+  const rangePosition = stock.yearHigh !== null && stock.yearLow !== null && stock.yearHigh > stock.yearLow ? (stock.price - stock.yearLow) / (stock.yearHigh - stock.yearLow) : 0.5;
+  const volatilityScore = clamp(Math.abs(stock.changePercent ?? 0) * 10 + Math.max(0, volumeRatio - 1) * 15);
+  const marketCapBillions = (stock.marketCap ?? 0) / 1_000_000_000;
+  const opportunityPriority = clamp(liquidityScore * 0.3 + momentumScore * 0.25 + clamp(volumeRatio * 35) * 0.2 + clamp((1 - Math.abs(rangePosition - 0.45)) * 100) * 0.15 + clamp(Math.log10(Math.max(1, marketCapBillions)) * 25) * 0.1);
+  const riskPriority = clamp(volatilityScore * 0.45 + clamp(Math.max(0, -(stock.changePercent ?? 0)) * 10) * 0.3 + clamp(Math.max(0, 0.2 - rangePosition) * 250) * 0.25);
+  const yearDrawdown = stock.yearHigh && stock.yearHigh > 0 ? percentChange(stock.yearHigh, stock.price) : null;
+  const buyResearchThemes = [
+    ...(rangePosition >= 0.9 && (stock.changePercent ?? 0) >= 2 ? ["buy_breakout_momentum"] : []),
+    ...(rangePosition <= 0.2 && (stock.changePercent ?? 0) >= 2 ? ["buy_oversold_recovery"] : []),
+    ...((stock.changePercent ?? 0) >= 4 && volumeRatio >= 1.5 ? ["buy_catalyst_repricing"] : []),
+    ...(liquidityScore >= 80 && momentumScore >= 60 ? ["buy_quality_value_dislocation_research"] : []),
+  ];
+  const sellResearchThemes = [
+    ...(rangePosition <= 0.1 && (stock.changePercent ?? 0) <= -2 ? ["sell_technical_breakdown"] : []),
+    ...((stock.changePercent ?? 0) <= -4 && volumeRatio >= 1.5 ? ["sell_distribution_pressure"] : []),
+    ...(rangePosition <= 0.2 ? ["sell_thesis_break_research"] : []),
+  ];
+  const watchOutResearchThemes = [
+    ...(yearDrawdown !== null && yearDrawdown <= -55 ? ["watch_out_extreme_volatility_candidate"] : []),
+    ...(volatilityScore >= 70 ? ["watch_out_unusual_volatility"] : []),
+    ...(liquidityScore < 30 ? ["watch_out_liquidity_gap"] : []),
+  ];
+  const reasons = [
+    ...(volumeRatio >= 1.5 ? [`Volume is ${volumeRatio.toFixed(1)}x normal`] : []),
+    ...((stock.changePercent ?? 0) >= 4 ? [`Price rose ${stock.changePercent?.toFixed(1)}%`] : []),
+    ...((stock.changePercent ?? 0) <= -4 ? [`Price fell ${stock.changePercent?.toFixed(1)}%`] : []),
+    ...(rangePosition <= 0.15 ? ["Trading near its 52-week low"] : []),
+    ...(rangePosition >= 0.9 ? ["Trading near its 52-week high"] : []),
+    ...(yearDrawdown !== null && yearDrawdown <= -55 ? [`Price is ${Math.abs(yearDrawdown).toFixed(1)}% below its 52-week high`] : []),
+  ];
+  return { ...stock, liquidityScore, momentumScore, volatilityScore, opportunityPriority, riskPriority, buyResearchThemes, sellResearchThemes, watchOutResearchThemes, reasons };
+}
+
+function yahooMapping(stock: TradingViewGlobalStock): YahooMapping | null {
+  const exchange = stock.exchange.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const symbol = stock.symbol.toUpperCase();
+  const direct = () => symbol.replace(/\.([A-Z])$/, "-$1");
+  if (["NASDAQ", "NYSE", "AMEX", "NYSEARCA", "BATS", "CBOE", "OTC", "OTCQX", "OTCQB"].includes(exchange)) return { symbol: direct(), reason: "US primary listing" };
+  if (["LSE", "LSIN"].includes(exchange)) return { symbol: `${symbol}.L`, reason: "London Stock Exchange" };
+  if (["TSE", "JPX"].includes(exchange)) return { symbol: `${symbol}.T`, reason: "Tokyo Stock Exchange" };
+  if (exchange === "HKEX") return { symbol: `${symbol.padStart(4, "0")}.HK`, reason: "Hong Kong Exchange" };
+  if (exchange === "NSE") return { symbol: `${symbol}.NS`, reason: "National Stock Exchange of India" };
+  if (exchange === "BSE") return { symbol: `${symbol}.BO`, reason: "Bombay Stock Exchange" };
+  if (exchange === "ASX") return { symbol: `${symbol}.AX`, reason: "Australian Securities Exchange" };
+  if (exchange === "TSX") return { symbol: `${symbol}.TO`, reason: "Toronto Stock Exchange" };
+  if (["TSXV", "TSXVENTURE"].includes(exchange)) return { symbol: `${symbol}.V`, reason: "TSX Venture" };
+  if (exchange === "NEO") return { symbol: `${symbol}.NE`, reason: "Cboe Canada" };
+  if (["XETR", "TRADEGATE"].includes(exchange)) return { symbol: `${symbol}.DE`, reason: "German electronic primary listing" };
+  if (exchange === "FWB") return { symbol: `${symbol}.F`, reason: "Frankfurt Stock Exchange" };
+  if (exchange === "MIL") return { symbol: `${symbol}.MI`, reason: "Borsa Italiana" };
+  if (["BME", "BMAD"].includes(exchange)) return { symbol: `${symbol}.MC`, reason: "Madrid Stock Exchange" };
+  if (exchange === "SIX") return { symbol: `${symbol}.SW`, reason: "SIX Swiss Exchange" };
+  if (exchange === "VIE") return { symbol: `${symbol}.VI`, reason: "Vienna Stock Exchange" };
+  if (["OMXSTO", "NGM"].includes(exchange)) return { symbol: `${symbol}.ST`, reason: "Sweden" };
+  if (exchange === "OMXCOP") return { symbol: `${symbol}.CO`, reason: "Copenhagen" };
+  if (exchange === "OMXHEL") return { symbol: `${symbol}.HE`, reason: "Helsinki" };
+  if (exchange === "OSL") return { symbol: `${symbol}.OL`, reason: "Oslo" };
+  if (exchange === "WSE") return { symbol: `${symbol}.WA`, reason: "Warsaw" };
+  if (exchange === "PSE") return { symbol: `${symbol}.PR`, reason: "Prague" };
+  if (exchange === "BET") return { symbol: `${symbol}.RO`, reason: "Bucharest" };
+  if (exchange === "ATHEX") return { symbol: `${symbol}.AT`, reason: "Athens" };
+  if (exchange === "BIST") return { symbol: `${symbol}.IS`, reason: "Borsa Istanbul" };
+  if (exchange === "TASE") return { symbol: `${symbol}.TA`, reason: "Tel Aviv" };
+  if (exchange === "KRX") return { symbol: `${symbol.padStart(6, "0")}.KS`, reason: "Korea Exchange" };
+  if (exchange === "KOSDAQ") return { symbol: `${symbol.padStart(6, "0")}.KQ`, reason: "KOSDAQ" };
+  if (exchange === "TWSE") return { symbol: `${symbol}.TW`, reason: "Taiwan Stock Exchange" };
+  if (exchange === "TPEX") return { symbol: `${symbol}.TWO`, reason: "Taipei Exchange" };
+  if (exchange === "SSE") return { symbol: `${symbol}.SS`, reason: "Shanghai Stock Exchange" };
+  if (exchange === "SZSE") return { symbol: `${symbol}.SZ`, reason: "Shenzhen Stock Exchange" };
+  if (exchange === "SGX") return { symbol: `${symbol}.SI`, reason: "Singapore Exchange" };
+  if (["MYX", "BURSA"].includes(exchange)) return { symbol: `${symbol}.KL`, reason: "Bursa Malaysia" };
+  if (exchange === "IDX") return { symbol: `${symbol}.JK`, reason: "Indonesia Stock Exchange" };
+  if (exchange === "SET") return { symbol: `${symbol}.BK`, reason: "Stock Exchange of Thailand" };
+  if (exchange === "PSE") return { symbol: `${symbol}.PS`, reason: "Philippine Stock Exchange" };
+  if (exchange === "NZX") return { symbol: `${symbol}.NZ`, reason: "New Zealand Exchange" };
+  if (exchange === "JSE") return { symbol: `${symbol}.JO`, reason: "Johannesburg Stock Exchange" };
+  if (["BMFBOVESPA", "B3"].includes(exchange)) return { symbol: `${symbol}.SA`, reason: "B3 Brazil" };
+  if (exchange === "BMV") return { symbol: `${symbol}.MX`, reason: "Mexican Stock Exchange" };
+  if (exchange === "BYMA") return { symbol: `${symbol}.BA`, reason: "Buenos Aires" };
+  if (exchange === "BCS") return { symbol: `${symbol}.SN`, reason: "Santiago" };
+  if (exchange === "TADAWUL") return { symbol: `${symbol}.SR`, reason: "Saudi Exchange" };
+  if (exchange === "QSE") return { symbol: `${symbol}.QA`, reason: "Qatar Stock Exchange" };
+  if (exchange === "KSE") return { symbol: `${symbol}.KW`, reason: "Kuwait" };
+  const country = (stock.country ?? "").toLowerCase();
+  if (exchange === "EURONEXT") {
+    if (country.includes("france")) return { symbol: `${symbol}.PA`, reason: "Euronext Paris" };
+    if (country.includes("netherlands")) return { symbol: `${symbol}.AS`, reason: "Euronext Amsterdam" };
+    if (country.includes("belgium")) return { symbol: `${symbol}.BR`, reason: "Euronext Brussels" };
+    if (country.includes("portugal")) return { symbol: `${symbol}.LS`, reason: "Euronext Lisbon" };
+    if (country.includes("ireland")) return { symbol: `${symbol}.IR`, reason: "Euronext Dublin" };
+  }
+  return null;
+}
+
+async function fetchYahooHistory(mapping: YahooMapping, now: Date) {
+  const period1 = Math.floor((now.getTime() - 430 * 86_400_000) / 1000);
+  const period2 = Math.floor((now.getTime() + 2 * 86_400_000) / 1000);
+  const failures: string[] = [];
+  for (const host of ["query1.finance.yahoo.com", "query2.finance.yahoo.com"]) {
+    const url = `https://${host}/v8/finance/chart/${encodeURIComponent(mapping.symbol)}?period1=${period1}&period2=${period2}&interval=1d&events=history&includeAdjustedClose=true`;
+    try {
+      const response = await fetch(url, { cache: "no-store", headers: { accept: "application/json", "user-agent": "Mozilla/5.0 (compatible; SwingUpLiveCertification/2.0)", referer: "https://finance.yahoo.com/" }, signal: AbortSignal.timeout(25_000) });
+      if (!response.ok) throw new Error(`yahoo_http_${response.status}`);
+      const payload = object(await response.json());
+      const chart = object(payload.chart);
+      if (Object.keys(object(chart.error)).length) throw new Error(`yahoo_chart_error:${mapping.symbol}`);
+      const result = object(array(chart.result)[0]);
+      const timestamps = array(result.timestamp);
+      const indicators = object(result.indicators);
+      const quote = object(array(indicators.quote)[0]);
+      const adjusted = object(array(indicators.adjclose)[0]);
+      const closes = array(quote.close);
+      const highs = array(quote.high);
+      const adjustedCloses = array(adjusted.adjclose);
+      const rows = timestamps.flatMap((timestamp, index): PriceHistoryRow[] => {
+        const seconds = finite(timestamp);
+        const rawClose = finite(closes[index]);
+        const adjustedClose = finite(adjustedCloses[index]) ?? rawClose;
+        if (seconds === null || rawClose === null || adjustedClose === null || adjustedClose <= 0) return [];
+        const adjustment = rawClose > 0 ? adjustedClose / rawClose : 1;
+        const rawHigh = finite(highs[index]) ?? rawClose;
+        return [{ date: new Date(seconds * 1000).toISOString().slice(0, 10), close: adjustedClose, high: Math.max(adjustedClose, rawHigh * adjustment) }];
+      }).sort((left, right) => left.date.localeCompare(right.date));
+      if (rows.length < 120) throw new Error(`insufficient_history:${mapping.symbol}:${rows.length}`);
+      return { rows, url };
+    } catch (error) {
+      failures.push(`${host}:${safeError(error)}`);
+    }
+  }
+  throw new Error(`all_yahoo_sources_failed:${mapping.symbol}:${failures.join("|")}`);
+}
+
+function evaluateCertifiedAlert(candidate: GlobalResearchCandidate, mapping: YahooMapping, history: { rows: PriceHistoryRow[]; url: string }, now: Date): CertifiedGlobalWatchOut | null {
+  const rows = history.rows.slice(-120);
+  const latest = rows.at(-1);
+  if (!latest || rows.length < 120) return null;
+  const high = Math.max(...rows.map((row) => row.high));
+  const drawdown = percentChange(high, latest.close);
+  if (drawdown > CERTIFIED_EXTREME_VOLATILITY_RULE.trailing120SessionDrawdownMaximumPercent) return null;
+  const ageDays = Math.max(0, Math.floor((now.getTime() - Date.parse(`${latest.date}T23:59:59Z`)) / 86_400_000));
+  if (ageDays > 7) throw new Error(`stale_history:${mapping.symbol}:${latest.date}`);
+  const midpoint = (candidate.price + latest.close) / 2;
+  const agreement = midpoint > 0 ? (Math.abs(candidate.price - latest.close) / midpoint) * 100 : 100;
+  if (agreement > 5) throw new Error(`price_disagreement:${candidate.tradingViewSymbol}:${mapping.symbol}:${agreement.toFixed(2)}pct`);
+  return {
+    ruleId: CERTIFIED_EXTREME_VOLATILITY_RULE.id,
+    action: "watch_out",
+    subtype: CERTIFIED_EXTREME_VOLATILITY_RULE.subtype,
+    seriousSignal: true,
+    publicationStatus: "review_only",
+    notificationEligible: false,
+    tradingViewSymbol: candidate.tradingViewSymbol,
+    symbol: candidate.symbol,
+    company: candidate.description,
+    exchange: candidate.exchange,
+    country: candidate.country,
+    currency: candidate.currency,
+    currentPrice: latest.close,
+    tradingViewPrice: candidate.price,
+    trailing120SessionHigh: high,
+    trailing120SessionDrawdownPercent: drawdown,
+    independentPriceAgreementPercent: agreement,
+    observedAt: `${latest.date}T23:59:59.000Z`,
+    horizonTradingDays: 30,
+    expectedMoveThresholdPercent: 12,
+    message: `${candidate.tradingViewSymbol} is ${Math.abs(drawdown).toFixed(1)}% below its 120-session high. The certified rule indicates a high likelihood of at least a 12% move in either direction within 30 trading sessions. This is a volatility warning, not a Sell instruction.`,
+    reasons: [`Adjusted price is ${Math.abs(drawdown).toFixed(1)}% below the highest adjusted price in the last 120 sessions.`, `TradingView and Yahoo prices agree within ${agreement.toFixed(2)}%.`, `Independent historical certification produced ${CERTIFIED_EXTREME_VOLATILITY_RULE.certification.wins} wins from ${CERTIFIED_EXTREME_VOLATILITY_RULE.certification.sampleSize} signals.`],
+    alertKey: [CERTIFIED_EXTREME_VOLATILITY_RULE.id, candidate.tradingViewSymbol, latest.date, Math.floor(drawdown / 5) * 5].join(":"),
+    evidence: { primaryListing: true, sessionsUsed: 120, latestMarketDate: latest.date, marketDataAgeDays: ageDays, universeAndQuoteSource: "TradingView public stock scanner", adjustedHistorySource: "Yahoo Finance public chart API", tradingViewMarket: candidate.market, tradingViewSymbol: candidate.tradingViewSymbol, yahooSymbol: mapping.symbol, historyUrl: history.url, noSyntheticData: true },
+    calibration: CERTIFIED_EXTREME_VOLATILITY_RULE.certification,
+  };
+}
+
+export async function scanTradingViewGlobalStocks(options?: {
+  maximumListings?: number;
+  pageSize?: number;
+  pageConcurrency?: number;
+  deepQueueSize?: number;
+  minimumPrice?: number;
+  minimumMarketCap?: number;
+  maximumCertifiedChecks?: number;
+  historyConcurrency?: number;
+  now?: Date;
+}): Promise<TradingViewGlobalScanResult> {
+  const now = options?.now ?? new Date();
+  const maximumListings = Math.max(1_000, Math.min(options?.maximumListings ?? 150_000, 200_000));
+  const pageSize = Math.max(100, Math.min(options?.pageSize ?? 1_000, 2_000));
+  const pageConcurrency = Math.max(1, Math.min(options?.pageConcurrency ?? 8, 16));
+  const deepQueueSize = Math.max(10, Math.min(options?.deepQueueSize ?? 300, 2_000));
+  const minimumPrice = Math.max(0, options?.minimumPrice ?? 0.25);
+  const minimumMarketCap = Math.max(0, options?.minimumMarketCap ?? 25_000_000);
+  const maximumCertifiedChecks = Math.max(10, Math.min(options?.maximumCertifiedChecks ?? 5_000, 15_000));
+  const historyConcurrency = Math.max(1, Math.min(options?.historyConcurrency ?? 10, 20));
+
+  const world = await fetchEntireWorld(maximumListings, pageSize, pageConcurrency);
+  const bySymbol = new Map<string, TradingViewGlobalStock>();
+  for (const page of world.pages) for (const row of page.rows) if (!bySymbol.has(row.tradingViewSymbol)) bySymbol.set(row.tradingViewSymbol, row);
+  const allRows = [...bySymbol.values()].slice(0, maximumListings);
+  const eligible = allRows.filter((row) => row.price >= minimumPrice && row.marketCap !== null && row.marketCap >= minimumMarketCap);
+  const candidates = eligible.map(scoreCandidate);
+  const opportunity = [...candidates].sort((left, right) => right.opportunityPriority - left.opportunityPriority).slice(0, deepQueueSize);
+  const buyResearch = candidates.filter((row) => row.buyResearchThemes.length).sort((left, right) => right.opportunityPriority - left.opportunityPriority).slice(0, deepQueueSize);
+  const sellResearch = candidates.filter((row) => row.sellResearchThemes.length).sort((left, right) => right.riskPriority - left.riskPriority).slice(0, deepQueueSize);
+  const watchOutResearch = candidates.filter((row) => row.watchOutResearchThemes.length).sort((left, right) => right.riskPriority - left.riskPriority).slice(0, deepQueueSize);
+  const deepAnalysisQueue = [...new Set([...buyResearch, ...sellResearch, ...watchOutResearch, ...opportunity].map((row) => row.tradingViewSymbol))].slice(0, deepQueueSize * 3);
+
+  const prefilter = candidates.filter((row) => row.yearHigh !== null && row.yearHigh > 0 && percentChange(row.yearHigh, row.price) <= -55).sort((left, right) => right.riskPriority - left.riskPriority);
+  const mapped = prefilter.flatMap((candidate) => {
+    const mapping = yahooMapping(candidate);
+    return mapping ? [{ candidate, mapping }] : [];
+  });
+  const selected = mapped.slice(0, maximumCertifiedChecks);
+  const historyErrors: string[] = [];
+  const verified = await mapWithConcurrency(selected, historyConcurrency, async ({ candidate, mapping }) => {
+    try {
+      return evaluateCertifiedAlert(candidate, mapping, await fetchYahooHistory(mapping, now), now);
+    } catch (error) {
+      historyErrors.push(`${candidate.tradingViewSymbol}:${safeError(error)}`);
+      return null;
+    }
+  });
+  const alerts = verified.filter((row): row is CertifiedGlobalWatchOut => Boolean(row));
+  const unsupportedYahooMappings = prefilter.length - mapped.length;
+  const skippedCandidates = Math.max(0, mapped.length - selected.length);
+  const failedHistoryChecks = historyErrors.length;
+  const successfullyChecked = Math.max(0, selected.length - failedHistoryChecks);
+  const coveragePercent = prefilter.length ? Number(((successfullyChecked / prefilter.length) * 100).toFixed(2)) : 100;
+  const coverageComplete = skippedCandidates === 0 && coveragePercent >= 99;
+  const providerTarget = Math.min(maximumListings, world.totalCount || maximumListings);
+  const pagesFailed = world.pages.filter((page) => page.error).length;
+  const universeCoverage = providerTarget ? Number(((allRows.length / providerTarget) * 100).toFixed(2)) : 0;
+  const universeCoverageComplete = pagesFailed === 0 && universeCoverage >= 99 && (world.mode === "entire_world_primary_listings" || world.marketsSucceeded.length >= 40);
+  const exchanges = new Set(eligible.map((row) => row.exchange));
+  const countries = new Set(eligible.map((row) => row.country).filter((row): row is string => Boolean(row)));
+  const currencies = new Set(eligible.map((row) => row.currency).filter((row): row is string => Boolean(row)));
+
+  return {
+    ok: universeCoverageComplete && coverageComplete,
+    checkedAt: now.toISOString(),
+    universe: { provider: "TradingView public stock scanner", mode: world.mode, marketsAttempted: world.marketsAttempted, marketsSucceeded: world.marketsSucceeded, totalProviderRows: world.totalCount, primaryListingsFetched: allRows.length, eligibleListings: eligible.length, exchanges: exchanges.size, countries: countries.size, currencies: currencies.size, pageSize, pagesRequested: world.pages.length, pagesFailed, coveragePercent: universeCoverage, coverageComplete: universeCoverageComplete, sourceErrors: [...new Set(world.errors)].slice(0, 100) },
+    candidates: { opportunity, buyResearch, sellResearch, watchOutResearch, deepAnalysisQueue },
+    seriousAlerts: { buy: [], sell: [], watchOut: alerts, certifiedRuleIds: [CERTIFIED_EXTREME_VOLATILITY_RULE.id], verification: { prefilterCandidates: prefilter.length, mappedCandidates: mapped.length, checkedCandidates: selected.length, qualifyingAlerts: alerts.length, unsupportedYahooMappings, failedHistoryChecks, skippedCandidates, coveragePercent, coverageComplete, errors: [...new Set(historyErrors)].slice(0, 150) } },
+    opportunityCoverage: opportunityCoverageSummary(),
+    safety: { databaseWrites: false, publishing: false, notifications: false, seriousSignalsUnlocked: alerts.length > 0, certifiedRuleEnabled: true },
+  };
+}

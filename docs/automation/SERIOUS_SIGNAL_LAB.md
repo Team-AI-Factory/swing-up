@@ -23,29 +23,28 @@ Every provider has a cadence and rolling free-plan budget stored in R2. A provid
 
 Connected is not equivalent to useful evidence. Each report distinguishes live contribution, cached contribution, scheduled/not-due, not configured, not entitled, rate limited, and failed. Unmapped official events and upcoming earnings remain visible as watch items instead of being discarded or forced into a trade.
 
-## Current-evidence serious Buy, Sell, and Watch gate
+## Five-case pilot serious Buy and Sell gate
 
 All 14 committee roles must complete, the Final Judge must be positive at 80 or higher, and the consensus threshold must pass. Paid calls are quota-reserved before execution and require healthy durable state.
 
-A serious Buy, Sell, or Watch may qualify without historical analogues only when:
+A pilot serious Buy or Sell additionally requires:
 
-- the current event is verified and fresh;
-- the issuer match is exact and defensible;
-- materiality and the causal transmission path are strong;
-- evidence is independent enough for the source type;
-- a real live price anchors the finding and later measurement;
-- no severe contradiction remains unresolved;
-- the full committee approval rules pass.
+- at least five independent real historical events from Swing Up tracked outcomes or public historical bootstrap data;
+- no future-data leakage;
+- a usable historical outcome horizon;
+- at least 90% observed directional success across those analogues;
+- a non-negative lower-quartile direction-adjusted result;
+- current event truth, exact issuer mapping, materiality, causal transmission, evidence independence, a live price anchor, and no severe contradiction.
 
-Historical comparison is optional context and must never grant or remove current-evidence permission. When real leakage-safe analogues exist they may refine ranking, scenario ranges, and confidence wording. When they do not exist, the system must omit unsupported numeric forecasts rather than block an otherwise fully verified current signal.
+Five examples are deliberately labelled a pilot threshold. Five successful examples are not statistically equivalent to a 30-plus-sample certificate. The alert must expose this limitation rather than displaying false certainty.
 
-Every unique qualified finding is stored in R2 and measured using real public-equity quotes at 1D, 3D, 7D, 30D, and 90D. Pending findings and completed checkpoint outcomes are counted separately. The actual provider timestamp and source are recorded. Late checkpoints are marked missed. Duplicate stories, future information, mock records, and the current event itself are excluded.
+The public bootstrap uses official issuer announcements and rebuilds stock and SPY outcomes from public adjusted daily history at runtime. It stores no hard-coded return or future outcome. Every new qualified finding is stored in R2 and measured at 1D, 3D, 7D, 30D, and 90D so the evidence set grows over time.
 
 ## Watch Out rules
 
 Watch Out alerts use a separate rule catalog. Only the already certified extreme-volatility rule is active. Every additional Watch Out rule remains disabled until the founder selects it and it receives its own evidence, testing, duplicate-alert, freshness, and contradiction gates. See `config/watch-out-rule-catalog.json`.
 
-CI uses deterministic policy fixtures only to test compilation and safety. It makes no market-performance claim. Live performance is measured only from the guarded Railway preview with real provider responses and all database-write, publishing, and notification flags false.
+CI uses deterministic policy fixtures only to test compilation and safety. It makes no market-performance claim. Live performance is measured only from real provider responses with all database-write, publishing, and notification flags false.
 
 ## Iteration limit
 

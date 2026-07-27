@@ -102,7 +102,7 @@ async function main() {
         assert.ok(item.providersAttempted.includes("TradingView"));
         assert.ok(typeof item.currentPrice === "number" && item.currentPrice > 0);
         assert.equal(item.currentPriceSource, "TradingView public stock scanner");
-        assert.ok(Array.isArray(item.blockedReasons) && item.blockedReasons.some((reason) => /certificate/i.test(reason)));
+        assert.ok(Array.isArray(item.blockedReasons) && item.blockedReasons.some((reason) => /certif/i.test(reason)));
         if (item.secondSourcePrice !== null) {
           assert.ok(item.secondSourcePrice > 0);
           assert.ok(item.priceAgreementPercent === null || item.priceAgreementPercent >= 0);

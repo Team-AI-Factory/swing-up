@@ -80,11 +80,15 @@ assert.match(quotaSource, /quotaKey: "nasdaq_trader_equity_universe"[\s\S]{0,180
 assert.match(quotaSource, /quotaKey: "sec_equity_universe"[\s\S]{0,180}maximumCallsInWindow: 2, minimumIntervalMs: 4\.5 \* minute/);
 assert.match(runnerSource, /const universeResult = await loadEquityUniverse\(fetchImpl, now\);[\s\S]{0,180}const \[eventResult, macroResult, historicalBootstrap\] = await Promise\.all/);
 assert.doesNotMatch(runnerSource, /const \[universeResult,[\s\S]{0,120}Promise\.all/);
+assert.match(source, /cached\.snapshot\.constructionMode === "nasdaq_plus_sec"/);
+assert.match(source, /cached\.snapshot\.entries\.length > entries\.length/);
+assert.match(source, /cache: "cloudflare_r2_larger_fallback"/);
 
 console.log(JSON.stringify({
   ok: true,
   secOfficialFallbackPreventsZeroUniverse: true,
   partialNasdaqDataPreserved: true,
+  partialRefreshCannotReplaceLargerCache: true,
   fundAndPreferredRowsRejected: true,
   malformedSecResponseIsolated: true,
   boundedRetryCanUseRemainingDailyAllowance: true,

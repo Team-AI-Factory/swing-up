@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { mapGlobalListingToYahoo } from "../lib/opportunity-engine/global-listing-identity";
-import { buildOverlappingPageStarts, summarizeGlobalUniverseRows } from "../lib/opportunity-engine/global-market-scanner-v3";
+import { buildOverlappingPageStarts, isEligibleUsCommonStockOrAdr, summarizeGlobalUniverseRows } from "../lib/opportunity-engine/global-market-scanner-v3";
+
+assert.equal(isEligibleUsCommonStockOrAdr({ exchange: "NASDAQ", typeSpecs: ["common"] }), true);
+assert.equal(isEligibleUsCommonStockOrAdr({ exchange: "NYSE", typeSpecs: ["dr"] }), true);
+assert.equal(isEligibleUsCommonStockOrAdr({ exchange: "LSE", typeSpecs: ["common"] }), false);
+assert.equal(isEligibleUsCommonStockOrAdr({ exchange: "NYSE", typeSpecs: ["preferred"] }), false);
 
 assert.deepEqual(
   mapGlobalListingToYahoo({ symbol: "CEZ", exchange: "PSE", country: "Czech Republic" }),
@@ -51,4 +56,6 @@ console.log(JSON.stringify({
   sharedByGlobalScannerAndDeepResearch: true,
   stableOverlappingPagination: true,
   rawRowsSeparatedFromDuplicatesAndUsability: true,
+  usCommonStocksAndAdrsOnly: true,
+  nonUsListingsDisabled: true,
 }, null, 2));

@@ -58,7 +58,7 @@ function safeError(error: unknown) {
 }
 
 async function probeField(field: string) {
-  const response = await fetch("https://scanner.tradingview.com/global/scan", {
+  const response = await fetch("https://scanner.tradingview.com/america/scan", {
     method: "POST",
     cache: "no-store",
     headers: {
@@ -117,6 +117,10 @@ export async function GET(request: NextRequest) {
     ok: true,
     checkedAt: new Date().toISOString(),
     symbol: "NASDAQ:AAPL",
+    marketScope: {
+      active: "US-listed common stocks and ADRs",
+      nonUsScanningEnabled: false,
+    },
     availableFields: results.filter((row) => row.available).map((row) => row.field),
     unavailableFields: results.filter((row) => !row.available).map((row) => row.field),
     results,

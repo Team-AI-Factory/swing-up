@@ -35,14 +35,14 @@ export async function GET(request: NextRequest) {
   if (expected && suppliedToken(request) !== expected) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   return NextResponse.json({
     ok: true,
-    scanner: "tradingview_entire_world_primary_listing_scanner",
+    scanner: "tradingview_us_primary_listing_scanner",
     universeProvider: "TradingView public stock scanner",
     historyProvider: "Yahoo Finance public chart API",
     optionalDeepResearchProviders: ["Financial Modeling Prep", "Alpha Vantage", "Marketaux", "SEC and official filings"],
-    method: "Scan current primary equity listings worldwide, separate Buy, Sell and Watch Out research queues, and verify any certified serious alert against fresh adjusted history from an independent provider.",
+    method: "Scan current NASDAQ, NYSE and AMEX primary common-stock and ADR listings, separate Buy, Sell and Watch Out research queues, and verify certified alerts against fresh adjusted history.",
     certifiedRule: {
       ...CERTIFIED_EXTREME_VOLATILITY_RULE,
-      certifiedListingScope: "Primary listings on NASDAQ, NYSE and AMEX only. Other global listings remain research-only until independent cross-market certification passes.",
+      certifiedListingScope: "Primary listings on NASDAQ, NYSE and AMEX only. Non-U.S. scanning is disabled.",
     },
     opportunityCoverage: opportunityCoverageSummary(),
     publishingEnabled: false,
@@ -66,9 +66,9 @@ export async function POST(request: NextRequest) {
       maximumCertifiedChecks: integer(body.maximumCertifiedChecks, 5_000, 15_000),
       historyConcurrency: integer(body.certifiedCheckConcurrency ?? body.historyConcurrency, 10, 20),
     });
-    const globallyQualified = result.seriousAlerts.watchOut;
-    const certifiedScopeAlerts = globallyQualified.filter((alert) => CERTIFIED_US_LISTING_EXCHANGES.has(alert.exchange.toUpperCase()));
-    const suppressedOutsideCertifiedScope = globallyQualified.length - certifiedScopeAlerts.length;
+    const usQualified = result.seriousAlerts.watchOut;
+    const certifiedScopeAlerts = usQualified.filter((alert) => CERTIFIED_US_LISTING_EXCHANGES.has(alert.exchange.toUpperCase()));
+    const suppressedOutsideCertifiedScope = usQualified.length - certifiedScopeAlerts.length;
     const response = {
       ...result,
       seriousAlerts: {
@@ -76,8 +76,9 @@ export async function POST(request: NextRequest) {
         watchOut: certifiedScopeAlerts,
         certificationScope: {
           exchanges: [...CERTIFIED_US_LISTING_EXCHANGES],
-          evidence: "The independent external certificate used U.S.-listed securities. Cross-market portability has not yet been proven.",
-          globallyQualifiedCases: globallyQualified.length,
+          evidence: "The active pilot and independent certificate are restricted to U.S.-listed securities. Non-U.S. scanning is disabled.",
+          globallyQualifiedCases: 0,
+          usQualifiedCases: usQualified.length,
           seriousAlertsInsideCertifiedScope: certifiedScopeAlerts.length,
           researchOnlyOutsideCertifiedScope: suppressedOutsideCertifiedScope,
         },

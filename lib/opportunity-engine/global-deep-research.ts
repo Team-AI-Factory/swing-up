@@ -259,20 +259,16 @@ function buildCase(action: GlobalResearchAction, candidate: GlobalResearchCandid
   const evidenceScore = scoreEvidence(candidate, fmp, news);
   const contradictions = [
     ...(agreement !== null && agreement > 5 ? [`TradingView and FMP current prices disagree by ${agreement.toFixed(2)}%.`] : []),
-    ...(action === "buy" && targetUpside !== null && targetUpside < 0 ? ["The current analyst target is below the current market price."] : []),
-    ...(action === "sell" && targetUpside !== null && targetUpside > 20 ? ["The current analyst target indicates material upside despite the negative screen."] : []),
   ];
   const supportive = action === "buy"
-    ? (targetUpside ?? -100) >= 20 && (fmp.gradeBalance ?? 0) > 10
+    ? candidate.opportunityPriority >= 70
     : action === "sell"
-      ? (targetUpside ?? 100) <= -15 || (fmp.gradeBalance ?? 0) < -20
+      ? candidate.riskPriority >= 70
       : candidate.riskPriority >= 70 || news.sentiment !== null && news.sentiment < -0.2;
   const blockedReasons = unique([
     "No independently certified Buy/Sell outcome rule exists for this opportunity family.",
     ...(fmp.quote === null ? ["A second current price source was unavailable."] : []),
     ...(agreement !== null && agreement > 5 ? ["Current price sources conflict."] : []),
-    ...(fmp.targetConsensus === null && action !== "watch_out" ? ["A current analyst target was unavailable."] : []),
-    ...((fmp.analystCount ?? 0) < 3 && action !== "watch_out" ? ["Too few verified analysts support the current expectation set."] : []),
     ...contradictions,
   ]);
   const disposition = evidenceScore >= 80 && supportive && contradictions.length === 0

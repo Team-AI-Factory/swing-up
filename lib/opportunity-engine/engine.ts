@@ -132,11 +132,10 @@ export function evaluateFoundation(input: CompanyFoundationInput): FoundationDec
   const evidence = evidenceConfidence(input);
   const riskScore = risk(input);
   const opportunityScore = clamp(
-    businessQuality * 0.22
-    + financialMomentum * 0.25
-    + valuationSupport * 0.2
-    + expectationsGap * 0.18
-    + timingQuality * 0.15
+    businessQuality * 0.27
+    + financialMomentum * 0.3
+    + valuationSupport * 0.23
+    + timingQuality * 0.2
     - riskScore * 0.16
     + 12,
   );
@@ -178,7 +177,6 @@ export function evaluateFoundation(input: CompanyFoundationInput): FoundationDec
     ...(riskScore >= 65 && signalAction === "buy" ? ["risk_too_high_for_buy_signal"] : []),
     ...(opportunityScore < 70 && signalAction === "buy" ? ["opportunity_score_below_buy_threshold"] : []),
     ...(input.market.currentPrice === null ? ["current_price_missing"] : []),
-    ...(expectationsMissing ? ["market_expectations_not_available"] : []),
     ...(priceTarget.sourcePosture === "unavailable" ? ["price_target_scenario_unavailable"] : []),
     ...(!known(priceTarget.rewardRiskRatio) || priceTarget.rewardRiskRatio < 2 ? ["reward_risk_below_two_to_one"] : []),
     ...(!confidence.seriousSignalEligible ? ["calibrated_confidence_below_90"] : []),
@@ -241,8 +239,8 @@ export function evaluateFoundation(input: CompanyFoundationInput): FoundationDec
     firstRejection: seriousSignal
       ? "No immediate rejection; monitor the stated kill criteria and calibration drift."
       : confidence.confidenceCaps[0]
-        ?? (riskScore >= 65 ? "Risk is too high." : evidence < 65 ? "The evidence pack is incomplete." : expectationsMissing ? "Verified market expectations are missing." : valuationSupport < 40 ? "The stock may already price in too much success." : "The opportunity score is not high enough."),
-    whatWouldMakeInvestable: ["Fresh official financial evidence", "Two independent price sources", "Verified consensus and target range", "A source-backed bull/base/bear scenario", "At least 30 comparable real outcomes with a 90% lower confidence bound"],
+        ?? (riskScore >= 65 ? "Risk is too high." : evidence < 65 ? "The evidence pack is incomplete." : valuationSupport < 40 ? "The stock may already price in too much success." : "The opportunity score is not high enough."),
+    whatWouldMakeInvestable: ["Fresh official financial evidence", "Two independent price sources", "A real price anchor", "Five independent leakage-safe same-direction outcomes with at least 90% observed success", "Full committee approval"],
     killCriteria: ["Two consecutive periods of worsening growth", "Material margin or cash-flow deterioration", "Balance-sheet stress or heavy dilution", "Valuation removes the reward-to-risk advantage", "Observed signal precision falls below its published calibration band"],
     blockedReasons: [...new Set(blockedReasons)],
     pillars,

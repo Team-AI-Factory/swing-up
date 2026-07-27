@@ -100,7 +100,7 @@ jobs:
       - name: Test controlled foundation and event paths
         run: npm run smoke:combined-opportunity-engine
 
-      - name: Test global stock universe normalization and filtering
+      - name: Test US stock universe normalization and filtering
         run: npm run smoke:global-market-scanner
 
       - name: Test repeated workflow with real SEC and market data

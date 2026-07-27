@@ -84,7 +84,7 @@ export type TradingViewGlobalScanResult = {
   checkedAt: string;
   universe: {
     provider: "TradingView public stock scanner";
-    mode: "entire_world_primary_listings" | "regional_primary_listing_fallback";
+    mode: "us_primary_listings";
     marketsAttempted: string[];
     marketsSucceeded: string[];
     totalProviderRows: number;
@@ -187,13 +187,13 @@ const TV_COLUMNS = [
   "price_52_week_high", "price_52_week_low", "update_mode",
 ] as const;
 
-const REGIONAL_FALLBACK_MARKETS = [
-  "america", "canada", "mexico", "brazil", "argentina", "chile", "colombia", "peru",
-  "uk", "germany", "france", "italy", "spain", "portugal", "netherlands", "belgium", "switzerland", "austria",
-  "denmark", "sweden", "norway", "finland", "iceland", "poland", "czech", "hungary", "romania", "greece", "turkey", "israel",
-  "japan", "china", "hongkong", "korea", "taiwan", "india", "singapore", "malaysia", "indonesia", "thailand", "vietnam", "philippines", "pakistan", "bangladesh", "srilanka",
-  "australia", "newzealand", "southafrica", "egypt", "nigeria", "saudiarabia", "uae", "qatar", "kuwait", "bahrain", "oman",
-];
+const US_PRIMARY_EXCHANGES = new Set(["NASDAQ", "NYSE", "AMEX"]);
+
+export function isEligibleUsCommonStockOrAdr(row: Pick<TradingViewGlobalStock, "exchange" | "typeSpecs">) {
+  if (!US_PRIMARY_EXCHANGES.has(row.exchange.toUpperCase())) return false;
+  const disallowed = row.typeSpecs.some((value) => /preferred|preference|warrant|right|unit|fund|etf|closed.?end/i.test(value));
+  return !disallowed;
+}
 
 function parseTradingViewRow(value: unknown, market: string): TradingViewGlobalStock | null {
   const row = object(value);
@@ -245,7 +245,7 @@ async function fetchTradingViewPage(market: string, start: number, pageSize: num
     symbols: { query: { types: [] }, tickers: [] },
     columns: [...TV_COLUMNS],
     // A stable symbol sort plus overlapping page windows reduces omissions when
-    // live market-cap values change while the worldwide scan is paginating.
+    // live market-cap values change while the U.S. scan is paginating.
     sort: { sortBy: "name", sortOrder: "asc" },
     range: [start, start + pageSize],
   };
@@ -337,37 +337,34 @@ export function summarizeGlobalUniverseRows(
   };
 }
 
-async function fetchEntireWorld(maximumListings: number, pageSize: number, concurrency: number) {
+async function fetchUsPrimaryListings(maximumListings: number, pageSize: number, concurrency: number) {
   const errors: string[] = [];
-  const { pageOverlapRows, pageStep } = buildOverlappingPageStarts(maximumListings, pageSize);
-  const first = await fetchTradingViewPage("global", 0, pageSize, true);
+  const { pageOverlapRows } = buildOverlappingPageStarts(maximumListings, pageSize);
+  const first = await fetchTradingViewPage("america", 0, pageSize, true);
   if (!first.error && first.totalCount >= 1_000 && first.rows.length) {
     const target = Math.min(maximumListings, first.totalCount);
     const { starts } = buildOverlappingPageStarts(target, pageSize);
-    const remaining = await mapWithConcurrency(starts, concurrency, (start) => fetchTradingViewPage("global", start, pageSize, true));
+    const remaining = await mapWithConcurrency(starts, concurrency, (start) => fetchTradingViewPage("america", start, pageSize, true));
     const pages = [first, ...remaining];
-    for (const page of pages) if (page.error) errors.push(`global:${page.start}:${page.error}`);
-    return { mode: "entire_world_primary_listings" as const, marketsAttempted: ["global"], marketsSucceeded: pages.some((page) => page.rawRowCount > 0) ? ["global"] : [], totalCount: first.totalCount, pages, errors, pageOverlapRows };
+    for (const page of pages) if (page.error) errors.push(`america:${page.start}:${page.error}`);
+    return {
+      mode: "us_primary_listings" as const,
+      marketsAttempted: ["america"],
+      marketsSucceeded: pages.some((page) => page.rawRowCount > 0) ? ["america"] : [],
+      totalCount: first.totalCount,
+      pages,
+      errors,
+      pageOverlapRows,
+    };
   }
-  if (first.error) errors.push(`global:0:${first.error}`);
-  else errors.push(`global:insufficient_rows:${first.rows.length}:total:${first.totalCount}`);
-
-  const firstPages = await mapWithConcurrency(REGIONAL_FALLBACK_MARKETS, Math.min(concurrency, 10), (market) => fetchTradingViewPage(market, 0, pageSize, true));
-  const jobs: Array<{ market: string; start: number }> = [];
-  for (const page of firstPages) {
-    if (page.error) errors.push(`${page.market}:0:${page.error}`);
-    const target = Math.min(maximumListings, page.totalCount);
-    for (let start = pageStep; start < target; start += pageStep) jobs.push({ market: page.market, start });
-  }
-  const remaining = await mapWithConcurrency(jobs, concurrency, (job) => fetchTradingViewPage(job.market, job.start, pageSize, true));
-  const pages = [...firstPages, ...remaining];
-  for (const page of remaining) if (page.error) errors.push(`${page.market}:${page.start}:${page.error}`);
+  if (first.error) errors.push(`america:0:${first.error}`);
+  else errors.push(`america:insufficient_rows:${first.rows.length}:total:${first.totalCount}`);
   return {
-    mode: "regional_primary_listing_fallback" as const,
-    marketsAttempted: [...REGIONAL_FALLBACK_MARKETS],
-    marketsSucceeded: [...new Set(pages.filter((page) => page.rawRowCount > 0).map((page) => page.market))],
-    totalCount: firstPages.reduce((sum, page) => sum + page.totalCount, 0),
-    pages,
+    mode: "us_primary_listings" as const,
+    marketsAttempted: ["america"],
+    marketsSucceeded: [],
+    totalCount: first.totalCount,
+    pages: [first],
     errors,
     pageOverlapRows,
   };
@@ -510,12 +507,17 @@ export async function scanTradingViewGlobalStocks(options?: {
   const maximumCertifiedChecks = Math.max(10, Math.min(options?.maximumCertifiedChecks ?? 5_000, 15_000));
   const historyConcurrency = Math.max(1, Math.min(options?.historyConcurrency ?? 10, 20));
 
-  const world = await fetchEntireWorld(maximumListings, pageSize, pageConcurrency);
+  const world = await fetchUsPrimaryListings(maximumListings, pageSize, pageConcurrency);
   const bySymbol = new Map<string, TradingViewGlobalStock>();
   for (const page of world.pages) for (const row of page.rows) if (!bySymbol.has(row.tradingViewSymbol)) bySymbol.set(row.tradingViewSymbol, row);
   const usablePrimaryListingsBeforeLimit = bySymbol.size;
   const allRows = [...bySymbol.values()].slice(0, maximumListings);
-  const eligible = allRows.filter((row) => row.price >= minimumPrice && row.marketCap !== null && row.marketCap >= minimumMarketCap);
+  const eligible = allRows.filter((row) => (
+    isEligibleUsCommonStockOrAdr(row)
+    && row.price >= minimumPrice
+    && row.marketCap !== null
+    && row.marketCap >= minimumMarketCap
+  ));
   const candidates = eligible.map(scoreCandidate);
   const opportunity = [...candidates].sort((left, right) => right.opportunityPriority - left.opportunityPriority).slice(0, deepQueueSize);
   const buyResearch = candidates.filter((row) => row.buyResearchThemes.length).sort((left, right) => right.opportunityPriority - left.opportunityPriority).slice(0, deepQueueSize);
@@ -596,7 +598,8 @@ export async function scanTradingViewGlobalStocks(options?: {
     && universeCoverage >= 99
     && universeRows.identifiedProviderRowPercent >= 99
     && universeRows.usableListingPercent >= 95
-    && (world.mode === "entire_world_primary_listings" || world.marketsSucceeded.length >= 40);
+    && world.mode === "us_primary_listings"
+    && world.marketsSucceeded.includes("america");
   const exchanges = new Set(eligible.map((row) => row.exchange));
   const countries = new Set(eligible.map((row) => row.country).filter((row): row is string => Boolean(row)));
   const currencies = new Set(eligible.map((row) => row.currency).filter((row): row is string => Boolean(row)));

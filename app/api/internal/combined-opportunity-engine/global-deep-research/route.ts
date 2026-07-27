@@ -33,10 +33,10 @@ export async function GET(request: NextRequest) {
   if (expected && suppliedToken(request) !== expected) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   return NextResponse.json({
     ok: true,
-    workflow: "global_live_deep_research",
+    workflow: "us_live_deep_research",
     currentProviders: {
-      worldwideUniverseAndScreening: "TradingView public stock scanner",
-      worldwideValuationGrowthMarginsAndAnalystFields: "TradingView current global fundamentals",
+      usUniverseAndScreening: "TradingView U.S. primary-listing stock scanner",
+      usValuationGrowthMarginsAndAnalystFields: "TradingView current U.S. fundamentals",
       independentAdjustedPriceFallback: "Yahoo Finance public chart API",
       secondPriceAndExpectations: "Financial Modeling Prep when available",
       currentCompanyNews: "Marketaux when available",
@@ -45,7 +45,7 @@ export async function GET(request: NextRequest) {
     actionsCovered: ["buy", "sell", "watch_out"],
     opportunityCoverage: opportunityCoverageSummary(),
     seriousDirectionalAlertsEnabled: false,
-    reason: "No independent Buy or Sell certificate has passed. Current worldwide fundamentals improve prioritization but cannot turn research into a serious directional alert.",
+    reason: "The active pilot is U.S.-only. Buy and Sell require the five-case historical gate plus current evidence and committee approval.",
     safety: { databaseWrites: false, publishing: false, notifications: false },
   });
 }

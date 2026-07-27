@@ -111,7 +111,7 @@ function enrichCase(item: GlobalDeepResearchCase, snapshot: TradingViewFundament
       fundamentalWarningCount: 0,
       fundamentalReasons: [],
       providerErrors: unique([...item.providerErrors, "TradingView fundamental snapshot was unavailable."]),
-      blockedReasons: unique([...item.blockedReasons, "Current worldwide fundamental data was unavailable for this listing."]),
+      blockedReasons: unique([...item.blockedReasons, "Current U.S. fundamental data was unavailable for this listing."]),
     };
   }
   const result = assessment(item.action, snapshot, item.currentPrice);

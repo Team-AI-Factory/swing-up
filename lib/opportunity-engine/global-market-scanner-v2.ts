@@ -175,6 +175,7 @@ const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(reso
 const exchangeKey = (value: string | null | undefined) => (value ?? "UNKNOWN").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
 const listingKey = (stock: Pick<GlobalStock, "exchangeShortName" | "symbol">) => `${exchangeKey(stock.exchangeShortName)}:${stock.symbol}`;
 const percentChange = (from: number, to: number) => ((to / from) - 1) * 100;
+const US_PRIMARY_EXCHANGES = new Set(["NASDAQ", "NYSE", "AMEX", "NYSEAMERICAN"]);
 
 function safeError(error: unknown) {
   return error instanceof Error
@@ -240,6 +241,7 @@ export function normalizeGlobalStockUniverse(payload: unknown, exchangeCountry =
   return array(payload).flatMap((value): GlobalStock[] => {
     const stock = stockFromRow(value, exchangeCountry);
     if (!stock) return [];
+    if (!US_PRIMARY_EXCHANGES.has(exchangeKey(stock.exchangeShortName))) return [];
     const key = listingKey(stock);
     if (seen.has(key)) return [];
     seen.add(key);

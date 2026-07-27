@@ -15,10 +15,10 @@ const universe = normalizeGlobalStockUniverse([
   { symbol: "OLD", name: "Old Company", exchange: "NYSE", exchangeShortName: "NYSE", country: "US", currency: "USD", type: "stock", isActivelyTrading: false },
 ]);
 
-assert.equal(universe.length, 3);
-assert.deepEqual(universe.map((row) => row.symbol), ["AAPL", "7203.T", "VOD.L"]);
-assert.equal(new Set(universe.map((row) => row.exchangeShortName)).size, 3);
-assert.equal(new Set(universe.map((row) => row.country)).size, 3);
+assert.equal(universe.length, 1);
+assert.deepEqual(universe.map((row) => row.symbol), ["AAPL"]);
+assert.equal(new Set(universe.map((row) => row.exchangeShortName)).size, 1);
+assert.equal(new Set(universe.map((row) => row.country)).size, 1);
 
 const quotes = normalizeGlobalQuotes([
   { symbol: "AAPL", name: "Apple Inc.", price: 210.5, changePercentage: 2.1, volume: 1000000, avgVolume: 800000, marketCap: 3200000000000, yearHigh: 220, yearLow: 150, exchange: "NASDAQ", country: "US", currency: "USD", timestamp: 1 },
@@ -88,8 +88,9 @@ assert.deepEqual(coverage.certifiedRuleIds, [CERTIFIED_EXTREME_VOLATILITY_RULE.i
 console.log(JSON.stringify({
   ok: true,
   stocks: universe.length,
-  countries: 3,
-  exchanges: 3,
+  countries: 1,
+  exchanges: 1,
+  nonUsListingsDisabled: true,
   quotes: quotes.length,
   noEtfs: true,
   noInactiveStocks: true,

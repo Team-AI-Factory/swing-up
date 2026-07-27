@@ -4,32 +4,45 @@ This lab keeps every stock-intelligence change off `main` until the founder appr
 
 ## Branch boundary
 
-- Work stays on `agent/live-signal-evaluation-automation` or another `agent/**` branch.
+- Work stays on `agent/combined-opportunity-engine` or another isolated `agent/**` branch.
 - CI refuses to run the lab as a `main`-branch job and has read-only repository permissions.
 - The preview cannot merge, trade, publish alerts, send notifications, write PostgreSQL, or alter Railway production.
 - Cloudflare R2 is the only durable branch-state store.
 
-## Event-first public-equity policy
+## US-only public-equity policy
 
-The scanner covers the active US-listed common-stock and ADR universe. Crypto is disabled. It starts from official filings, government and regulator releases, macro and geopolitical developments, scheduled earnings, company/product/technology news, and broad news discovery. It then maps direct issuers and defensible knock-on effects before fetching a short-list quote.
+The active scanner covers US-listed common stocks and ADRs only. Non-US equity scanning is paused. Crypto is disabled. The scanner starts from official filings, government and regulator releases, macro and geopolitical developments, scheduled earnings, company/product/technology news, and broad news discovery. It then maps direct issuers and defensible knock-on effects before fetching a short-list quote.
 
-A candidate does not need a prior 2% daily move or a 1% post-event move. Price is used to establish an executable reference and measure later outcomes, not to decide whether the system is allowed to predict. Primary sources may establish an event directly; unofficial claims require independent origin publishers. Rumors, weak issuer matches, unclear transmission paths, stale events, and severe contrary evidence force `No Action`.
+A candidate does not need a prior 2% daily move or a 1% post-event move. Price is used to establish an executable reference and measure later outcomes, not to decide whether the system is allowed to discover an event. Primary sources may establish an event directly; unofficial claims require independent origin publishers. Rumours, weak issuer matches, unclear transmission paths, stale events, and severe contrary evidence force `No Action`.
 
-The system discovers every stock through a daily exchange/SEC universe refresh, but it does not call a free quote or news API once per stock every five minutes. Broad feeds narrow the affected companies first, preserving free quotas for evidence and execution checks that can change a decision.
+Analyst expectations are optional context. An analyst already expecting improvement does not veto a Buy opportunity, and missing analyst coverage does not by itself block an event-first Buy candidate.
 
-## Source behavior
+## Source behaviour
 
 Every provider has a cadence and rolling free-plan budget stored in R2. A provider outage is isolated and cannot crash the whole scan. Fresh, previously successful real responses may be carried forward for discovery when explicitly marked cached; mock, neutral, or invented values are forbidden. The lab does not retry endpoints that the configured free package is not entitled to use.
 
 Connected is not equivalent to useful evidence. Each report distinguishes live contribution, cached contribution, scheduled/not-due, not configured, not entitled, rate limited, and failed. Unmapped official events and upcoming earnings remain visible as watch items instead of being discarded or forced into a trade.
 
-## Quality and outcome gates
+## Five-case pilot serious Buy and Sell gate
 
 All 14 committee roles must complete, the Final Judge must be positive at 80 or higher, and the consensus threshold must pass. Paid calls are quota-reserved before execution and require healthy durable state.
 
-Approved candidates are measured using real public-equity quotes at 1D, 3D, 7D, 30D, and 90D. The actual provider timestamp and source are recorded. Late checkpoints are marked missed. Legacy crypto outcomes cannot count toward equity consistency.
+A pilot serious Buy or Sell additionally requires:
 
-Historical learning has its own durable R2 library. It starts with a small set of curated official events already documented in Swing Up, but fetches the stock and SPY prices from public history at runtime instead of hard-coding returns. New qualified events enter the learning queue immediately; the first valid 1D result can teach the model, while 3D/7D/30D/90D results refine it later. Duplicate stories, future information, mock records, and the current event itself are excluded. A numeric price range needs at least three independent real analogues. Historical comparison is optional supporting context and is not required for a serious Buy, Sell, or Watch decision. A serious action can qualify from current verified evidence, a strong causal path, a usable price anchor, and full committee approval. Every qualified finding is still stored in R2, and its 1D/3D/7D/30D/90D outcomes gradually improve later calibration.
+- at least five independent real historical events from Swing Up tracked outcomes or public historical bootstrap data;
+- no future-data leakage;
+- a usable historical horizon;
+- at least 90% observed directional success across those analogues;
+- a non-negative lower-quartile direction-adjusted result;
+- current event truth, exact issuer mapping, materiality, causal transmission, evidence independence, a live price anchor, and no severe contradiction.
+
+Five examples are deliberately labelled a pilot threshold. Five successful examples are not statistically equivalent to a 30-plus-sample certificate. The alert must expose this limitation rather than displaying false certainty.
+
+Approved candidates are measured using real public-equity quotes at 1D, 3D, 7D, 30D, and 90D. The actual provider timestamp and source are recorded. Late checkpoints are marked missed. Duplicate stories, future information, mock records, and the current event itself are excluded.
+
+## Watch Out rules
+
+Watch Out alerts use a separate rule catalog. Only the already certified extreme-volatility rule is active. Every additional Watch Out rule remains disabled until the founder selects it and it receives its own evidence, testing, duplicate-alert, freshness, and contradiction gates. See `config/watch-out-rule-catalog.json`.
 
 CI uses deterministic policy fixtures only to test compilation and safety. It makes no market-performance claim. Live performance is measured only from the guarded Railway preview with real provider responses and all database-write, publishing, and notification flags false.
 

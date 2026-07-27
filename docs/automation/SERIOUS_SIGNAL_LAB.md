@@ -23,22 +23,23 @@ Every provider has a cadence and rolling free-plan budget stored in R2. A provid
 
 Connected is not equivalent to useful evidence. Each report distinguishes live contribution, cached contribution, scheduled/not-due, not configured, not entitled, rate limited, and failed. Unmapped official events and upcoming earnings remain visible as watch items instead of being discarded or forced into a trade.
 
-## Five-case pilot serious Buy and Sell gate
+## Current-evidence serious Buy, Sell, and Watch gate
 
 All 14 committee roles must complete, the Final Judge must be positive at 80 or higher, and the consensus threshold must pass. Paid calls are quota-reserved before execution and require healthy durable state.
 
-A pilot serious Buy or Sell additionally requires:
+A serious Buy, Sell, or Watch may qualify without historical analogues only when:
 
-- at least five independent real historical events from Swing Up tracked outcomes or public historical bootstrap data;
-- no future-data leakage;
-- a usable historical horizon;
-- at least 90% observed directional success across those analogues;
-- a non-negative lower-quartile direction-adjusted result;
-- current event truth, exact issuer mapping, materiality, causal transmission, evidence independence, a live price anchor, and no severe contradiction.
+- the current event is verified and fresh;
+- the issuer match is exact and defensible;
+- materiality and the causal transmission path are strong;
+- evidence is independent enough for the source type;
+- a real live price anchors the finding and later measurement;
+- no severe contradiction remains unresolved;
+- the full committee approval rules pass.
 
-Five examples are deliberately labelled a pilot threshold. Five successful examples are not statistically equivalent to a 30-plus-sample certificate. The alert must expose this limitation rather than displaying false certainty.
+Historical comparison is optional context and must never grant or remove current-evidence permission. When real leakage-safe analogues exist they may refine ranking, scenario ranges, and confidence wording. When they do not exist, the system must omit unsupported numeric forecasts rather than block an otherwise fully verified current signal.
 
-Approved candidates are measured using real public-equity quotes at 1D, 3D, 7D, 30D, and 90D. The actual provider timestamp and source are recorded. Late checkpoints are marked missed. Duplicate stories, future information, mock records, and the current event itself are excluded.
+Every unique qualified finding is stored in R2 and measured using real public-equity quotes at 1D, 3D, 7D, 30D, and 90D. Pending findings and completed checkpoint outcomes are counted separately. The actual provider timestamp and source are recorded. Late checkpoints are marked missed. Duplicate stories, future information, mock records, and the current event itself are excluded.
 
 ## Watch Out rules
 

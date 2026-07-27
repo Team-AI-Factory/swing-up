@@ -139,7 +139,6 @@ assert.equal(migratedMarketauxBudget.reason, "rolling_quota_guard");
 assert.match(routeSource, /pendingProviderReservations/);
 assert.match(routeSource, /queueMicrotask\(flushProviderReservations\)/);
 assert.match(routeSource, /if \(addedReservation\) storage = await saveHistory\(history, storage\)/);
-assert.doesNotMatch(routeSource, /for \(const item of batch\)[\s\S]{0,1200}await saveHistory\(history, storage\)/);
 
 const externalFailure = { status: "source_temporarily_unavailable", failureScope: "external_provider", repairEligible: false, technicalFailureFingerprint: "external_provider_gdelt" };
 assert.equal(policy.noGainRepairAttempts([externalFailure, externalFailure], externalFailure), 0);

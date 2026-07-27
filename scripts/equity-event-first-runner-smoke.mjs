@@ -99,8 +99,11 @@ assert.equal(held.status, "qualified_signal_openai_not_requested");
 
 const approved = await runEquitySignalLab({ now: new Date("2026-07-22T10:00:00.000Z"), allowOpenAi: true, beforeOpenAiCall: async () => true });
 assert.equal(approved.seriousSignalFound, true);
-assert.equal(approved.alertType, "watch");
-assert.equal(approved.actionableSignalFound, false);
+assert.equal(approved.alertType, "buy");
+assert.equal(approved.actionableSignalFound, true);
+assert.equal(approved.selectedCandidate.priceForecast.status, "insufficient_history");
+assert.equal(approved.historicalLearning.historicalComparisonRequiredForSeriousSignal, false);
+assert.equal(approved.historicalLearning.findingsAndLaterOutcomesStoredInR2, true);
 assert.equal(approved.openAiCalled, true);
 assert.equal(approved.committee.finalJudge.confidence, 85);
 assert.equal(approved.databaseWrites, false);
@@ -122,4 +125,4 @@ assert.equal(calibrated.historicalLearning.realPointInTimeSignalsAvailable, 20);
 assert.equal(calibrated.historicalLearning.swingUpForwardSignalsAvailable, 15);
 assert.equal(calibrated.historicalLearning.publicBootstrapSignalsAvailable, 5);
 
-console.log(JSON.stringify({ ok: true, eventQualifiedAtZeroPercentMove: true, cryptoDisabled: true, priorMoveNotRequired: true, strictCommitteeStillRequired: true, watchBeforeCalibration: true, buyAfterCalibration: true, noWritesOrPublishing: true }, null, 2));
+console.log(JSON.stringify({ ok: true, eventQualifiedAtZeroPercentMove: true, cryptoDisabled: true, priorMoveNotRequired: true, strictCommitteeStillRequired: true, buyWithoutHistoricalComparison: true, historyStillStoredAndRefined: true, buyAfterCalibration: true, noWritesOrPublishing: true }, null, 2));

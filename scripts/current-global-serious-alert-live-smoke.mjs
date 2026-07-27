@@ -93,6 +93,9 @@ async function main() {
     assert.equal(scan.json?.universe?.coverageComplete, true, `Worldwide coverage incomplete: ${JSON.stringify(scan.json?.universe)}`);
 
     const verification = scan.json?.seriousAlerts?.verification;
+    assert.equal(scan.json?.ok, true, `Global scan reported incomplete verification: ${JSON.stringify(verification)}`);
+    assert.equal(scan.status, 200, `A complete global scan must return HTTP 200, received ${scan.status}.`);
+    assert.equal(verification?.coverageComplete, true, `Independent verification coverage incomplete: ${JSON.stringify(verification)}`);
     assert.equal(verification?.checkedCandidates, verification?.mappedCandidates, `Not all mapped candidates were attempted: ${JSON.stringify(verification)}`);
     assert.equal(verification?.skippedCandidates, 0, `Candidates were skipped: ${JSON.stringify(verification)}`);
     assert.equal(verification?.allMappedCandidatesAttempted, true);
@@ -125,7 +128,7 @@ async function main() {
     assert.equal(accountedCandidates, verification?.prefilterCandidates, `Not every prefilter candidate was accounted for: ${JSON.stringify(verification)}`);
 
     const report = {
-      ok: true,
+      ok: scan.json.ok === true,
       checkedAt: new Date().toISOString(),
       expectedCommit: expectedCommit || null,
       runtimeCommit: health.runtime?.commitSha || null,

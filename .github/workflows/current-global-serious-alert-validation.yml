@@ -5,7 +5,8 @@ on:
     branches:
       - "agent/combined-opportunity-engine"
     paths:
-      - "lib/opportunity-engine/global-market-scanner.ts"
+      - "lib/opportunity-engine/global-market-scanner-v3.ts"
+      - "lib/opportunity-engine/global-listing-identity.ts"
       - "lib/opportunity-engine/serious-alert-registry.ts"
       - "app/api/internal/combined-opportunity-engine/global-scan/route.ts"
       - "scripts/current-global-serious-alert-live-smoke.mjs"
@@ -14,7 +15,8 @@ on:
     branches:
       - main
     paths:
-      - "lib/opportunity-engine/global-market-scanner.ts"
+      - "lib/opportunity-engine/global-market-scanner-v3.ts"
+      - "lib/opportunity-engine/global-listing-identity.ts"
       - "lib/opportunity-engine/serious-alert-registry.ts"
       - "app/api/internal/combined-opportunity-engine/global-scan/route.ts"
       - "scripts/current-global-serious-alert-live-smoke.mjs"
@@ -33,7 +35,7 @@ jobs:
     name: Scan current global market and validate certified alerts
     if: github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - name: Check out isolated branch
         uses: actions/checkout@v4

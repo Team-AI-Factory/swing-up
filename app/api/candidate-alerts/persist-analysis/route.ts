@@ -142,13 +142,37 @@ export async function POST(request: NextRequest) {
 
     const historicalPatternMatch = selectedPattern ? patternLabel(selectedPattern.score) : "no_clear_match";
     const sentiment = buildMarketSentimentImpact(await loadLatestMarketSentimentSnapshot());
-    if (sentiment.sentimentDataStatus === "missing") warnings.push("Market sentiment snapshot is missing; neutral sentiment assumptions were used and no sentiment source row was attached.");
+    if (sentiment.sentimentDataStatus !== "available") warnings.push(`Market sentiment is ${sentiment.sentimentDataStatus}; conservative penalties were used and live publication readiness is blocked.`);
 
     const score = scoreSwingUpAlert(scoreInputFromAlert(alert, historicalPatternMatch, sentiment.macroSupportScore), sentiment);
 
     const savedScore = alert.scores[0]
-      ? await prisma.alertScore.update({ where: { id: alert.scores[0].id }, data: { profitPotential: score.profitPotentialScore, evidenceConfidence: score.evidenceConfidenceScore, riskLevel: score.riskLevel, pricedInCheck: score.pricedInCheck } })
-      : await prisma.alertScore.create({ data: { alertId: alert.id, profitPotential: score.profitPotentialScore, evidenceConfidence: score.evidenceConfidenceScore, riskLevel: score.riskLevel, pricedInCheck: score.pricedInCheck } });
+      ? await prisma.alertScore.update({
+          where: { id: alert.scores[0].id },
+          data: {
+            profitPotential: score.profitPotentialScore,
+            evidenceConfidence: score.evidenceConfidenceScore,
+            riskLevel: score.riskLevel,
+            pricedInCheck: score.pricedInCheck,
+            inputCompleteness: score.inputCompleteness,
+            liveDataReady: score.liveDataReady,
+            missingInputs: score.missingInputs,
+            inputProvenance: score.inputProvenance,
+          },
+        })
+      : await prisma.alertScore.create({
+          data: {
+            alertId: alert.id,
+            profitPotential: score.profitPotentialScore,
+            evidenceConfidence: score.evidenceConfidenceScore,
+            riskLevel: score.riskLevel,
+            pricedInCheck: score.pricedInCheck,
+            inputCompleteness: score.inputCompleteness,
+            liveDataReady: score.liveDataReady,
+            missingInputs: score.missingInputs,
+            inputProvenance: score.inputProvenance,
+          },
+        });
 
     return NextResponse.json({
       ok: true,
@@ -161,6 +185,9 @@ export async function POST(request: NextRequest) {
         historicalPatternMatch,
         patternMatchId: createdOrUpdatedPatternMatchId,
         marketSentimentImpact: sentiment.sentimentDataStatus === "available" ? score.marketSentimentImpact : null,
+        liveDataReady: score.liveDataReady,
+        inputCompleteness: score.inputCompleteness,
+        missingInputs: score.missingInputs,
       },
       warnings: [...warnings, ...score.warnings],
       compatibility: { publishesRealAlert: false, createsPublicLedgerRecord: false, callsPaidAiModel: false },

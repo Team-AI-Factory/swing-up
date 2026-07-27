@@ -2,6 +2,7 @@ import {
   CERTIFIED_EXTREME_VOLATILITY_RULE,
   opportunityCoverageSummary,
 } from "./serious-alert-registry";
+import { mapGlobalListingToYahoo, type GlobalYahooMapping } from "./global-listing-identity";
 
 export type TradingViewGlobalStock = {
   symbol: string;
@@ -143,7 +144,6 @@ type TradingViewPage = {
   error: string | null;
 };
 type PriceHistoryRow = { date: string; close: number; high: number };
-type YahooMapping = { symbol: string; reason: string };
 
 const object = (value: unknown): Json => value && typeof value === "object" && !Array.isArray(value) ? value as Json : {};
 const array = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
@@ -332,68 +332,7 @@ function scoreCandidate(stock: TradingViewGlobalStock): GlobalResearchCandidate 
   return { ...stock, liquidityScore, momentumScore, volatilityScore, opportunityPriority, riskPriority, buyResearchThemes, sellResearchThemes, watchOutResearchThemes, reasons };
 }
 
-function yahooMapping(stock: TradingViewGlobalStock): YahooMapping | null {
-  const exchange = stock.exchange.toUpperCase().replace(/[^A-Z0-9]/g, "");
-  const symbol = stock.symbol.toUpperCase();
-  const direct = () => symbol.replace(/\.([A-Z])$/, "-$1");
-  if (["NASDAQ", "NYSE", "AMEX", "NYSEARCA", "BATS", "CBOE", "OTC", "OTCQX", "OTCQB"].includes(exchange)) return { symbol: direct(), reason: "US primary listing" };
-  if (["LSE", "LSIN"].includes(exchange)) return { symbol: `${symbol}.L`, reason: "London Stock Exchange" };
-  if (["TSE", "JPX"].includes(exchange)) return { symbol: `${symbol}.T`, reason: "Tokyo Stock Exchange" };
-  if (exchange === "HKEX") return { symbol: `${symbol.padStart(4, "0")}.HK`, reason: "Hong Kong Exchange" };
-  if (exchange === "NSE") return { symbol: `${symbol}.NS`, reason: "National Stock Exchange of India" };
-  if (exchange === "BSE") return { symbol: `${symbol}.BO`, reason: "Bombay Stock Exchange" };
-  if (exchange === "ASX") return { symbol: `${symbol}.AX`, reason: "Australian Securities Exchange" };
-  if (exchange === "TSX") return { symbol: `${symbol}.TO`, reason: "Toronto Stock Exchange" };
-  if (["TSXV", "TSXVENTURE"].includes(exchange)) return { symbol: `${symbol}.V`, reason: "TSX Venture" };
-  if (exchange === "NEO") return { symbol: `${symbol}.NE`, reason: "Cboe Canada" };
-  if (["XETR", "TRADEGATE"].includes(exchange)) return { symbol: `${symbol}.DE`, reason: "German electronic primary listing" };
-  if (exchange === "FWB") return { symbol: `${symbol}.F`, reason: "Frankfurt Stock Exchange" };
-  if (exchange === "MIL") return { symbol: `${symbol}.MI`, reason: "Borsa Italiana" };
-  if (["BME", "BMAD"].includes(exchange)) return { symbol: `${symbol}.MC`, reason: "Madrid Stock Exchange" };
-  if (exchange === "SIX") return { symbol: `${symbol}.SW`, reason: "SIX Swiss Exchange" };
-  if (exchange === "VIE") return { symbol: `${symbol}.VI`, reason: "Vienna Stock Exchange" };
-  if (["OMXSTO", "NGM"].includes(exchange)) return { symbol: `${symbol}.ST`, reason: "Sweden" };
-  if (exchange === "OMXCOP") return { symbol: `${symbol}.CO`, reason: "Copenhagen" };
-  if (exchange === "OMXHEL") return { symbol: `${symbol}.HE`, reason: "Helsinki" };
-  if (exchange === "OSL") return { symbol: `${symbol}.OL`, reason: "Oslo" };
-  if (exchange === "WSE") return { symbol: `${symbol}.WA`, reason: "Warsaw" };
-  if (exchange === "PSE") return { symbol: `${symbol}.PR`, reason: "Prague" };
-  if (exchange === "BET") return { symbol: `${symbol}.RO`, reason: "Bucharest" };
-  if (exchange === "ATHEX") return { symbol: `${symbol}.AT`, reason: "Athens" };
-  if (exchange === "BIST") return { symbol: `${symbol}.IS`, reason: "Borsa Istanbul" };
-  if (exchange === "TASE") return { symbol: `${symbol}.TA`, reason: "Tel Aviv" };
-  if (exchange === "KRX") return { symbol: `${symbol.padStart(6, "0")}.KS`, reason: "Korea Exchange" };
-  if (exchange === "KOSDAQ") return { symbol: `${symbol.padStart(6, "0")}.KQ`, reason: "KOSDAQ" };
-  if (exchange === "TWSE") return { symbol: `${symbol}.TW`, reason: "Taiwan Stock Exchange" };
-  if (exchange === "TPEX") return { symbol: `${symbol}.TWO`, reason: "Taipei Exchange" };
-  if (exchange === "SSE") return { symbol: `${symbol}.SS`, reason: "Shanghai Stock Exchange" };
-  if (exchange === "SZSE") return { symbol: `${symbol}.SZ`, reason: "Shenzhen Stock Exchange" };
-  if (exchange === "SGX") return { symbol: `${symbol}.SI`, reason: "Singapore Exchange" };
-  if (["MYX", "BURSA"].includes(exchange)) return { symbol: `${symbol}.KL`, reason: "Bursa Malaysia" };
-  if (exchange === "IDX") return { symbol: `${symbol}.JK`, reason: "Indonesia Stock Exchange" };
-  if (exchange === "SET") return { symbol: `${symbol}.BK`, reason: "Stock Exchange of Thailand" };
-  if (exchange === "PSE") return { symbol: `${symbol}.PS`, reason: "Philippine Stock Exchange" };
-  if (exchange === "NZX") return { symbol: `${symbol}.NZ`, reason: "New Zealand Exchange" };
-  if (exchange === "JSE") return { symbol: `${symbol}.JO`, reason: "Johannesburg Stock Exchange" };
-  if (["BMFBOVESPA", "B3"].includes(exchange)) return { symbol: `${symbol}.SA`, reason: "B3 Brazil" };
-  if (exchange === "BMV") return { symbol: `${symbol}.MX`, reason: "Mexican Stock Exchange" };
-  if (exchange === "BYMA") return { symbol: `${symbol}.BA`, reason: "Buenos Aires" };
-  if (exchange === "BCS") return { symbol: `${symbol}.SN`, reason: "Santiago" };
-  if (exchange === "TADAWUL") return { symbol: `${symbol}.SR`, reason: "Saudi Exchange" };
-  if (exchange === "QSE") return { symbol: `${symbol}.QA`, reason: "Qatar Stock Exchange" };
-  if (exchange === "KSE") return { symbol: `${symbol}.KW`, reason: "Kuwait" };
-  const country = (stock.country ?? "").toLowerCase();
-  if (exchange === "EURONEXT") {
-    if (country.includes("france")) return { symbol: `${symbol}.PA`, reason: "Euronext Paris" };
-    if (country.includes("netherlands")) return { symbol: `${symbol}.AS`, reason: "Euronext Amsterdam" };
-    if (country.includes("belgium")) return { symbol: `${symbol}.BR`, reason: "Euronext Brussels" };
-    if (country.includes("portugal")) return { symbol: `${symbol}.LS`, reason: "Euronext Lisbon" };
-    if (country.includes("ireland")) return { symbol: `${symbol}.IR`, reason: "Euronext Dublin" };
-  }
-  return null;
-}
-
-async function fetchYahooHistory(mapping: YahooMapping, now: Date) {
+async function fetchYahooHistory(mapping: GlobalYahooMapping, now: Date) {
   const period1 = Math.floor((now.getTime() - 430 * 86_400_000) / 1000);
   const period2 = Math.floor((now.getTime() + 2 * 86_400_000) / 1000);
   const failures: string[] = [];
@@ -431,7 +370,7 @@ async function fetchYahooHistory(mapping: YahooMapping, now: Date) {
   throw new Error(`all_yahoo_sources_failed:${mapping.symbol}:${failures.join("|")}`);
 }
 
-function evaluateCertifiedAlert(candidate: GlobalResearchCandidate, mapping: YahooMapping, history: { rows: PriceHistoryRow[]; url: string }, now: Date): CertifiedGlobalWatchOut | null {
+function evaluateCertifiedAlert(candidate: GlobalResearchCandidate, mapping: GlobalYahooMapping, history: { rows: PriceHistoryRow[]; url: string }, now: Date): CertifiedGlobalWatchOut | null {
   const rows = history.rows.slice(-120);
   const latest = rows.at(-1);
   if (!latest || rows.length < 120) return null;
@@ -507,7 +446,7 @@ export async function scanTradingViewGlobalStocks(options?: {
 
   const prefilter = candidates.filter((row) => row.yearHigh !== null && row.yearHigh > 0 && percentChange(row.yearHigh, row.price) <= -55).sort((left, right) => right.riskPriority - left.riskPriority);
   const mapped = prefilter.flatMap((candidate) => {
-    const mapping = yahooMapping(candidate);
+    const mapping = mapGlobalListingToYahoo(candidate);
     return mapping ? [{ candidate, mapping }] : [];
   });
   const selected = mapped.slice(0, maximumCertifiedChecks);

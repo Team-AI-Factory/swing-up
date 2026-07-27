@@ -6,7 +6,10 @@ on:
       - "agent/combined-opportunity-engine"
     paths:
       - "lib/opportunity-engine/global-deep-research.ts"
+      - "lib/opportunity-engine/global-deep-research-v2.ts"
+      - "lib/opportunity-engine/global-deep-research-v3.ts"
       - "lib/opportunity-engine/global-market-scanner-v3.ts"
+      - "lib/opportunity-engine/global-listing-identity.ts"
       - "app/api/internal/combined-opportunity-engine/global-deep-research/route.ts"
       - "scripts/current-global-deep-research-live-smoke.mjs"
       - ".github/workflows/current-global-deep-research-validation.yml"
@@ -15,7 +18,10 @@ on:
       - main
     paths:
       - "lib/opportunity-engine/global-deep-research.ts"
+      - "lib/opportunity-engine/global-deep-research-v2.ts"
+      - "lib/opportunity-engine/global-deep-research-v3.ts"
       - "lib/opportunity-engine/global-market-scanner-v3.ts"
+      - "lib/opportunity-engine/global-listing-identity.ts"
       - "app/api/internal/combined-opportunity-engine/global-deep-research/route.ts"
       - "scripts/current-global-deep-research-live-smoke.mjs"
       - ".github/workflows/current-global-deep-research-validation.yml"

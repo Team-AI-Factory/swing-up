@@ -81,6 +81,7 @@ model Alert {
   notificationLogs NotificationLog[]
   aiRuns           AiRun[]
   aiCommitteeRuns  AiCommitteeRun[]
+  priceSnapshots   PriceSnapshot[]
 
   @@map("alerts")
 }
@@ -104,6 +105,10 @@ model AlertScore {
   evidenceConfidence Int      @map("evidence_confidence")
   riskLevel          String   @map("risk_level")
   pricedInCheck      String?  @map("priced_in_check")
+  inputCompleteness  Int      @default(0) @map("input_completeness")
+  liveDataReady      Boolean  @default(false) @map("live_data_ready")
+  missingInputs      Json     @default("[]") @map("missing_inputs")
+  inputProvenance    Json     @default("{}") @map("input_provenance")
   createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   alert              Alert?   @relation(fields: [alertId], references: [id])
 
@@ -144,11 +149,21 @@ model PublicLedger {
 }
 
 model PriceSnapshot {
-  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  ticker     String
-  price      Decimal  @db.Decimal(12, 2)
-  capturedAt DateTime @default(now()) @map("captured_at") @db.Timestamptz(6)
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  alertId         String?  @map("alert_id") @db.Uuid
+  ticker          String
+  price           Decimal  @db.Decimal(20, 8)
+  capturedAt      DateTime @default(now()) @map("captured_at") @db.Timestamptz(6)
+  provider        String   @default("manual")
+  providerAssetId String?  @map("provider_asset_id")
+  currency        String   @default("USD")
+  sourceUrl       String?  @map("source_url")
+  dataQuality     String   @default("unverified") @map("data_quality")
+  alert           Alert?   @relation(fields: [alertId], references: [id], onDelete: Cascade)
 
+  @@unique([alertId, provider, capturedAt])
+  @@index([alertId, capturedAt])
+  @@index([ticker, dataQuality, capturedAt])
   @@map("price_snapshots")
 }
 
@@ -391,7 +406,7 @@ model AiCommitteeRun {
   alertId             String?                  @map("alert_id") @db.Uuid
   status              String
   runMode             String                   @map("run_mode")
-  dryRun              Boolean                  @default(true) @map("dry_run")
+  dryRun              Boolean                  @default(false) @map("dry_run")
   agentIds            Json                     @default("[]") @map("agent_ids")
   finalRecommendation String?                  @map("final_recommendation")
   selectedActionLabel String?                  @map("selected_action_label")

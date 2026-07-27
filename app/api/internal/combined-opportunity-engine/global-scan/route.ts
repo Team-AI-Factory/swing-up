@@ -93,7 +93,7 @@ export async function POST(request: NextRequest) {
         seriousSignalsUnlocked: certifiedScopeAlerts.length > 0,
       },
     };
-    return NextResponse.json(response, { status: result.universe.coverageComplete ? 200 : 206 });
+    return NextResponse.json(response, { status: response.ok ? 200 : 206 });
   } catch (error) {
     return NextResponse.json({
       ok: false,

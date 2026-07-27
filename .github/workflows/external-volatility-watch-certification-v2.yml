@@ -7,15 +7,6 @@ on:
     paths:
       - "scripts/build-technical-risk-dataset.ts"
       - "scripts/certify_external_volatility_watch_v2.py"
-      - "package.json"
-      - ".github/workflows/external-volatility-watch-certification-v2.yml"
-  pull_request:
-    branches:
-      - main
-    paths:
-      - "scripts/build-technical-risk-dataset.ts"
-      - "scripts/certify_external_volatility_watch_v2.py"
-      - "package.json"
       - ".github/workflows/external-volatility-watch-certification-v2.yml"
   workflow_dispatch:
 

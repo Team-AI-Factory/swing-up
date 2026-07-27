@@ -17,7 +17,12 @@ function compile(url, dependencies = {}) {
 
 const policy = compile(new URL("../lib/equity-signal/pilot-serious-signal-policy.ts", import.meta.url));
 let nextResult = null;
+const pilotBootstrap = {
+  bootstrapPilotHistoricalSignals: async () => ({ records: [], requestedSeeds: 10, builtSeeds: 0, errors: [], priceSource: "Yahoo Finance public adjusted daily chart history", noSyntheticData: true }),
+  mergePilotHistoricalSignals: (...groups) => groups.flat(),
+};
 const wrapper = compile(new URL("../lib/equity-signal/pilot-runner.ts", import.meta.url), {
+  "@/lib/equity-signal/pilot-historical-bootstrap": pilotBootstrap,
   "@/lib/equity-signal/pilot-serious-signal-policy": policy,
   "@/lib/equity-signal/runner": {
     runEquitySignalLab: async () => structuredClone(nextResult),
@@ -45,6 +50,7 @@ function resultWith({ action = "buy", samples = 0, hitRate = 0, p25 = null, leak
     },
     historicalLearning: {},
     liveSourcePolicy: {},
+    _historicalSignalLibraryAdditions: [],
   };
 }
 

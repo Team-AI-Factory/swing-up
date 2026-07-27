@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { runGlobalDeepResearch } from "@/lib/opportunity-engine/global-deep-research";
+import { runGlobalDeepResearchV2 } from "@/lib/opportunity-engine/global-deep-research-v2";
 import { opportunityCoverageSummary } from "@/lib/opportunity-engine/serious-alert-registry";
 
 export const dynamic = "force-dynamic";
@@ -36,6 +36,7 @@ export async function GET(request: NextRequest) {
     workflow: "global_live_deep_research",
     currentProviders: {
       worldwideUniverseAndScreening: "TradingView public stock scanner",
+      independentAdjustedPriceFallback: "Yahoo Finance public chart API",
       secondPriceAndExpectations: "Financial Modeling Prep when available",
       currentCompanyNews: "Marketaux when available",
       officialUSFundamentals: "SEC and issuer filings in the foundation workflow",
@@ -54,7 +55,7 @@ export async function POST(request: NextRequest) {
   if (expected && suppliedToken(request) !== expected) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   const body = await request.json().catch(() => ({})) as Record<string, unknown>;
   try {
-    const result = await runGlobalDeepResearch({
+    const result = await runGlobalDeepResearchV2({
       perAction: integer(body.perAction, 3, 15),
     });
     return NextResponse.json(result);

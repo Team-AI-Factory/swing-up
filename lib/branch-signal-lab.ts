@@ -1,4 +1,5 @@
-import { runEquitySignalLab, type EquityProviderCallDecision, type EquityProviderCallRequest, type EquitySignalLabInput } from "@/lib/equity-signal/runner";
+import { runPilotEquitySignalLab } from "@/lib/equity-signal/pilot-runner";
+import type { EquityProviderCallDecision, EquityProviderCallRequest, EquitySignalLabInput } from "@/lib/equity-signal/runner";
 
 export type BranchProviderCallRequest = EquityProviderCallRequest;
 export type BranchProviderCallDecision = EquityProviderCallDecision;
@@ -101,5 +102,5 @@ export async function runBranchSignalLab(input: BranchSignalLabInput = {}) {
     }
     return rawFetch(request, init);
   };
-  return runEquitySignalLab({ ...input, now, fetchImpl: quotaAwareFetch });
+  return runPilotEquitySignalLab({ ...input, now, fetchImpl: quotaAwareFetch });
 }

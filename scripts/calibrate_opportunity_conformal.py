@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Chronological selective calibration for Swing Up serious signals.
+"""Chronological selective calibration for Swing Up research context.
 
 The newest 30% of cases is never used for model or threshold selection. A signal
 is certified only when a separate calibration period supports a one-sided 90%
@@ -338,8 +338,8 @@ def main() -> int:
         raise RuntimeError(f"Chronological partitions are too small: train={len(train)}, validation={len(validation)}, calibration={len(calibration)}, final={len(final)}")
 
     exploratory_results = [run_definition(train, validation, calibration, final, definition) for definition in signal_definitions]
-    # The final test is used only once per definition. A definition is production-ready only when both the
-    # separate calibration certificate and the untouched final period clear the requested threshold.
+    # The final test is used only once per definition. A historical research definition is validated only
+    # when both the separate calibration certificate and untouched final period clear the threshold.
     passed = [result for result in exploratory_results if result["passed"]]
     report = {
         "version": 4,
@@ -363,8 +363,8 @@ def main() -> int:
             "certificateMethod": "One-sided Clopper-Pearson upper bound on calibration-period error.",
             "minimumCalibrationSignals": MIN_CALIBRATION_SAMPLES,
             "minimumFinalSignals": MIN_FINAL_SAMPLES,
-            "abstentionPolicy": "No threshold certificate means no directional signal.",
-            "multipleTestingPosture": "Each action and horizon is reported separately; production promotion requires a new untouched confirmation run before enabling any action.",
+            "abstentionPolicy": "No threshold certificate means no historically calibrated research definition. Serious-signal permission is a separate current-evidence and full-committee decision that does not require historical analogues.",
+            "multipleTestingPosture": "Each action and horizon is reported separately. These results may refine research context but cannot enable a serious alert.",
             "noSyntheticData": True,
             "survivorshipCaveat": "The universe contains current liquid large-cap companies and does not yet include delisted securities.",
         },
@@ -373,7 +373,7 @@ def main() -> int:
             "tickers": sorted(frame["ticker"].unique().tolist()),
             "sourceErrors": dataset.get("sourceErrors", []),
             "certifiedDefinitions": [f"{result['definition']['action']}_{result['definition']['horizon_days']}d" for result in passed],
-            "seriousSignalReady": bool(passed),
+            "historicalResearchReady": bool(passed),
         },
         "results": exploratory_results,
         "passedDefinitions": passed,

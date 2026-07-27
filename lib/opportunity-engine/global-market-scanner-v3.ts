@@ -74,6 +74,11 @@ export type CertifiedGlobalWatchOut = {
     tradingViewSymbol: string;
     yahooSymbol: string;
     historyUrl: string;
+    estimatedAverageDollarVolume10d: number;
+    minimumAverageDollarVolumeRequired: number;
+    splitEventsInLookback: 0;
+    maximumSingleSessionPriceRatio: number;
+    corporateActionAndDiscontinuityCheckPassed: true;
     noSyntheticData: true;
   };
   calibration: typeof CERTIFIED_EXTREME_VOLATILITY_RULE.certification;
@@ -84,7 +89,7 @@ export type TradingViewGlobalScanResult = {
   checkedAt: string;
   universe: {
     provider: "TradingView public stock scanner";
-    mode: "us_primary_listings";
+    mode: "entire_world_primary_listings" | "regional_primary_listing_fallback";
     marketsAttempted: string[];
     marketsSucceeded: string[];
     totalProviderRows: number;
@@ -134,6 +139,9 @@ export type TradingViewGlobalScanResult = {
       priceConflictsBlocked: number;
       insufficientHistoryBlocked: number;
       staleHistoryBlocked: number;
+      corporateActionBlocked: number;
+      historyDiscontinuityBlocked: number;
+      liquidityBlocked: number;
       providerFailures: number;
       skippedCandidates: number;
       independentHistoryAvailablePercent: number;
@@ -167,6 +175,14 @@ type TradingViewPage = {
   error: string | null;
 };
 type PriceHistoryRow = { date: string; close: number; high: number };
+type SplitEvent = { date: string; numerator: number | null; denominator: number | null; splitRatio: string | null };
+
+export const LIVE_CERTIFIED_WATCH_OUT_QUALITY_POLICY = {
+  id: "live_certified_watch_out_evidence_quality_v1",
+  minimumEstimatedAverageDollarVolume10d: 1_000_000,
+  maximumMarketDataAgeDays: 4,
+  maximumSingleSessionPriceRatio: 4,
+} as const;
 
 const object = (value: unknown): Json => value && typeof value === "object" && !Array.isArray(value) ? value as Json : {};
 const array = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
@@ -187,13 +203,13 @@ const TV_COLUMNS = [
   "price_52_week_high", "price_52_week_low", "update_mode",
 ] as const;
 
-const US_PRIMARY_EXCHANGES = new Set(["NASDAQ", "NYSE", "AMEX"]);
-
-export function isEligibleUsCommonStockOrAdr(row: Pick<TradingViewGlobalStock, "exchange" | "typeSpecs">) {
-  if (!US_PRIMARY_EXCHANGES.has(row.exchange.toUpperCase())) return false;
-  const disallowed = row.typeSpecs.some((value) => /preferred|preference|warrant|right|unit|fund|etf|closed.?end/i.test(value));
-  return !disallowed;
-}
+const REGIONAL_FALLBACK_MARKETS = [
+  "america", "canada", "mexico", "brazil", "argentina", "chile", "colombia", "peru",
+  "uk", "germany", "france", "italy", "spain", "portugal", "netherlands", "belgium", "switzerland", "austria",
+  "denmark", "sweden", "norway", "finland", "iceland", "poland", "czech", "hungary", "romania", "greece", "turkey", "israel",
+  "japan", "china", "hongkong", "korea", "taiwan", "india", "singapore", "malaysia", "indonesia", "thailand", "vietnam", "philippines", "pakistan", "bangladesh", "srilanka",
+  "australia", "newzealand", "southafrica", "egypt", "nigeria", "saudiarabia", "uae", "qatar", "kuwait", "bahrain", "oman",
+];
 
 function parseTradingViewRow(value: unknown, market: string): TradingViewGlobalStock | null {
   const row = object(value);
@@ -245,7 +261,7 @@ async function fetchTradingViewPage(market: string, start: number, pageSize: num
     symbols: { query: { types: [] }, tickers: [] },
     columns: [...TV_COLUMNS],
     // A stable symbol sort plus overlapping page windows reduces omissions when
-    // live market-cap values change while the U.S. scan is paginating.
+    // live market-cap values change while the worldwide scan is paginating.
     sort: { sortBy: "name", sortOrder: "asc" },
     range: [start, start + pageSize],
   };
@@ -337,34 +353,100 @@ export function summarizeGlobalUniverseRows(
   };
 }
 
-async function fetchUsPrimaryListings(maximumListings: number, pageSize: number, concurrency: number) {
+export function assessLiveCertifiedWatchOutQuality(input: {
+  rows: PriceHistoryRow[];
+  splitEvents: SplitEvent[];
+  averageVolume: number | null;
+  now: Date;
+}) {
+  const rows = input.rows.slice(-120);
+  const first = rows[0];
+  const latest = rows.at(-1);
+  if (!first || !latest) {
+    return { eligible: false as const, reason: "insufficient_history" as const };
+  }
+  const marketDataAgeDays = Math.max(
+    0,
+    Math.floor((input.now.getTime() - Date.parse(`${latest.date}T23:59:59Z`)) / 86_400_000),
+  );
+  if (marketDataAgeDays > LIVE_CERTIFIED_WATCH_OUT_QUALITY_POLICY.maximumMarketDataAgeDays) {
+    return { eligible: false as const, reason: "stale_history" as const, marketDataAgeDays };
+  }
+  const splitEventsInLookback = input.splitEvents.filter(
+    (event) => event.date >= first.date && event.date <= latest.date,
+  ).length;
+  if (splitEventsInLookback > 0) {
+    return { eligible: false as const, reason: "corporate_action_in_lookback" as const, splitEventsInLookback };
+  }
+  let maximumSingleSessionPriceRatio = 1;
+  for (let index = 1; index < rows.length; index += 1) {
+    const previous = rows[index - 1].close;
+    const current = rows[index].close;
+    if (previous <= 0 || current <= 0) continue;
+    maximumSingleSessionPriceRatio = Math.max(
+      maximumSingleSessionPriceRatio,
+      current / previous,
+      previous / current,
+    );
+  }
+  if (maximumSingleSessionPriceRatio >= LIVE_CERTIFIED_WATCH_OUT_QUALITY_POLICY.maximumSingleSessionPriceRatio) {
+    return {
+      eligible: false as const,
+      reason: "history_price_discontinuity" as const,
+      maximumSingleSessionPriceRatio,
+    };
+  }
+  if (input.averageVolume === null || !Number.isFinite(input.averageVolume) || input.averageVolume <= 0) {
+    return { eligible: false as const, reason: "liquidity_evidence_unavailable" as const };
+  }
+  const estimatedAverageDollarVolume10d = latest.close * input.averageVolume;
+  if (estimatedAverageDollarVolume10d < LIVE_CERTIFIED_WATCH_OUT_QUALITY_POLICY.minimumEstimatedAverageDollarVolume10d) {
+    return {
+      eligible: false as const,
+      reason: "insufficient_liquidity" as const,
+      estimatedAverageDollarVolume10d,
+    };
+  }
+  return {
+    eligible: true as const,
+    marketDataAgeDays,
+    splitEventsInLookback: 0 as const,
+    maximumSingleSessionPriceRatio,
+    estimatedAverageDollarVolume10d,
+  };
+}
+
+async function fetchEntireWorld(maximumListings: number, pageSize: number, concurrency: number) {
   const errors: string[] = [];
-  const { pageOverlapRows } = buildOverlappingPageStarts(maximumListings, pageSize);
-  const first = await fetchTradingViewPage("america", 0, pageSize, true);
+  const { pageOverlapRows, pageStep } = buildOverlappingPageStarts(maximumListings, pageSize);
+  const first = await fetchTradingViewPage("global", 0, pageSize, true);
   if (!first.error && first.totalCount >= 1_000 && first.rows.length) {
     const target = Math.min(maximumListings, first.totalCount);
     const { starts } = buildOverlappingPageStarts(target, pageSize);
-    const remaining = await mapWithConcurrency(starts, concurrency, (start) => fetchTradingViewPage("america", start, pageSize, true));
+    const remaining = await mapWithConcurrency(starts, concurrency, (start) => fetchTradingViewPage("global", start, pageSize, true));
     const pages = [first, ...remaining];
-    for (const page of pages) if (page.error) errors.push(`america:${page.start}:${page.error}`);
-    return {
-      mode: "us_primary_listings" as const,
-      marketsAttempted: ["america"],
-      marketsSucceeded: pages.some((page) => page.rawRowCount > 0) ? ["america"] : [],
-      totalCount: first.totalCount,
-      pages,
-      errors,
-      pageOverlapRows,
-    };
+    for (const page of pages) if (page.error) errors.push(`global:${page.start}:${page.error}`);
+    return { mode: "entire_world_primary_listings" as const, marketsAttempted: ["global"], marketsSucceeded: pages.some((page) => page.rawRowCount > 0) ? ["global"] : [], totalCount: first.totalCount, pages, errors, pageOverlapRows };
   }
-  if (first.error) errors.push(`america:0:${first.error}`);
-  else errors.push(`america:insufficient_rows:${first.rows.length}:total:${first.totalCount}`);
+  if (first.error) errors.push(`global:0:${first.error}`);
+  else errors.push(`global:insufficient_rows:${first.rows.length}:total:${first.totalCount}`);
+
+  const firstPages = await mapWithConcurrency(REGIONAL_FALLBACK_MARKETS, Math.min(concurrency, 10), (market) => fetchTradingViewPage(market, 0, pageSize, true));
+  const jobs: Array<{ market: string; start: number }> = [];
+  for (const page of firstPages) {
+    if (page.error) errors.push(`${page.market}:0:${page.error}`);
+    const target = Math.min(maximumListings, page.totalCount);
+    for (let start = pageStep; start < target; start += pageStep) jobs.push({ market: page.market, start });
+  }
+  const remaining = await mapWithConcurrency(jobs, concurrency, (job) => fetchTradingViewPage(job.market, job.start, pageSize, true));
+  const pages = [...firstPages, ...remaining];
+  for (const page of remaining) if (page.error) errors.push(`${page.market}:${page.start}:${page.error}`);
   return {
-    mode: "us_primary_listings" as const,
-    marketsAttempted: ["america"],
-    marketsSucceeded: [],
-    totalCount: first.totalCount,
-    pages: [first],
+    mode: "regional_primary_listing_fallback" as const,
+    marketsAttempted: [...REGIONAL_FALLBACK_MARKETS],
+    marketsSucceeded: [...new Set(pages.filter((page) => page.rawRowCount > 0).map((page) => page.market))],
+    totalCount: firstPages.reduce((sum, page) => sum + page.totalCount, 0),
+    pages,
     errors,
     pageOverlapRows,
   };
@@ -412,7 +494,7 @@ async function fetchYahooHistory(mapping: GlobalYahooMapping, now: Date) {
   const period2 = Math.floor((now.getTime() + 2 * 86_400_000) / 1000);
   const failures: string[] = [];
   for (const host of ["query1.finance.yahoo.com", "query2.finance.yahoo.com"]) {
-    const url = `https://${host}/v8/finance/chart/${encodeURIComponent(mapping.symbol)}?period1=${period1}&period2=${period2}&interval=1d&events=history&includeAdjustedClose=true`;
+    const url = `https://${host}/v8/finance/chart/${encodeURIComponent(mapping.symbol)}?period1=${period1}&period2=${period2}&interval=1d&events=div%2Csplits%2CcapitalGains&includeAdjustedClose=true`;
     try {
       const response = await fetch(url, { cache: "no-store", headers: { accept: "application/json", "user-agent": "Mozilla/5.0 (compatible; SwingUpLiveCertification/2.0)", referer: "https://finance.yahoo.com/" }, signal: AbortSignal.timeout(25_000) });
       if (!response.ok) throw new Error(`yahoo_http_${response.status}`);
@@ -437,7 +519,18 @@ async function fetchYahooHistory(mapping: GlobalYahooMapping, now: Date) {
         return [{ date: new Date(seconds * 1000).toISOString().slice(0, 10), close: adjustedClose, high: Math.max(adjustedClose, rawHigh * adjustment) }];
       }).sort((left, right) => left.date.localeCompare(right.date));
       if (rows.length < 120) throw new Error(`insufficient_history:${mapping.symbol}:${rows.length}`);
-      return { rows, url };
+      const splitEvents = Object.values(object(object(result.events).splits)).flatMap((value): SplitEvent[] => {
+        const event = object(value);
+        const seconds = finite(event.date);
+        if (seconds === null) return [];
+        return [{
+          date: new Date(seconds * 1000).toISOString().slice(0, 10),
+          numerator: finite(event.numerator),
+          denominator: finite(event.denominator),
+          splitRatio: text(event.splitRatio),
+        }];
+      }).sort((left, right) => left.date.localeCompare(right.date));
+      return { rows, splitEvents, url };
     } catch (error) {
       failures.push(`${host}:${safeError(error)}`);
     }
@@ -445,15 +538,25 @@ async function fetchYahooHistory(mapping: GlobalYahooMapping, now: Date) {
   throw new Error(`all_yahoo_sources_failed:${mapping.symbol}:${failures.join("|")}`);
 }
 
-function evaluateCertifiedAlert(candidate: GlobalResearchCandidate, mapping: GlobalYahooMapping, history: { rows: PriceHistoryRow[]; url: string }, now: Date): CertifiedGlobalWatchOut | null {
+function evaluateCertifiedAlert(
+  candidate: GlobalResearchCandidate,
+  mapping: GlobalYahooMapping,
+  history: { rows: PriceHistoryRow[]; splitEvents: SplitEvent[]; url: string },
+  now: Date,
+): CertifiedGlobalWatchOut | null {
   const rows = history.rows.slice(-120);
   const latest = rows.at(-1);
   if (!latest || rows.length < 120) return null;
   const high = Math.max(...rows.map((row) => row.high));
   const drawdown = percentChange(high, latest.close);
   if (drawdown > CERTIFIED_EXTREME_VOLATILITY_RULE.trailing120SessionDrawdownMaximumPercent) return null;
-  const ageDays = Math.max(0, Math.floor((now.getTime() - Date.parse(`${latest.date}T23:59:59Z`)) / 86_400_000));
-  if (ageDays > 7) throw new Error(`stale_history:${mapping.symbol}:${latest.date}`);
+  const quality = assessLiveCertifiedWatchOutQuality({
+    rows,
+    splitEvents: history.splitEvents,
+    averageVolume: candidate.averageVolume,
+    now,
+  });
+  if (!quality.eligible) throw new Error(`${quality.reason}:${mapping.symbol}`);
   const midpoint = (candidate.price + latest.close) / 2;
   const agreement = midpoint > 0 ? (Math.abs(candidate.price - latest.close) / midpoint) * 100 : 100;
   if (agreement > 5) throw new Error(`price_disagreement:${candidate.tradingViewSymbol}:${mapping.symbol}:${agreement.toFixed(2)}pct`);
@@ -479,9 +582,9 @@ function evaluateCertifiedAlert(candidate: GlobalResearchCandidate, mapping: Glo
     horizonTradingDays: 30,
     expectedMoveThresholdPercent: 12,
     message: `${candidate.tradingViewSymbol} is ${Math.abs(drawdown).toFixed(1)}% below its 120-session high. The certified rule indicates a high likelihood of at least a 12% move in either direction within 30 trading sessions. This is a volatility warning, not a Sell instruction.`,
-    reasons: [`Adjusted price is ${Math.abs(drawdown).toFixed(1)}% below the highest adjusted price in the last 120 sessions.`, `TradingView and Yahoo prices agree within ${agreement.toFixed(2)}%.`, `Independent historical certification produced ${CERTIFIED_EXTREME_VOLATILITY_RULE.certification.wins} wins from ${CERTIFIED_EXTREME_VOLATILITY_RULE.certification.sampleSize} signals.`],
+    reasons: [`Adjusted price is ${Math.abs(drawdown).toFixed(1)}% below the highest adjusted price in the last 120 sessions.`, `TradingView and Yahoo prices agree within ${agreement.toFixed(2)}%.`, `Estimated 10-session average dollar volume is $${Math.round(quality.estimatedAverageDollarVolume10d).toLocaleString("en-US")}.`, "No reported split or extreme single-session price discontinuity appears inside the 120-session evidence window.", `Independent historical certification produced ${CERTIFIED_EXTREME_VOLATILITY_RULE.certification.wins} wins from ${CERTIFIED_EXTREME_VOLATILITY_RULE.certification.sampleSize} signals.`],
     alertKey: [CERTIFIED_EXTREME_VOLATILITY_RULE.id, candidate.tradingViewSymbol, latest.date, Math.floor(drawdown / 5) * 5].join(":"),
-    evidence: { primaryListing: true, sessionsUsed: 120, latestMarketDate: latest.date, marketDataAgeDays: ageDays, universeAndQuoteSource: "TradingView public stock scanner", adjustedHistorySource: "Yahoo Finance public chart API", tradingViewMarket: candidate.market, tradingViewSymbol: candidate.tradingViewSymbol, yahooSymbol: mapping.symbol, historyUrl: history.url, noSyntheticData: true },
+    evidence: { primaryListing: true, sessionsUsed: 120, latestMarketDate: latest.date, marketDataAgeDays: quality.marketDataAgeDays, universeAndQuoteSource: "TradingView public stock scanner", adjustedHistorySource: "Yahoo Finance public chart API", tradingViewMarket: candidate.market, tradingViewSymbol: candidate.tradingViewSymbol, yahooSymbol: mapping.symbol, historyUrl: history.url, estimatedAverageDollarVolume10d: quality.estimatedAverageDollarVolume10d, minimumAverageDollarVolumeRequired: LIVE_CERTIFIED_WATCH_OUT_QUALITY_POLICY.minimumEstimatedAverageDollarVolume10d, splitEventsInLookback: quality.splitEventsInLookback, maximumSingleSessionPriceRatio: quality.maximumSingleSessionPriceRatio, corporateActionAndDiscontinuityCheckPassed: true, noSyntheticData: true },
     calibration: CERTIFIED_EXTREME_VOLATILITY_RULE.certification,
   };
 }
@@ -507,17 +610,12 @@ export async function scanTradingViewGlobalStocks(options?: {
   const maximumCertifiedChecks = Math.max(10, Math.min(options?.maximumCertifiedChecks ?? 5_000, 15_000));
   const historyConcurrency = Math.max(1, Math.min(options?.historyConcurrency ?? 10, 20));
 
-  const world = await fetchUsPrimaryListings(maximumListings, pageSize, pageConcurrency);
+  const world = await fetchEntireWorld(maximumListings, pageSize, pageConcurrency);
   const bySymbol = new Map<string, TradingViewGlobalStock>();
   for (const page of world.pages) for (const row of page.rows) if (!bySymbol.has(row.tradingViewSymbol)) bySymbol.set(row.tradingViewSymbol, row);
   const usablePrimaryListingsBeforeLimit = bySymbol.size;
   const allRows = [...bySymbol.values()].slice(0, maximumListings);
-  const eligible = allRows.filter((row) => (
-    isEligibleUsCommonStockOrAdr(row)
-    && row.price >= minimumPrice
-    && row.marketCap !== null
-    && row.marketCap >= minimumMarketCap
-  ));
+  const eligible = allRows.filter((row) => row.price >= minimumPrice && row.marketCap !== null && row.marketCap >= minimumMarketCap);
   const candidates = eligible.map(scoreCandidate);
   const opportunity = [...candidates].sort((left, right) => right.opportunityPriority - left.opportunityPriority).slice(0, deepQueueSize);
   const buyResearch = candidates.filter((row) => row.buyResearchThemes.length).sort((left, right) => right.opportunityPriority - left.opportunityPriority).slice(0, deepQueueSize);
@@ -547,7 +645,13 @@ export async function scanTradingViewGlobalStocks(options?: {
           ? "insufficient_history" as const
           : message.includes("stale_history:")
             ? "stale_history" as const
-            : "provider_failure" as const;
+            : message.includes("corporate_action_in_lookback:")
+              ? "corporate_action" as const
+              : message.includes("history_price_discontinuity:")
+                ? "history_discontinuity" as const
+                : message.includes("liquidity_evidence_unavailable:") || message.includes("insufficient_liquidity:")
+                  ? "liquidity_blocked" as const
+                  : "provider_failure" as const;
       const fullError = `${candidate.tradingViewSymbol}:${message}`;
       historyErrors.push(fullError);
       return { alert: null, status, error: fullError };
@@ -560,15 +664,29 @@ export async function scanTradingViewGlobalStocks(options?: {
   const priceConflictsBlocked = verificationOutcomes.filter((row) => row.status === "price_conflict").length;
   const insufficientHistoryBlocked = verificationOutcomes.filter((row) => row.status === "insufficient_history").length;
   const staleHistoryBlocked = verificationOutcomes.filter((row) => row.status === "stale_history").length;
+  const corporateActionBlocked = verificationOutcomes.filter((row) => row.status === "corporate_action").length;
+  const historyDiscontinuityBlocked = verificationOutcomes.filter((row) => row.status === "history_discontinuity").length;
+  const liquidityBlocked = verificationOutcomes.filter((row) => row.status === "liquidity_blocked").length;
   const providerFailures = verificationOutcomes.filter((row) => row.status === "provider_failure").length;
   const failedHistoryChecks = providerFailures;
-  const independentHistoryAvailablePercent = prefilter.length ? Number(((verifiedHistoryCandidates / prefilter.length) * 100).toFixed(2)) : 100;
+  const independentHistoryAvailableCandidates = verifiedHistoryCandidates
+    + priceConflictsBlocked
+    + staleHistoryBlocked
+    + corporateActionBlocked
+    + historyDiscontinuityBlocked
+    + liquidityBlocked;
+  const independentHistoryAvailablePercent = prefilter.length
+    ? Number(((independentHistoryAvailableCandidates / prefilter.length) * 100).toFixed(2))
+    : 100;
   const attemptedOrUnsupported = selected.length + unsupportedYahooMappings;
   const coveragePercent = prefilter.length ? Number(((attemptedOrUnsupported / prefilter.length) * 100).toFixed(2)) : 100;
   const classifiedCandidates = verifiedHistoryCandidates
     + priceConflictsBlocked
     + insufficientHistoryBlocked
     + staleHistoryBlocked
+    + corporateActionBlocked
+    + historyDiscontinuityBlocked
+    + liquidityBlocked
     + providerFailures;
   const allCandidatesAccountedFor = mapped.length + unsupportedYahooMappings === prefilter.length
     && selected.length + skippedCandidates === mapped.length
@@ -581,6 +699,13 @@ export async function scanTradingViewGlobalStocks(options?: {
     && outcome.alert.action === "watch_out"
     && outcome.alert.evidence.noSyntheticData
     && outcome.alert.independentPriceAgreementPercent <= 5
+    && outcome.alert.evidence.estimatedAverageDollarVolume10d
+      >= LIVE_CERTIFIED_WATCH_OUT_QUALITY_POLICY.minimumEstimatedAverageDollarVolume10d
+    && outcome.alert.evidence.splitEventsInLookback === 0
+    && outcome.alert.evidence.maximumSingleSessionPriceRatio
+      < LIVE_CERTIFIED_WATCH_OUT_QUALITY_POLICY.maximumSingleSessionPriceRatio
+    && outcome.alert.evidence.marketDataAgeDays
+      <= LIVE_CERTIFIED_WATCH_OUT_QUALITY_POLICY.maximumMarketDataAgeDays
     && outcome.alert.trailing120SessionDrawdownPercent
       <= CERTIFIED_EXTREME_VOLATILITY_RULE.trailing120SessionDrawdownMaximumPercent
   ));
@@ -598,8 +723,7 @@ export async function scanTradingViewGlobalStocks(options?: {
     && universeCoverage >= 99
     && universeRows.identifiedProviderRowPercent >= 99
     && universeRows.usableListingPercent >= 95
-    && world.mode === "us_primary_listings"
-    && world.marketsSucceeded.includes("america");
+    && (world.mode === "entire_world_primary_listings" || world.marketsSucceeded.length >= 40);
   const exchanges = new Set(eligible.map((row) => row.exchange));
   const countries = new Set(eligible.map((row) => row.country).filter((row): row is string => Boolean(row)));
   const currencies = new Set(eligible.map((row) => row.currency).filter((row): row is string => Boolean(row)));
@@ -609,7 +733,7 @@ export async function scanTradingViewGlobalStocks(options?: {
     checkedAt: now.toISOString(),
     universe: { provider: "TradingView public stock scanner", mode: world.mode, marketsAttempted: world.marketsAttempted, marketsSucceeded: world.marketsSucceeded, totalProviderRows: world.totalCount, primaryListingsFetched: allRows.length, eligibleListings: eligible.length, exchanges: exchanges.size, countries: countries.size, currencies: currencies.size, pageSize, pageOverlapRows: world.pageOverlapRows, pagesRequested: world.pages.length, pagesFailed, ...universeRows, coverageComplete: universeCoverageComplete, sourceErrors: [...new Set(world.errors)].slice(0, 100) },
     candidates: { opportunity, buyResearch, sellResearch, watchOutResearch, deepAnalysisQueue },
-    seriousAlerts: { buy: [], sell: [], watchOut: alerts, certifiedRuleIds: [CERTIFIED_EXTREME_VOLATILITY_RULE.id], verification: { prefilterCandidates: prefilter.length, mappedCandidates: mapped.length, checkedCandidates: selected.length, qualifyingAlerts: alerts.length, unsupportedYahooMappings, failedHistoryChecks, verifiedHistoryCandidates, priceConflictsBlocked, insufficientHistoryBlocked, staleHistoryBlocked, providerFailures, skippedCandidates, independentHistoryAvailablePercent, processingCoveragePercent: coveragePercent, coveragePercent, coverageComplete, executionComplete, allCandidatesAccountedFor, promotionSafetyComplete, errors: [...new Set(historyErrors)].slice(0, 150) } },
+    seriousAlerts: { buy: [], sell: [], watchOut: alerts, certifiedRuleIds: [CERTIFIED_EXTREME_VOLATILITY_RULE.id], verification: { prefilterCandidates: prefilter.length, mappedCandidates: mapped.length, checkedCandidates: selected.length, qualifyingAlerts: alerts.length, unsupportedYahooMappings, failedHistoryChecks, verifiedHistoryCandidates, priceConflictsBlocked, insufficientHistoryBlocked, staleHistoryBlocked, corporateActionBlocked, historyDiscontinuityBlocked, liquidityBlocked, providerFailures, skippedCandidates, independentHistoryAvailablePercent, processingCoveragePercent: coveragePercent, coveragePercent, coverageComplete, executionComplete, allCandidatesAccountedFor, promotionSafetyComplete, errors: [...new Set(historyErrors)].slice(0, 150) } },
     opportunityCoverage: opportunityCoverageSummary(),
     safety: { databaseWrites: false, publishing: false, notifications: false, seriousSignalsUnlocked: alerts.length > 0, certifiedRuleEnabled: true },
   };

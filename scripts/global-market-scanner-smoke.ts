@@ -15,10 +15,10 @@ const universe = normalizeGlobalStockUniverse([
   { symbol: "OLD", name: "Old Company", exchange: "NYSE", exchangeShortName: "NYSE", country: "US", currency: "USD", type: "stock", isActivelyTrading: false },
 ]);
 
-assert.equal(universe.length, 1);
-assert.deepEqual(universe.map((row) => row.symbol), ["AAPL"]);
-assert.equal(new Set(universe.map((row) => row.exchangeShortName)).size, 1);
-assert.equal(new Set(universe.map((row) => row.country)).size, 1);
+assert.equal(universe.length, 3);
+assert.deepEqual(universe.map((row) => row.symbol), ["AAPL", "7203.T", "VOD.L"]);
+assert.equal(new Set(universe.map((row) => row.exchangeShortName)).size, 3);
+assert.equal(new Set(universe.map((row) => row.country)).size, 3);
 
 const quotes = normalizeGlobalQuotes([
   { symbol: "AAPL", name: "Apple Inc.", price: 210.5, changePercentage: 2.1, volume: 1000000, avgVolume: 800000, marketCap: 3200000000000, yearHigh: 220, yearLow: 150, exchange: "NASDAQ", country: "US", currency: "USD", timestamp: 1 },
@@ -84,13 +84,14 @@ assert.ok(coverage.buy.length >= 5);
 assert.ok(coverage.sell.length >= 5);
 assert.ok(coverage.watchOut.some((family) => family.seriousSignalEnabled));
 assert.deepEqual(coverage.certifiedRuleIds, [CERTIFIED_EXTREME_VOLATILITY_RULE.id]);
+assert.match(coverage.seriousSignalPolicy, /Proposed Watch Out rules and non-US listings remain research-only/i);
+assert.match(coverage.seriousSignalPolicy, /does not require historical analogues/i);
 
 console.log(JSON.stringify({
   ok: true,
   stocks: universe.length,
-  countries: 1,
-  exchanges: 1,
-  nonUsListingsDisabled: true,
+  countries: 3,
+  exchanges: 3,
   quotes: quotes.length,
   noEtfs: true,
   noInactiveStocks: true,

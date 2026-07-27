@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { mapGlobalListingToYahoo } from "../lib/opportunity-engine/global-listing-identity";
-import { buildOverlappingPageStarts, isEligibleUsCommonStockOrAdr, summarizeGlobalUniverseRows } from "../lib/opportunity-engine/global-market-scanner-v3";
+import {
+  assessLiveCertifiedWatchOutQuality,
+  buildOverlappingPageStarts,
+  LIVE_CERTIFIED_WATCH_OUT_QUALITY_POLICY,
+  summarizeGlobalUniverseRows,
+} from "../lib/opportunity-engine/global-market-scanner-v3";
 
-assert.equal(isEligibleUsCommonStockOrAdr({ exchange: "NASDAQ", typeSpecs: ["common"] }), true);
-assert.equal(isEligibleUsCommonStockOrAdr({ exchange: "NYSE", typeSpecs: ["dr"] }), true);
-assert.equal(isEligibleUsCommonStockOrAdr({ exchange: "LSE", typeSpecs: ["common"] }), false);
-assert.equal(isEligibleUsCommonStockOrAdr({ exchange: "NYSE", typeSpecs: ["preferred"] }), false);
 
 assert.deepEqual(
   mapGlobalListingToYahoo({ symbol: "CEZ", exchange: "PSE", country: "Czech Republic" }),
@@ -49,6 +50,77 @@ assert.equal(rowSummary.usableListingsExcludedByConfiguredLimit, 1);
 assert.equal(rowSummary.usableListingPercent, 100);
 assert.equal(rowSummary.coveragePercent, 100);
 
+const qualityRows = Array.from({ length: 120 }, (_, index) => ({
+  date: new Date(Date.parse("2026-03-28T00:00:00.000Z") + index * 86_400_000).toISOString().slice(0, 10),
+  close: 100 - index * 0.1,
+  high: 101 - index * 0.1,
+}));
+const liveQuality = assessLiveCertifiedWatchOutQuality({
+  rows: qualityRows,
+  splitEvents: [],
+  averageVolume: 20_000,
+  now: new Date("2026-07-27T10:00:00.000Z"),
+});
+assert.equal(liveQuality.eligible, true);
+assert.ok(liveQuality.eligible && liveQuality.estimatedAverageDollarVolume10d >= 1_000_000);
+assert.equal(LIVE_CERTIFIED_WATCH_OUT_QUALITY_POLICY.minimumEstimatedAverageDollarVolume10d, 1_000_000);
+
+const splitBlocked = assessLiveCertifiedWatchOutQuality({
+  rows: qualityRows,
+  splitEvents: [{ date: qualityRows[80].date, numerator: 1, denominator: 25, splitRatio: "1:25" }],
+  averageVolume: 20_000,
+  now: new Date("2026-07-27T10:00:00.000Z"),
+});
+assert.deepEqual(
+  { eligible: splitBlocked.eligible, reason: splitBlocked.eligible ? null : splitBlocked.reason },
+  { eligible: false, reason: "corporate_action_in_lookback" },
+);
+
+const discontinuityRows = qualityRows.map((row, index) => index === 80 ? { ...row, close: 10, high: 11 } : row);
+const discontinuityBlocked = assessLiveCertifiedWatchOutQuality({
+  rows: discontinuityRows,
+  splitEvents: [],
+  averageVolume: 20_000,
+  now: new Date("2026-07-27T10:00:00.000Z"),
+});
+assert.deepEqual(
+  { eligible: discontinuityBlocked.eligible, reason: discontinuityBlocked.eligible ? null : discontinuityBlocked.reason },
+  { eligible: false, reason: "history_price_discontinuity" },
+);
+
+const liquidityBlocked = assessLiveCertifiedWatchOutQuality({
+  rows: qualityRows,
+  splitEvents: [],
+  averageVolume: 1_000,
+  now: new Date("2026-07-27T10:00:00.000Z"),
+});
+assert.deepEqual(
+  { eligible: liquidityBlocked.eligible, reason: liquidityBlocked.eligible ? null : liquidityBlocked.reason },
+  { eligible: false, reason: "insufficient_liquidity" },
+);
+
+const missingLiquidityBlocked = assessLiveCertifiedWatchOutQuality({
+  rows: qualityRows,
+  splitEvents: [],
+  averageVolume: null,
+  now: new Date("2026-07-27T10:00:00.000Z"),
+});
+assert.deepEqual(
+  { eligible: missingLiquidityBlocked.eligible, reason: missingLiquidityBlocked.eligible ? null : missingLiquidityBlocked.reason },
+  { eligible: false, reason: "liquidity_evidence_unavailable" },
+);
+
+const staleBlocked = assessLiveCertifiedWatchOutQuality({
+  rows: qualityRows,
+  splitEvents: [],
+  averageVolume: 20_000,
+  now: new Date("2026-08-03T10:00:00.000Z"),
+});
+assert.deepEqual(
+  { eligible: staleBlocked.eligible, reason: staleBlocked.eligible ? null : staleBlocked.reason },
+  { eligible: false, reason: "stale_history" },
+);
+
 console.log(JSON.stringify({
   ok: true,
   ambiguousExchangeResolvedByCountry: true,
@@ -56,6 +128,8 @@ console.log(JSON.stringify({
   sharedByGlobalScannerAndDeepResearch: true,
   stableOverlappingPagination: true,
   rawRowsSeparatedFromDuplicatesAndUsability: true,
-  usCommonStocksAndAdrsOnly: true,
-  nonUsListingsDisabled: true,
+  corporateActionsBlockedFromSeriousWarnings: true,
+  extremeHistoryDiscontinuitiesBlockedFromSeriousWarnings: true,
+  minimumLiquidityEvidenceRequired: true,
+  staleHistoryBlockedWithinFourDays: true,
 }, null, 2));

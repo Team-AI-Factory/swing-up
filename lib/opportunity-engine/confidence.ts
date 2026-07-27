@@ -180,7 +180,7 @@ export function buildFoundationConfidence(input: CompanyFoundationInput, scenari
   const contradictions = input.dataQuality?.contradictionCount ?? input.contradictions?.length ?? 0;
   if (!historicallyCalibrated) {
     overall = Math.min(overall, 84);
-    confidenceCaps.push("No 30-plus-sample historical calibration is available, so confidence is capped below a serious signal.");
+    confidenceCaps.push("No 30-plus-sample historical calibration is available, so this legacy research score remains provisional.");
   } else if ((calibrationEvidence?.lowerConfidenceBound ?? 0) < 0.9) {
     overall = Math.min(overall, 89);
     confidenceCaps.push("The historical lower confidence bound is below 90%.");
@@ -199,9 +199,9 @@ export function buildFoundationConfidence(input: CompanyFoundationInput, scenari
   }
   if (dataQuality < 90 || freshness < 90) {
     overall = Math.min(overall, 89);
-    confidenceCaps.push("Data quality or freshness is below the 90% serious-signal requirement.");
+    confidenceCaps.push("Data quality or freshness is below this research screen's 90% threshold.");
   }
-  const seriousSignalEligible = overall >= 90
+  const researchCalibrationPassed = overall >= 90
     && dataQuality >= 90
     && freshness >= 90
     && sourceAgreement >= 85
@@ -220,7 +220,11 @@ export function buildFoundationConfidence(input: CompanyFoundationInput, scenari
     scenario: scenarioConfidence,
     overall,
     kind: historicallyCalibrated ? "historically_calibrated" : "evidence_only",
-    seriousSignalEligible,
+    researchCalibrationPassed,
+    // This legacy foundation scorer does not run current-event issuer/causal
+    // verification or the full committee, so it can rank research but cannot
+    // grant serious-signal permission.
+    seriousSignalEligible: false,
     calibrationSampleSize: calibrationEvidence?.sampleSize ?? 0,
     confidenceCaps: [...new Set(confidenceCaps)],
   };
@@ -248,16 +252,16 @@ export function buildEventConfidence(event: EventSignalInput, thesis: StoredThes
     overall = Math.min(overall, 84);
     confidenceCaps.push("The event has fewer than two independent receipts.");
   }
-  if (!base?.seriousSignalEligible) {
+  if (!base?.researchCalibrationPassed) {
     overall = Math.min(overall, 89);
-    confidenceCaps.push("The underlying security thesis is not yet calibrated for a 90% serious signal.");
+    confidenceCaps.push("The underlying foundation research has not passed its optional historical calibration screen.");
   }
   if (impact.direction === "neutral") {
     overall = Math.min(overall, 70);
     confidenceCaps.push("The event does not materially change the thesis.");
   }
-  const seriousSignalEligible = Boolean(
-    base?.seriousSignalEligible
+  const researchCalibrationPassed = Boolean(
+    base?.researchCalibrationPassed
     && official
     && independentReceipts >= 2
     && impact.direction !== "neutral"
@@ -275,7 +279,10 @@ export function buildEventConfidence(event: EventSignalInput, thesis: StoredThes
     scenario,
     overall,
     kind: base?.kind ?? "evidence_only",
-    seriousSignalEligible,
+    researchCalibrationPassed,
+    // Current-event serious permission belongs to the separate event-first
+    // price-anchor and full-committee path. History is optional there.
+    seriousSignalEligible: false,
     calibrationSampleSize: base?.calibrationSampleSize ?? 0,
     confidenceCaps: [...new Set(confidenceCaps)],
   };

@@ -59,6 +59,29 @@ assert.equal(decision.path, "foundation");
 assert.ok(decision.scores.opportunityScore >= 0 && decision.scores.opportunityScore <= 100);
 assert.equal(decision.pillars.length, 7);
 assert.ok(decision.killCriteria.length >= 3);
+assert.equal(decision.seriousSignal, false);
+assert.equal(decision.userAlertEligible, false);
+assert.equal(decision.confidence.seriousSignalEligible, false);
+assert.ok(decision.blockedReasons.includes("research_only_requires_current_event_verification_price_anchor_and_full_committee"));
+assert.match(decision.actionability, /Historical results are optional context/i);
+
+const historicallyCalibratedResearch = evaluateFoundation({
+  ...foundation,
+  calibration: {
+    horizonDays: 30,
+    sampleSize: 100,
+    wins: 100,
+    losses: 0,
+    precision: 1,
+    lowerConfidenceBound: 0.99,
+    asOf: new Date().toISOString(),
+    source: "real historical research outcomes",
+    successDefinition: "direction-adjusted research outcome",
+  },
+});
+assert.equal(historicallyCalibratedResearch.seriousSignal, false);
+assert.equal(historicallyCalibratedResearch.userAlertEligible, false);
+assert.equal(historicallyCalibratedResearch.confidence.seriousSignalEligible, false);
 
 const thesis = {
   id: null,
@@ -90,6 +113,9 @@ const positiveEvent = {
 const positive = evaluateEvent(positiveEvent, thesis);
 assert.equal(positive.impact.direction, "confirming");
 assert.ok(["thesis_strengthening", "catalyst_alert"].includes(positive.alertType));
+assert.equal(positive.seriousSignal, false);
+assert.equal(positive.userAlertEligible, false);
+assert.ok(positive.blockedReasons.includes("research_only_requires_exact_issuer_causal_mapping_price_anchor_contradiction_checks_and_full_committee"));
 
 const negative = evaluateEvent({
   ...positiveEvent,
@@ -100,6 +126,8 @@ const negative = evaluateEvent({
 assert.equal(negative.impact.direction, "disconfirming");
 assert.ok(["risk_warning", "thesis_broken"].includes(negative.alertType));
 assert.equal(negative.evidence[0]?.path, "event");
+assert.equal(negative.seriousSignal, false);
+assert.equal(negative.userAlertEligible, false);
 
 console.log(JSON.stringify({
   ok: true,
@@ -107,5 +135,7 @@ console.log(JSON.stringify({
   foundationAlert: decision.alertType,
   positiveEventAlert: positive.alertType,
   negativeEventAlert: negative.alertType,
+  historyCannotUnlockLegacyResearchPromotion: true,
+  currentEventCommitteePathRemainsRequired: true,
   safety: { databaseWrites: false, publishing: false, notifications: false, openAiCalls: false },
 }, null, 2));

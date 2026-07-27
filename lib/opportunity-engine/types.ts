@@ -162,6 +162,7 @@ export type ConfidenceBreakdown = {
   scenario: number;
   overall: number;
   kind: ConfidenceKind;
+  researchCalibrationPassed: boolean;
   seriousSignalEligible: boolean;
   calibrationSampleSize: number;
   confidenceCaps: string[];

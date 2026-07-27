@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { runGlobalDeepResearchV3 } from "@/lib/opportunity-engine/global-deep-research-v3";
 import { opportunityCoverageSummary } from "@/lib/opportunity-engine/serious-alert-registry";
+import { persistWorldwideLearningRun, WORLDWIDE_LEARNING_LEDGER_POLICY } from "@/lib/opportunity-engine/worldwide-learning-ledger";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -33,10 +34,10 @@ export async function GET(request: NextRequest) {
   if (expected && suppliedToken(request) !== expected) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   return NextResponse.json({
     ok: true,
-    workflow: "us_live_deep_research",
+    workflow: "global_live_deep_research",
     currentProviders: {
-      usUniverseAndScreening: "TradingView U.S. primary-listing stock scanner",
-      usValuationGrowthMarginsAndAnalystFields: "TradingView current U.S. fundamentals",
+      worldwideUniverseAndScreening: "TradingView public stock scanner",
+      worldwideValuationGrowthMarginsAndAnalystFields: "TradingView current global fundamentals",
       independentAdjustedPriceFallback: "Yahoo Finance public chart API",
       secondPriceAndExpectations: "Financial Modeling Prep when available",
       currentCompanyNews: "Marketaux when available",
@@ -44,8 +45,9 @@ export async function GET(request: NextRequest) {
     },
     actionsCovered: ["buy", "sell", "watch_out"],
     opportunityCoverage: opportunityCoverageSummary(),
+    learningLedger: WORLDWIDE_LEARNING_LEDGER_POLICY,
     seriousDirectionalAlertsEnabled: false,
-    reason: "The active pilot is U.S.-only. Buy and Sell require the five-case historical gate plus current evidence and committee approval.",
+    reason: "Current worldwide fundamentals improve prioritization, but this research path does not perform the current-event issuer/causal verification, real price anchor, contradiction review, and full committee required for serious-signal permission. Historical analogues are optional context.",
     safety: { databaseWrites: false, publishing: false, notifications: false },
   });
 }
@@ -59,12 +61,76 @@ export async function POST(request: NextRequest) {
     const result = await runGlobalDeepResearchV3({
       perAction: integer(body.perAction, 3, 15),
     });
-    return NextResponse.json(result);
+    const allFindings = [
+      ...result.results.buy,
+      ...result.results.sell,
+      ...result.results.watchOut,
+    ];
+    const learningLedger = await persistWorldwideLearningRun({
+      workflow: "global_deep_research",
+      checkedAt: result.checkedAt,
+      runtimeCommit: process.env.RAILWAY_GIT_COMMIT_SHA?.trim() || null,
+      summary: {
+        ok: result.ok,
+        universe: result.universe,
+        requested: result.requested,
+        liveFundamentalCoverage: result.liveFundamentalCoverage,
+        researchSummary: result.summary,
+        safety: result.safety,
+      },
+      findings: allFindings.map((finding) => ({
+        kind: "research_finding",
+        tradingViewSymbol: finding.tradingViewSymbol,
+        symbol: finding.symbol,
+        company: finding.company,
+        exchange: finding.exchange,
+        country: finding.country,
+        action: finding.action,
+        disposition: finding.researchDisposition,
+        currentPrice: finding.currentPrice,
+        observedAt: finding.observedAt,
+        qualifiedCertified: false,
+        rejectionReasons: [...new Set([...finding.blockedReasons, ...finding.providerErrors])],
+        evidence: {
+          evidenceScore: finding.evidenceScore,
+          priceAgreementPercent: finding.priceAgreementPercent,
+          providersAttempted: finding.providersAttempted,
+          providersUsed: finding.providersUsed,
+          fundamentalSupportCount: finding.fundamentalSupportCount,
+          fundamentalWarningCount: finding.fundamentalWarningCount,
+          themes: finding.themes,
+          seriousSignal: finding.seriousSignal,
+        },
+      })),
+      observations: allFindings.map((finding) => ({
+        tradingViewSymbol: finding.tradingViewSymbol,
+        price: finding.currentPrice,
+        observedAt: finding.observedAt,
+        source: finding.currentPriceSource,
+      })),
+    });
+    return NextResponse.json({ ...result, learningLedger });
   } catch (error) {
+    const checkedAt = new Date().toISOString();
+    const errorMessageSafe = error instanceof Error ? error.message.replace(/\s+/g, " ").slice(0, 1000) : "unknown_error";
+    const learningLedger = await persistWorldwideLearningRun({
+      workflow: "global_deep_research",
+      checkedAt,
+      runtimeCommit: process.env.RAILWAY_GIT_COMMIT_SHA?.trim() || null,
+      summary: {
+        ok: false,
+        status: "global_deep_research_failed",
+        errorMessageSafe,
+        safety: { databaseWrites: false, publishing: false, notifications: false, trading: false, seriousSignalsUnlocked: false },
+      },
+      findings: [],
+      observations: [],
+    }).catch(() => null);
     return NextResponse.json({
       ok: false,
       error: "global_deep_research_failed",
-      errorMessageSafe: error instanceof Error ? error.message.replace(/\s+/g, " ").slice(0, 1000) : "unknown_error",
+      errorMessageSafe,
+      learningLedger,
       safety: { databaseWrites: false, publishing: false, notifications: false, seriousSignalsUnlocked: false },
     }, { status: 502 });
   }

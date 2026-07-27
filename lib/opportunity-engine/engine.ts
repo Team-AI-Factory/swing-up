@@ -132,10 +132,11 @@ export function evaluateFoundation(input: CompanyFoundationInput): FoundationDec
   const evidence = evidenceConfidence(input);
   const riskScore = risk(input);
   const opportunityScore = clamp(
-    businessQuality * 0.27
-    + financialMomentum * 0.3
-    + valuationSupport * 0.23
-    + timingQuality * 0.2
+    businessQuality * 0.22
+    + financialMomentum * 0.25
+    + valuationSupport * 0.2
+    + expectationsGap * 0.18
+    + timingQuality * 0.15
     - riskScore * 0.16
     + 12,
   );
@@ -158,7 +159,7 @@ export function evaluateFoundation(input: CompanyFoundationInput): FoundationDec
   const priceTarget = buildPriceTargetScenario(input);
   const confidence = buildFoundationConfidence(input, priceTarget);
   const signalAction = foundationSignal({
-    confidenceEligible: confidence.seriousSignalEligible,
+    confidenceEligible: confidence.researchCalibrationPassed,
     opportunityScore,
     riskScore,
     upsidePercent: priceTarget.upsidePercent,
@@ -166,7 +167,9 @@ export function evaluateFoundation(input: CompanyFoundationInput): FoundationDec
     rewardRiskRatio: priceTarget.rewardRiskRatio,
     candidateBucket,
   });
-  const seriousSignal = confidence.seriousSignalEligible && ["buy", "sell", "watch_out"].includes(signalAction);
+  const researchCalibrationPassed = confidence.researchCalibrationPassed
+    && ["buy", "sell", "watch_out"].includes(signalAction);
+  const seriousSignal = false;
   const expectationsMissing = !known(input.expectations.analystRevisionScore)
     && !known(input.expectations.earningsSurprisePercent)
     && !known(input.expectations.consensusRevenueGrowthPercent)
@@ -177,11 +180,10 @@ export function evaluateFoundation(input: CompanyFoundationInput): FoundationDec
     ...(riskScore >= 65 && signalAction === "buy" ? ["risk_too_high_for_buy_signal"] : []),
     ...(opportunityScore < 70 && signalAction === "buy" ? ["opportunity_score_below_buy_threshold"] : []),
     ...(input.market.currentPrice === null ? ["current_price_missing"] : []),
+    ...(expectationsMissing ? ["market_expectations_not_available"] : []),
     ...(priceTarget.sourcePosture === "unavailable" ? ["price_target_scenario_unavailable"] : []),
     ...(!known(priceTarget.rewardRiskRatio) || priceTarget.rewardRiskRatio < 2 ? ["reward_risk_below_two_to_one"] : []),
-    ...(!confidence.seriousSignalEligible ? ["calibrated_confidence_below_90"] : []),
-    ...((input.calibration?.sampleSize ?? 0) < 30 ? ["historical_calibration_sample_below_30"] : []),
-    ...((input.calibration?.lowerConfidenceBound ?? 0) < 0.9 ? ["historical_lower_confidence_bound_below_90"] : []),
+    "research_only_requires_current_event_verification_price_anchor_and_full_committee",
   ];
   const securityReadiness: SecurityReadiness = seriousSignal
     ? "ready"
@@ -192,8 +194,6 @@ export function evaluateFoundation(input: CompanyFoundationInput): FoundationDec
         : evidence < 55 ? "wait_for_proof" : "not_decision_grade";
   const thesisStatus: ThesisStatus = candidateBucket === "advance_to_deeper_work" ? "strengthening" : candidateBucket === "deprioritized_or_reject" ? "watch" : "untested";
   let alertType: OpportunityAlertType = candidateBucket === "advance_to_deeper_work" ? "new_opportunity" : "wait_for_proof";
-  if (seriousSignal && signalAction === "buy") alertType = "price_opportunity";
-  else if (seriousSignal && (signalAction === "sell" || signalAction === "watch_out")) alertType = "risk_warning";
   const valuationPe = input.valuation.forwardPriceToEarnings ?? input.valuation.priceToEarnings;
   const pillars = [
     pillar("growth", "Growth", financialMomentum >= 60 ? "confirming" : financialMomentum < 40 ? "warning" : "neutral", `Revenue growth: ${input.metrics.revenueGrowthYoY ?? "missing"}`, "Next reported revenue and guidance"),
@@ -229,23 +229,23 @@ export function evaluateFoundation(input: CompanyFoundationInput): FoundationDec
     confidence,
     priceTarget,
     confidenceExplanation,
-    actionability: seriousSignal
-      ? `${signalAction.toUpperCase()} serious signal cleared the 90% calibrated-confidence gate.`
-      : "Research/watch only. The engine abstained from a directional user alert until data, scenario, and historical calibration all clear the 90% gate.",
+    actionability: researchCalibrationPassed
+      ? "Research candidate only. Historical calibration may improve context, but this path cannot grant serious-signal permission without a current verified event, a real price anchor, contradiction checks, and full committee approval."
+      : "Research/watch only. Historical results are optional context; serious-signal permission is evaluated separately from current verified evidence, a real price anchor, contradiction checks, and full committee approval.",
     variantWedge: expectationsMissing
       ? "Reported fundamentals are measurable, but no verified market-expectations edge has been proven."
       : expectationsGap >= 60 ? "Reported fundamentals may be improving faster than current expectations." : "No strong expectations gap has been proven yet.",
     whyNow: input.catalyst.description ?? (financialMomentum >= 60 ? "Fundamental momentum is improving without requiring a fresh-news trigger." : "The company was screened for persistent monitoring."),
-    firstRejection: seriousSignal
-      ? "No immediate rejection; monitor the stated kill criteria and calibration drift."
+    firstRejection: researchCalibrationPassed
+      ? "This foundation-only research path has no current verified event or full committee decision."
       : confidence.confidenceCaps[0]
-        ?? (riskScore >= 65 ? "Risk is too high." : evidence < 65 ? "The evidence pack is incomplete." : valuationSupport < 40 ? "The stock may already price in too much success." : "The opportunity score is not high enough."),
-    whatWouldMakeInvestable: ["Fresh official financial evidence", "Two independent price sources", "A real price anchor", "Five independent leakage-safe same-direction outcomes with at least 90% observed success", "Full committee approval"],
+        ?? (riskScore >= 65 ? "Risk is too high." : evidence < 65 ? "The evidence pack is incomplete." : expectationsMissing ? "Verified market expectations are missing." : valuationSupport < 40 ? "The stock may already price in too much success." : "The opportunity score is not high enough."),
+    whatWouldMakeInvestable: ["A current verified event with exact issuer mapping", "A defensible causal path", "A real current price anchor", "No unresolved severe contradiction", "Full committee approval"],
     killCriteria: ["Two consecutive periods of worsening growth", "Material margin or cash-flow deterioration", "Balance-sheet stress or heavy dilution", "Valuation removes the reward-to-risk advantage", "Observed signal precision falls below its published calibration band"],
     blockedReasons: [...new Set(blockedReasons)],
     pillars,
     evidence: input.receipts.map((item) => ({ path: "foundation", direction: "neutral", pillar: "other", sourceName: item.source, sourceUrl: item.url, rawSignalId: null, observedAt: item.observedAt ?? input.observedAt, summary: `Foundation receipt from ${item.source}`, reliability: item.reliability, payload: { fields: item.fields ?? [] } })),
-    nextWorkflow: seriousSignal ? "publish_to_guarded_serious_signal_review" : candidateBucket === "advance_to_deeper_work" ? "scenario_sensitivity_and_calibration" : "collect_missing_foundation_evidence",
+    nextWorkflow: researchCalibrationPassed ? "event_first_current_evidence_and_full_committee_review" : candidateBucket === "advance_to_deeper_work" ? "scenario_sensitivity_and_calibration" : "collect_missing_foundation_evidence",
     input,
   };
 }
@@ -283,14 +283,16 @@ export function evaluateEvent(event: EventSignalInput, thesis: StoredThesisSnaps
   const confidence = buildEventConfidence(event, thesis, impact);
   let signalAction: SeriousSignalAction = "no_action";
   if (direction === "disconfirming") signalAction = thesisStatusAfter === "broken" || severity === "critical" ? "sell" : "watch_out";
-  else if (direction === "confirming") signalAction = confidence.seriousSignalEligible && thesis.signalAction === "buy" ? "buy" : "watch";
+  else if (direction === "confirming") signalAction = confidence.researchCalibrationPassed && thesis.signalAction === "buy" ? "buy" : "watch";
   else if (thesis.signalAction === "watch" || thesis.signalAction === "buy") signalAction = "watch";
-  const seriousSignal = confidence.seriousSignalEligible && ["buy", "sell", "watch_out"].includes(signalAction);
+  const researchCalibrationPassed = confidence.researchCalibrationPassed
+    && ["buy", "sell", "watch_out"].includes(signalAction);
+  const seriousSignal = false;
   const blockedReasons = [
     ...(direction === "neutral" ? ["event_does_not_change_the_thesis"] : []),
     ...(evidenceConfidence < 65 ? ["event_needs_official_or_independent_confirmation"] : []),
     ...(independentReceipts < 2 ? ["event_independent_receipts_below_two"] : []),
-    ...(!confidence.seriousSignalEligible ? ["event_calibrated_confidence_below_90"] : []),
+    "research_only_requires_exact_issuer_causal_mapping_price_anchor_contradiction_checks_and_full_committee",
   ];
   const securityReadinessAfter: SecurityReadiness = seriousSignal
     ? "ready"
@@ -320,11 +322,13 @@ export function evaluateEvent(event: EventSignalInput, thesis: StoredThesisSnaps
     confidence,
     confidenceExplanation,
     thesisDelta: direction === "confirming" ? "New evidence strengthens the existing foundation thesis." : direction === "disconfirming" ? "New evidence weakens or breaks an existing thesis." : "The event does not materially change the thesis yet.",
-    firstRejection: seriousSignal ? "No immediate rejection; confirm price reaction and monitor the kill criteria." : confidence.confidenceCaps[0] ?? (official ? "The event still needs a second independent receipt and calibrated thesis." : "The source is not yet strong enough."),
-    requiredFollowUp: ["Verify with an official receipt", "Obtain a second independent receipt", "Measure price and volume reaction", "Update valuation and scenario ranges", "Update historical calibration after the outcome window closes"],
+    firstRejection: researchCalibrationPassed
+      ? "This legacy event evaluator does not run exact issuer/causal mapping, a fresh execution-price anchor, contradiction review, or the full committee."
+      : confidence.confidenceCaps[0] ?? (official ? "The event still needs a second independent receipt and current-evidence review." : "The source is not yet strong enough."),
+    requiredFollowUp: ["Verify with an official receipt", "Obtain a second independent receipt", "Verify exact issuer and causal mapping", "Anchor a fresh real price", "Resolve contradictory evidence", "Run the full committee", "Store later outcomes in R2"],
     blockedReasons: [...new Set(blockedReasons)],
     evidence: [{ path: "event", direction, pillar: "catalyst", sourceName: event.source, sourceUrl: event.sourceUrl, rawSignalId: event.rawSignalId, observedAt: event.receivedAt, summary: event.summary || event.title, reliability: official ? "official" : event.sourceUrl ? "medium" : "low", payload: event.payload }],
-    nextWorkflow: seriousSignal ? "guarded_serious_signal_review" : direction === "disconfirming" ? "thesis_red_team_and_risk_review" : direction === "confirming" ? "valuation_and_priced_in_check" : "wait_for_more_evidence",
+    nextWorkflow: researchCalibrationPassed ? "event_first_current_evidence_and_full_committee_review" : direction === "disconfirming" ? "thesis_red_team_and_risk_review" : direction === "confirming" ? "valuation_and_priced_in_check" : "wait_for_more_evidence",
     event,
   };
 }

@@ -139,7 +139,7 @@ function parseRow(value: unknown, observedAt: string, sourceUrl: string): Tradin
 export async function fetchTradingViewFundamentals(cases: GlobalDeepResearchCase[]) {
   const symbols = [...new Set(cases.map((item) => item.tradingViewSymbol).filter(Boolean))];
   if (!symbols.length) return { snapshots: new Map<string, TradingViewFundamentalSnapshot>(), errors: [] as string[] };
-  const sourceUrl = "https://scanner.tradingview.com/america/scan";
+  const sourceUrl = "https://scanner.tradingview.com/global/scan";
   const observedAt = new Date().toISOString();
   try {
     const response = await fetch(sourceUrl, {
@@ -154,7 +154,6 @@ export async function fetchTradingViewFundamentals(cases: GlobalDeepResearchCase
       },
       body: JSON.stringify({
         symbols: { tickers: symbols, query: { types: [] } },
-        markets: ["america"],
         columns: [...FIELDS],
         range: [0, symbols.length],
       }),

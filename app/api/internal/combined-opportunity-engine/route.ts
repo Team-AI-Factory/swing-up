@@ -109,11 +109,11 @@ export async function GET() {
     liveDataAvailable: true,
     liveDataSources: ["SEC Company Facts", "SEC filing archives", "Yahoo Finance public chart API", "configured Railway estimates, price, and news providers"],
     mode: "isolated_preview_only",
-    confidencePolicy: {
-      seriousSignalThreshold: 90,
-      minimumHistoricalSamples: 30,
-      requiresLowerConfidenceBound: 0.9,
-      abstainsWhenUncalibrated: true,
+    researchCalibrationPolicy: {
+      historicalContextRole: "optional_research_context_only",
+      historicalComparisonRequiredForSeriousSignal: false,
+      seriousSignalPermission: "separate_event_first_current_evidence_price_anchor_and_full_committee_path",
+      thisRouteCanEmitSeriousSignals: false,
     },
     runtime: runtimeDiagnostics(),
     safety: { databaseWrites: false, publishing: false, notifications: false, payments: false, openAiCalls: false },
@@ -158,11 +158,11 @@ export async function POST(request: NextRequest) {
     dryRun: true,
     dataMode: useLiveData ? "real_live_sec_market_and_configured_provider_data" : "provided_input_only",
     runtime: runtimeDiagnostics(),
-    confidencePolicy: {
-      seriousSignalThreshold: 90,
-      minimumHistoricalSamples: 30,
-      requiresLowerConfidenceBound: 0.9,
-      noUncalibratedDirectionalAlerts: true,
+    researchCalibrationPolicy: {
+      historicalContextRole: "optional_research_context_only",
+      historicalComparisonRequiredForSeriousSignal: false,
+      seriousSignalPermission: "separate_event_first_current_evidence_price_anchor_and_full_committee_path",
+      thisRouteCanEmitSeriousSignals: false,
     },
     foundationDecisions,
     eventDecisions,
@@ -207,6 +207,6 @@ export async function POST(request: NextRequest) {
       optionalProviderErrors: enrichment.providerSummary.reduce((sum, row) => sum + row.providerErrors.length, 0),
     },
     safety: { databaseWrites: false, publishing: false, notifications: false, payments: false, openAiCalls: false },
-    nextStep: "Build and validate chronological outcome calibration. Until the 90% lower confidence bound is proven on at least 30 real outcomes, all directional results remain research/watch only.",
+    nextStep: "Keep these foundation and event rows as research. A serious Buy, Sell, or Watch decision must go through the separate event-first path with current verified evidence, an exact issuer and causal mapping, a real price anchor, contradiction checks, and full committee approval; historical analogues are optional context.",
   });
 }

@@ -111,7 +111,7 @@ function enrichCase(item: GlobalDeepResearchCase, snapshot: TradingViewFundament
       fundamentalWarningCount: 0,
       fundamentalReasons: [],
       providerErrors: unique([...item.providerErrors, "TradingView fundamental snapshot was unavailable."]),
-      blockedReasons: unique([...item.blockedReasons, "Current U.S. fundamental data was unavailable for this listing."]),
+      blockedReasons: unique([...item.blockedReasons, "Current worldwide fundamental data was unavailable for this listing."]),
     };
   }
   const result = assessment(item.action, snapshot, item.currentPrice);
@@ -159,7 +159,7 @@ function enrichCase(item: GlobalDeepResearchCase, snapshot: TradingViewFundament
     researchDisposition: disposition,
     blockedReasons: unique([
       ...item.blockedReasons,
-      "Current fundamentals improve research quality but do not replace an independent outcome certificate.",
+      "Current fundamentals improve research quality but do not replace current-event issuer/causal verification, a real price anchor, contradiction review, and full committee approval.",
       ...(conflicts ? ["Multiple current fundamental warnings conflict with the proposed direction."] : []),
     ]),
     receipts: [...item.receipts, receipt],

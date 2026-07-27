@@ -1,0 +1,81 @@
+name: Current Global Serious Alert Validation
+
+on:
+  push:
+    branches:
+      - "agent/combined-opportunity-engine"
+    paths:
+      - "lib/opportunity-engine/global-market-scanner-v3.ts"
+      - "lib/opportunity-engine/global-listing-identity.ts"
+      - "lib/opportunity-engine/serious-alert-registry.ts"
+      - "lib/opportunity-engine/worldwide-learning-ledger.ts"
+      - "app/api/internal/combined-opportunity-engine/global-scan/route.ts"
+      - "scripts/current-global-serious-alert-live-smoke.mjs"
+      - ".github/workflows/current-global-serious-alert-validation.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "lib/opportunity-engine/global-market-scanner-v3.ts"
+      - "lib/opportunity-engine/global-listing-identity.ts"
+      - "lib/opportunity-engine/serious-alert-registry.ts"
+      - "lib/opportunity-engine/worldwide-learning-ledger.ts"
+      - "app/api/internal/combined-opportunity-engine/global-scan/route.ts"
+      - "scripts/current-global-serious-alert-live-smoke.mjs"
+      - ".github/workflows/current-global-serious-alert-validation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: current-global-serious-alert-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-current-global-scan:
+    name: Scan current global market and validate certified alerts
+    if: github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Check out isolated branch
+        uses: actions/checkout@v4
+
+      - name: Refuse main branch execution
+        shell: bash
+        run: |
+          branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          test "${branch}" != "main"
+          echo "Validating live global scan on isolated branch: ${branch}"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit --fund=false
+
+      - name: Typecheck and build
+        run: |
+          npm run typecheck
+          npm run build
+
+      - name: Run full current Railway global scan
+        env:
+          COMBINED_ENGINE_RAILWAY_URL: https://swing-up-swing-up-pr-262.up.railway.app
+          EXPECTED_BRANCH_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+          SWING_UP_AUTOMATION_TOKEN: ${{ secrets.SWING_UP_AUTOMATION_TOKEN }}
+          CURRENT_GLOBAL_SCAN_REPORT_PATH: artifacts/current-global-serious-alert-report.json
+        run: node scripts/current-global-serious-alert-live-smoke.mjs
+
+      - name: Upload current global report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: current-global-serious-alert-report
+          path: artifacts/current-global-serious-alert-report.json
+          if-no-files-found: warn
+          retention-days: 30

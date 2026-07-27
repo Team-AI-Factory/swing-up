@@ -214,6 +214,6 @@ export function opportunityCoverageSummary() {
     sell: byAction("sell"),
     watchOut: byAction("watch_out"),
     certifiedRuleIds: OPPORTUNITY_FAMILIES.filter((family) => family.seriousSignalEnabled).flatMap((family) => family.certificationRuleId ?? []),
-    seriousSignalPolicy: "Only independently certified rules can set seriousSignal=true. Every other family remains research-only.",
+    seriousSignalPolicy: "This worldwide registry can promote only the existing certified US-scope extreme-volatility Watch Out rule. Proposed Watch Out rules and non-US listings remain research-only. Current-event Buy, Sell, or Watch permission is handled separately by the US event-first current-evidence and full-committee path and does not require historical analogues.",
   };
 }

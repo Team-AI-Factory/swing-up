@@ -67,7 +67,7 @@ export type GlobalDeepResearchResult = {
     publishing: false;
     notifications: false;
     seriousSignalsUnlocked: false;
-    reason: "Live research does not become a serious directional alert until an independent historical certificate passes.";
+    reason: "Worldwide screening is research-only because it does not perform the current-event issuer/causal verification, real execution-price anchor, contradiction review, and full committee required for serious-signal permission. Historical analogues are optional context.";
   };
 };
 
@@ -259,16 +259,20 @@ function buildCase(action: GlobalResearchAction, candidate: GlobalResearchCandid
   const evidenceScore = scoreEvidence(candidate, fmp, news);
   const contradictions = [
     ...(agreement !== null && agreement > 5 ? [`TradingView and FMP current prices disagree by ${agreement.toFixed(2)}%.`] : []),
+    ...(action === "buy" && targetUpside !== null && targetUpside < 0 ? ["The current analyst target is below the current market price."] : []),
+    ...(action === "sell" && targetUpside !== null && targetUpside > 20 ? ["The current analyst target indicates material upside despite the negative screen."] : []),
   ];
   const supportive = action === "buy"
-    ? candidate.opportunityPriority >= 70
+    ? (targetUpside ?? -100) >= 20 && (fmp.gradeBalance ?? 0) > 10
     : action === "sell"
-      ? candidate.riskPriority >= 70
+      ? (targetUpside ?? 100) <= -15 || (fmp.gradeBalance ?? 0) < -20
       : candidate.riskPriority >= 70 || news.sentiment !== null && news.sentiment < -0.2;
   const blockedReasons = unique([
-    "No independently certified Buy/Sell outcome rule exists for this opportunity family.",
+    "This worldwide research case has not passed the current-event issuer/causal verification, real price anchor, contradiction review, and full committee required for serious-signal permission.",
     ...(fmp.quote === null ? ["A second current price source was unavailable."] : []),
     ...(agreement !== null && agreement > 5 ? ["Current price sources conflict."] : []),
+    ...(fmp.targetConsensus === null && action !== "watch_out" ? ["A current analyst target was unavailable."] : []),
+    ...((fmp.analystCount ?? 0) < 3 && action !== "watch_out" ? ["Too few verified analysts support the current expectation set."] : []),
     ...contradictions,
   ]);
   const disposition = evidenceScore >= 80 && supportive && contradictions.length === 0
@@ -349,6 +353,6 @@ export async function runGlobalDeepResearch(options?: { perAction?: number }): P
       seriousSignals: 0,
       providerErrors: all.reduce((sum, row) => sum + row.providerErrors.length, 0),
     },
-    safety: { databaseWrites: false, publishing: false, notifications: false, seriousSignalsUnlocked: false, reason: "Live research does not become a serious directional alert until an independent historical certificate passes." },
+    safety: { databaseWrites: false, publishing: false, notifications: false, seriousSignalsUnlocked: false, reason: "Worldwide screening is research-only because it does not perform the current-event issuer/causal verification, real execution-price anchor, contradiction review, and full committee required for serious-signal permission. Historical analogues are optional context." },
   };
 }

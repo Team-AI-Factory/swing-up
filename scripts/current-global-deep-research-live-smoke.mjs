@@ -94,6 +94,14 @@ async function main() {
     assert.equal(research.json?.safety?.databaseWrites, false);
     assert.equal(research.json?.safety?.publishing, false);
     assert.equal(research.json?.safety?.notifications, false);
+    assert.equal(research.json?.learningLedger?.backend, "cloudflare_r2");
+    assert.equal(research.json?.learningLedger?.durable, true);
+    assert.equal(research.json?.learningLedger?.branchNamespace, "pr-262");
+    assert.equal(research.json?.learningLedger?.immutableCreateOnlyRecords, true);
+    assert.equal(research.json?.learningLedger?.safety?.databaseWrites, false);
+    assert.equal(research.json?.learningLedger?.safety?.publishing, false);
+    assert.equal(research.json?.learningLedger?.safety?.notifications, false);
+    assert.equal(research.json?.learningLedger?.safety?.trading, false);
 
     for (const action of ["buy", "sell", "watchOut"]) {
       const cases = research.json?.results?.[action];
@@ -111,7 +119,8 @@ async function main() {
         assert.ok(typeof item.fundamentalWarningCount === "number");
         assert.ok(Array.isArray(item.fundamentalReasons));
         assert.ok(item.providersUsed.includes("TradingView fundamentals"));
-        assert.ok(Array.isArray(item.blockedReasons) && item.blockedReasons.some((reason) => /certif/i.test(reason)));
+        assert.ok(Array.isArray(item.blockedReasons) && item.blockedReasons.some((reason) => /current-event.*full committee/i.test(reason)));
+        assert.equal(item.blockedReasons.some((reason) => /historical (analogue|analog|certificate).*(required|passes)/i.test(reason)), false);
         if (item.secondSourcePrice !== null) {
           assert.ok(item.secondSourcePrice > 0);
           assert.ok(item.priceAgreementPercent === null || item.priceAgreementPercent >= 0);
@@ -131,6 +140,7 @@ async function main() {
       liveFundamentalCoverage: research.json.liveFundamentalCoverage,
       summary: research.json.summary,
       results: research.json.results,
+      learningLedger: research.json.learningLedger,
       safety: research.json.safety,
     };
     await saveReport(report);

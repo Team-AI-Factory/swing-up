@@ -5,10 +5,6 @@ import ts from "typescript";
 
 const source = readFileSync(new URL("../lib/branch-signal-lab-policy.ts", import.meta.url), "utf8");
 const routeSource = readFileSync(new URL("../app/api/internal/railway-branch-signal-lab/route.ts", import.meta.url), "utf8");
-const usScannerSource = readFileSync(new URL("../lib/opportunity-engine/global-market-scanner-v3.ts", import.meta.url), "utf8");
-const usEnrichmentSource = readFileSync(new URL("../lib/opportunity-engine/tradingview-deep-enrichment.ts", import.meta.url), "utf8");
-const directoryAuditSource = readFileSync(new URL("../app/api/internal/combined-opportunity-engine/global-directory-audit/route.ts", import.meta.url), "utf8");
-const fieldAuditSource = readFileSync(new URL("../app/api/internal/combined-opportunity-engine/tradingview-field-audit/route.ts", import.meta.url), "utf8");
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
 const cjsModule = { exports: {} };
 vm.runInNewContext(`(function (exports, module) { ${compiled}\n})(cjsModule.exports, cjsModule);`, { cjsModule, URL });
@@ -143,14 +139,6 @@ assert.equal(migratedMarketauxBudget.reason, "rolling_quota_guard");
 assert.match(routeSource, /pendingProviderReservations/);
 assert.match(routeSource, /queueMicrotask\(flushProviderReservations\)/);
 assert.match(routeSource, /if \(addedReservation\) storage = await saveHistory\(history, storage\)/);
-for (const currentScannerSource of [usScannerSource, usEnrichmentSource, directoryAuditSource, fieldAuditSource]) {
-  assert.doesNotMatch(currentScannerSource, /scanner\.tradingview\.com\/global\/scan/);
-}
-assert.match(usScannerSource, /mode: "us_primary_listings"/);
-assert.match(usScannerSource, /US_PRIMARY_EXCHANGES = new Set\(\["NASDAQ", "NYSE", "AMEX"\]\)/);
-assert.match(usEnrichmentSource, /scanner\.tradingview\.com\/america\/scan/);
-assert.match(directoryAuditSource, /nonUsScanningEnabled: false/);
-assert.match(fieldAuditSource, /nonUsScanningEnabled: false/);
 
 const externalFailure = { status: "source_temporarily_unavailable", failureScope: "external_provider", repairEligible: false, technicalFailureFingerprint: "external_provider_gdelt" };
 assert.equal(policy.noGainRepairAttempts([externalFailure, externalFailure], externalFailure), 0);
@@ -172,5 +160,4 @@ console.log(JSON.stringify({
   legacyMarketauxReservationsCountTowardCurrentPlan: true,
   externalFailuresNotRepairEligible: true,
   applicationFailureStopPolicy: true,
-  usOnlyScannerBoundaries: true,
 }, null, 2));

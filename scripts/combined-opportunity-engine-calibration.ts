@@ -110,7 +110,7 @@ async function main() {
       sellSuccess: "Negative absolute return and SPY underperformance at the declared horizon",
       watchOutSuccess: "At least 8% maximum drawdown at the declared horizon",
       noSyntheticData: true,
-      survivorshipCaveat: "The first calibration universe uses current liquid large-cap stocks; delisted securities must be added before production reliance.",
+      survivorshipCaveat: "The first calibration universe uses current liquid large-cap stocks; delisted securities must be added before relying on this historical research context.",
     },
     summary: {
       totalCases: scored.length,
@@ -122,7 +122,7 @@ async function main() {
       sourceErrors: source.errors,
       passedRuleCount: passedRules.length,
       passedActions: passedRules.map((evaluation) => `${evaluation.action}_${evaluation.horizonDays}d`),
-      seriousSignalReady: passedRules.length > 0,
+      historicalResearchReady: passedRules.length > 0,
     },
     evaluations,
     passedRules,

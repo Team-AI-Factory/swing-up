@@ -111,17 +111,32 @@ async function main() {
     assert.deepEqual(new Set(scan.json?.seriousAlerts?.certificationScope?.exchanges), certifiedExchanges);
     assert.equal(scan.json?.safety?.publishing, false);
     assert.equal(scan.json?.safety?.notifications, false);
+    assert.equal(scan.json?.learningLedger?.backend, "cloudflare_r2");
+    assert.equal(scan.json?.learningLedger?.durable, true);
+    assert.equal(scan.json?.learningLedger?.branchNamespace, "pr-262");
+    assert.equal(scan.json?.learningLedger?.immutableCreateOnlyRecords, true);
+    assert.equal(scan.json?.learningLedger?.safety?.databaseWrites, false);
+    assert.equal(scan.json?.learningLedger?.safety?.publishing, false);
+    assert.equal(scan.json?.learningLedger?.safety?.notifications, false);
+    assert.equal(scan.json?.learningLedger?.safety?.trading, false);
 
     const watchOutAlerts = Array.isArray(scan.json?.seriousAlerts?.watchOut) ? scan.json.seriousAlerts.watchOut : [];
+    assert.equal(new Set(watchOutAlerts.map((alert) => alert.tradingViewSymbol)).size, watchOutAlerts.length, "Duplicate listing warnings escaped the live scan.");
+    assert.equal(new Set(watchOutAlerts.map((alert) => alert.alertKey)).size, watchOutAlerts.length, "Duplicate warning keys escaped the live scan.");
     for (const alert of watchOutAlerts) {
       assert.equal(certifiedExchanges.has(String(alert.exchange).toUpperCase()), true, `Alert escaped certified listing scope: ${alert.tradingViewSymbol}`);
       assert.equal(alert.seriousSignal, true);
       assert.equal(alert.action, "watch_out");
       assert.equal(alert.subtype, "extreme_volatility_direction_uncertain");
       assert.ok(alert.trailing120SessionDrawdownPercent <= -60);
-      assert.ok(alert.evidence?.marketDataAgeDays <= 7);
+      assert.ok(alert.evidence?.marketDataAgeDays <= 4);
       assert.equal(alert.evidence?.primaryListing, true);
       assert.equal(alert.evidence?.noSyntheticData, true);
+      assert.ok(alert.evidence?.estimatedAverageDollarVolume10d >= 1_000_000);
+      assert.equal(alert.evidence?.minimumAverageDollarVolumeRequired, 1_000_000);
+      assert.equal(alert.evidence?.splitEventsInLookback, 0);
+      assert.ok(alert.evidence?.maximumSingleSessionPriceRatio < 4);
+      assert.equal(alert.evidence?.corporateActionAndDiscontinuityCheckPassed, true);
       assert.ok(alert.calibration?.sampleSize >= 30);
       assert.ok(alert.calibration?.lowerConfidenceBound90 >= 0.9);
       assert.ok(alert.independentPriceAgreementPercent <= 5);
@@ -135,6 +150,9 @@ async function main() {
       + (verification?.priceConflictsBlocked || 0)
       + (verification?.insufficientHistoryBlocked || 0)
       + (verification?.staleHistoryBlocked || 0)
+      + (verification?.corporateActionBlocked || 0)
+      + (verification?.historyDiscontinuityBlocked || 0)
+      + (verification?.liquidityBlocked || 0)
       + (verification?.providerFailures || 0);
     assert.equal(classifiedCandidates, verification?.checkedCandidates, `Attempted candidates were not assigned an honest verification result: ${JSON.stringify(verification)}`);
 
@@ -165,10 +183,14 @@ async function main() {
         priceConflicts: verification?.priceConflictsBlocked || 0,
         insufficientHistory: verification?.insufficientHistoryBlocked || 0,
         staleHistory: verification?.staleHistoryBlocked || 0,
+        corporateActions: verification?.corporateActionBlocked || 0,
+        historyDiscontinuities: verification?.historyDiscontinuityBlocked || 0,
+        insufficientOrMissingLiquidity: verification?.liquidityBlocked || 0,
         providerFailures: verification?.providerFailures || 0,
         globalCasesOutsideCertifiedListingScope: scan.json.seriousAlerts?.certificationScope?.researchOnlyOutsideCertifiedScope || 0,
       },
       opportunityCoverage: scan.json.opportunityCoverage,
+      learningLedger: scan.json.learningLedger,
       safety: scan.json.safety,
     };
 

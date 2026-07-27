@@ -54,11 +54,9 @@ async function fmpProbe(path: string, apiKey: string) {
   }
 }
 
-async function tradingViewUsProbe(rangeEnd: number) {
+async function tradingViewProbe(market: string, primaryOnly: boolean, rangeEnd: number) {
   const started = Date.now();
-  const market = "america";
-  const primaryOnly = true;
-  const url = "https://scanner.tradingview.com/america/scan";
+  const url = `https://scanner.tradingview.com/${market}/scan`;
   const filters: Array<{ left: string; operation: string; right: unknown }> = [
     { left: "type", operation: "equal", right: "stock" },
   ];
@@ -71,7 +69,7 @@ async function tradingViewUsProbe(rangeEnd: number) {
   const body = {
     filter: filters,
     options: { lang: "en" },
-    markets: ["america"],
+    markets: market === "global" ? [] : [market],
     symbols: { query: { types: [] }, tickers: [] },
     columns,
     sort: { sortBy: "market_cap_basic", sortOrder: "desc" },
@@ -115,18 +113,25 @@ export async function GET(request: NextRequest) {
   if (!apiKey) return NextResponse.json({ ok: false, error: "fmp_not_configured" }, { status: 503 });
 
   const results = [];
-  results.push(await fmpProbe("quote?symbol=AAPL", apiKey));
-  for (const rangeEnd of [249, 999]) results.push(await tradingViewUsProbe(rangeEnd));
+  for (const endpoint of ["all-exchange-market-hours", "quote?symbol=AAPL"]) results.push(await fmpProbe(endpoint, apiKey));
+  for (const probe of [
+    ["global", false, 249],
+    ["global", true, 249],
+    ["global", true, 999],
+    ["america", true, 999],
+    ["uk", true, 999],
+    ["germany", true, 999],
+    ["japan", true, 999],
+    ["hongkong", true, 999],
+    ["india", true, 999],
+    ["australia", true, 999],
+    ["canada", true, 999],
+  ] as const) results.push(await tradingViewProbe(probe[0], probe[1], probe[2]));
 
   const usable = results.filter((result) => result.ok && result.rowCount > 0);
   return NextResponse.json({
     ok: true,
     checkedAt: new Date().toISOString(),
-    marketScope: {
-      active: "US-listed common stocks and ADRs",
-      exchanges: ["NASDAQ", "NYSE", "AMEX"],
-      nonUsScanningEnabled: false,
-    },
     usableEndpoints: usable.map((result) => `${result.provider}:${result.endpoint}`),
     results,
     safety: { databaseWrites: false, publishing: false, notifications: false, secretsRedacted: true },

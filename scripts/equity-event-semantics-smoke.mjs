@@ -95,6 +95,11 @@ const activeConflict = build([receipt({
   channel: "defense_department",
 })]);
 assert.equal(activeConflict.candidates.some((item) => item.ticker === "XOM" && item.eventFamily === "geopolitical_conflict" && item.relationship === "second_order"), true);
+const conflictKnockOn = activeConflict.candidates.find((item) => item.ticker === "XOM" && item.relationship === "second_order");
+assert.equal(conflictKnockOn?.historicalAnalog.available, false);
+assert.equal(conflictKnockOn?.gateChecks.historicalComparisonRequired, false);
+assert.equal(conflictKnockOn?.gateChecks.knockOnCausalPathVerified, true);
+assert.equal(conflictKnockOn?.gatePassed, true);
 
 const exactIssuer = build([receipt({
   title: "Freedom Holding Corp. announces a secondary offering",
@@ -117,6 +122,7 @@ console.log(JSON.stringify({
   timeZoneWordNotIssuer: true,
   wordSenseNotIssuer: true,
   activeConflictStillMapped: true,
+  knockOnCanQualifyWithoutHistory: true,
   exactTickerAndCompanyStillMapped: true,
   exactIntelIssuerStillMapped: true,
 }, null, 2));

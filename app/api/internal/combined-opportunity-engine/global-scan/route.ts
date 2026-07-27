@@ -5,6 +5,8 @@ import { CERTIFIED_EXTREME_VOLATILITY_RULE, opportunityCoverageSummary } from "@
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
+const CERTIFIED_US_LISTING_EXCHANGES = new Set(["NASDAQ", "NYSE", "AMEX"]);
+
 function branchAllowed() {
   if (process.env.SWING_UP_COMBINED_ENGINE_ALLOW_LOCAL === "true") return true;
   const branch = process.env.RAILWAY_GIT_BRANCH?.trim();
@@ -38,7 +40,10 @@ export async function GET(request: NextRequest) {
     historyProvider: "Yahoo Finance public chart API",
     optionalDeepResearchProviders: ["Financial Modeling Prep", "Alpha Vantage", "Marketaux", "SEC and official filings"],
     method: "Scan current primary equity listings worldwide, separate Buy, Sell and Watch Out research queues, and verify any certified serious alert against fresh adjusted history from an independent provider.",
-    certifiedRule: CERTIFIED_EXTREME_VOLATILITY_RULE,
+    certifiedRule: {
+      ...CERTIFIED_EXTREME_VOLATILITY_RULE,
+      certifiedListingScope: "Primary listings on NASDAQ, NYSE and AMEX only. Other global listings remain research-only until independent cross-market certification passes.",
+    },
     opportunityCoverage: opportunityCoverageSummary(),
     publishingEnabled: false,
     notificationsEnabled: false,
@@ -61,7 +66,34 @@ export async function POST(request: NextRequest) {
       maximumCertifiedChecks: integer(body.maximumCertifiedChecks, 5_000, 15_000),
       historyConcurrency: integer(body.certifiedCheckConcurrency ?? body.historyConcurrency, 10, 20),
     });
-    return NextResponse.json(result, { status: result.ok ? 200 : 206 });
+    const globallyQualified = result.seriousAlerts.watchOut;
+    const certifiedScopeAlerts = globallyQualified.filter((alert) => CERTIFIED_US_LISTING_EXCHANGES.has(alert.exchange.toUpperCase()));
+    const suppressedOutsideCertifiedScope = globallyQualified.length - certifiedScopeAlerts.length;
+    const response = {
+      ...result,
+      seriousAlerts: {
+        ...result.seriousAlerts,
+        watchOut: certifiedScopeAlerts,
+        certificationScope: {
+          exchanges: [...CERTIFIED_US_LISTING_EXCHANGES],
+          evidence: "The independent external certificate used U.S.-listed securities. Cross-market portability has not yet been proven.",
+          globallyQualifiedCases: globallyQualified.length,
+          seriousAlertsInsideCertifiedScope: certifiedScopeAlerts.length,
+          researchOnlyOutsideCertifiedScope: suppressedOutsideCertifiedScope,
+        },
+        verification: {
+          ...result.seriousAlerts.verification,
+          qualifyingAlerts: certifiedScopeAlerts.length,
+          allMappedCandidatesAttempted: result.seriousAlerts.verification.checkedCandidates === result.seriousAlerts.verification.mappedCandidates,
+          unresolvedCandidatesAreBlockedNotPromoted: true,
+        },
+      },
+      safety: {
+        ...result.safety,
+        seriousSignalsUnlocked: certifiedScopeAlerts.length > 0,
+      },
+    };
+    return NextResponse.json(response, { status: result.universe.coverageComplete ? 200 : 206 });
   } catch (error) {
     return NextResponse.json({
       ok: false,

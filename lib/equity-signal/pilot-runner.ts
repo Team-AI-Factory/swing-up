@@ -1,3 +1,4 @@
+import type { HistoricalSignalRecord } from "@/lib/equity-signal/historical-analogs";
 import {
   bootstrapPilotHistoricalSignals,
   mergePilotHistoricalSignals,
@@ -24,6 +25,10 @@ function strings(value: unknown) {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
+function historicalRecords(value: unknown): HistoricalSignalRecord[] {
+  return Array.isArray(value) ? value.filter((item): item is HistoricalSignalRecord => Boolean(item) && typeof item === "object") : [];
+}
+
 export async function runPilotEquitySignalLab(input: PilotEquitySignalLabInput = {}) {
   const now = input.now ?? new Date();
   const fetchImpl = input.fetchImpl ?? fetch;
@@ -36,6 +41,10 @@ export async function runPilotEquitySignalLab(input: PilotEquitySignalLabInput =
   const pilotGate = evaluateFiveCasePilotGate(selectedCandidate);
   const historicalLearning = object(base.historicalLearning);
   const liveSourcePolicy = object(base.liveSourcePolicy);
+  const libraryAdditions = mergePilotHistoricalSignals(
+    historicalRecords(base._historicalSignalLibraryAdditions),
+    pilotBootstrap.records,
+  );
   const common = {
     ...baseResult,
     marketScope: US_SERIOUS_SIGNAL_PILOT_POLICY.marketScope,
@@ -64,6 +73,7 @@ export async function runPilotEquitySignalLab(input: PilotEquitySignalLabInput =
       analystExpectationsCanVetoBuy: false,
       analystExpectationsRole: "optional context only",
     },
+    _historicalSignalLibraryAdditions: libraryAdditions,
   };
 
   const committeeApproved = base.seriousSignalFound === true;

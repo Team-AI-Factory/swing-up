@@ -18,6 +18,18 @@ const compiled = ts.transpileModule(source, {
 
 const objects = new Map();
 let etagSequence = 0;
+let activeFindingWrites = 0;
+let maximumConcurrentFindingWrites = 0;
+let findingCreateAttempts = 0;
+let findingWriteDelayMs = 0;
+let transientFindingFailuresRemaining = 0;
+let persistentFindingFailureSymbol = null;
+const findingAttemptKeys = new Set();
+let activeOutcomeWrites = 0;
+let maximumConcurrentOutcomeWrites = 0;
+let outcomeCreateAttempts = 0;
+let outcomeWriteDelayMs = 0;
+const outcomeAttemptKeys = new Set();
 const nextEtag = () => `"etag-${++etagSequence}"`;
 const r2 = {
   getR2Config: () => ({ configured: true }),
@@ -29,13 +41,45 @@ const r2 = {
       : { found: false, text: null, etag: null };
   },
   writeVersionedJsonToR2: async (key, payload, options = {}) => {
-    const current = objects.get(key);
-    if (options.createOnly && current) return { written: false, conflict: true, etag: null };
-    if (options.expectedEtag && current?.etag !== options.expectedEtag) return { written: false, conflict: true, etag: null };
-    if (options.expectedEtag && !current) return { written: false, conflict: true, etag: null };
-    const etag = nextEtag();
-    objects.set(key, { text: `${JSON.stringify(payload, null, 2)}\n`, etag });
-    return { written: true, conflict: false, etag };
+    const findingCreate = options.createOnly === true && key.includes("/findings/");
+    const outcomeCreate = options.createOnly === true && key.includes("/outcomes/");
+    if (findingCreate) {
+      findingCreateAttempts += 1;
+      findingAttemptKeys.add(key);
+      activeFindingWrites += 1;
+      maximumConcurrentFindingWrites = Math.max(maximumConcurrentFindingWrites, activeFindingWrites);
+    }
+    if (outcomeCreate) {
+      outcomeCreateAttempts += 1;
+      outcomeAttemptKeys.add(key);
+      activeOutcomeWrites += 1;
+      maximumConcurrentOutcomeWrites = Math.max(maximumConcurrentOutcomeWrites, activeOutcomeWrites);
+    }
+    try {
+      if (findingCreate && findingWriteDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, findingWriteDelayMs));
+      }
+      if (outcomeCreate && outcomeWriteDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, outcomeWriteDelayMs));
+      }
+      if (findingCreate && transientFindingFailuresRemaining > 0) {
+        transientFindingFailuresRemaining -= 1;
+        throw new Error("simulated_transient_r2_write_failure");
+      }
+      if (findingCreate && payload.tradingViewSymbol === persistentFindingFailureSymbol) {
+        throw new Error("simulated_persistent_r2_write_failure");
+      }
+      const current = objects.get(key);
+      if (options.createOnly && current) return { written: false, conflict: true, etag: null };
+      if (options.expectedEtag && current?.etag !== options.expectedEtag) return { written: false, conflict: true, etag: null };
+      if (options.expectedEtag && !current) return { written: false, conflict: true, etag: null };
+      const etag = nextEtag();
+      objects.set(key, { text: `${JSON.stringify(payload, null, 2)}\n`, etag });
+      return { written: true, conflict: false, etag };
+    } finally {
+      if (findingCreate) activeFindingWrites -= 1;
+      if (outcomeCreate) activeOutcomeWrites -= 1;
+    }
   },
 };
 const customRequire = (id) => {
@@ -54,7 +98,7 @@ const testProcess = {
 };
 vm.runInNewContext(
   `(function (exports, module, require, process) { ${compiled}\n})(cjsModule.exports, cjsModule, customRequire, process);`,
-  { cjsModule, customRequire, process: testProcess },
+  { cjsModule, customRequire, process: testProcess, setTimeout },
 );
 const ledger = cjsModule.exports;
 
@@ -154,6 +198,117 @@ const oldPending = state.pendingFindings.filter((item) => item.signalObservedAt 
 assert.equal(oldPending.length, 2);
 assert.ok(oldPending.every((item) => typeof item.checkpointObjects["1D"] === "string"));
 
+const duplicateConflictAt = "2026-07-21T12:00:00.000Z";
+await assert.rejects(
+  () => ledger.persistWorldwideLearningRun({
+    ...firstRun,
+    checkedAt: duplicateConflictAt,
+    runtimeCommit: "duplicate-identity-conflict",
+    findings: [
+      finding({ observedAt: duplicateConflictAt }),
+      finding({ observedAt: duplicateConflictAt, company: "Conflicting payload for the same finding identity" }),
+    ],
+    observations: [],
+  }),
+  /worldwide_learning_duplicate_finding_identity_conflict/,
+);
+
+const drainAt = "2026-07-21T13:00:00.000Z";
+const drainFindings = Array.from({ length: 24 }, (_, index) => finding({
+  tradingViewSymbol: `NASDAQ:DRAIN${String(index).padStart(2, "0")}`,
+  symbol: `DRAIN${String(index).padStart(2, "0")}`,
+  company: `Drain Corp ${index}`,
+  observedAt: drainAt,
+}));
+findingAttemptKeys.clear();
+persistentFindingFailureSymbol = "NASDAQ:DRAIN00";
+await assert.rejects(
+  () => ledger.persistWorldwideLearningRun({
+    ...firstRun,
+    checkedAt: drainAt,
+    runtimeCommit: "drain-before-throw-regression",
+    findings: drainFindings,
+    observations: [],
+  }),
+  /simulated_persistent_r2_write_failure/,
+);
+persistentFindingFailureSymbol = null;
+assert.equal(findingAttemptKeys.size, drainFindings.length, "Workers stopped before all independent immutable writes drained.");
+
+const bulkFindingCount = 64;
+const bulkAt = "2026-07-22T10:00:00.000Z";
+const bulkFindings = Array.from({ length: bulkFindingCount }, (_, index) => finding({
+  tradingViewSymbol: `NASDAQ:BULK${String(index).padStart(3, "0")}`,
+  symbol: `BULK${String(index).padStart(3, "0")}`,
+  company: `Bulk Corp ${index}`,
+  currentPrice: 10 + index,
+  observedAt: bulkAt,
+}));
+maximumConcurrentFindingWrites = 0;
+findingCreateAttempts = 0;
+findingAttemptKeys.clear();
+findingWriteDelayMs = 15;
+transientFindingFailuresRemaining = 1;
+const bulkStartedAt = performance.now();
+const bulk = await ledger.persistWorldwideLearningRun({
+  ...firstRun,
+  checkedAt: bulkAt,
+  runtimeCommit: "bulk-concurrency-regression",
+  findings: [...bulkFindings, ...bulkFindings.slice(0, 8)],
+  observations: bulkFindings.map((item) => ({
+    tradingViewSymbol: item.tradingViewSymbol,
+    price: item.currentPrice,
+    observedAt: item.observedAt,
+    source: "TradingView public stock scanner",
+  })),
+});
+const bulkDurationMs = performance.now() - bulkStartedAt;
+findingWriteDelayMs = 0;
+assert.equal(bulk.findingObjects.length, bulkFindingCount);
+assert.equal(new Set(bulk.findingObjects).size, bulkFindingCount);
+assert.equal(findingAttemptKeys.size, bulkFindingCount);
+assert.equal(findingCreateAttempts, bulkFindingCount + 1);
+assert.ok(maximumConcurrentFindingWrites > 1, "Immutable finding writes were serialized.");
+assert.ok(maximumConcurrentFindingWrites <= 12, "Immutable finding write concurrency exceeded its safety bound.");
+assert.ok(
+  bulkDurationMs < (bulkFindingCount * 15) / 2,
+  `Bounded concurrent writes did not materially outperform the ${bulkFindingCount * 15}ms sequential floor: ${bulkDurationMs.toFixed(1)}ms.`,
+);
+assert.equal(bulk.immutableFindingWriteConcurrency, 12);
+
+maximumConcurrentOutcomeWrites = 0;
+outcomeCreateAttempts = 0;
+outcomeAttemptKeys.clear();
+outcomeWriteDelayMs = 15;
+const bulkOutcomeAt = "2026-07-23T10:00:00.000Z";
+const outcomesStartedAt = performance.now();
+const bulkOutcomes = await ledger.persistWorldwideLearningRun({
+  workflow: "global_deep_research",
+  checkedAt: bulkOutcomeAt,
+  runtimeCommit: "bulk-outcome-concurrency-regression",
+  summary: { ok: true, matured: bulkFindingCount, safety: { databaseWrites: false, publishing: false, notifications: false, trading: false } },
+  findings: [],
+  observations: bulkFindings.map((item) => ({
+    tradingViewSymbol: item.tradingViewSymbol,
+    price: item.currentPrice * 1.1,
+    observedAt: bulkOutcomeAt,
+    source: "TradingView public stock scanner",
+  })),
+});
+const bulkOutcomeDurationMs = performance.now() - outcomesStartedAt;
+outcomeWriteDelayMs = 0;
+assert.equal(bulkOutcomes.outcomeObjects.length, bulkFindingCount);
+assert.equal(new Set(bulkOutcomes.outcomeObjects).size, bulkFindingCount);
+assert.equal(outcomeAttemptKeys.size, bulkFindingCount);
+assert.equal(outcomeCreateAttempts, bulkFindingCount);
+assert.ok(maximumConcurrentOutcomeWrites > 1, "Immutable outcome writes were serialized.");
+assert.ok(maximumConcurrentOutcomeWrites <= 12, "Immutable outcome write concurrency exceeded its safety bound.");
+assert.ok(
+  bulkOutcomeDurationMs < (bulkFindingCount * 15) / 2,
+  `Bounded concurrent outcome writes did not materially outperform the ${bulkFindingCount * 15}ms sequential floor: ${bulkOutcomeDurationMs.toFixed(1)}ms.`,
+);
+assert.equal(bulkOutcomes.immutableOutcomeWriteConcurrency, 12);
+
 testProcess.env.RAILWAY_GIT_BRANCH = "main";
 await assert.rejects(() => ledger.persistWorldwideLearningRun(firstRun), /worldwide_learning_branch_not_allowed/);
 testProcess.env.RAILWAY_GIT_BRANCH = "agent/combined-opportunity-engine";
@@ -171,6 +326,14 @@ console.log(JSON.stringify({
   ok: true,
   immutableRunSummaries: true,
   immutableFindingsAndRejections: true,
+  duplicateFindingsCollapsedToUniqueObjects: true,
+  conflictingDuplicateFindingPayloadsRejected: true,
+  workersDrainBeforeFailure: true,
+  immutableFindingWriteConcurrency: maximumConcurrentFindingWrites,
+  immutableOutcomeWriteConcurrency: maximumConcurrentOutcomeWrites,
+  bulkFindingCount,
+  bulkDurationMs: Math.round(bulkDurationMs),
+  bulkOutcomeDurationMs: Math.round(bulkOutcomeDurationMs),
   laterEligibleOutcomes: ["1D", "3D", "7D", "30D", "90D"],
   idempotentCreateOnlyWrites: true,
   conditionalStateWrites: true,

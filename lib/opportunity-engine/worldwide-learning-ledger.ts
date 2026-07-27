@@ -12,6 +12,9 @@ const R2_LEDGER_PREFIX = `${R2_WRITE_PREFIX}worldwide-learning`;
 const R2_STATE_KEY = `${R2_LEDGER_PREFIX}/state-v1.json`;
 const MAX_PENDING_FINDINGS = 4_000;
 const MAX_STATE_AGE_MS = 110 * 24 * 60 * 60 * 1000;
+const IMMUTABLE_FINDING_WRITE_CONCURRENCY = 12;
+const IMMUTABLE_OUTCOME_WRITE_CONCURRENCY = 12;
+const IMMUTABLE_WRITE_ATTEMPTS = 3;
 const CHECKPOINTS = [
   { label: "1D", milliseconds: 24 * 60 * 60 * 1000, maximumDelayMs: 7 * 24 * 60 * 60 * 1000 },
   { label: "3D", milliseconds: 3 * 24 * 60 * 60 * 1000, maximumDelayMs: 7 * 24 * 60 * 60 * 1000 },
@@ -195,6 +198,34 @@ function normalizedFinding(finding: WorldwideLearningFinding) {
   };
 }
 
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const output = new Array<R>(items.length);
+  const failures = new Array<unknown>(items.length);
+  let cursor = 0;
+  await Promise.all(Array.from(
+    { length: Math.min(concurrency, items.length) },
+    async () => {
+      while (cursor < items.length) {
+        const index = cursor;
+        cursor += 1;
+        try {
+          output[index] = await worker(items[index]);
+        } catch (error) {
+          failures[index] = error ?? new Error("worldwide_learning_unknown_concurrent_write_failure");
+        }
+      }
+    },
+  ));
+  const firstFailure = failures.find((failure) => failure !== undefined);
+  if (firstFailure !== undefined) throw firstFailure;
+  return output;
+}
+
 function normalizedObservation(observation: WorldwideMarketObservation) {
   const observedAt = validTime(observation.observedAt);
   const tradingViewSymbol = text(observation.tradingViewSymbol)?.toUpperCase();
@@ -296,13 +327,29 @@ async function writeImmutable(
   payload: JsonRecord,
   identityMatches: (existing: JsonRecord) => boolean,
 ) {
-  const written = await writeVersionedJsonToR2(objectKey, payload, { createOnly: true });
+  let written: Awaited<ReturnType<typeof writeVersionedJsonToR2>> | null = null;
+  for (let attempt = 0; attempt < IMMUTABLE_WRITE_ATTEMPTS && !written; attempt += 1) {
+    try {
+      written = await writeVersionedJsonToR2(objectKey, payload, { createOnly: true });
+    } catch (error) {
+      if (attempt + 1 >= IMMUTABLE_WRITE_ATTEMPTS) throw error;
+      const jitterMs = Number.parseInt(digest([objectKey, attempt]).slice(0, 4), 16) % 25;
+      await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1) + jitterMs));
+    }
+  }
+  if (!written) throw new Error("worldwide_learning_immutable_write_failed");
   if (written.written) return payload;
   if (!written.conflict) throw new Error("worldwide_learning_immutable_write_failed");
   const existing = await readVersionedTextFromR2(objectKey);
   if (!existing.found || !existing.text) throw new Error("worldwide_learning_immutable_conflict_read_failed");
   const parsed = record(JSON.parse(existing.text));
-  if (!parsed || !identityMatches(parsed)) throw new Error("worldwide_learning_immutable_content_conflict");
+  if (
+    !parsed
+    || !identityMatches(parsed)
+    || digest(parsed) !== digest(payload)
+  ) {
+    throw new Error("worldwide_learning_immutable_content_conflict");
+  }
   return parsed;
 }
 
@@ -418,17 +465,36 @@ export async function persistWorldwideLearningRun(rawInput: WorldwideLearningRun
   const input = validateRun(rawInput);
   const findings = input.findings.map(normalizedFinding);
   const runId = runIdentity({ ...input, findings });
+  const immutableFindingMap = new Map<string, {
+    finding: ReturnType<typeof normalizedFinding>;
+    findingId: string;
+    payload: JsonRecord;
+  }>();
+  for (const finding of findings) {
+    const item = { finding, ...immutableFindingPayload(input, runId, finding) };
+    const existing = immutableFindingMap.get(item.findingId);
+    if (existing) {
+      if (digest(existing.payload) !== digest(item.payload)) {
+        throw new Error("worldwide_learning_duplicate_finding_identity_conflict");
+      }
+      continue;
+    }
+    immutableFindingMap.set(item.findingId, item);
+  }
+  const immutableFindings = [...immutableFindingMap.values()];
   const runPayload = immutableRunPayload({ ...input, findings }, runId);
   const runKey = runObjectKey(input, runId);
   await writeImmutable(runKey, runPayload, (existing) => existing.kind === "worldwide_real_test_run" && existing.runId === runId);
 
-  const immutableFindings = findings.map((finding) => ({ finding, ...immutableFindingPayload(input, runId, finding) }));
-  const findingKeys: string[] = [];
-  for (const item of immutableFindings) {
-    const objectKey = findingObjectKey(input, item.findingId);
-    await writeImmutable(objectKey, item.payload, (existing) => existing.findingId === item.findingId && existing.runId === runId);
-    findingKeys.push(objectKey);
-  }
+  const findingKeys = await mapWithConcurrency(
+    immutableFindings,
+    IMMUTABLE_FINDING_WRITE_CONCURRENCY,
+    async (item) => {
+      const objectKey = findingObjectKey(input, item.findingId);
+      await writeImmutable(objectKey, item.payload, (existing) => existing.findingId === item.findingId && existing.runId === runId);
+      return objectKey;
+    },
+  );
 
   const observations = latestObservations(input.observations);
   const outcomeKeys = new Set<string>();
@@ -441,19 +507,29 @@ export async function persistWorldwideLearningRun(rawInput: WorldwideLearningRun
       const pending = pendingFromFinding(input, runId, item.findingId, item.finding);
       if (pending && !byId.has(pending.id)) byId.set(pending.id, pending);
     }
+    const dueOutcomes: OutcomeCandidate[] = [];
     for (const pending of byId.values()) {
       const observation = observations.get(pending.tradingViewSymbol);
       if (!observation) continue;
       const due = nextOutcomeCandidate(pending, observation);
-      if (!due) continue;
-      const archived = await writeImmutable(
-        due.objectKey,
-        due.payload,
-        (existing) => existing.kind === "worldwide_forward_outcome_checkpoint"
-          && existing.findingId === pending.id
-          && existing.checkpoint === due.checkpoint.label,
-      );
-      pending.checkpointObjects[due.checkpoint.label] = due.objectKey;
+      if (due) dueOutcomes.push(due);
+    }
+    const archivedOutcomes = await mapWithConcurrency(
+      dueOutcomes,
+      IMMUTABLE_OUTCOME_WRITE_CONCURRENCY,
+      async (due) => {
+        const archived = await writeImmutable(
+          due.objectKey,
+          due.payload,
+          (existing) => existing.kind === "worldwide_forward_outcome_checkpoint"
+            && existing.findingId === due.pending.id
+            && existing.checkpoint === due.checkpoint.label,
+        );
+        return { due, archived };
+      },
+    );
+    for (const { due, archived } of archivedOutcomes) {
+      due.pending.checkpointObjects[due.checkpoint.label] = due.objectKey;
       if (archived.evaluatedAt !== due.payload.evaluatedAt) {
         const archivedObservedAt = validTime(archived.evaluatedAt);
         if (!archivedObservedAt) throw new Error("worldwide_learning_archived_outcome_invalid");
@@ -488,6 +564,8 @@ export async function persistWorldwideLearningRun(rawInput: WorldwideLearningRun
     pendingOutcomeFindingCount: finalPendingCount,
     immutableCreateOnlyRecords: true,
     idempotent: true,
+    immutableFindingWriteConcurrency: IMMUTABLE_FINDING_WRITE_CONCURRENCY,
+    immutableOutcomeWriteConcurrency: IMMUTABLE_OUTCOME_WRITE_CONCURRENCY,
     safety: { databaseWrites: false, publishing: false, notifications: false, trading: false, productionR2Writes: false },
   };
 }
@@ -503,6 +581,8 @@ export const WORLDWIDE_LEARNING_LEDGER_POLICY = {
   })),
   historyRequiredForPromotion: false,
   findingsAndOutcomesAreLearningEvidenceOnly: true,
+  immutableFindingWriteConcurrency: IMMUTABLE_FINDING_WRITE_CONCURRENCY,
+  immutableOutcomeWriteConcurrency: IMMUTABLE_OUTCOME_WRITE_CONCURRENCY,
   databaseWrites: false,
   publishing: false,
   notifications: false,

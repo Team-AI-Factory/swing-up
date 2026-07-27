@@ -1,0 +1,43 @@
+name: Patch TradingView Pagination
+
+on:
+  push:
+    branches:
+      - "agent/combined-opportunity-engine"
+    paths:
+      - ".github/workflows/patch-tradingview-pagination.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.ref == 'refs/heads/agent/combined-opportunity-engine'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out isolated branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/combined-opportunity-engine
+
+      - name: Correct exclusive range boundary
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path("lib/opportunity-engine/global-market-scanner-v3.ts")
+          text = path.read_text()
+          old = 'range: [start, start + pageSize - 1],'
+          new = 'range: [start, start + pageSize],'
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f"Expected one pagination expression, found {count}")
+          path.write_text(text.replace(old, new))
+
+      - name: Commit patch to isolated branch
+        shell: bash
+        run: |
+          git config user.name "Swing Up CI"
+          git config user.email "swing-up-ci@users.noreply.github.com"
+          git add lib/opportunity-engine/global-market-scanner-v3.ts
+          git commit -m "Fix TradingView exclusive pagination boundary"
+          git push origin HEAD:agent/combined-opportunity-engine

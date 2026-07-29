@@ -180,7 +180,13 @@ export async function enrichCandidateQuotes(
   maximum = 3,
   outcomeTickers: string[] = [],
 ) {
-  const shortlisted = candidates.filter((candidate) => candidate.gatePassed).slice(0, maximum);
+  const qualified = candidates.filter((candidate) => candidate.gatePassed).slice(0, maximum);
+  const shadow = candidates
+    .filter((candidate) => candidate.trackingDisposition === "shadow_near_miss")
+    .slice(0, 2);
+  // A single fetched quote can serve several distinct current events for the
+  // same ticker. Keep every candidate object and deduplicate only network calls.
+  const shortlisted = [...qualified, ...shadow];
   const eventTickers = [...new Set([
     ...shortlisted.map((candidate) => candidate.ticker),
     ...outcomeTickers.slice(0, MAX_OUTCOME_TICKERS).map(validTicker).filter((value): value is string => Boolean(value)),

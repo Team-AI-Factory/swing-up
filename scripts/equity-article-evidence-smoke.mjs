@@ -27,7 +27,13 @@ const candidate = {
   }],
 };
 
-const html = `<html><main><p>Example Medical announced that the FDA placed its lead programme on clinical hold.</p><p>The clinical hold followed a safety signal and delays development.</p><p>The company is reviewing the FDA request and the programme outlook.</p><p>Investors should consider the resulting pipeline value risk.</p></main></html>`;
+const html = `<html><main>
+<p>Example Medical announced that the FDA placed its lead programme on clinical hold after reviewing a newly reported safety signal in the ongoing study.</p>
+<p>The clinical hold pauses new enrolment and dosing while the company supplies additional information requested by the regulator.</p>
+<p>Management said the development timetable will be delayed and that the programme outlook will be reassessed after discussions with the FDA.</p>
+<p>The company described the programme as a material part of its research pipeline and acknowledged that extended delay could increase development costs.</p>
+<p>Example Medical will investigate the safety finding, update investigators, and provide another public update when the regulator allows the study to proceed or requests further action.</p>
+</main></html>`;
 const fetchImpl = async () => new Response(html, { status: 200, headers: { "content-type": "text/html" } });
 const report = await buildArticleEvidenceReport({ candidates: [candidate], selectedCandidate: candidate, fetchImpl, maximumArticles: 2 });
 const evidence = articleEvidenceForCandidate(report, candidate);

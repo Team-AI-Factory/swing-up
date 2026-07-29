@@ -36,12 +36,14 @@ const universe = {
     entry("INTC", "INTEL CORP", ["Intel"]),
     entry("PPLI", "People Inc", ["People"]),
     entry("XOM", "Exxon Mobil Corporation", ["Exxon Mobil"]),
+    entry("DAL", "Delta Air Lines, Inc.", ["Delta Air Lines", "Delta"]),
+    entry("JPM", "JPMorgan Chase & Co.", ["JPMorgan Chase", "JPMorgan"]),
     entry("RS", "Reliance, Inc.", ["Reliance"]),
     entry("AWX", "Avalon Holdings Corp.", ["Avalon"]),
     entry("GOOGL", "Alphabet Inc.", ["Alphabet"]),
     entry("AAPL", "Apple Inc.", ["Apple"]),
   ],
-  coverage: { nasdaqRows: 9, otherExchangeRows: 0, eligibleEquities: 9, cikMapped: 0, cikMappedPercent: 0, adrCount: 0, excludedByReason: {} },
+  coverage: { nasdaqRows: 11, otherExchangeRows: 0, eligibleEquities: 11, cikMapped: 0, cikMappedPercent: 0, adrCount: 0, excludedByReason: {} },
   sources: [],
 };
 const macro = { checkedAt: "2026-07-22T13:00:00.000Z", status: "connected", series: [], regime: ["normal"], historicalComparisonAvailable: false, errors: [] };
@@ -61,7 +63,7 @@ const receipt = (overrides) => ({
   rawEventType: null,
   ...overrides,
 });
-const build = (receipts) => analysis.buildImpactCandidates(receipts, universe, macro, new Date("2026-07-22T13:00:00.000Z"), []);
+const build = (receipts, historicalSignals = []) => analysis.buildImpactCandidates(receipts, universe, macro, new Date("2026-07-22T13:00:00.000Z"), historicalSignals);
 
 const commemoration = build([receipt({
   title: "Presidential Message on the Anniversary of the Liberation of Guam",
@@ -122,8 +124,125 @@ assert.equal(activeConflict.candidates.some((item) => item.ticker === "XOM" && i
 const conflictKnockOn = activeConflict.candidates.find((item) => item.ticker === "XOM" && item.relationship === "second_order");
 assert.equal(conflictKnockOn?.historicalAnalog.available, false);
 assert.equal(conflictKnockOn?.gateChecks.historicalComparisonRequired, false);
-assert.equal(conflictKnockOn?.gateChecks.knockOnCausalPathVerified, true);
-assert.equal(conflictKnockOn?.gatePassed, true);
+assert.equal(conflictKnockOn?.causalExposure.status, "generic_sector_proxy");
+assert.equal(conflictKnockOn?.gateChecks.knockOnCausalPathVerified, false);
+assert.equal(conflictKnockOn?.gatePassed, false);
+
+const vaguePrimaryCompanyMention = build([receipt({
+  title: "Official notice: military strikes close a Red Sea shipping route",
+  summary: "The notice mentions Exxon Mobil Corporation but contains no company-specific exposure size or effect direction.",
+  companyHints: ["Exxon Mobil Corporation"],
+})]);
+const vaguePrimaryCandidate = vaguePrimaryCompanyMention.candidates.find((item) => item.ticker === "XOM");
+assert.equal(vaguePrimaryCandidate?.relationship, "second_order");
+assert.equal(vaguePrimaryCandidate?.causalExposure.status, "generic_sector_proxy");
+assert.equal(vaguePrimaryCandidate?.causalExposure.eligibleForSeriousSignal, false);
+assert.equal(vaguePrimaryCandidate?.gateChecks.knockOnCausalPathVerified, false);
+assert.equal(vaguePrimaryCandidate?.gatePassed, false);
+
+const companySpecificConflictExposure = build([receipt({
+  title: "Military strikes close a Red Sea shipping route as conflict escalates",
+  summary: "Exxon Mobil Corporation derives 25% of its revenue from operations exposed to the affected route, creating a direct disclosed disruption risk.",
+  channel: "defense_department",
+  companyHints: ["Exxon Mobil Corporation"],
+})]);
+const verifiedExposure = companySpecificConflictExposure.candidates.find((item) => item.ticker === "XOM" && item.causalExposure.status === "event_specific");
+assert.equal(verifiedExposure?.causalExposure.status, "event_specific");
+assert.equal(verifiedExposure?.causalExposure.eligibleForSeriousSignal, true);
+assert.equal(verifiedExposure?.gateChecks.knockOnCausalPathVerified, true);
+assert.equal(verifiedExposure?.gatePassed, true);
+
+const independentlyVerifiedExposure = build([
+  receipt({
+    title: "Red Sea military strikes close a shipping route",
+    summary: "Exxon Mobil Corporation derives 25% of its revenue from operations exposed to the affected route, and the disruption is expected to reduce revenue.",
+    publisher: "Independent Energy Desk",
+    url: "https://news-one.example/red-sea-route",
+    channel: "google_news_rss",
+    official: false,
+    primarySource: false,
+    companyHints: ["Exxon Mobil Corporation"],
+    rawEventType: "red-sea-route-20260722",
+  }),
+  receipt({
+    title: "Shipping disruption follows military strikes in Red Sea",
+    summary: "Exxon Mobil Corporation derives 25% of its revenue from operations using the affected route, and the disruption is expected to reduce revenue.",
+    publisher: "Independent Logistics Desk",
+    url: "https://news-two.example/shipping-disruption",
+    channel: "marketaux",
+    official: false,
+    primarySource: false,
+    companyHints: ["Exxon Mobil Corporation"],
+    rawEventType: "red-sea-route-20260722",
+  }),
+]);
+const corroboratedExposure = independentlyVerifiedExposure.candidates.find((item) => item.ticker === "XOM" && item.causalExposure.status === "event_specific");
+assert.equal(corroboratedExposure?.independentPublishers, 2);
+assert.equal(corroboratedExposure?.causalExposure.eligibleForSeriousSignal, true);
+assert.equal(corroboratedExposure?.gateChecks.knockOnCausalPathVerified, true);
+assert.equal(corroboratedExposure?.gatePassed, true);
+
+const vaguePrimaryDoesNotValidateExposure = build([
+  receipt({
+    title: "Official notice: military strikes close a Red Sea shipping route",
+    summary: "The notice mentions Exxon Mobil Corporation but contains no quantified company exposure.",
+    publisher: "Official Source",
+    url: "https://official.example/red-sea-route",
+    companyHints: ["Exxon Mobil Corporation"],
+    rawEventType: "red-sea-route-vague-20260722",
+  }),
+  receipt({
+    title: "Publisher estimates Exxon exposure after Red Sea military strikes",
+    summary: "Exxon Mobil Corporation derives 25% of its revenue from operations exposed to the affected route, and the disruption is expected to reduce revenue.",
+    publisher: "Single Secondary Desk",
+    url: "https://single-secondary.example/exposure",
+    channel: "google_news_rss",
+    official: false,
+    primarySource: false,
+    companyHints: ["Exxon Mobil Corporation"],
+    rawEventType: "red-sea-route-vague-20260722",
+  }),
+]);
+const singleSecondaryExposure = vaguePrimaryDoesNotValidateExposure.candidates.find((item) => item.ticker === "XOM" && item.causalExposure.status === "event_specific");
+assert.equal(singleSecondaryExposure?.causalExposure.eligibleForSeriousSignal, false);
+assert.equal(singleSecondaryExposure?.gateChecks.knockOnCausalPathVerified, false);
+assert.equal(singleSecondaryExposure?.gatePassed, false);
+
+const airlineFuelExposure = build([receipt({
+  title: "Oil prices surge after pipeline disruption",
+  summary: "Delta Air Lines reports fuel costs represent 25% of operating expense, and higher oil prices will increase fuel costs and pressure margins.",
+  publisher: "Delta Air Lines",
+  url: "https://delta.example/fuel-exposure",
+  companyHints: ["Delta Air Lines"],
+})]);
+const airlineEffect = airlineFuelExposure.candidates.find((item) => item.ticker === "DAL" && item.causalExposure.status === "event_specific");
+assert.equal(airlineEffect?.direction, "downside");
+assert.equal(airlineEffect?.causalExposure.sensitivityDirection, "downside");
+assert.equal(airlineEffect?.causalExposure.eligibleForSeriousSignal, true);
+
+const unsignedFuelExposure = build([receipt({
+  title: "Oil prices surge after pipeline disruption",
+  summary: "Delta Air Lines reports fuel costs represent 25% of operating expense.",
+  publisher: "Delta Air Lines",
+  url: "https://delta.example/unsigned-fuel-exposure",
+  companyHints: ["Delta Air Lines"],
+})]);
+const unsignedAirlineEffect = unsignedFuelExposure.candidates.find((item) => item.ticker === "DAL" && item.causalExposure.status === "event_specific");
+assert.equal(unsignedAirlineEffect?.causalExposure.sensitivityDirection, null);
+assert.equal(unsignedAirlineEffect?.causalExposure.eligibleForSeriousSignal, false);
+assert.equal(unsignedAirlineEffect?.gatePassed, false);
+
+const bankRateExposure = build([receipt({
+  title: "Federal Reserve raises interest rate",
+  summary: "JPMorgan Chase reports 20% policy exposure and expects net interest margin and profit to increase after the rate hike.",
+  publisher: "JPMorgan Chase",
+  url: "https://jpmorgan.example/rate-exposure",
+  companyHints: ["JPMorgan Chase"],
+})]);
+const bankEffect = bankRateExposure.candidates.find((item) => item.ticker === "JPM" && item.causalExposure.status === "event_specific");
+assert.equal(bankEffect?.direction, "upside");
+assert.equal(bankEffect?.causalExposure.sensitivityDirection, "upside");
+assert.equal(bankEffect?.causalExposure.eligibleForSeriousSignal, true);
 
 const exactIssuer = build([receipt({
   title: "Freedom Holding Corp. announces a secondary offering",
@@ -132,6 +251,459 @@ const exactIssuer = build([receipt({
   companyHints: ["Freedom Holding Corp."],
 })]);
 assert.equal(exactIssuer.candidates.some((item) => item.ticker === "FRHC" && item.relationship === "direct" && item.eventFamily === "financing_dilution"), true);
+assert.equal(exactIssuer.candidates.find((item) => item.ticker === "FRHC")?.gatePassed, false);
+
+const materialContractReceipt = receipt({
+  title: "Apple wins contract, a five-year award valued at $500 million",
+  summary: "The committed contract was awarded to Apple.",
+  symbolHints: ["AAPL"],
+  companyHints: ["Apple Inc."],
+});
+const contractBeforeScale = build([materialContractReceipt]).candidates.find((item) => item.ticker === "AAPL");
+assert.ok(contractBeforeScale);
+assert.equal(contractBeforeScale.gateChecks.eventMagnitudeActionable, false);
+assert.equal(contractBeforeScale.trackingDisposition, "shadow_near_miss");
+contractBeforeScale.eventMagnitude.relativeToCompany = {
+  metric: "annual_revenue",
+  eventValue: 500_000_000,
+  eventMetricSourceReceiptId: contractBeforeScale.eventMagnitude.metrics[0].sourceReceiptId,
+  companyValue: 1_000_000_000,
+  ratioPercent: 50,
+  sourceUrl: "https://data.sec.gov/example",
+};
+contractBeforeScale.eventMagnitude.status = "relative_to_company";
+analysis.reassessCandidateAfterFundamentals(contractBeforeScale, new Date("2026-07-22T13:00:00.000Z"));
+assert.equal(contractBeforeScale.gateChecks.eventMagnitudeActionable, true);
+assert.equal(contractBeforeScale.gatePassed, true);
+
+const winsAmountBeforeContract = build([receipt({
+  title: "Apple wins $500 million contract",
+  summary: "The committed award was announced by Apple.",
+  symbolHints: ["AAPL"],
+  companyHints: ["Apple Inc."],
+})]).candidates.find((item) => item.ticker === "AAPL");
+assert.equal(winsAmountBeforeContract?.eventFamily, "contract_award");
+assert.equal(winsAmountBeforeContract?.eventMagnitude.metrics.find((item) => item.kind === "contract_value")?.value, 500_000_000);
+assert.equal(winsAmountBeforeContract?.trackingDisposition, "shadow_near_miss");
+
+const awardedAmountBeforeContract = build([receipt({
+  title: "Apple awarded a $100 million contract",
+  summary: "The committed award was announced by Apple.",
+  symbolHints: ["AAPL"],
+  companyHints: ["Apple Inc."],
+})]).candidates.find((item) => item.ticker === "AAPL");
+assert.equal(awardedAmountBeforeContract?.eventFamily, "contract_award");
+assert.equal(awardedAmountBeforeContract?.eventMagnitude.metrics.find((item) => item.kind === "contract_value")?.value, 100_000_000);
+
+const smallContract = build([receipt({
+  title: "Apple wins contract, a five-year award valued at $5 million",
+  summary: "The committed contract was awarded to Apple.",
+  symbolHints: ["AAPL"],
+  companyHints: ["Apple Inc."],
+})]).candidates.find((item) => item.ticker === "AAPL");
+assert.ok(smallContract);
+smallContract.eventMagnitude.relativeToCompany = {
+  metric: "annual_revenue",
+  eventValue: 5_000_000,
+  eventMetricSourceReceiptId: smallContract.eventMagnitude.metrics[0].sourceReceiptId,
+  companyValue: 1_000_000_000,
+  ratioPercent: 0.5,
+  sourceUrl: "https://data.sec.gov/example",
+};
+smallContract.eventMagnitude.status = "relative_to_company";
+analysis.reassessCandidateAfterFundamentals(smallContract, new Date("2026-07-22T13:00:00.000Z"));
+assert.equal(smallContract.gateChecks.eventMagnitudeActionable, false);
+assert.equal(smallContract.gatePassed, false);
+
+const pricedDilution = build([receipt({
+  title: "Freedom Holding Corp. priced a primary share offering with dilution of 20%",
+  summary: "The company completed the primary offering.",
+  symbolHints: ["FRHC"],
+  companyHints: ["Freedom Holding Corp."],
+})]).candidates.find((item) => item.ticker === "FRHC");
+assert.equal(pricedDilution?.gateChecks.eventMagnitudeActionable, true);
+assert.equal(pricedDilution?.gatePassed, true);
+assert.equal(pricedDilution?.eventMagnitude.metrics.find((item) => item.kind === "dilution_percent")?.promotionEvidenceVerified, true);
+
+const proposedPrimaryOffering = build([receipt({
+  title: "Freedom Holding announces proposed primary offering of 20 million new shares",
+  summary: "The company plans to issue the shares if the offering is priced later.",
+  symbolHints: ["FRHC"],
+  companyHints: ["Freedom Holding Corp."],
+})]).candidates.find((item) => item.ticker === "FRHC");
+assert.ok(proposedPrimaryOffering);
+const proposedSharesMetric = proposedPrimaryOffering.eventMagnitude.metrics.find((item) => item.kind === "offering_shares");
+assert.ok(proposedSharesMetric);
+assert.equal(proposedSharesMetric.eventStatus, "proposed");
+proposedPrimaryOffering.eventMagnitude.relativeToCompany = {
+  metric: "shares_outstanding",
+  eventValue: proposedSharesMetric.value,
+  eventMetricSourceReceiptId: proposedSharesMetric.sourceReceiptId,
+  companyValue: 100_000_000,
+  ratioPercent: 20,
+  sourceUrl: "https://data.sec.gov/example",
+};
+proposedPrimaryOffering.eventMagnitude.status = "relative_to_company";
+analysis.reassessCandidateAfterFundamentals(proposedPrimaryOffering, new Date("2026-07-22T13:00:00.000Z"));
+assert.equal(proposedPrimaryOffering.gateChecks.eventMagnitudeActionable, false);
+assert.equal(proposedPrimaryOffering.gatePassed, false);
+
+const unsupportedDilutionNumber = build([
+  receipt({
+    title: "Freedom Holding Corp. prices a primary offering",
+    summary: "The issuer completed the primary offering without disclosing a dilution percentage here.",
+    symbolHints: ["FRHC"],
+    companyHints: ["Freedom Holding Corp."],
+    rawEventType: "frhc-offering-unsupported",
+  }),
+  receipt({
+    title: "Blog estimates Freedom Holding priced offering dilution at 20%",
+    summary: "The blog claims the company completed a primary offering with dilution of 20%.",
+    publisher: "Single Blog",
+    url: "https://blog.example/frhc-dilution",
+    channel: "google_news_rss",
+    official: false,
+    primarySource: false,
+    symbolHints: ["FRHC"],
+    companyHints: ["Freedom Holding Corp."],
+    rawEventType: "frhc-offering-unsupported",
+  }),
+]).candidates.find((item) => item.ticker === "FRHC");
+assert.equal(unsupportedDilutionNumber?.eventMagnitude.metrics.find((item) => item.kind === "dilution_percent")?.promotionEvidenceVerified, false);
+assert.equal(unsupportedDilutionNumber?.gateChecks.eventMagnitudeActionable, false);
+assert.equal(unsupportedDilutionNumber?.gatePassed, false);
+
+const independentlyCorroboratedDilution = build([
+  receipt({
+    title: "Freedom Holding priced primary offering with dilution of 20%",
+    summary: "The completed primary offering issued new shares.",
+    publisher: "Independent Capital Desk",
+    url: "https://capital.example/frhc-offering",
+    channel: "google_news_rss",
+    official: false,
+    primarySource: false,
+    symbolHints: ["FRHC"],
+    companyHints: ["Freedom Holding Corp."],
+    rawEventType: "frhc-offering-corroborated",
+  }),
+  receipt({
+    title: "Completed Freedom Holding share sale creates 20% dilution",
+    summary: "Freedom Holding priced the primary offering and completed it.",
+    publisher: "Independent Markets Desk",
+    url: "https://markets.example/frhc-offering",
+    channel: "marketaux",
+    official: false,
+    primarySource: false,
+    symbolHints: ["FRHC"],
+    companyHints: ["Freedom Holding Corp."],
+    rawEventType: "frhc-offering-corroborated",
+  }),
+]).candidates.find((item) => item.ticker === "FRHC");
+assert.equal(independentlyCorroboratedDilution?.eventMagnitude.metrics.find((item) => item.kind === "dilution_percent")?.corroboratingPublishers, 2);
+assert.equal(independentlyCorroboratedDilution?.gateChecks.eventMagnitudeActionable, true);
+assert.equal(independentlyCorroboratedDilution?.gatePassed, true);
+
+const pricedAfterShelf = build([
+  receipt({
+    title: "Freedom Holding files a shelf offering",
+    summary: "The company may offer shares later.",
+    publishedAt: "2026-07-22T10:00:00.000Z",
+    symbolHints: ["FRHC"],
+    companyHints: ["Freedom Holding Corp."],
+    rawEventType: "frhc-offering-progression",
+  }),
+  receipt({
+    title: "Freedom Holding prices primary offering with dilution of 20%",
+    summary: "The company completed the primary offering.",
+    publishedAt: "2026-07-22T12:30:00.000Z",
+    symbolHints: ["FRHC"],
+    companyHints: ["Freedom Holding Corp."],
+    rawEventType: "frhc-offering-progression",
+  }),
+]).candidates.find((item) => item.ticker === "FRHC");
+assert.equal(pricedAfterShelf?.gateChecks.eventMagnitudeActionable, true);
+assert.equal(pricedAfterShelf?.gatePassed, true);
+
+const pricedAfterProposed = build([
+  receipt({
+    title: "Freedom Holding announces proposed primary offering",
+    summary: "The company plans to issue shares if the offering is priced later.",
+    publishedAt: "2026-07-22T10:00:00.000Z",
+    symbolHints: ["FRHC"],
+    companyHints: ["Freedom Holding Corp."],
+    rawEventType: "frhc-proposed-to-priced",
+  }),
+  receipt({
+    title: "Freedom Holding prices primary offering with dilution of 20%",
+    summary: "The company completed the primary offering.",
+    publishedAt: "2026-07-22T12:30:00.000Z",
+    symbolHints: ["FRHC"],
+    companyHints: ["Freedom Holding Corp."],
+    rawEventType: "frhc-proposed-to-priced",
+  }),
+]).candidates.find((item) => item.ticker === "FRHC");
+assert.equal(pricedAfterProposed?.gateChecks.eventMagnitudeActionable, true);
+assert.equal(pricedAfterProposed?.gatePassed, true);
+
+const shelfAfterPriced = build([
+  receipt({
+    title: "Freedom Holding prices primary offering with dilution of 20%",
+    summary: "The company completed the primary offering.",
+    publishedAt: "2026-07-22T10:00:00.000Z",
+    symbolHints: ["FRHC"],
+    companyHints: ["Freedom Holding Corp."],
+    rawEventType: "frhc-offering-reversed",
+  }),
+  receipt({
+    title: "Freedom Holding files a new shelf offering",
+    summary: "The company may offer shares later.",
+    publishedAt: "2026-07-22T12:30:00.000Z",
+    symbolHints: ["FRHC"],
+    companyHints: ["Freedom Holding Corp."],
+    rawEventType: "frhc-offering-reversed",
+  }),
+]).candidates.find((item) => item.ticker === "FRHC");
+assert.equal(shelfAfterPriced?.gateChecks.eventMagnitudeActionable, false);
+assert.equal(shelfAfterPriced?.gatePassed, false);
+
+const vagueGuidance = build([receipt({
+  title: "Apple raises guidance",
+  symbolHints: ["AAPL"],
+  companyHints: ["Apple Inc."],
+})]).candidates.find((item) => item.ticker === "AAPL");
+assert.equal(vagueGuidance?.gateChecks.eventMagnitudeActionable, false);
+assert.equal(vagueGuidance?.gatePassed, false);
+
+const measuredGuidance = build([receipt({
+  title: "Apple raises guidance by 6%",
+  symbolHints: ["AAPL"],
+  companyHints: ["Apple Inc."],
+})]).candidates.find((item) => item.ticker === "AAPL");
+assert.equal(measuredGuidance?.gateChecks.eventMagnitudeActionable, true);
+assert.equal(measuredGuidance?.gatePassed, true);
+
+const investigation = build([receipt({
+  title: "Government opens investigation into Apple",
+  symbolHints: ["AAPL"],
+  companyHints: ["Apple Inc."],
+})]).candidates.find((item) => item.ticker === "AAPL");
+assert.equal(investigation?.gateChecks.eventMagnitudeActionable, false);
+assert.equal(investigation?.gatePassed, false);
+
+const possibleFraudCharges = build([receipt({
+  title: "Government opens investigation into possible fraud charges against Apple",
+  symbolHints: ["AAPL"],
+  companyHints: ["Apple Inc."],
+})]).candidates.find((item) => item.ticker === "AAPL");
+assert.equal(possibleFraudCharges?.gateChecks.eventMagnitudeActionable, false);
+assert.equal(possibleFraudCharges?.gatePassed, false);
+
+const possiblePenalty = build([receipt({
+  title: "Regulator is considering a possible penalty of $100 million for Apple",
+  symbolHints: ["AAPL"],
+  companyHints: ["Apple Inc."],
+})]).candidates.find((item) => item.ticker === "AAPL");
+assert.equal(possiblePenalty?.eventMagnitude.metrics.find((item) => item.kind === "fine_value")?.eventStatus, "proposed");
+assert.equal(possiblePenalty?.gateChecks.eventMagnitudeActionable, false);
+assert.equal(possiblePenalty?.gatePassed, false);
+
+const possibleRecall = build([receipt({
+  title: "FDA opens investigation into a possible Class I recall for Apple",
+  symbolHints: ["AAPL"],
+  companyHints: ["Apple Inc."],
+})]).candidates.find((item) => item.ticker === "AAPL");
+assert.equal(possibleRecall?.gateChecks.eventMagnitudeActionable, false);
+assert.equal(possibleRecall?.gatePassed, false);
+
+const consideringClinicalHold = build([receipt({
+  title: "FDA is considering a clinical hold for Apple trial",
+  symbolHints: ["AAPL"],
+  companyHints: ["Apple Inc."],
+})]).candidates.find((item) => item.ticker === "AAPL");
+assert.equal(consideringClinicalHold?.gateChecks.eventMagnitudeActionable, false);
+assert.equal(consideringClinicalHold?.gatePassed, false);
+
+const finalCharge = build([receipt({
+  title: "SEC charges Apple in a final enforcement action",
+  symbolHints: ["AAPL"],
+  companyHints: ["Apple Inc."],
+})]).candidates.find((item) => item.ticker === "AAPL");
+assert.equal(finalCharge?.gateChecks.eventMagnitudeActionable, true);
+assert.equal(finalCharge?.gatePassed, true);
+
+const chargedAfterInvestigationText = build([receipt({
+  title: "SEC charged Apple after its investigation",
+  symbolHints: ["AAPL"],
+  companyHints: ["Apple Inc."],
+})]).candidates.find((item) => item.ticker === "AAPL");
+assert.equal(chargedAfterInvestigationText?.gateChecks.eventMagnitudeActionable, true);
+assert.equal(chargedAfterInvestigationText?.gatePassed, true);
+
+const issuedFinalOrder = build([receipt({
+  title: "Regulator issued final enforcement order against Apple",
+  symbolHints: ["AAPL"],
+  companyHints: ["Apple Inc."],
+})]).candidates.find((item) => item.ticker === "AAPL");
+assert.equal(issuedFinalOrder?.gateChecks.eventMagnitudeActionable, true);
+assert.equal(issuedFinalOrder?.gatePassed, true);
+
+const issuedClassOneRecall = build([receipt({
+  title: "FDA issued a Class I recall for Apple product",
+  symbolHints: ["AAPL"],
+  companyHints: ["Apple Inc."],
+})]).candidates.find((item) => item.ticker === "AAPL");
+assert.equal(issuedClassOneRecall?.gateChecks.eventMagnitudeActionable, true);
+assert.equal(issuedClassOneRecall?.gatePassed, true);
+
+const placedClinicalHold = build([receipt({
+  title: "FDA placed Apple trial on clinical hold",
+  symbolHints: ["AAPL"],
+  companyHints: ["Apple Inc."],
+})]).candidates.find((item) => item.ticker === "AAPL");
+assert.equal(placedClinicalHold?.gateChecks.eventMagnitudeActionable, true);
+assert.equal(placedClinicalHold?.gatePassed, true);
+
+const chargesAfterInvestigation = build([
+  receipt({
+    title: "Government opens investigation into Apple",
+    publishedAt: "2026-07-22T10:00:00.000Z",
+    symbolHints: ["AAPL"],
+    companyHints: ["Apple Inc."],
+    rawEventType: "apple-enforcement-progression",
+  }),
+  receipt({
+    title: "SEC charges Apple in a filed enforcement action",
+    publishedAt: "2026-07-22T12:30:00.000Z",
+    symbolHints: ["AAPL"],
+    companyHints: ["Apple Inc."],
+    rawEventType: "apple-enforcement-progression",
+  }),
+]).candidates.find((item) => item.ticker === "AAPL");
+assert.equal(chargesAfterInvestigation?.gateChecks.eventMagnitudeActionable, true);
+assert.equal(chargesAfterInvestigation?.gatePassed, true);
+
+const investigationAfterCharges = build([
+  receipt({
+    title: "SEC charges Apple in a filed enforcement action",
+    publishedAt: "2026-07-22T10:00:00.000Z",
+    symbolHints: ["AAPL"],
+    companyHints: ["Apple Inc."],
+    rawEventType: "apple-enforcement-reversed",
+  }),
+  receipt({
+    title: "Government opens a new investigation into Apple",
+    publishedAt: "2026-07-22T12:30:00.000Z",
+    symbolHints: ["AAPL"],
+    companyHints: ["Apple Inc."],
+    rawEventType: "apple-enforcement-reversed",
+  }),
+]).candidates.find((item) => item.ticker === "AAPL");
+assert.equal(investigationAfterCharges?.gateChecks.eventMagnitudeActionable, false);
+assert.equal(investigationAfterCharges?.gatePassed, false);
+
+const corroboratedChargesAfterPrimaryInvestigation = build([
+  receipt({
+    title: "Government opens investigation into Apple",
+    publishedAt: "2026-07-22T10:00:00.000Z",
+    symbolHints: ["AAPL"],
+    companyHints: ["Apple Inc."],
+    rawEventType: "apple-enforcement-corroborated",
+  }),
+  receipt({
+    title: "SEC charges Apple in a filed enforcement action",
+    publisher: "Independent Legal Desk",
+    url: "https://legal.example/apple-charges",
+    channel: "google_news_rss",
+    official: false,
+    primarySource: false,
+    publishedAt: "2026-07-22T12:00:00.000Z",
+    symbolHints: ["AAPL"],
+    companyHints: ["Apple Inc."],
+    rawEventType: "apple-enforcement-corroborated",
+  }),
+  receipt({
+    title: "SEC charges Apple; enforcement filing published",
+    publisher: "Independent Markets Desk",
+    url: "https://markets.example/apple-charges",
+    channel: "marketaux",
+    official: false,
+    primarySource: false,
+    publishedAt: "2026-07-22T12:10:00.000Z",
+    symbolHints: ["AAPL"],
+    companyHints: ["Apple Inc."],
+    rawEventType: "apple-enforcement-corroborated",
+  }),
+]).candidates.find((item) => item.ticker === "AAPL");
+assert.equal(corroboratedChargesAfterPrimaryInvestigation?.gateChecks.eventMagnitudeActionable, true);
+assert.equal(corroboratedChargesAfterPrimaryInvestigation?.gatePassed, true);
+
+const unverifiedChargeAfterPrimaryInvestigation = build([
+  receipt({
+    title: "Government opens investigation into Apple",
+    publishedAt: "2026-07-22T10:00:00.000Z",
+    symbolHints: ["AAPL"],
+    companyHints: ["Apple Inc."],
+    rawEventType: "apple-enforcement-unverified",
+  }),
+  receipt({
+    title: "Single publisher says SEC charges Apple",
+    publisher: "Single Legal Blog",
+    url: "https://single-blog.example/apple-charges",
+    channel: "google_news_rss",
+    official: false,
+    primarySource: false,
+    publishedAt: "2026-07-22T12:00:00.000Z",
+    symbolHints: ["AAPL"],
+    companyHints: ["Apple Inc."],
+    rawEventType: "apple-enforcement-unverified",
+  }),
+]).candidates.find((item) => item.ticker === "AAPL");
+assert.equal(unverifiedChargeAfterPrimaryInvestigation?.gateChecks.eventMagnitudeActionable, false);
+assert.equal(unverifiedChargeAfterPrimaryInvestigation?.gatePassed, false);
+
+const trivialFine = build([receipt({
+  title: "Apple receives final fine $10 thousand",
+  summary: "The regulator issued the final monetary penalty.",
+  symbolHints: ["AAPL"],
+  companyHints: ["Apple Inc."],
+})]).candidates.find((item) => item.ticker === "AAPL");
+assert.ok(trivialFine);
+const trivialFineMetric = trivialFine.eventMagnitude.metrics.find((item) => item.kind === "fine_value");
+assert.ok(trivialFineMetric);
+trivialFine.eventMagnitude.relativeToCompany = {
+  metric: "annual_revenue",
+  eventValue: trivialFineMetric.value,
+  eventMetricSourceReceiptId: trivialFineMetric.sourceReceiptId,
+  companyValue: 1_000_000_000,
+  ratioPercent: 0.001,
+  sourceUrl: "https://data.sec.gov/example",
+};
+trivialFine.eventMagnitude.status = "relative_to_company";
+analysis.reassessCandidateAfterFundamentals(trivialFine, new Date("2026-07-22T13:00:00.000Z"));
+assert.equal(trivialFine.gateChecks.eventMagnitudeActionable, false);
+assert.equal(trivialFine.gatePassed, false);
+
+const materialFine = build([receipt({
+  title: "Apple receives final fine $20 million",
+  summary: "The regulator issued the final monetary penalty.",
+  symbolHints: ["AAPL"],
+  companyHints: ["Apple Inc."],
+})]).candidates.find((item) => item.ticker === "AAPL");
+assert.ok(materialFine);
+const materialFineMetric = materialFine.eventMagnitude.metrics.find((item) => item.kind === "fine_value");
+assert.ok(materialFineMetric);
+materialFine.eventMagnitude.relativeToCompany = {
+  metric: "annual_revenue",
+  eventValue: materialFineMetric.value,
+  eventMetricSourceReceiptId: materialFineMetric.sourceReceiptId,
+  companyValue: 1_000_000_000,
+  ratioPercent: 2,
+  sourceUrl: "https://data.sec.gov/example",
+};
+materialFine.eventMagnitude.status = "relative_to_company";
+analysis.reassessCandidateAfterFundamentals(materialFine, new Date("2026-07-22T13:00:00.000Z"));
+assert.equal(materialFine.gateChecks.eventMagnitudeActionable, true);
+assert.equal(materialFine.gatePassed, true);
 
 const exactIntelIssuer = build([receipt({
   title: "Intel launches a new semiconductor processor",
@@ -143,6 +715,32 @@ const exactSingleTokenBrand = build([receipt({
 })]);
 assert.equal(exactSingleTokenBrand.candidates.some((item) => item.ticker === "AAPL" && item.relationship === "direct" && item.eventFamily === "product_launch"), true);
 
+const overflowEntries = Array.from({ length: 101 }, (_, index) => {
+  const ticker = `Q${String.fromCharCode(65 + Math.floor(index / 26))}${String.fromCharCode(65 + (index % 26))}`;
+  return entry(ticker, `Issuer ${index} Technologies`, [`Issuer ${index}`]);
+});
+const overflowReceipts = overflowEntries.map((equity, index) => receipt({
+  title: `Government opens investigation ${index} into ${equity.name}`,
+  url: `https://official.example/investigation-${index}`,
+  symbolHints: [equity.ticker],
+  companyHints: [equity.name],
+  rawEventType: `investigation-${index}`,
+}));
+const overflowResult = analysis.buildImpactCandidates(overflowReceipts, {
+  ...universe,
+  entries: overflowEntries,
+  coverage: { ...universe.coverage, nasdaqRows: 101, eligibleEquities: 101 },
+}, macro, new Date("2026-07-22T13:00:00.000Z"), []);
+assert.equal(overflowResult.findingAuditLedger.length, 101);
+assert.equal(overflowResult.candidates.length, 100);
+const retainedTickers = new Set(overflowResult.candidates.map((item) => item.ticker));
+const archivedOnlyFinding = overflowResult.findingAuditLedger.find((item) => !retainedTickers.has(item.ticker));
+assert.ok(archivedOnlyFinding);
+const archivedProof = overflowResult.findingReceiptProofDictionary[archivedOnlyFinding.receiptIds[0]];
+assert.equal(archivedProof.title, archivedOnlyFinding.eventHeadline);
+assert.equal(archivedProof.publisher, "Official Source");
+assert.match(archivedProof.url, /^https:\/\/official\.example\/investigation-/);
+
 console.log(JSON.stringify({
   ok: true,
   warAnniversaryRejected: true,
@@ -153,8 +751,16 @@ console.log(JSON.stringify({
   unrelatedSameFirstWordIssuerRejected: true,
   passiveStakeArticleRejectedAsNoise: true,
   activeConflictStillMapped: true,
-  knockOnCanQualifyWithoutHistory: true,
+  genericSectorBasketCannotQualify: true,
+  companySpecificKnockOnCanQualifyWithoutHistory: true,
   exactTickerAndCompanyStillMapped: true,
+  companyRelativeContractScaleRequired: true,
+  materialContractCanQualifyBeforePriceMove: true,
+  immaterialContractRejected: true,
+  pricedPrimaryDilutionMeasured: true,
+  vagueGuidanceRejected: true,
+  measuredGuidanceAccepted: true,
+  investigationNotTreatedAsFinalEnforcement: true,
   exactIntelIssuerStillMapped: true,
   exactSingleTokenBrandStillMapped: true,
 }, null, 2));

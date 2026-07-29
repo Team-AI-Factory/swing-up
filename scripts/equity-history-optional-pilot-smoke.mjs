@@ -4,41 +4,41 @@ import ts from "typescript";
 
 function compile(url, dependencies = {}) {
   const source = readFileSync(url, "utf8");
-  const output = ts.transpileModule(source, {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
-  }).outputText;
+  const output = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const cjsModule = { exports: {} };
   new Function("require", "module", "exports", output)((name) => {
     if (name in dependencies) return dependencies[name];
-    throw new Error(`Unexpected import in history-optional pilot smoke: ${name}`);
+    throw new Error(`Unexpected import in mandatory pilot smoke: ${name}`);
   }, cjsModule, cjsModule.exports);
   return cjsModule.exports;
 }
 
 let nextResult = null;
+let pilotGate = { passed: false, blockers: ["Need five peer events"], independentRealEventCount: 4, observedDirectionalHitRatePercent: 100 };
+let articleDecisionGrade = true;
 let receivedHistory = null;
-let bootstrapRecords = [];
+const policy = { marketScope: "active_us_exchange_listed_common_equities_and_adrs", confidenceTier: "pilot_five_independent_cases", minimumIndependentHistoricalEvents: 5, minimumObservedDirectionalHitRatePercent: 80, warning: "Four of five pilot warning" };
+const articleReport = () => ({ policyVersion: 1, maximumFullArticlesPerScan: 12, maximumBytesPerArticle: 300000, headlineAloneCanPromoteSeriousSignal: false, candidates: { "EXM|earnings_guidance|2026-07-29T06:00:00.000Z": { key: "EXM|earnings_guidance|2026-07-29T06:00:00.000Z", ticker: "EXM", company: "Example", eventFamily: "earnings_guidance", relationship: "direct", decisionGrade: articleDecisionGrade, basis: articleDecisionGrade ? "full_article" : "headline_only_blocked", fullArticlesRead: articleDecisionGrade ? 1 : 0, supportedArticles: articleDecisionGrade ? 1 : 0, officialStructuredReceipts: 0, failedUrls: [], sourceUrls: [], excerpts: [], blockers: articleDecisionGrade ? [] : ["Full article missing"] } }, diagnostics: { candidatesConsidered: 1, urlsSelected: 1, urlsFetched: articleDecisionGrade ? 1 : 0, urlsSupported: articleDecisionGrade ? 1 : 0, urlsFailed: articleDecisionGrade ? 0 : 1, officialStructuredCandidates: 0 } });
+
 const wrapper = compile(new URL("../lib/equity-signal/pilot-runner.ts", import.meta.url), {
+  "@/lib/equity-signal/article-evidence": {
+    buildArticleEvidenceReport: async () => articleReport(),
+    articleEvidenceForCandidate: (report) => Object.values(report.candidates)[0],
+  },
+  "@/lib/equity-signal/industry-peer-pilot": { evaluateIndustryPeerPilotGate: async () => structuredClone(pilotGate) },
   "@/lib/equity-signal/pilot-historical-bootstrap": {
-    bootstrapPilotHistoricalSignals: async () => ({
-      records: structuredClone(bootstrapRecords),
-      requestedSeeds: bootstrapRecords.length,
-      builtSeeds: bootstrapRecords.length,
-      errors: [],
-      priceSource: "public_adjusted_prices",
-      noSyntheticData: true,
-    }),
-    mergePilotHistoricalSignals: (supplied, records) => [...supplied, ...records],
+    bootstrapPilotHistoricalSignals: async () => ({ records: [{ id: "public-peer" }], requestedSeeds: 1, builtSeeds: 1, errors: [], priceSource: "public adjusted prices", noSyntheticData: true }),
+    mergePilotHistoricalSignals: (left, right) => [...left, ...right],
   },
+  "@/lib/equity-signal/pilot-serious-signal-policy": { US_SERIOUS_SIGNAL_PILOT_POLICY: policy },
   "@/lib/equity-signal/runner": {
-    runEquitySignalLab: async (input) => {
-      receivedHistory = input.historicalSignals;
-      return structuredClone(nextResult);
-    },
+    runEquitySignalLab: async (input) => { receivedHistory = input.historicalSignals; return structuredClone(nextResult); },
   },
+  "@/lib/equity-signal/us-watch-out-engine": { buildApprovedUsWatchOutReview: async () => ({ findings: [], seriousSignals: [] }) },
+  "@/lib/equity-signal/us-watch-out-serious-promotion": { promoteApprovedWatchOutRules: ({ watchOutReview }) => ({ ...watchOutReview, seriousSignals: [] }) },
 });
 
-function approvedResult(action) {
+function approved(action = "buy") {
   return {
     ok: true,
     status: `serious_${action}`,
@@ -46,63 +46,31 @@ function approvedResult(action) {
     actionableSignalFound: true,
     alertType: action,
     blockers: [],
+    selectedCandidate: { ticker: "EXM", company: "Example", eventFamily: "earnings_guidance", eventObservedAt: "2026-07-29T06:00:00.000Z", relationship: "direct" },
+    rankedCandidates: [],
     historicalLearning: {},
     liveSourcePolicy: {},
-    _historicalSignalLibraryAdditions: [{ id: "forward-finding" }],
+    _historicalSignalLibraryAdditions: [{ id: "forward-ledger" }],
   };
 }
 
-nextResult = approvedResult("buy");
-const buy = await wrapper.runPilotEquitySignalLab({ historicalSignals: [] });
-assert.equal(buy.seriousSignalFound, true);
-assert.equal(buy.alertType, "buy");
-assert.equal(buy.historicalLearning.historicalComparisonRequiredForSeriousSignal, false);
-assert.equal(buy.historicalLearning.actionableBuySellRequiresCalibratedHistory, false);
-assert.equal(buy.historicalLearning.historicalEvidenceRole, "optional_context_and_r2_learning_only");
-assert.equal(receivedHistory.length, 0);
-assert.deepEqual(
-  buy._historicalSignalLibraryAdditions.map((record) => record.id),
-  ["forward-finding"],
-);
-
-nextResult = approvedResult("sell");
-const sell = await wrapper.runPilotEquitySignalLab({ historicalSignals: [] });
-assert.equal(sell.seriousSignalFound, true);
-assert.equal(sell.alertType, "sell");
-
-nextResult = approvedResult("watch");
-const watch = await wrapper.runPilotEquitySignalLab({ historicalSignals: [] });
-assert.equal(watch.seriousSignalFound, true);
-assert.equal(watch.alertType, "watch");
-
-bootstrapRecords = [{ id: "public-analogue" }];
-nextResult = approvedResult("buy");
-const contextualBuy = await wrapper.runPilotEquitySignalLab({ historicalSignals: [] });
-assert.equal(contextualBuy.seriousSignalFound, true);
+nextResult = approved("buy");
+const fourCases = await wrapper.runPilotEquitySignalLab({ historicalSignals: [] });
+assert.equal(fourCases.seriousSignalFound, false);
+assert.equal(fourCases.status, "candidate_needs_same_company_or_industry_pilot_history");
 assert.equal(receivedHistory.length, 1);
-assert.deepEqual(
-  contextualBuy._historicalSignalLibraryAdditions.map((record) => record.id),
-  ["forward-finding", "public-analogue"],
-);
 
-nextResult = {
-  ...approvedResult("sell"),
-  seriousSignalFound: false,
-  actionableSignalFound: false,
-  alertType: null,
-  status: "no_serious_signal",
-};
-const rejected = await wrapper.runPilotEquitySignalLab({ historicalSignals: [] });
-assert.equal(rejected.seriousSignalFound, false);
-assert.equal(rejected.alertType, null);
+pilotGate = { passed: true, blockers: [], independentRealEventCount: 5, observedDirectionalHitRatePercent: 80, statisticallyEquivalentToThirtySamples: false };
+const fourOfFive = await wrapper.runPilotEquitySignalLab({ historicalSignals: [] });
+assert.equal(fourOfFive.seriousSignalFound, true);
+assert.equal(fourOfFive.alertType, "buy");
+assert.equal(fourOfFive.historicalLearning.minimumObservedDirectionalHitRatePercent, 80);
+assert.equal(fourOfFive.historicalLearning.forwardOutcomeRequiredBeforeAlert, false);
+assert.equal(fourOfFive.liveSourcePolicy.analystExpectationsCanVetoBuy, false);
 
-console.log(JSON.stringify({
-  ok: true,
-  currentEvidenceDecisionPreserved: true,
-  buyWithoutHistoricalComparisonAllowed: true,
-  sellWithoutHistoricalComparisonAllowed: true,
-  watchWithoutHistoricalComparisonAllowed: true,
-  rejectedCurrentEvidenceStaysRejected: true,
-  publicHistoryStillLoadedForContext: true,
-  publicAndForwardHistoryPersistedForLearning: true,
-}, null, 2));
+articleDecisionGrade = false;
+const headlineOnly = await wrapper.runPilotEquitySignalLab({ historicalSignals: [] });
+assert.equal(headlineOnly.seriousSignalFound, false);
+assert.equal(headlineOnly.status, "candidate_needs_full_article_confirmation");
+
+console.log(JSON.stringify({ ok: true, historicalPeerGateMandatory: true, fourOfFivePasses: true, ownForwardOutcomeNotRequiredBeforeAlert: true, analystExpectationsCannotVetoBuy: true, headlineOnlyBlocked: true }, null, 2));

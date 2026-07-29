@@ -36,6 +36,7 @@
     "smoke:us-watch-out-engine": "node scripts/us-watch-out-engine-smoke.mjs",
     "smoke:watch-out-serious-promotion": "node scripts/us-watch-out-serious-promotion-smoke.mjs",
     "smoke:us-value-investing-engine": "node scripts/us-value-investing-engine-smoke.mjs",
+    "smoke:us-value-investing-safety": "node scripts/us-value-investing-safety-smoke.mjs",
     "smoke:equity-historical-analogs": "node scripts/equity-historical-analogs-smoke.mjs",
     "smoke:equity-historical-bootstrap": "node scripts/equity-historical-bootstrap-smoke.mjs",
     "smoke:equity-sec-filing-details": "node scripts/equity-sec-filing-details-smoke.mjs",

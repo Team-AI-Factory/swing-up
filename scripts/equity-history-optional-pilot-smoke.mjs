@@ -19,6 +19,19 @@ let articleDecisionGrade = true;
 let receivedHistory = null;
 const policy = { marketScope: "active_us_exchange_listed_common_equities_and_adrs", confidenceTier: "pilot_five_independent_cases", minimumIndependentHistoricalEvents: 5, minimumObservedDirectionalHitRatePercent: 80, warning: "Four of five pilot warning" };
 const articleReport = () => ({ policyVersion: 1, maximumFullArticlesPerScan: 12, maximumBytesPerArticle: 300000, headlineAloneCanPromoteSeriousSignal: false, candidates: { "EXM|earnings_guidance|2026-07-29T06:00:00.000Z": { key: "EXM|earnings_guidance|2026-07-29T06:00:00.000Z", ticker: "EXM", company: "Example", eventFamily: "earnings_guidance", relationship: "direct", decisionGrade: articleDecisionGrade, basis: articleDecisionGrade ? "full_article" : "headline_only_blocked", fullArticlesRead: articleDecisionGrade ? 1 : 0, supportedArticles: articleDecisionGrade ? 1 : 0, officialStructuredReceipts: 0, failedUrls: [], sourceUrls: [], excerpts: [], blockers: articleDecisionGrade ? [] : ["Full article missing"] } }, diagnostics: { candidatesConsidered: 1, urlsSelected: 1, urlsFetched: articleDecisionGrade ? 1 : 0, urlsSupported: articleDecisionGrade ? 1 : 0, urlsFailed: articleDecisionGrade ? 0 : 1, officialStructuredCandidates: 0 } });
+const valueCycle = () => ({
+  ok: true,
+  checkedAt: "2026-07-29T06:00:00.000Z",
+  marketScope: "US listed common stocks and ADRs only",
+  methodology: { style: "company_first_conservative_intrinsic_value", analystTargetUsedAsFairValue: false, newsRequiredForFoundationAlert: false, fullFundamentalRefreshMinutes: 15, fullWarehousePersistenceHours: 6, minimumMarginOfSafetyPercent: 25, seriousBuyMinimumUpsidePercent: 40, seriousSellMinimumPremiumPercent: 50, noSyntheticData: true },
+  coverage: { provider: "TradingView public US stock scanner", totalProviderRows: 1, usPrimaryListings: 1, companiesAnalyzed: 1, companiesWithFairValue: 1, companiesWithoutFairValue: 0, pagesRequested: 1, pagesFailed: 0, processingCoveragePercent: 100, errors: [] },
+  seriousAlerts: { buy: [], sell: [], watchOut: [] },
+  watchlists: { qualityWaitingForPrice: [], researchOnly: [] },
+  warehouse: { storage: "not_persisted", branchPrefix: "branch-labs/pr-262/value-investing", latestIndexKey: "branch-labs/pr-262/value-investing/latest/index.json", immutableRunKey: null, shardKeys: [], persistedThisCycle: false, companyRecordsStored: 0, errors: [] },
+  cacheUsed: false,
+  analyses: [],
+  safety: { databaseWrites: false, publishing: false, notifications: false, trades: false },
+});
 
 const wrapper = compile(new URL("../lib/equity-signal/pilot-runner.ts", import.meta.url), {
   "@/lib/equity-signal/article-evidence": {
@@ -39,6 +52,7 @@ const wrapper = compile(new URL("../lib/equity-signal/pilot-runner.ts", import.m
   },
   "@/lib/equity-signal/us-watch-out-engine": { buildApprovedUsWatchOutReview: async () => ({ findings: [], seriousSignals: [] }) },
   "@/lib/equity-signal/us-watch-out-serious-promotion": { promoteApprovedWatchOutRules: ({ watchOutReview }) => ({ ...watchOutReview, seriousSignals: [] }) },
+  "@/lib/opportunity-engine/us-value-investing-engine": { runUsValueInvestingCycle: async () => valueCycle() },
 });
 
 function approved(action = "buy") {
@@ -63,6 +77,7 @@ assert.equal(fourCases.seriousSignalFound, false);
 assert.equal(fourCases.status, "candidate_needs_same_company_or_industry_pilot_history");
 assert.equal(receivedHistory.length, 2);
 assert.deepEqual(fourCases.historicalLearning.publicHistoricalFamiliesBuilt, ["earnings_guidance", "regulatory_approval"]);
+assert.equal(fourCases.valueInvesting.methodology.newsRequiredForFoundationAlert, false);
 
 pilotGate = { passed: true, blockers: [], independentRealEventCount: 5, observedDirectionalHitRatePercent: 80, statisticallyEquivalentToThirtySamples: false };
 const fourOfFive = await wrapper.runPilotEquitySignalLab({ historicalSignals: [] });
@@ -71,10 +86,11 @@ assert.equal(fourOfFive.alertType, "buy");
 assert.equal(fourOfFive.historicalLearning.minimumObservedDirectionalHitRatePercent, 80);
 assert.equal(fourOfFive.historicalLearning.forwardOutcomeRequiredBeforeAlert, false);
 assert.equal(fourOfFive.liveSourcePolicy.analystExpectationsCanVetoBuy, false);
+assert.equal(fourOfFive.liveSourcePolicy.foundationFairValueCanTriggerImmediately, true);
 
 articleDecisionGrade = false;
 const headlineOnly = await wrapper.runPilotEquitySignalLab({ historicalSignals: [] });
 assert.equal(headlineOnly.seriousSignalFound, false);
 assert.equal(headlineOnly.status, "candidate_needs_full_article_confirmation");
 
-console.log(JSON.stringify({ ok: true, historicalPeerGateMandatory: true, publicFamiliesBuilt: ["earnings_guidance", "regulatory_approval"], fourOfFivePasses: true, ownForwardOutcomeNotRequiredBeforeAlert: true, analystExpectationsCannotVetoBuy: true, headlineOnlyBlocked: true }, null, 2));
+console.log(JSON.stringify({ ok: true, historicalPeerGateMandatory: true, publicFamiliesBuilt: ["earnings_guidance", "regulatory_approval"], fourOfFivePasses: true, ownForwardOutcomeNotRequiredBeforeAlert: true, analystExpectationsCannotVetoBuy: true, headlineOnlyBlocked: true, foundationFairValueCanTriggerWithoutNews: true }, null, 2));

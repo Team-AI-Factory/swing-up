@@ -4,7 +4,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { runBranchSignalLab, type BranchProviderCallDecision, type BranchProviderCallRequest } from "@/lib/branch-signal-lab";
 import { isLegacyExternalStopReason, noGainRepairAttempts, providerCallBudgetDecision, repairEligibleFailure } from "@/lib/branch-signal-lab-policy";
 import type { HistoricalAnalogHorizon, HistoricalSignalRecord } from "@/lib/equity-signal/historical-analogs";
-import { mergeHistoricalSignals } from "@/lib/equity-signal/historical-bootstrap";
 import { getR2Config, readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 
 export const dynamic = "force-dynamic";
@@ -175,6 +174,57 @@ function isHistoricalSignalRecord(value: unknown): value is HistoricalSignalReco
     && !Array.isArray(item.checkpoints);
 }
 
+function historicalSignalOccurrenceKey(item: HistoricalSignalRecord) {
+  return [
+    item.id,
+    item.eventKey,
+    item.ticker.trim().toUpperCase(),
+    item.direction,
+    item.relationship,
+    item.signalObservedAt,
+  ].join("|");
+}
+
+function validatedHistoricalCheckpoints(item: HistoricalSignalRecord): HistoricalSignalRecord["checkpoints"] {
+  const checkpoints: HistoricalSignalRecord["checkpoints"] = {};
+  for (const { label } of OUTCOME_CHECKPOINTS) {
+    const checkpoint = record(item.checkpoints[label]);
+    const returnPercent = finiteNumber(checkpoint?.returnPercent);
+    const benchmarkReturnPercent = finiteNumber(checkpoint?.benchmarkReturnPercent);
+    const observedAt = typeof checkpoint?.observedAt === "string" ? checkpoint.observedAt : "";
+    const source = typeof checkpoint?.source === "string" ? checkpoint.source.trim() : "";
+    if (returnPercent === null || benchmarkReturnPercent === null || !Number.isFinite(Date.parse(observedAt)) || !source) continue;
+    checkpoints[label] = { returnPercent, benchmarkReturnPercent, observedAt, source };
+  }
+  return checkpoints;
+}
+
+function historicalTrustRank(item: HistoricalSignalRecord) {
+  const learningUse = historicalLearningUse(item);
+  return learningUse === "quarantined" ? 3 : learningUse === "forecast_eligible" ? 2 : 1;
+}
+
+function mergeHistoricalSignalRecordsForRoute(...groups: HistoricalSignalRecord[][]) {
+  const merged = new Map<string, HistoricalSignalRecord>();
+  for (const item of groups.flat()) {
+    const key = historicalSignalOccurrenceKey(item);
+    const existing = merged.get(key);
+    if (!existing) {
+      merged.set(key, { ...item, checkpoints: validatedHistoricalCheckpoints(item) });
+      continue;
+    }
+    const trusted = historicalTrustRank(item) >= historicalTrustRank(existing) ? item : existing;
+    merged.set(key, {
+      ...trusted,
+      checkpoints: {
+        ...validatedHistoricalCheckpoints(existing),
+        ...validatedHistoricalCheckpoints(item),
+      },
+    });
+  }
+  return [...merged.values()].sort((left, right) => left.signalObservedAt.localeCompare(right.signalObservedAt) || left.id.localeCompare(right.id));
+}
+
 function normalizeHistoricalSignalLibrary(value: unknown): HistoricalSignalLibrary {
   if (!value || typeof value !== "object" || Array.isArray(value)) return emptyHistoricalSignalLibrary();
   const parsed = value as Record<string, unknown>;
@@ -183,7 +233,7 @@ function normalizeHistoricalSignalLibrary(value: unknown): HistoricalSignalLibra
     : [];
   return {
     version: 1,
-    records: mergeHistoricalSignals(records).slice(-MAX_HISTORICAL_SIGNAL_RECORDS),
+    records: mergeHistoricalSignalRecordsForRoute(records).slice(-MAX_HISTORICAL_SIGNAL_RECORDS),
     updatedAt: typeof parsed.updatedAt === "string" && Number.isFinite(Date.parse(parsed.updatedAt)) ? parsed.updatedAt : new Date(0).toISOString(),
   };
 }
@@ -215,7 +265,7 @@ async function persistHistoricalSignalLibrary(
   loaded: HistoricalSignalLibraryLoad,
   additions: HistoricalSignalRecord[],
 ): Promise<HistoricalSignalLibraryLoad> {
-  const merged = mergeHistoricalSignals(loaded.library.records, additions).slice(-MAX_HISTORICAL_SIGNAL_RECORDS);
+  const merged = mergeHistoricalSignalRecordsForRoute(loaded.library.records, additions).slice(-MAX_HISTORICAL_SIGNAL_RECORDS);
   if (!loaded.rewriteRequired && (!additions.length || sameHistoricalSignals(loaded.library.records, merged))) return { ...loaded, library: { ...loaded.library, records: merged } };
   const payload: HistoricalSignalLibrary = { version: 1, records: merged, updatedAt: new Date().toISOString() };
   try {
@@ -223,7 +273,7 @@ async function persistHistoricalSignalLibrary(
     if (!written.conflict && written.etag) return { library: payload, etag: written.etag, error: null, rewriteRequired: false };
     const winner = await loadHistoricalSignalLibrary();
     if (winner.error) return winner;
-    const retryRecords = mergeHistoricalSignals(winner.library.records, additions).slice(-MAX_HISTORICAL_SIGNAL_RECORDS);
+    const retryRecords = mergeHistoricalSignalRecordsForRoute(winner.library.records, additions).slice(-MAX_HISTORICAL_SIGNAL_RECORDS);
     const retryPayload: HistoricalSignalLibrary = { version: 1, records: retryRecords, updatedAt: new Date().toISOString() };
     const retried = await writeVersionedJsonToR2(R2_EQUITY_HISTORY_KEY, retryPayload, winner.etag ? { expectedEtag: winner.etag } : { createOnly: true });
     if (retried.conflict || !retried.etag) throw new Error("r2_equity_history_write_conflict");
@@ -380,32 +430,81 @@ function countablePerformanceRun(run: JsonRecord) {
   return realBranchPerformanceRun(run) && safeRun(run);
 }
 
-type OutcomeTrackingEntry = { run: JsonRecord; candidate: JsonRecord; fingerprint: string; outcomeOwner: JsonRecord };
+type FindingDisposition = "qualified" | "shadow_near_miss";
+type LearningUse = "forecast_eligible" | "diagnostics_only" | "quarantined";
+type OutcomeTrackingEntry = {
+  run: JsonRecord;
+  candidate: JsonRecord;
+  fingerprint: string;
+  rootEventKey: string;
+  findingDisposition: FindingDisposition;
+  committeeApproved: boolean;
+  outcomeOwner: JsonRecord;
+};
+
+function trackerDisposition(candidate: JsonRecord, fallback: FindingDisposition): FindingDisposition {
+  return candidate.findingDisposition === "shadow_near_miss"
+    || candidate.trackingDisposition === "shadow_near_miss"
+    ? "shadow_near_miss"
+    : fallback;
+}
 
 function outcomeTrackingEntries(history: History): OutcomeTrackingEntry[] {
-  const seen = new Set<string>();
-  const entries: OutcomeTrackingEntry[] = [];
+  const entries = new Map<string, OutcomeTrackingEntry>();
   for (const run of history.runs) {
     if (!countablePerformanceRun(run)) continue;
     const selected = record(run.selectedCandidate);
-    const trackers = Array.isArray(run.outcomeTrackingCandidates)
-      ? run.outcomeTrackingCandidates.map(record).filter((item): item is JsonRecord => Boolean(item))
+    const approvedFingerprint = exactApprovedFingerprint(run);
+    const qualifiedTrackers = Array.isArray(run.outcomeTrackingCandidates)
+      ? run.outcomeTrackingCandidates
+        .map(record)
+        .filter((item): item is JsonRecord => Boolean(item))
+        .map((candidate) => ({ candidate, findingDisposition: trackerDisposition(candidate, "qualified") }))
       : [];
-    const candidates = trackers.length ? trackers : selected ? [selected] : [];
-    for (const candidate of candidates) {
+    const shadowTrackers = Array.isArray(run.shadowOutcomeTrackingCandidates)
+      ? run.shadowOutcomeTrackingCandidates
+        .map(record)
+        .filter((item): item is JsonRecord => Boolean(item))
+        .map((candidate) => ({ candidate, findingDisposition: "shadow_near_miss" as const }))
+      : [];
+    const candidates: Array<{ candidate: JsonRecord; findingDisposition: FindingDisposition }> = [
+      ...qualifiedTrackers,
+      ...shadowTrackers,
+      ...(selected ? [{ candidate: selected, findingDisposition: trackerDisposition(selected, "qualified") }] : []),
+    ];
+    for (const { candidate, findingDisposition } of candidates) {
       const fallbackFingerprint = candidate === selected && typeof run.candidateFingerprint === "string" ? run.candidateFingerprint : "";
       const fingerprint = typeof candidate.evidenceFingerprint === "string" ? candidate.evidenceFingerprint.trim() : fallbackFingerprint.trim();
       const ticker = typeof candidate.ticker === "string" ? candidate.ticker.trim().toUpperCase() : "";
       const price = finiteNumber(candidate.price);
       const benchmarkPrice = finiteNumber(candidate.benchmarkPrice);
       const direction = candidate.direction;
-      if (!fingerprint || INVALIDATED_FALSE_MAPPING_EVENT_KEYS.has(fingerprint) || !ticker || price === null || price <= 0 || benchmarkPrice === null || benchmarkPrice <= 0 || (direction !== "upside" && direction !== "downside") || seen.has(fingerprint)) continue;
-      seen.add(fingerprint);
+      if (!fingerprint || INVALIDATED_FALSE_MAPPING_EVENT_KEYS.has(fingerprint) || !ticker || price === null || price <= 0 || benchmarkPrice === null || benchmarkPrice <= 0 || (direction !== "upside" && direction !== "downside")) continue;
+      const committeeApproved = candidate === selected && approvedFingerprint === fingerprint;
       const outcomeOwner = typeof run.candidateFingerprint === "string" && run.candidateFingerprint === fingerprint ? run : candidate;
-      entries.push({ run, candidate, fingerprint, outcomeOwner });
+      const rootEventKey = typeof candidate.rootEventKey === "string" && candidate.rootEventKey.trim()
+        ? candidate.rootEventKey.trim()
+        : fingerprint;
+      const entry = { run, candidate, fingerprint, rootEventKey, findingDisposition, committeeApproved, outcomeOwner };
+      const existing = entries.get(fingerprint);
+      const entryTime = Date.parse(String(run.checkedAt ?? ""));
+      const existingTime = existing ? Date.parse(String(existing.run.checkedAt ?? "")) : Number.POSITIVE_INFINITY;
+      const entrySortTime = Number.isFinite(entryTime) ? entryTime : Number.POSITIVE_INFINITY;
+      const existingSortTime = Number.isFinite(existingTime) ? existingTime : Number.POSITIVE_INFINITY;
+      if (!existing
+        || (committeeApproved && !existing.committeeApproved)
+        || (committeeApproved === existing.committeeApproved && entrySortTime < existingSortTime)) {
+        entries.set(fingerprint, entry);
+      }
     }
   }
-  return entries;
+  return [...entries.values()].sort((left, right) => {
+    const leftAt = Date.parse(String(left.run.checkedAt ?? ""));
+    const rightAt = Date.parse(String(right.run.checkedAt ?? ""));
+    const leftTime = Number.isFinite(leftAt) ? leftAt : Number.POSITIVE_INFINITY;
+    const rightTime = Number.isFinite(rightAt) ? rightAt : Number.POSITIVE_INFINITY;
+    return leftTime - rightTime || left.fingerprint.localeCompare(right.fingerprint);
+  });
 }
 
 function record(value: unknown): JsonRecord | null {
@@ -414,6 +513,27 @@ function record(value: unknown): JsonRecord | null {
 
 function finiteNumber(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function exactApprovedFingerprint(run: JsonRecord) {
+  if (!countablePerformanceRun(run) || run.seriousSignalFound !== true) return null;
+  const runFingerprint = typeof run.candidateFingerprint === "string" ? run.candidateFingerprint.trim() : "";
+  const selected = record(run.selectedCandidate);
+  const selectedFingerprint = typeof selected?.evidenceFingerprint === "string" ? selected.evidenceFingerprint.trim() : "";
+  if (!runFingerprint || runFingerprint !== selectedFingerprint || INVALIDATED_FALSE_MAPPING_EVENT_KEYS.has(runFingerprint)) return null;
+  return runFingerprint;
+}
+
+function historicalLearningUse(recordValue: HistoricalSignalRecord): LearningUse {
+  if (recordValue.learningUse === "forecast_eligible"
+    || recordValue.learningUse === "diagnostics_only"
+    || recordValue.learningUse === "quarantined") {
+    return recordValue.learningUse;
+  }
+  return recordValue.dataQuality === "real"
+    && recordValue.provenance?.origin === "public_historical_bootstrap"
+    ? "forecast_eligible"
+    : "diagnostics_only";
 }
 
 function positiveEnvironmentNumber(value: string | undefined, fallback: number) {
@@ -471,11 +591,13 @@ function providerQuotaUsage(history: History, now: number) {
 function pruneHistory(history: History, now: number) {
   const recentQuietRunStart = Math.max(0, history.runs.length - 576);
   const outcomeRetentionMs = 100 * 24 * 60 * 60 * 1000;
+  const selectedOutcomeOwnerRuns = new Set(outcomeTrackingEntries(history).map((entry) => entry.run));
   history.runs = history.runs.filter((run, index) => {
     if (index >= recentQuietRunStart) return true;
     const checkedAt = Date.parse(String(run.checkedAt ?? ""));
     const withinOutcomeWindow = Number.isFinite(checkedAt) && now - checkedAt >= 0 && now - checkedAt <= outcomeRetentionMs;
-    return withinOutcomeWindow && (run.openAiCalled === true || run.seriousSignalFound === true || typeof run.candidateFingerprint === "string");
+    const actualCommitteeOrSeriousRun = run.openAiCalled === true || run.seriousSignalFound === true;
+    return withinOutcomeWindow && (actualCommitteeOrSeriousRun || selectedOutcomeOwnerRuns.has(run));
   });
   history.openAiReservations = history.openAiReservations.filter((reservation) => now - Date.parse(reservation.reservedAt) < 31 * 24 * 60 * 60 * 1000);
   history.providerCallReservations = history.providerCallReservations.filter((reservation) => now - Date.parse(reservation.reservedAt) < 31 * 24 * 60 * 60 * 1000);
@@ -520,6 +642,73 @@ function validOneDayOutcome(run: JsonRecord) {
     return outcome;
   }
   return null;
+}
+
+type ValidatedSeriousSignalEffect = {
+  fingerprint: string;
+  rootEventKey: string;
+  run: JsonRecord;
+  outcome: JsonRecord;
+  directionAdjustedReturnPercent: number;
+  directionAdjustedMarketRelativeReturnPercent: number;
+};
+
+type ValidatedRootSignal = {
+  rootEventKey: string;
+  effectCount: number;
+  jointUsefulEffectCount: number;
+  jointUsefulEffectRate: number;
+  medianDirectionAdjustedReturnPercent: number;
+  medianDirectionAdjustedMarketRelativeReturnPercent: number;
+  usefulAtCheckpoint: boolean;
+};
+
+function median(values: number[]) {
+  const ordered = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(ordered.length / 2);
+  return ordered.length % 2 === 1
+    ? ordered[middle]
+    : (ordered[middle - 1] + ordered[middle]) / 2;
+}
+
+function validatedSeriousSignalEffects(history: History): ValidatedSeriousSignalEffect[] {
+  return outcomeTrackingEntries(history).flatMap((entry) => {
+    if (!entry.committeeApproved) return [];
+    const outcome = validOneDayOutcome(entry.run);
+    const directionAdjustedReturnPercent = finiteNumber(outcome?.directionAdjustedReturnPercent);
+    const directionAdjustedMarketRelativeReturnPercent = finiteNumber(outcome?.directionAdjustedMarketRelativeReturnPercent);
+    if (!outcome || directionAdjustedReturnPercent === null || directionAdjustedMarketRelativeReturnPercent === null) return [];
+    return [{
+      fingerprint: entry.fingerprint,
+      rootEventKey: entry.rootEventKey,
+      run: entry.run,
+      outcome,
+      directionAdjustedReturnPercent,
+      directionAdjustedMarketRelativeReturnPercent,
+    }];
+  }).sort((left, right) => left.rootEventKey.localeCompare(right.rootEventKey) || left.fingerprint.localeCompare(right.fingerprint));
+}
+
+function aggregateValidatedRootSignals(effects: ValidatedSeriousSignalEffect[]): ValidatedRootSignal[] {
+  const grouped = new Map<string, ValidatedSeriousSignalEffect[]>();
+  for (const effect of effects) grouped.set(effect.rootEventKey, [...(grouped.get(effect.rootEventKey) ?? []), effect]);
+  return [...grouped.entries()].map(([rootEventKey, rootEffects]) => {
+    const jointUsefulEffectCount = rootEffects.filter((effect) => (
+      effect.directionAdjustedReturnPercent >= MINIMUM_DIRECTIONAL_MOVE_AFTER_COSTS_PERCENT
+      && effect.directionAdjustedMarketRelativeReturnPercent > 0
+    )).length;
+    const medianDirectionAdjustedReturnPercent = median(rootEffects.map((effect) => effect.directionAdjustedReturnPercent));
+    const medianDirectionAdjustedMarketRelativeReturnPercent = median(rootEffects.map((effect) => effect.directionAdjustedMarketRelativeReturnPercent));
+    return {
+      rootEventKey,
+      effectCount: rootEffects.length,
+      jointUsefulEffectCount,
+      jointUsefulEffectRate: jointUsefulEffectCount / rootEffects.length,
+      medianDirectionAdjustedReturnPercent,
+      medianDirectionAdjustedMarketRelativeReturnPercent,
+      usefulAtCheckpoint: jointUsefulEffectCount > rootEffects.length / 2,
+    };
+  }).sort((left, right) => left.rootEventKey.localeCompare(right.rootEventKey));
 }
 
 function updateForwardOutcomes(history: History, currentReport: JsonRecord) {
@@ -598,7 +787,13 @@ function updateForwardOutcomes(history: History, currentReport: JsonRecord) {
 
 function outcomeTickersDue(history: History, now: number) {
   const due = new Set<string>();
-  for (const { run, candidate: selected, outcomeOwner } of outcomeTrackingEntries(history)) {
+  const entries = outcomeTrackingEntries(history).sort((left, right) => {
+    const leftPriority = left.committeeApproved ? 0 : left.findingDisposition === "qualified" ? 1 : 2;
+    const rightPriority = right.committeeApproved ? 0 : right.findingDisposition === "qualified" ? 1 : 2;
+    return leftPriority - rightPriority
+      || Date.parse(String(left.run.checkedAt ?? "")) - Date.parse(String(right.run.checkedAt ?? ""));
+  });
+  for (const { run, candidate: selected, outcomeOwner } of entries) {
     const ticker = typeof selected?.ticker === "string" ? selected.ticker.trim().toUpperCase() : "";
     const startedAt = Date.parse(String(run.checkedAt ?? ""));
     if (!ticker || !Number.isFinite(startedAt)) continue;
@@ -619,7 +814,7 @@ function outcomeTickersDue(history: History, now: number) {
 
 function historicalSignalRecords(history: History): HistoricalSignalRecord[] {
   const validHorizons = new Set<HistoricalAnalogHorizon>(OUTCOME_CHECKPOINTS.map((checkpoint) => checkpoint.label));
-  return outcomeTrackingEntries(history).flatMap(({ run, candidate, fingerprint, outcomeOwner }) => {
+  return outcomeTrackingEntries(history).flatMap(({ run, candidate, fingerprint, rootEventKey, findingDisposition, outcomeOwner }) => {
     const ticker = typeof candidate.ticker === "string" ? candidate.ticker.trim().toUpperCase() : "";
     const direction = candidate.direction === "downside" ? "downside" : candidate.direction === "upside" ? "upside" : null;
     const relationship = candidate.relationship === "direct" || candidate.relationship === "second_order" || candidate.relationship === "third_order" ? candidate.relationship : null;
@@ -646,9 +841,14 @@ function historicalSignalRecords(history: History): HistoricalSignalRecord[] {
     const receipts = Array.isArray(candidate.receipts) ? candidate.receipts.map(record).filter((item): item is JsonRecord => Boolean(item)) : [];
     const eventReceipt = receipts.find((item) => item.primarySource === true) ?? receipts[0] ?? null;
     const firstCheckpoint = Object.values(checkpoints).find(Boolean);
+    const runArchiveObject = typeof run.runArchiveObject === "string" ? run.runArchiveObject.trim() : "";
+    const forecastEligible = exactApprovedFingerprint(run) === fingerprint && runArchiveObject.length > 0;
+    const learningUse: LearningUse = forecastEligible ? "forecast_eligible" : "diagnostics_only";
+    const effectiveFindingDisposition: FindingDisposition = forecastEligible ? "qualified" : findingDisposition;
     return [{
       id: `${fingerprint}:${signalObservedAt}`,
       eventKey: fingerprint,
+      rootEventKey,
       ticker,
       eventFamily,
       direction,
@@ -658,13 +858,22 @@ function historicalSignalRecords(history: History): HistoricalSignalRecord[] {
       signalObservedAt,
       featuresAsOf,
       dataQuality: "real" as const,
+      learningUse,
+      learningReasons: forecastEligible
+        ? ["safe_run", "serious_signal_approved", "exact_selected_fingerprint_match", "immutable_run_archive_confirmed"]
+        : effectiveFindingDisposition === "shadow_near_miss"
+          ? ["shadow_near_miss", "non_alerting_diagnostics_only"]
+          : exactApprovedFingerprint(run) === fingerprint
+            ? ["approved_occurrence_pending_immutable_run_archive", "diagnostics_only"]
+            : ["qualified_but_not_approved_serious_signal", "diagnostics_only"],
+      findingDisposition: effectiveFindingDisposition,
       provenance: {
         origin: "swing_up_forward_outcome",
         eventPublisher: typeof eventReceipt?.publisher === "string" ? eventReceipt.publisher : "Swing Up verified event receipts",
         eventSourceUrl: typeof eventReceipt?.url === "string" ? eventReceipt.url : "r2://branch-labs/pr-261/serious-signal/state.json",
         priceSource: firstCheckpoint?.source ?? "live public-equity market snapshot",
         benchmarkSource: firstCheckpoint?.source ?? "live SPY benchmark snapshot",
-        methodologyVersion: "swing-up-forward-outcomes-v1",
+        methodologyVersion: "swing-up-forward-outcomes-v2-trust-root-event",
       },
       checkpoints,
     }];
@@ -679,13 +888,13 @@ export async function GET() {
   const countedPerformanceRuns = testedPerformanceRuns.filter(safeRun);
   const unsafePerformanceRuns = testedPerformanceRuns.filter((run) => !safeRun(run));
   const consistentSafeBehavior = testedPerformanceRuns.length > 0 && unsafePerformanceRuns.length === 0;
-  const validatedSeriousSignalRuns = countedPerformanceRuns.filter((run) => run.seriousSignalFound === true && typeof run.candidateFingerprint === "string" && run.candidateFingerprint.length > 0 && validOneDayOutcome(run));
-  const validatedSeriousSignals = [...new Map(validatedSeriousSignalRuns.map((run) => [String(run.candidateFingerprint), run])).values()];
-  const usefulValidatedSignals = validatedSeriousSignals.filter((run) => validOneDayOutcome(run)?.usefulAtCheckpoint === true);
-  const usefulRate = validatedSeriousSignals.length ? usefulValidatedSignals.length / validatedSeriousSignals.length : 0;
-  const usefulRateLower95 = wilsonLowerBound(usefulValidatedSignals.length, validatedSeriousSignals.length);
-  const threeSignalPipelineMilestone = consistentSafeBehavior && validatedSeriousSignals.length >= 3 && usefulRate >= 2 / 3;
-  const consistentSeriousSignals = consistentSafeBehavior && validatedSeriousSignals.length >= 30 && usefulRate >= 0.75 && usefulRateLower95 >= 0.55;
+  const validatedEffects = validatedSeriousSignalEffects(history);
+  const validatedRootSignals = aggregateValidatedRootSignals(validatedEffects);
+  const usefulValidatedSignals = validatedRootSignals.filter((signal) => signal.usefulAtCheckpoint);
+  const usefulRate = validatedRootSignals.length ? usefulValidatedSignals.length / validatedRootSignals.length : 0;
+  const usefulRateLower95 = wilsonLowerBound(usefulValidatedSignals.length, validatedRootSignals.length);
+  const threeSignalPipelineMilestone = consistentSafeBehavior && validatedRootSignals.length >= 3 && usefulRate >= 2 / 3;
+  const consistentSeriousSignals = consistentSafeBehavior && validatedRootSignals.length >= 30 && usefulRate >= 0.75 && usefulRateLower95 >= 0.55;
   const latestRun = history.runs.at(-1) ?? null;
   const latestSchedulerInvocation = record(latestRun?.schedulerInvocation);
   const effectiveIntervalSeconds = positiveEnvironmentNumber(process.env.SWING_UP_BRANCH_LAB_EFFECTIVE_INTERVAL_SECONDS, 300);
@@ -712,15 +921,17 @@ export async function GET() {
     unsafePerformanceRunCount: unsafePerformanceRuns.length,
     consistentSafeBehavior,
     consecutiveSeriousSignals: recent.filter((run) => run.seriousSignalFound === true).length,
-    validatedSeriousSignalCount: validatedSeriousSignals.length,
-    distinctValidatedEvidenceCount: validatedSeriousSignals.length,
+    validatedSeriousSignalCount: validatedRootSignals.length,
+    validatedSeriousSignalEffectCount: validatedEffects.length,
+    validatedRootEventCount: validatedRootSignals.length,
+    distinctValidatedEvidenceCount: validatedRootSignals.length,
     usefulValidatedSeriousSignalCount: usefulValidatedSignals.length,
-    firstValidatedSeriousSignal: validatedSeriousSignals.length > 0,
+    firstValidatedSeriousSignal: validatedRootSignals.length > 0,
     threeSignalPipelineMilestone,
     usefulValidatedSignalRate: Math.round(usefulRate * 10_000) / 100,
     usefulValidatedSignalRateLower95: Math.round(usefulRateLower95 * 10_000) / 100,
     consistentSeriousSignals,
-    outcomeEvaluationPolicy: { provider: "event-qualified public-equity market snapshots", checkpoints: OUTCOME_CHECKPOINTS.map((checkpoint) => ({ label: checkpoint.label, maximumDelayHours: checkpoint.maximumDelayMs / (60 * 60 * 1000) })), tracksEveryUniqueQualifiedEvent: true, openAiReviewRequiredForTracking: false, alertWaitsForOutcomes: false, minimumDirectionalMoveAfterCostsPercent: MINIMUM_DIRECTIONAL_MOVE_AFTER_COSTS_PERCENT, lateSnapshotReuseAllowed: false, consistencyMinimumIndependentSignals: 30 },
+    outcomeEvaluationPolicy: { provider: "event-qualified public-equity market snapshots", checkpoints: OUTCOME_CHECKPOINTS.map((checkpoint) => ({ label: checkpoint.label, maximumDelayHours: checkpoint.maximumDelayMs / (60 * 60 * 1000) })), tracksEveryUniqueQualifiedEvent: true, tracksStrongNearMissesForDiagnostics: true, shadowFindingsCanAlert: false, openAiReviewRequiredForTracking: false, alertWaitsForOutcomes: false, checkpointsArePostSignalLearningOnly: true, minimumDirectionalMoveAfterCostsPercent: MINIMUM_DIRECTIONAL_MOVE_AFTER_COSTS_PERCENT, lateSnapshotReuseAllowed: false, consistencyGrouping: "root_event", rootUsefulnessAggregation: "strict majority of unique approved ticker effects must each meet both the directional-return and SPY-relative thresholds; ties fail", consistencyMinimumIndependentSignals: 30 },
     pollingPolicy: {
       schedulerOwner: process.env.SWING_UP_BRANCH_LAB_SCHEDULER_OWNER === "dedicated_worker" ? "dedicated_worker" : "unavailable",
       schedulerTransport: "loopback",
@@ -743,6 +954,10 @@ export async function GET() {
       realRecordCount: historicalLibrary.library.records.filter((item) => item.dataQuality === "real").length,
       publicBootstrapRecordCount: historicalLibrary.library.records.filter((item) => item.provenance?.origin === "public_historical_bootstrap").length,
       swingUpForwardOutcomeRecordCount: historicalLibrary.library.records.filter((item) => item.provenance?.origin === "swing_up_forward_outcome" || !item.provenance).length,
+      forecastEligibleRecordCount: historicalLibrary.library.records.filter((item) => historicalLearningUse(item) === "forecast_eligible").length,
+      diagnosticsOnlyRecordCount: historicalLibrary.library.records.filter((item) => historicalLearningUse(item) === "diagnostics_only").length,
+      quarantinedRecordCount: historicalLibrary.library.records.filter((item) => historicalLearningUse(item) === "quarantined").length,
+      distinctRootEventCount: new Set(historicalLibrary.library.records.map((item) => item.rootEventKey?.trim() || item.eventKey.trim()).filter(Boolean)).size,
       earliestSignalObservedAt: historicalLibrary.library.records[0]?.signalObservedAt ?? null,
       latestSignalObservedAt: historicalLibrary.library.records.at(-1)?.signalObservedAt ?? null,
       updatedAt: historicalLibrary.library.updatedAt,
@@ -755,6 +970,8 @@ export async function GET() {
       immutable: true,
       createOnly: true,
       oneObjectPerCompletedScan: true,
+      containsCompleteFindingAuditLedger: true,
+      containsCompleteMappedFindingReceiptProofDictionary: true,
       latestObject: typeof latestRun?.runArchiveObject === "string" ? latestRun.runArchiveObject : null,
       legacyRunsWithoutArchive: history.runs.filter((run) => typeof run.runArchiveObject !== "string").length,
     },
@@ -857,7 +1074,7 @@ async function executePost(request: NextRequest) {
   const report = await runBranchSignalLab({
     allowOpenAi,
     outcomeTickers: outcomeTickersDue(history, Date.now()),
-    historicalSignals: mergeHistoricalSignals(historicalLibrary.library.records, historicalSignalRecords(history)),
+    historicalSignals: mergeHistoricalSignalRecordsForRoute(historicalLibrary.library.records, historicalSignalRecords(history)),
     skipOpenAiCandidateFingerprints: reviewedFingerprints,
     beforeOpenAiCall: async (candidate) => {
       const reservationNow = Date.now();
@@ -898,15 +1115,23 @@ async function executePost(request: NextRequest) {
       methodologyVersion: "swing-up-forward-outcomes-v1",
     },
   }));
-  historicalLibrary = await persistHistoricalSignalLibrary(historicalLibrary, mergeHistoricalSignals(publicHistoricalAdditions, forwardOutcomeAdditions));
+  historicalLibrary = await persistHistoricalSignalLibrary(historicalLibrary, mergeHistoricalSignalRecordsForRoute(publicHistoricalAdditions, forwardOutcomeAdditions));
   const learning = record(report.historicalLearning) ?? {};
   report.historicalLearning = {
     ...learning,
+    seriousSignalWaitsForCheckpoint: false,
+    checkpointsArePostSignalLearningOnly: true,
+    shadowOutcomesAreDiagnosticsOnly: true,
+    forecastLearningRequiresExactApprovedSeriousFingerprint: true,
     r2LibraryObject: R2_EQUITY_HISTORY_KEY,
     r2LibraryDurable: historicalLibrary.error === null,
     r2LibraryRealRecordCount: historicalLibrary.library.records.filter((item) => item.dataQuality === "real").length,
     r2LibraryPublicBootstrapRecordCount: historicalLibrary.library.records.filter((item) => item.provenance?.origin === "public_historical_bootstrap").length,
     r2LibrarySwingUpForwardRecordCount: historicalLibrary.library.records.filter((item) => item.provenance?.origin === "swing_up_forward_outcome").length,
+    r2LibraryForecastEligibleRecordCount: historicalLibrary.library.records.filter((item) => historicalLearningUse(item) === "forecast_eligible").length,
+    r2LibraryDiagnosticsOnlyRecordCount: historicalLibrary.library.records.filter((item) => historicalLearningUse(item) === "diagnostics_only").length,
+    r2LibraryQuarantinedRecordCount: historicalLibrary.library.records.filter((item) => historicalLearningUse(item) === "quarantined").length,
+    r2LibraryDistinctRootEventCount: new Set(historicalLibrary.library.records.map((item) => item.rootEventKey?.trim() || item.eventKey.trim()).filter(Boolean)).size,
     r2LibraryMockOrSyntheticRecordCount: historicalLibrary.library.records.filter((item) => item.dataQuality !== "real").length,
     r2LibraryError: historicalLibrary.error,
   };
@@ -919,9 +1144,23 @@ async function executePost(request: NextRequest) {
   }
   history.totalRunCount += 1;
   const runNumber = history.totalRunCount;
-  const completedRun = { ...report, runNumber, repairAttemptNumber, schedulerInvocation: invocation, ...(activeReservationId ? { openAiReservationId: activeReservationId } : {}) };
+  const completedRun: JsonRecord = { ...report, runNumber, repairAttemptNumber, schedulerInvocation: invocation, ...(activeReservationId ? { openAiReservationId: activeReservationId } : {}) };
   const runArchiveObject = await archiveCompletedRun(runNumber, invocation, completedRun);
-  history.runs.push({ ...completedRun, runArchiveObject });
+  const findingAuditLedger = Array.isArray(completedRun.mappedFindingAuditLedger) ? completedRun.mappedFindingAuditLedger : [];
+  const findingAuditLedgerPresent = Array.isArray(completedRun.mappedFindingAuditLedger);
+  const findingAuditLedgerCount = findingAuditLedger.length;
+  const mappedFindingReceiptProofDictionary = record(completedRun.mappedFindingReceiptProofDictionary);
+  const mappedFindingReceiptProofDictionaryCount = mappedFindingReceiptProofDictionary ? Object.keys(mappedFindingReceiptProofDictionary).length : 0;
+  history.runs.push({
+    ...completedRun,
+    mappedFindingAuditLedger: undefined,
+    mappedFindingReceiptProofDictionary: undefined,
+    findingAuditLedgerCount,
+    findingAuditLedgerStoredInRunArchive: findingAuditLedgerPresent,
+    mappedFindingReceiptProofDictionaryCount,
+    mappedFindingReceiptProofDictionaryStoredInRunArchive: Boolean(mappedFindingReceiptProofDictionary),
+    runArchiveObject,
+  });
   if (repairFailure && repairAttemptNumber >= 3) {
     history.stopped = true;
     history.stopReason = `Stopped after the same repair-eligible ${repairFailure.scope} failure produced no measurable gain three times: ${repairFailure.fingerprint}`;

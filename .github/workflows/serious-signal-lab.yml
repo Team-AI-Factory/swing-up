@@ -55,7 +55,7 @@ jobs:
         run: npm run typecheck
 
       - name: Verify live-lab evidence and provider policies
-        run: npm run smoke:branch-lab-policy && npm run smoke:r2-preview-write-guard && npm run smoke:branch-learning-ledger && npm run smoke:equity-universe-fallback && npm run smoke:equity-event-semantics && npm run smoke:equity-event-sources && npm run smoke:equity-historical-analogs && npm run smoke:equity-historical-bootstrap && npm run smoke:equity-event-first-runner && npm run smoke:equity-five-case-pilot && npm run smoke:equity-history-optional-pilot && npm run smoke:equity-industry-peer-pilot && npm run smoke:equity-article-evidence && npm run smoke:us-watch-out-engine && npm run smoke:watch-out-serious-promotion && npm run smoke:equity-sec-filing-details && npm run smoke:ai-committee-crypto-policy && npm run smoke:ai-committee-provider-guardrails
+        run: npm run smoke:branch-lab-policy && npm run smoke:r2-preview-write-guard && npm run smoke:branch-learning-ledger && npm run smoke:equity-universe-fallback && npm run smoke:equity-event-semantics && npm run smoke:equity-event-sources && npm run smoke:equity-historical-analogs && npm run smoke:equity-historical-bootstrap && npm run smoke:equity-event-first-runner && npm run smoke:equity-five-case-pilot && npm run smoke:equity-history-optional-pilot && npm run smoke:equity-industry-peer-pilot && npm run smoke:equity-article-evidence && npm run smoke:us-watch-out-engine && npm run smoke:watch-out-serious-promotion && npm run smoke:us-value-investing-engine && npm run smoke:equity-sec-filing-details && npm run smoke:ai-committee-crypto-policy && npm run smoke:ai-committee-provider-guardrails
 
       - name: Lint
         run: npm run lint

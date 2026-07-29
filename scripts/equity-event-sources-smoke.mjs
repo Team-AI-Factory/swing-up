@@ -9,6 +9,10 @@ const output = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
   fileName: "event-sources.ts",
 }).outputText;
+const marketOutput = ts.transpileModule(marketSource, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
+  fileName: "market.ts",
+}).outputText;
 
 const loaded = { exports: {} };
 const stubs = {
@@ -129,6 +133,37 @@ assert.doesNotMatch(source, /www\.commerce\.gov\/feeds\/news/);
 assert.match(quotaSource, /host === "api\.commerce\.gov"[\s\S]{0,240}quotaKey: "commerce_demo_key_50_daily"[\s\S]{0,180}maximumCallsInWindow: 48, minimumIntervalMs: 29 \* minute/);
 assert.match(marketSource, /status: !settled\.length \? "not_due"/);
 
+const marketLoaded = { exports: {} };
+new Function("require", "module", "exports", marketOutput)((name) => {
+  throw new Error(`Unexpected market import: ${name}`);
+}, marketLoaded, marketLoaded.exports);
+const quoteFetches = [];
+const sameTickerCandidates = [
+  { ticker: "ZZZ", gatePassed: true, trackingDisposition: "qualified", quote: null, rootEventKey: "event-a" },
+  { ticker: "ZZZ", gatePassed: true, trackingDisposition: "qualified", quote: null, rootEventKey: "event-b" },
+];
+await marketLoaded.exports.enrichCandidateQuotes(sameTickerCandidates, async (value) => {
+  const ticker = new URL(String(value)).pathname.split("/").at(-1);
+  quoteFetches.push(ticker);
+  const price = ticker === "SPY" ? 600 : 100;
+  return new Response(JSON.stringify({
+    chart: {
+      result: [{
+        meta: {
+          regularMarketPrice: price,
+          chartPreviousClose: price,
+          regularMarketTime: Date.parse("2026-07-22T13:55:00.000Z") / 1000,
+        },
+        timestamp: [Date.parse("2026-07-22T13:55:00.000Z") / 1000],
+      }],
+      error: null,
+    },
+  }), { status: 200, headers: { "content-type": "application/json" } });
+}, now);
+assert.equal(sameTickerCandidates[0].quote?.price, 100);
+assert.equal(sameTickerCandidates[1].quote?.price, 100);
+assert.equal(quoteFetches.filter((ticker) => ticker === "ZZZ").length, 1);
+
 console.log(JSON.stringify({
   ok: true,
   gdeltQueryIsBoundedAndRotating: true,
@@ -138,4 +173,5 @@ console.log(JSON.stringify({
   commerceReceiptsRemainPrimaryOfficialEvidence: true,
   successfulHttpWithoutRecordsIsNotCountedAsConnected: true,
   unusedQuoteChainIsNotMisreportedAsUnconfigured: true,
+  oneQuoteServesEveryDistinctSameTickerEvent: true,
 }, null, 2));

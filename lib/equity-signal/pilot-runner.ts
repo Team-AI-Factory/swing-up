@@ -5,6 +5,7 @@ import {
   bootstrapPilotHistoricalSignals,
   mergePilotHistoricalSignals,
 } from "@/lib/equity-signal/pilot-historical-bootstrap";
+import { bootstrapRegulatoryApprovalPeerHistory } from "@/lib/equity-signal/pilot-regulatory-approval-bootstrap";
 import { US_SERIOUS_SIGNAL_PILOT_POLICY } from "@/lib/equity-signal/pilot-serious-signal-policy";
 import {
   runEquitySignalLab,
@@ -37,8 +38,11 @@ export async function runPilotEquitySignalLab(input: PilotEquitySignalLabInput =
   const now = input.now ?? new Date();
   const fetchImpl = input.fetchImpl ?? fetch;
   const suppliedHistory = input.historicalSignals ?? [];
-  const pilotBootstrap = await bootstrapPilotHistoricalSignals(suppliedHistory, fetchImpl, now);
-  const historicalSignals = mergePilotHistoricalSignals(suppliedHistory, pilotBootstrap.records);
+  const [earningsBootstrap, regulatoryApprovalBootstrap] = await Promise.all([
+    bootstrapPilotHistoricalSignals(suppliedHistory, fetchImpl, now),
+    bootstrapRegulatoryApprovalPeerHistory(suppliedHistory, fetchImpl, now),
+  ]);
+  const historicalSignals = mergePilotHistoricalSignals(suppliedHistory, earningsBootstrap.records, regulatoryApprovalBootstrap.records);
   const baseResult = await runEquitySignalLab({ ...input, now, fetchImpl, historicalSignals });
   const base = baseResult as unknown as Json;
   const selectedCandidate = object(base.selectedCandidate);
@@ -47,7 +51,8 @@ export async function runPilotEquitySignalLab(input: PilotEquitySignalLabInput =
   const liveSourcePolicy = object(base.liveSourcePolicy);
   const libraryAdditions = mergePilotHistoricalSignals(
     historicalRecords(base._historicalSignalLibraryAdditions),
-    pilotBootstrap.records,
+    earningsBootstrap.records,
+    regulatoryApprovalBootstrap.records,
   );
 
   const [pilotHistoricalGate, rawWatchOutReview, articleEvidence] = await Promise.all([
@@ -66,11 +71,21 @@ export async function runPilotEquitySignalLab(input: PilotEquitySignalLabInput =
     pilotHistoricalGate,
     articleEvidence,
     pilotHistoricalBootstrap: {
-      requestedSeeds: pilotBootstrap.requestedSeeds,
-      builtSeeds: pilotBootstrap.builtSeeds,
-      errors: pilotBootstrap.errors,
-      priceSource: pilotBootstrap.priceSource,
-      noSyntheticData: pilotBootstrap.noSyntheticData,
+      earningsGuidance: {
+        requestedSeeds: earningsBootstrap.requestedSeeds,
+        builtSeeds: earningsBootstrap.builtSeeds,
+        errors: earningsBootstrap.errors,
+        priceSource: earningsBootstrap.priceSource,
+      },
+      regulatoryApproval: {
+        requestedSeeds: regulatoryApprovalBootstrap.requestedSeeds,
+        builtSeeds: regulatoryApprovalBootstrap.builtSeeds,
+        errors: regulatoryApprovalBootstrap.errors,
+        priceSource: regulatoryApprovalBootstrap.priceSource,
+        officialEventSource: regulatoryApprovalBootstrap.officialEventSource,
+      },
+      totalRecordsBuilt: earningsBootstrap.records.length + regulatoryApprovalBootstrap.records.length,
+      noSyntheticData: earningsBootstrap.noSyntheticData && regulatoryApprovalBootstrap.noSyntheticData,
     },
     historicalLearning: {
       ...historicalLearning,
@@ -79,10 +94,11 @@ export async function runPilotEquitySignalLab(input: PilotEquitySignalLabInput =
       historicalComparisonRequiredForSeriousSignal: true,
       actionableBuySellRequiresCalibratedHistory: true,
       historicalEvidenceRole: "mandatory_same_company_or_same_industry_five_case_pilot_and_r2_learning",
+      publicHistoricalFamiliesBuilt: ["earnings_guidance", "regulatory_approval"],
       statisticallyEquivalentToThirtySamples: false,
       forwardOutcomeRequiredBeforeAlert: false,
       swingUpForwardTrackingRole: "transparent_ledger_and_future_self_improvement_only",
-      pilotPublicHistoricalSignalsAddedThisRun: pilotBootstrap.records.length,
+      pilotPublicHistoricalSignalsAddedThisRun: earningsBootstrap.records.length + regulatoryApprovalBootstrap.records.length,
     },
     liveSourcePolicy: {
       ...liveSourcePolicy,
@@ -138,7 +154,7 @@ export async function runPilotEquitySignalLab(input: PilotEquitySignalLabInput =
       alertType: null,
       blockers: [...new Set([
         ...strings(base.blockers),
-        ...(selectedArticleEvidence?.blockers ?? ["The headline and feed summary were not enough to confirm the full event." ]),
+        ...(selectedArticleEvidence?.blockers ?? ["The headline and feed summary were not enough to confirm the full event."]),
       ])],
     };
   }

@@ -228,6 +228,7 @@ function recordFromSeed(seed: HistoricalBootstrapSeed, security: SeriesResult, b
   return {
     id: `${key}:${seed.ticker}`,
     eventKey: key,
+    rootEventKey: key,
     ticker: seed.ticker,
     eventFamily: seed.eventFamily,
     direction: seed.direction,
@@ -237,6 +238,9 @@ function recordFromSeed(seed: HistoricalBootstrapSeed, security: SeriesResult, b
     signalObservedAt: entry.observedAt,
     featuresAsOf: seed.eventObservedAt,
     dataQuality: "real",
+    learningUse: "forecast_eligible",
+    learningReasons: ["official_event_source", "real_security_and_spy_prices", "point_in_time_checkpoint"],
+    findingDisposition: "qualified",
     provenance: {
       origin: "public_historical_bootstrap",
       eventPublisher: seed.eventPublisher,
@@ -257,7 +261,14 @@ function failureStatus(errors: string[]): ProviderStatus {
 }
 
 function richness(record: HistoricalSignalRecord) {
-  return Object.keys(record.checkpoints).length + (record.provenance ? 10 : 0);
+  const learningStateWeight = record.learningUse === "quarantined"
+    ? 40
+    : record.learningUse === "forecast_eligible"
+      ? 30
+      : record.learningUse === "diagnostics_only"
+        ? 10
+        : 0;
+  return Object.keys(record.checkpoints).length + (record.provenance ? 10 : 0) + learningStateWeight;
 }
 
 export function mergeHistoricalSignals(...groups: HistoricalSignalRecord[][]) {

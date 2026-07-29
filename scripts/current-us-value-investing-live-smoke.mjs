@@ -59,11 +59,14 @@ async function main() {
         const latest = result.json?.latest;
         const value = latest?.valueInvesting;
         const warehouse = value?.warehouse;
+        const hardened = value?.methodology?.safetyOverlay === "us_value_alert_safety_v2";
         if (
           result.status === 200
           && result.json?.ok === true
           && result.json?.branch === "agent/combined-opportunity-engine"
+          && hardened
           && value?.coverage?.companiesAnalyzed >= 5_000
+          && value?.coverage?.processingCoveragePercent >= 95
           && warehouse?.storage === "cloudflare_r2"
           && warehouse?.companyRecordsStored === value.coverage.companiesAnalyzed
         ) {
@@ -71,12 +74,12 @@ async function main() {
           break;
         }
       } catch {
-        // The five-minute worker may still be completing its first full valuation cycle.
+        // The five-minute worker may still be completing its first hardened full valuation cycle.
       }
       await sleep(15_000);
     }
 
-    assert.ok(lab, "Railway worker did not complete and persist the live U.S. fair-value warehouse before the validation deadline.");
+    assert.ok(lab, "Railway worker did not complete and persist the hardened live U.S. fair-value warehouse before the validation deadline.");
     const latest = lab.latest;
     const value = latest.valueInvesting;
     const coverage = value.coverage;
@@ -84,6 +87,8 @@ async function main() {
 
     assert.equal(value.marketScope, "US listed common stocks and ADRs only");
     assert.equal(value.methodology.style, "company_first_conservative_intrinsic_value");
+    assert.equal(value.methodology.safetyOverlay, "us_value_alert_safety_v2");
+    assert.equal(value.methodology.specialistSectorModelsRequired, true);
     assert.equal(value.methodology.analystTargetUsedAsFairValue, false);
     assert.equal(value.methodology.newsRequiredForFoundationAlert, false);
     assert.equal(value.methodology.fullFundamentalRefreshMinutes, 15);
@@ -94,10 +99,14 @@ async function main() {
     assert.equal(coverage.companiesWithFairValue + coverage.companiesWithoutFairValue, coverage.companiesAnalyzed);
     assert.equal(coverage.pagesFailed, 0);
     assert.ok(coverage.processingCoveragePercent >= 95);
+    assert.ok(coverage.eligibleExchangeCoveragePercent >= 95);
 
     assert.ok(Array.isArray(value.seriousAlerts.buy));
     assert.ok(Array.isArray(value.seriousAlerts.sell));
     assert.ok(Array.isArray(value.seriousAlerts.watchOut));
+    assert.ok(value.seriousAlerts.buy.every((item) => ["NASDAQ", "NYSE", "AMEX", "NYSEAMERICAN"].includes(item.exchange)));
+    assert.ok(value.seriousAlerts.sell.every((item) => ["NASDAQ", "NYSE", "AMEX", "NYSEAMERICAN"].includes(item.exchange)));
+    assert.ok(value.seriousAlerts.watchOut.every((item) => ["NASDAQ", "NYSE", "AMEX", "NYSEAMERICAN"].includes(item.exchange)));
     assert.ok(Array.isArray(value.watchlists.qualityWaitingForPrice));
     assert.ok(typeof value.watchlists.researchOnlyCount === "number");
 
@@ -111,6 +120,7 @@ async function main() {
 
     assert.equal(latest.liveSourcePolicy.foundationNewsRequired, false);
     assert.equal(latest.liveSourcePolicy.foundationFairValueCanTriggerImmediately, true);
+    assert.equal(latest.liveSourcePolicy.foundationSpecialistSectorModelsRequired, true);
     assert.equal(latest.liveSourcePolicy.headlineAloneCanPromoteSeriousSignal, false);
     assert.ok(latest.liveSourcePolicy.maximumFullArticlesReadPerScan >= 12);
     assert.ok(latest.liveSourcePolicy.maximumFullArticlesReadPerScan <= 20);
@@ -140,6 +150,8 @@ async function main() {
         sell: value.seriousAlerts.sell.length,
         watchOut: value.seriousAlerts.watchOut.length,
       },
+      seriousAlerts: value.seriousAlerts,
+      qualityPriceWatchlist: value.watchlists.qualityWaitingForPrice,
       qualityPriceWatchlistCount: value.watchlists.qualityWaitingForPrice.length,
       researchOnlyCount: value.watchlists.researchOnlyCount,
       warehouse,

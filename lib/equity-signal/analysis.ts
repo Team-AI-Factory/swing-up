@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { canonicalEventIdentity, computeEventFirstStrength, eventFirstGate, matchesEquityText, normalizeEquitySymbol, selectBalancedReceipts } from "@/lib/branch-signal-lab-policy";
 import { analyzeHistoricalAnalogs, type HistoricalSignalRecord } from "@/lib/equity-signal/historical-analogs";
 import type { EquityUniverseEntry, EquityUniverseSnapshot } from "@/lib/equity-signal/universe";
-import type { EventFamily, EventReceipt, ImpactCandidate, MacroContext } from "@/lib/equity-signal/types";
+import type { CausalExposureEvidence, EventFamily, EventMagnitudeEvidence, EventMagnitudeMetric, EventReceipt, ImpactCandidate, MacroContext } from "@/lib/equity-signal/types";
 
 type ClassifiedEvent = {
   family: EventFamily;
@@ -13,25 +13,353 @@ type ClassifiedEvent = {
   terms: string[];
 };
 
-type MappedEvent = { receipt: EventReceipt; classification: ClassifiedEvent; equity: EquityUniverseEntry; relationship: "direct" | "second_order" | "third_order"; mappingConfidence: number; causalChain: string[] };
+type MappedEvent = {
+  receipt: EventReceipt;
+  classification: ClassifiedEvent;
+  equity: EquityUniverseEntry;
+  relationship: "direct" | "second_order" | "third_order";
+  mappingConfidence: number;
+  causalChain: string[];
+  causalExposure: CausalExposureEvidence;
+};
 
 const NOISE = /\b(price target|technical analysis|stock picks?|stocks? to buy|should you buy|prediction|opinion|sponsored|top \d+ stocks?|(?:increases?|decreases?|reduces?|raises?|cuts?) (?:its )?(?:stake|position) in)\b/i;
 const RUMOUR = /\b(rumou?r|reportedly considering|unconfirmed|sources? say|may be planning|could announce|speculation)\b/i;
 const GENERIC_COMPANY_TOKENS = new Set(["american", "capital", "company", "corp", "digital", "energy", "financial", "first", "freedom", "general", "global", "group", "health", "holding", "holdings", "international", "national", "resources", "royal", "services", "systems", "technology", "technologies", "trust", "united", "world"]);
 const ACTIVE_CONFLICT = /\b(military strikes?|airstrikes?|missile (?:attack|launch|strike)|invasion|armed conflict|shipping attack|red sea attack|hostilities|troops? (?:invade|deploy|mobilize)|war (?:erupts|escalates|breaks out|begins|widens|intensifies)|(?:declares?|declaration of) war|ceasefire (?:breaks|collapses)|conflict (?:erupts|escalates|widens|intensifies))\b/i;
+const EXPOSURE_LINK = /\b(customer|supplier|vendor|sole[- ]source|depends? on|reliant on|exposure to|derives? (?:about |approximately )?\d+(?:\.\d+)?% (?:of )?(?:its )?revenue from|operations? in|manufactur(?:es|ing) in|sources? from|fuel costs?|input costs?|policy exposure|tariff exposure|commodity exposure)\b/i;
+const MAGNITUDE_SENSITIVE_FAMILIES = new Set<EventFamily>(["contract_award", "financing_dilution", "earnings_guidance", "regulatory_enforcement"]);
+const EXTERNAL_EXPOSURE_FAMILIES = new Set<EventFamily>(["macro_rates", "macro_inflation", "geopolitical_conflict", "sanctions_trade", "energy_commodity", "supply_chain"]);
+const NON_ACTIONABLE_OFFERING = /\b(shelf|at-the-market|ATM program|proposed|planned|plans? to|intends? to|seeks? to|may offer|might offer|could offer|selling stockholder|secondary offering|secondary sale)\b/i;
+const ACTIONABLE_OFFERING = /\b(priced|completed|closed|issued|company is issuing|commenced)\b/i;
+const NON_FINAL_REGULATORY = /\b(investigation|investigating|subpoena|inquiry|proposed (?:fine|penalty|rule|order)|may fine|could fine)\b/i;
+const UNCERTAIN_REGULATORY = /\b(?:possible|potential|may|might|could|faces?|seeks?|seeking|considering|discussion|negotiation|under consideration|reportedly|expected to)\b.{0,60}\b(?:charges?|penalt(?:y|ies)|fines?|settlement|lawsuit|class i recall|recall|clinical hold|complete response letter|approval denial|approval denied|rejected application|final (?:enforcement )?order)\b|\b(?:charges?|penalt(?:y|ies)|fines?|settlement|lawsuit|class i recall|recall|clinical hold|complete response letter|approval denial|approval denied|rejected application|final (?:enforcement )?order)\b.{0,40}\b(?:possible|potential|proposed|expected|considered|under discussion|under negotiation|under consideration)\b/i;
+const FINAL_REGULATORY = /\b(final (?:enforcement )?(?:order|penalty|fine)|(?:sec|doj|ftc|regulator|government)\s+(?:charged|charges|sues)|lawsuit filed|settlement|agreed to pay|fined|class i recall|recall|clinical hold|complete response letter|approval denied|rejected application)\b/i;
+const CATEGORICAL_SEVERE_REGULATORY = /\b(final (?:enforcement )?order|class i recall|recall|clinical hold|complete response letter|approval denied|rejected application|criminal charges? filed|indicted|(?:sec|doj|ftc)\s+(?:charged|charges|sues)|lawsuit filed)\b/i;
+const COMPANY_EFFECT_DOWNSIDE = /\b(?:costs?|expenses?|loss(?:es)?|disruption(?: risk)?|shortage|downtime|tariffs?|penalt(?:y|ies)|fine|risk)\b.{0,55}\b(?:increase[sd]?|rise[sn]?|rising|surge[sd]?|widen[sd]?|pressure[sd]?|hurt[sd]?|reduce[sd]?|erode[sd]?|weigh(?:s|ed)? on|threaten[sd]?|adverse)\b|\b(?:increase[sd]?|higher|rising|surging|widening)\b.{0,40}\b(?:costs?|expenses?|loss(?:es)?|risk)\b|\b(?:revenue|sales|demand|profit|earnings|margins?|cash flow)\b.{0,55}\b(?:decrease[sd]?|fall[sn]?|decline[sd]?|drop(?:ped|s)?|contract(?:ed|s)?|pressure[sd]?|hurt[sd]?|reduce[sd]?|erode[sd]?|weigh(?:s|ed)? on)\b|\b(?:disruption risk|negative exposure|revenue at risk|adverse impact)\b/i;
+const COMPANY_EFFECT_UPSIDE = /\b(?:revenue|sales|demand|profit|earnings|margins?|cash flow|net interest margin|NIM)\b.{0,55}\b(?:increase[sd]?|rise[sn]?|rising|grow(?:s|th|ing)?|expand(?:s|ed|ing)?|improve[sd]?|benefit(?:s|ed)?|boost(?:s|ed)?)\b|\b(?:increase[sd]?|higher|rising|growing|improving|boost(?:s|ed)?|support(?:s|ed)?|benefit(?:s|ed)?)\b.{0,20}\b(?:revenue|sales|demand|profit|earnings|margins?|cash flow|net interest margin|NIM)\b|\b(?:positive exposure|pricing benefit|higher reali[sz]ed prices?)\b/i;
+
+function evidenceWindow(value: string, index: number, length: number) {
+  return value.slice(Math.max(0, index - 90), Math.min(value.length, index + length + 90)).replace(/\s+/g, " ").trim();
+}
+
+function scaledNumber(raw: string, scale: string | undefined) {
+  const value = Number(raw.replace(/,/g, ""));
+  if (!Number.isFinite(value)) return null;
+  const normalizedScale = (scale ?? "").toLowerCase();
+  const multiplier = /^(?:billion|bn|b)$/.test(normalizedScale)
+    ? 1_000_000_000
+    : /^(?:million|mm|m)$/.test(normalizedScale)
+      ? 1_000_000
+      : /^(?:thousand|k)$/.test(normalizedScale)
+        ? 1_000
+        : 1;
+  return value * multiplier;
+}
+
+function explicitCompanyEffectDirection(value: string) {
+  const downside = COMPANY_EFFECT_DOWNSIDE.test(value);
+  const upside = COMPANY_EFFECT_UPSIDE.test(value);
+  if (downside === upside) return null;
+  return downside ? "downside" as const : "upside" as const;
+}
+
+function regulatoryStatusIsFinal(value: string) {
+  if (UNCERTAIN_REGULATORY.test(value)) return false;
+  if (FINAL_REGULATORY.test(value)) return true;
+  if (NON_FINAL_REGULATORY.test(value)) return false;
+  return false;
+}
+
+function latestPromotionGradeStatusText(
+  receipts: EventReceipt[],
+  classifyStatus: (value: string) => "actionable" | "non_actionable" | null,
+) {
+  const classified = receipts.flatMap((receipt) => {
+    const text = `${receipt.title} ${receipt.summary ?? ""}`;
+    const status = classifyStatus(text);
+    return status ? [{ receipt, text, status }] : [];
+  });
+  const constructions: Array<{ observedAt: number; text: string; status: "actionable" | "non_actionable" }> = classified
+    .filter((item) => item.receipt.primarySource)
+    .map((item) => ({ observedAt: Date.parse(item.receipt.publishedAt), text: item.text, status: item.status }));
+  for (const status of ["actionable", "non_actionable"] as const) {
+    const byPublisher = new Map<string, (typeof classified)[number]>();
+    for (const item of classified.filter((value) => !value.receipt.primarySource && value.status === status)) {
+      const publisher = item.receipt.publisher.trim().toLowerCase();
+      const existing = byPublisher.get(publisher);
+      if (!existing || Date.parse(item.receipt.publishedAt) > Date.parse(existing.receipt.publishedAt)) byPublisher.set(publisher, item);
+    }
+    if (byPublisher.size < 2) continue;
+    const corroborated = [...byPublisher.values()];
+    constructions.push({
+      observedAt: Math.max(...corroborated.map((item) => Date.parse(item.receipt.publishedAt))),
+      text: corroborated.map((item) => item.text).join(" "),
+      status,
+    });
+  }
+  return constructions
+    .filter((item) => Number.isFinite(item.observedAt))
+    .sort((left, right) => right.observedAt - left.observedAt)[0]?.text ?? "";
+}
+
+function latestFinancingStatusText(receipts: EventReceipt[]) {
+  return latestPromotionGradeStatusText(receipts, (value) => {
+    if (NON_ACTIONABLE_OFFERING.test(value)) return "non_actionable";
+    if (ACTIONABLE_OFFERING.test(value)) return "actionable";
+    return null;
+  });
+}
+
+function latestRegulatoryStatusText(receipts: EventReceipt[]) {
+  return latestPromotionGradeStatusText(receipts, (value) => {
+    if (regulatoryStatusIsFinal(value)) return "actionable";
+    if (NON_FINAL_REGULATORY.test(value) || UNCERTAIN_REGULATORY.test(value)) return "non_actionable";
+    return null;
+  });
+}
+
+function extractEventMagnitude(receipts: EventReceipt[], family: EventFamily): EventMagnitudeEvidence {
+  const metrics: EventMagnitudeMetric[] = [];
+  let nonActionableStatus = false;
+  for (const receipt of receipts) {
+    const value = `${receipt.title} ${receipt.summary ?? ""}`;
+    const addMetric = (metric: Omit<EventMagnitudeMetric, "sourceReceiptId" | "sourceUrl" | "sourcePublisher" | "primarySource" | "corroboratingPublishers" | "promotionEvidenceVerified">) => {
+      if (!Number.isFinite(metric.value) || metric.value <= 0) return;
+      const duplicate = metrics.some((item) => item.sourceReceiptId === receipt.id
+        && item.kind === metric.kind
+        && item.value === metric.value
+        && item.unit === metric.unit
+        && item.eventStatus === metric.eventStatus);
+      if (!duplicate) metrics.push({
+        ...metric,
+        sourceReceiptId: receipt.id,
+        sourceUrl: receipt.url,
+        sourcePublisher: receipt.publisher,
+        primarySource: receipt.primarySource,
+      });
+    };
+
+    if (family === "contract_award") {
+      for (const match of value.matchAll(/\b(?:contract|award|purchase order|deal)[^.]{0,120}?\b(?:valued at|worth|committed (?:value )?(?:of )?|total (?:committed )?value (?:of )?)\s*(?:US\$|\$|USD\s*)\s?(\d[\d,]*(?:\.\d+)?)\s*(billion|million|thousand|bn|mm|[bmk])?\b/gi)) {
+        const context = evidenceWindow(value, match.index ?? 0, match[0].length);
+        const amount = scaledNumber(match[1], match[2]);
+        const termMatch = context.match(/\b(\d+(?:\.\d+)?)\s*[- ]year\b/i);
+        const ceiling = /\b(up to|ceiling|maximum|not to exceed|indefinite delivery|IDIQ)\b/i.test(context);
+        if (ceiling) nonActionableStatus = true;
+        if (amount !== null) addMetric({
+          kind: "contract_value",
+          value: amount,
+          unit: "USD",
+          evidenceText: context,
+          termYears: termMatch ? Number(termMatch[1]) : null,
+          eventStatus: ceiling ? "ceiling" : "committed",
+        });
+      }
+      for (const match of value.matchAll(/\b(?:wins?|awarded)\s+(?:a\s+|the\s+)?(?:US\$|\$|USD\s*)\s?(\d[\d,]*(?:\.\d+)?)\s*(billion|million|thousand|bn|mm|[bmk])?\s+(?:contract|award|purchase order)\b/gi)) {
+        const context = evidenceWindow(value, match.index ?? 0, match[0].length);
+        const amount = scaledNumber(match[1], match[2]);
+        const termMatch = context.match(/\b(\d+(?:\.\d+)?)\s*[- ]year\b/i);
+        const ceiling = /\b(up to|ceiling|maximum|not to exceed|indefinite delivery|IDIQ)\b/i.test(context);
+        if (ceiling) nonActionableStatus = true;
+        if (amount !== null) addMetric({
+          kind: "contract_value",
+          value: amount,
+          unit: "USD",
+          evidenceText: context,
+          termYears: termMatch ? Number(termMatch[1]) : null,
+          eventStatus: ceiling ? "ceiling" : "committed",
+        });
+      }
+    }
+
+    if (family === "financing_dilution") {
+      const nonActionable = NON_ACTIONABLE_OFFERING.test(value);
+      const secondaryOnly = /\b(selling stockholder|secondary offering|secondary sale)\b/i.test(value);
+      const actionable = ACTIONABLE_OFFERING.test(value) && !nonActionable;
+      if (nonActionable || !actionable) nonActionableStatus = true;
+      for (const match of value.matchAll(/\b(?:priced|completed|closed|issued|primary offering of)[^.]{0,100}?(\d[\d,]*(?:\.\d+)?)\s*(billion|million|thousand|bn|mm|[bmk])?\s+(?:new |primary )?shares?\b/gi)) {
+        const shares = scaledNumber(match[1], match[2]);
+        if (shares !== null) addMetric({
+          kind: "offering_shares",
+          value: shares,
+          unit: "shares",
+          evidenceText: evidenceWindow(value, match.index ?? 0, match[0].length),
+          eventStatus: actionable ? "priced" : secondaryOnly ? "secondary" : "proposed",
+        });
+      }
+      for (const match of value.matchAll(/(?:\bdilution (?:of |is )?(\d+(?:\.\d+)?)%(?=\s|[.,;:]|$)|\b(\d+(?:\.\d+)?)%\s+dilution\b)/gi)) {
+        const percent = Number(match[1] ?? match[2]);
+        if (Number.isFinite(percent)) addMetric({
+          kind: "dilution_percent",
+          value: percent,
+          unit: "percent",
+          evidenceText: evidenceWindow(value, match.index ?? 0, match[0].length),
+          eventStatus: actionable ? "priced" : secondaryOnly ? "secondary" : "proposed",
+        });
+      }
+    }
+
+    if (family === "earnings_guidance") {
+      for (const match of value.matchAll(/\b(?:raises?|increases?|cuts?|reduces?|lowers?)\s+(?:its\s+)?(?:revenue |earnings |profit )?(?:guidance|outlook)\s+by\s+(\d+(?:\.\d+)?)%/gi)) {
+        addMetric({ kind: "guidance_change_percent", value: Number(match[1]), unit: "percent", evidenceText: evidenceWindow(value, match.index ?? 0, match[0].length) });
+      }
+      for (const match of value.matchAll(/\b(?:revenue |earnings |profit )?(?:guidance|outlook)[^.]{0,80}?\bfrom\s+\$?(\d+(?:\.\d+)?)\s*(?:-|to)\s*\$?(\d+(?:\.\d+)?)[^.]{0,80}?\bto\s+\$?(\d+(?:\.\d+)?)\s*(?:-|to)\s*\$?(\d+(?:\.\d+)?)/gi)) {
+        const oldMidpoint = (Number(match[1]) + Number(match[2])) / 2;
+        const newMidpoint = (Number(match[3]) + Number(match[4])) / 2;
+        const change = oldMidpoint > 0 ? Math.abs(((newMidpoint - oldMidpoint) / oldMidpoint) * 100) : 0;
+        if (change > 0) addMetric({ kind: "guidance_change_percent", value: change, unit: "percent", evidenceText: evidenceWindow(value, match.index ?? 0, match[0].length) });
+      }
+    }
+
+    if (family === "merger_acquisition") {
+      for (const match of value.matchAll(/\b(?:acquisition|merger|transaction|deal)[^.]{0,100}?\b(?:valued at|worth|for)\s*(?:US\$|\$|USD\s*)\s?(\d[\d,]*(?:\.\d+)?)\s*(billion|million|thousand|bn|mm|[bmk])?\b/gi)) {
+        const amount = scaledNumber(match[1], match[2]);
+        if (amount !== null) addMetric({ kind: "transaction_value", value: amount, unit: "USD", evidenceText: evidenceWindow(value, match.index ?? 0, match[0].length) });
+      }
+    }
+
+    if (family === "regulatory_enforcement") {
+      const final = regulatoryStatusIsFinal(value);
+      if (!final) nonActionableStatus = true;
+      for (const match of value.matchAll(/\b(?:final (?:fine|penalty)|fined|penalty of|settlement of|agreed to pay)\s*(?:US\$|\$|USD\s*)\s?(\d[\d,]*(?:\.\d+)?)\s*(billion|million|thousand|bn|mm|[bmk])?\b/gi)) {
+        const amount = scaledNumber(match[1], match[2]);
+        if (amount !== null) addMetric({
+          kind: "fine_value",
+          value: amount,
+          unit: "USD",
+          evidenceText: evidenceWindow(value, match.index ?? 0, match[0].length),
+          eventStatus: final ? "final" : "proposed",
+        });
+      }
+    }
+  }
+  if (family === "contract_award") {
+    nonActionableStatus = metrics.some((metric) => metric.kind === "contract_value" && metric.eventStatus === "ceiling")
+      && !metrics.some((metric) => metric.kind === "contract_value" && metric.eventStatus === "committed");
+  }
+  if (family === "financing_dilution") {
+    const latestStatus = latestFinancingStatusText(receipts);
+    nonActionableStatus = !ACTIONABLE_OFFERING.test(latestStatus) || NON_ACTIONABLE_OFFERING.test(latestStatus);
+  }
+  if (family === "regulatory_enforcement") {
+    const latestStatus = latestRegulatoryStatusText(receipts);
+    nonActionableStatus = !regulatoryStatusIsFinal(latestStatus);
+  }
+  const metricsWithProvenance = metrics.map((metric) => {
+    const matching = metrics.filter((other) =>
+      other.kind === metric.kind
+      && other.value === metric.value
+      && other.unit === metric.unit
+      && other.eventStatus === metric.eventStatus);
+    const corroboratingPublishers = new Set(matching
+      .map((item) => item.sourcePublisher?.trim().toLowerCase())
+      .filter((value): value is string => Boolean(value))).size;
+    return {
+      ...metric,
+      corroboratingPublishers,
+      promotionEvidenceVerified: matching.some((item) => item.primarySource === true) || corroboratingPublishers >= 2,
+    };
+  });
+  const sensitive = MAGNITUDE_SENSITIVE_FAMILIES.has(family);
+  return {
+    status: nonActionableStatus && sensitive
+      ? "non_actionable_status"
+      : metrics.length
+        ? "absolute_only"
+        : sensitive
+          ? "unquantified"
+          : "not_required",
+    metrics: metricsWithProvenance.slice(0, 8),
+    relativeToCompany: null,
+    materialityBasis: metricsWithProvenance.length
+      ? "An explicit event magnitude was extracted from the same evidence construction; company-relative scale is added only from compatible, current SEC facts."
+      : sensitive
+        ? "No promotion-grade quantitative magnitude was extracted. The finding may be retained for diagnostic outcome tracking, but it cannot become serious yet."
+        : "This event family does not require a numeric company-scale denominator; its current categorical evidence is assessed directly.",
+  };
+}
+
+function directExposure(receipt: EventReceipt, classification: ClassifiedEvent, equity: EquityUniverseEntry): CausalExposureEvidence {
+  const value = `${receipt.title}. ${receipt.summary ?? ""}`;
+  const exposureSentence = value
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => sentence.trim())
+    .find((sentence) => EXPOSURE_LINK.test(sentence) && matchesEquityText(sentence, equity));
+  const eventSpecific = EXTERNAL_EXPOSURE_FAMILIES.has(classification.family) && Boolean(exposureSentence);
+  const exposurePercent = Number(exposureSentence?.match(/\b(\d+(?:\.\d+)?)%(?=\s|[.,;:]|$)/)?.[1] ?? NaN);
+  const sensitivityDirection = exposureSentence ? explicitCompanyEffectDirection(exposureSentence) : null;
+  const promotionGrade = Boolean(exposureSentence)
+    && Boolean(sensitivityDirection)
+    && (Number.isFinite(exposurePercent) && exposurePercent >= 10 || /\bsole[- ]source\b/i.test(exposureSentence!));
+  if (eventSpecific && exposureSentence) {
+    return {
+      status: "event_specific",
+      exposureType: /\b(customer|revenue from)\b/i.test(exposureSentence)
+        ? "customer"
+        : /\b(supplier|vendor|sources? from)\b/i.test(exposureSentence)
+          ? "supplier"
+          : /\b(operations? in|manufactur(?:es|ing) in)\b/i.test(exposureSentence)
+            ? "geography"
+            : /\b(fuel|input|commodity)\b/i.test(exposureSentence)
+              ? "commodity"
+              : "policy",
+      confidence: promotionGrade ? 96 : 88,
+      evidenceText: exposureSentence.slice(0, 500),
+      sourceUrl: receipt.url,
+      // This flag describes whether the receipt contains promotion-grade
+      // exposure evidence. The cluster-level aggregator separately requires
+      // either a primary source or two independent publishers.
+      eligibleForSeriousSignal: promotionGrade,
+      sourceReceiptId: receipt.id,
+      publisher: receipt.publisher,
+      publishedAt: receipt.publishedAt,
+      expiresAt: new Date(Date.parse(receipt.publishedAt) + 180 * 24 * 60 * 60 * 1000).toISOString(),
+      sensitivityDirection,
+    };
+  }
+  if (EXTERNAL_EXPOSURE_FAMILIES.has(classification.family)) {
+    return {
+      status: "generic_sector_proxy",
+      exposureType: "sector_proxy",
+      confidence: 96,
+      evidenceText: `${equity.name} is mentioned in the external event, but the current receipt does not prove a company-specific exposure size and effect direction.`,
+      sourceUrl: receipt.url,
+      eligibleForSeriousSignal: false,
+      sourceReceiptId: receipt.id,
+      publisher: receipt.publisher,
+      publishedAt: receipt.publishedAt,
+      expiresAt: new Date(Date.parse(receipt.publishedAt) + 180 * 24 * 60 * 60 * 1000).toISOString(),
+      sensitivityDirection: null,
+    };
+  }
+  return {
+    status: "direct_issuer",
+    exposureType: "direct",
+    confidence: 99,
+    evidenceText: `${equity.name} is directly and exactly mapped to the current issuer event.`,
+    sourceUrl: receipt.url,
+    eligibleForSeriousSignal: true,
+    sourceReceiptId: receipt.id,
+    publisher: receipt.publisher,
+    publishedAt: receipt.publishedAt,
+    expiresAt: null,
+    sensitivityDirection: classification.direction === "unknown" ? null : classification.direction,
+  };
+}
 
 function classify(receipt: EventReceipt): ClassifiedEvent {
   const value = `${receipt.title} ${receipt.summary ?? ""} ${receipt.rawEventType ?? ""}`.toLowerCase();
   const rumour = RUMOUR.test(value) && !receipt.primarySource;
   const hit = (pattern: RegExp) => pattern.test(value);
-  if (hit(/\b(secondary offering|public offering|share offering|at-the-market offering|dilution|bankruptcy|chapter 11)\b/)) return { family: "financing_dilution", direction: "downside", materiality: 88, transmission: 91, rumour, terms: ["new supply or solvency pressure"] };
+  if (hit(/\b(primary offering|secondary offering|public offering|share offering|shelf offering|shelf registration|at-the-market offering|dilution|bankruptcy|chapter 11)\b/)) return { family: "financing_dilution", direction: "downside", materiality: 88, transmission: 91, rumour, terms: ["new supply or solvency pressure"] };
   if (hit(/\b(cyberattack|ransomware|data breach|security breach|systems? outage|hack(?:ed|ing)?)\b/)) return { family: "cyber_incident", direction: "downside", materiality: 82, transmission: 84, rumour, terms: ["operational disruption", "remediation and trust cost"] };
   if (hit(/\b(fda|food and drug administration).{0,45}\b(approv(?:e|ed|al)|clearance|authoriz(?:e|ed|ation))\b|\b(phase (?:2|3|ii|iii)).{0,40}\b(met|positive|success)\b/)) return { family: "regulatory_approval", direction: "upside", materiality: 92, transmission: 94, rumour, terms: ["official approval or positive pivotal result"] };
   if (hit(/\b(recall|clinical hold|complete response letter|approval denied|rejected application)\b/)) return { family: "regulatory_enforcement", direction: "downside", materiality: 90, transmission: 93, rumour, terms: ["regulatory setback or recall"] };
-  if (hit(/\b(sec charges?|doj charges?|ftc sues|investigation|subpoena|enforcement action|antitrust suit|fine[ds]?|sanctioned)\b/)) return { family: "regulatory_enforcement", direction: "downside", materiality: 82, transmission: 85, rumour, terms: ["enforcement or legal burden"] };
+  if (hit(/\b(sec (?:charges?|charged)|doj (?:charges?|charged)|ftc sues|investigation|subpoena|enforcement action|final (?:enforcement )?order|antitrust suit|fine[ds]?|penalt(?:y|ies)|settlement|sanctioned)\b/)) return { family: "regulatory_enforcement", direction: "downside", materiality: 82, transmission: 85, rumour, terms: ["enforcement or legal burden"] };
   if (hit(/\b(beat(?:s|ing)? expectations|raises? guidance|guidance raised|record revenue|profit surge|better than expected|upgrades? outlook)\b/)) return { family: "earnings_guidance", direction: "upside", materiality: 82, transmission: 88, rumour, terms: ["earnings or guidance positive surprise"] };
   if (hit(/\b(miss(?:es|ed)? expectations|cuts? guidance|guidance cut|profit warning|revenue warning|worse than expected|downgrades? outlook)\b/)) return { family: "earnings_guidance", direction: "downside", materiality: 84, transmission: 89, rumour, terms: ["earnings or guidance negative surprise"] };
-  if (hit(/\b(contract award|awarded (?:a |the )?contract|wins? contract|selected by|purchase order|multi-year deal)\b/)) return { family: "contract_award", direction: "upside", materiality: 77, transmission: 84, rumour, terms: ["incremental contracted revenue"] };
+  if (hit(/\b(contract award|awarded (?:a |the )?contract|wins? contract|selected by|purchase order|multi-year deal)\b|\b(?:wins?|awarded)\s+(?:a\s+|the\s+)?(?:US\$|\$|USD\s*)\s?\d[\d,]*(?:\.\d+)?\s*(?:billion|million|thousand|bn|mm|[bmk])?\s+(?:contract|award|purchase order)\b/)) return { family: "contract_award", direction: "upside", materiality: 77, transmission: 84, rumour, terms: ["incremental contracted revenue"] };
   if (hit(/\b(product launch|launches|unveils|announces? (?:a )?new (?:product|platform|model|chip)|keynote|developer conference|investor day)\b/)) return { family: hit(/conference|keynote|investor day/) ? "live_conference" : "product_launch", direction: "upside", materiality: 68, transmission: 72, rumour, terms: ["new product or commercial catalyst"] };
   if (hit(/\b(ai breakthrough|artificial intelligence breakthrough|new ai model|foundation model|quantum breakthrough|technology breakthrough|scientific breakthrough)\b/)) return { family: hit(/\bai\b|artificial intelligence/) ? "ai_breakthrough" : "technology_breakthrough", direction: "upside", materiality: 76, transmission: 78, rumour, terms: ["technical capability improvement", "potential demand or cost advantage"] };
   if (hit(/\b(acquisition completed|merger approved|definitive merger agreement|to be acquired|acquire[sd]? for \$)\b/)) return { family: "merger_acquisition", direction: "upside", materiality: 89, transmission: 86, rumour, terms: ["transaction value crystallisation"] };
@@ -119,12 +447,20 @@ function rippleMappings(receipt: EventReceipt, classification: ClassifiedEvent, 
   const value = `${receipt.title} ${receipt.summary ?? ""}`;
   return RIPPLE_RULES.flatMap((rule): MappedEvent[] => {
     if (!rule.families.includes(classification.family) || (rule.require && !rule.require.test(value))) return [];
+    const genericExposure = (ticker: string): CausalExposureEvidence => ({
+      status: "generic_sector_proxy",
+      exposureType: "sector_proxy",
+      confidence: 70,
+      evidenceText: `${ticker} is included only by a broad sector-sensitivity rule; no current company-specific exposure receipt was found.`,
+      sourceUrl: receipt.url,
+      eligibleForSeriousSignal: false,
+    });
     if (classification.family === "macro_rates" || classification.family === "macro_inflation") {
       if (classification.direction === "unknown") return [];
       const direction = classification.direction === "downside" ? rule.direction : rule.direction === "upside" ? "downside" : "upside";
-      return rule.tickers.flatMap((ticker) => index.ticker.get(ticker) ? [{ receipt, classification: { ...classification, direction }, equity: index.ticker.get(ticker)!, relationship: "second_order", mappingConfidence: 96, causalChain: rule.chain }] : []);
+      return rule.tickers.flatMap((ticker) => index.ticker.get(ticker) ? [{ receipt, classification: { ...classification, direction }, equity: index.ticker.get(ticker)!, relationship: "second_order", mappingConfidence: 80, causalChain: rule.chain, causalExposure: genericExposure(ticker) }] : []);
     }
-    return rule.tickers.flatMap((ticker) => index.ticker.get(ticker) ? [{ receipt, classification: { ...classification, direction: rule.direction }, equity: index.ticker.get(ticker)!, relationship: "second_order", mappingConfidence: 96, causalChain: rule.chain }] : []);
+    return rule.tickers.flatMap((ticker) => index.ticker.get(ticker) ? [{ receipt, classification: { ...classification, direction: rule.direction }, equity: index.ticker.get(ticker)!, relationship: "second_order", mappingConfidence: 80, causalChain: rule.chain, causalExposure: genericExposure(ticker) }] : []);
   });
 }
 
@@ -147,9 +483,128 @@ function related(left: MappedEvent, right: MappedEvent) {
     && (similarity(left.receipt, right.receipt) >= 0.28 || left.receipt.rawEventType && left.receipt.rawEventType === right.receipt.rawEventType);
 }
 
+const PERMISSION_GATE_KEYS = [
+  "verifiedEventTruth",
+  "reliableTickerMapping",
+  "materialEvent",
+  "causalTransmission",
+  "freshEvidence",
+  "primaryOrIndependentProof",
+  "noSevereContradiction",
+  "notRumour",
+  "knockOnCausalPathVerified",
+  "eventMagnitudeActionable",
+  "currentEvidenceScoreAtLeast72",
+] as const;
+
+function magnitudeAdjustedMateriality(base: number, magnitude: EventMagnitudeEvidence) {
+  const directPercent = magnitude.metrics
+    .filter((item) => item.promotionEvidenceVerified
+      && (item.kind === "dilution_percent" || item.kind === "guidance_change_percent"))
+    .map((item) => item.value)
+    .sort((left, right) => right - left)[0];
+  if (directPercent === undefined) return base;
+  const measured = directPercent >= 10 ? 95 : directPercent >= 5 ? 88 : directPercent >= 2 ? 80 : directPercent >= 0.5 ? 70 : 55;
+  return Math.round((base + measured) / 2);
+}
+
+function eventMagnitudeActionable(family: EventFamily, magnitude: EventMagnitudeEvidence, receipts: EventReceipt[]) {
+  if (family === "contract_award") {
+    const contract = magnitude.metrics
+      .filter((metric) => metric.promotionEvidenceVerified
+        && metric.kind === "contract_value"
+        && metric.eventStatus === "committed")
+      .sort((left, right) => right.value - left.value)[0];
+    const relative = magnitude.relativeToCompany;
+    if (!contract || !relative || relative.metric !== "annual_revenue" || contract.eventStatus !== "committed") return false;
+    if (relative.eventValue !== contract.value || relative.eventMetricSourceReceiptId !== contract.sourceReceiptId) return false;
+    const annualizedRatio = contract.termYears && contract.termYears > 1
+      ? relative.ratioPercent / contract.termYears
+      : relative.ratioPercent;
+    return annualizedRatio >= 5;
+  }
+  if (family === "financing_dilution") {
+    const latestStatus = latestFinancingStatusText(receipts);
+    if (NON_ACTIONABLE_OFFERING.test(latestStatus) || !ACTIONABLE_OFFERING.test(latestStatus)) return false;
+    const explicitDilution = magnitude.metrics
+      .filter((metric) => metric.promotionEvidenceVerified
+        && metric.kind === "dilution_percent"
+        && ["priced", "completed"].includes(metric.eventStatus ?? ""))
+      .some((metric) => metric.value >= 5);
+    const shareRatio = magnitude.relativeToCompany?.metric === "shares_outstanding"
+      ? magnitude.relativeToCompany.ratioPercent
+      : null;
+    const verifiedShareMetric = magnitude.relativeToCompany?.metric === "shares_outstanding"
+      && magnitude.metrics.some((metric) => metric.promotionEvidenceVerified
+        && metric.kind === "offering_shares"
+        && metric.value === magnitude.relativeToCompany?.eventValue
+        && metric.sourceReceiptId === magnitude.relativeToCompany?.eventMetricSourceReceiptId);
+    return explicitDilution || (verifiedShareMetric && shareRatio !== null && shareRatio >= 5);
+  }
+  if (family === "earnings_guidance") {
+    return magnitude.metrics
+      .filter((metric) => metric.promotionEvidenceVerified && metric.kind === "guidance_change_percent")
+      .some((metric) => metric.value >= 3);
+  }
+  if (family === "regulatory_enforcement") {
+    const latestStatus = latestRegulatoryStatusText(receipts);
+    if (!regulatoryStatusIsFinal(latestStatus)) return false;
+    if (CATEGORICAL_SEVERE_REGULATORY.test(latestStatus)) return true;
+    const fine = magnitude.metrics
+      .filter((metric) => metric.promotionEvidenceVerified
+        && metric.kind === "fine_value"
+        && metric.eventStatus === "final")
+      .sort((left, right) => right.value - left.value)[0];
+    const relative = magnitude.relativeToCompany;
+    return Boolean(fine
+      && relative?.metric === "annual_revenue"
+      && relative.eventValue === fine.value
+      && relative.eventMetricSourceReceiptId === fine.sourceReceiptId
+      && relative.ratioPercent >= 1);
+  }
+  return true;
+}
+
+function trackingDisposition(candidate: Pick<ImpactCandidate, "eventTruth" | "mappingConfidence" | "materiality" | "transmissionConfidence" | "evidenceIndependence" | "score" | "gateChecks" | "eventMagnitude">) {
+  const failedGateChecks = PERMISSION_GATE_KEYS.filter((key) => candidate.gateChecks[key] !== true);
+  const hardSafetyChecksPass = candidate.gateChecks.freshEvidence === true
+    && candidate.gateChecks.primaryOrIndependentProof === true
+    && candidate.gateChecks.noSevereContradiction === true
+    && candidate.gateChecks.notRumour === true
+    && candidate.gateChecks.verifiedEventTruth === true
+    && candidate.gateChecks.reliableTickerMapping === true
+    && candidate.gateChecks.knockOnCausalPathVerified === true;
+  const softFailures = failedGateChecks.filter((key) => ["materialEvent", "causalTransmission", "eventMagnitudeActionable", "currentEvidenceScoreAtLeast72"].includes(key));
+  const shadowEligible = hardSafetyChecksPass
+    && candidate.eventTruth >= 75
+    && candidate.mappingConfidence >= 95
+    && candidate.materiality >= 55
+    && candidate.transmissionConfidence >= 60
+    && candidate.evidenceIndependence >= 70
+    && candidate.score >= 65
+    && candidate.eventMagnitude.status !== "non_actionable_status"
+    && failedGateChecks.length === softFailures.length
+    && softFailures.length === 1;
+  return {
+    failedGateChecks,
+    disposition: failedGateChecks.length === 0
+      ? "qualified" as const
+      : shadowEligible
+        ? "shadow_near_miss" as const
+        : "rejected" as const,
+  };
+}
+
 function candidateFromCluster(cluster: MappedEvent[], macro: MacroContext, historicalSignals: HistoricalSignalRecord[], now: Date): ImpactCandidate {
-  const anchor = cluster.find((item) => item.receipt.primarySource) ?? cluster[0];
-  const receipts = selectBalancedReceipts(cluster.map((item) => item.receipt), 12);
+  const primaryItems = cluster.filter((item) => item.receipt.primarySource);
+  const anchor = [...(primaryItems.length ? primaryItems : cluster)]
+    .sort((left, right) => Date.parse(right.receipt.publishedAt) - Date.parse(left.receipt.publishedAt))[0];
+  const allReceipts = [...new Map(cluster.map((item) => [item.receipt.id, item.receipt])).values()];
+  const latestReceipt = [...allReceipts].sort((left, right) => Date.parse(right.publishedAt) - Date.parse(left.publishedAt))[0];
+  const receipts = [...new Map([
+    ...(latestReceipt ? [[latestReceipt.id, latestReceipt] as const] : []),
+    ...selectBalancedReceipts(allReceipts, 12).map((receipt) => [receipt.id, receipt] as const),
+  ]).values()].slice(0, 12);
   const publishers = new Set(receipts.map((receipt) => receipt.publisher.toLowerCase()));
   const primarySource = receipts.some((receipt) => receipt.primarySource);
   const classification = anchor.classification;
@@ -157,16 +612,41 @@ function candidateFromCluster(cluster: MappedEvent[], macro: MacroContext, histo
   const evidenceIndependence = primarySource && publishers.size >= 2 ? 100 : primarySource ? 88 : publishers.size >= 3 ? 92 : publishers.size >= 2 ? 78 : 35;
   const fresh = now.getTime() - Math.max(...receipts.map((receipt) => Date.parse(receipt.publishedAt))) <= 24 * 60 * 60 * 1000;
   const mappingConfidence = Math.max(...cluster.map((item) => item.mappingConfidence));
-  const materiality = Math.max(...cluster.map((item) => item.classification.materiality));
+  const eventMagnitude = extractEventMagnitude(receipts, classification.family);
+  const materiality = magnitudeAdjustedMateriality(Math.max(...cluster.map((item) => item.classification.materiality)), eventMagnitude);
   const transmissionConfidence = Math.max(...cluster.map((item) => item.classification.transmission));
   const rumour = cluster.every((item) => item.classification.rumour);
-  const eventKey = crypto.createHash("sha256").update(`${anchor.equity.ticker}|${anchor.classification.direction}|${classification.family}|${canonicalEventIdentity(anchor.receipt)}`).digest("hex").slice(0, 20);
+  const promotionGradeExposures = cluster.filter((item) =>
+    item.causalExposure.status === "event_specific"
+    && item.causalExposure.eligibleForSeriousSignal);
+  const exposurePublishers = new Set(promotionGradeExposures
+    .map((item) => item.receipt.publisher.toLowerCase()));
+  const primaryExposure = promotionGradeExposures.find((item) => item.receipt.primarySource);
+  const selectedExposure = primaryExposure
+    ?? promotionGradeExposures[0]
+    ?? cluster.find((item) => item.causalExposure.status === "event_specific")
+    ?? anchor;
+  const causalExposure: CausalExposureEvidence = selectedExposure.causalExposure.status === "event_specific"
+    ? {
+        ...selectedExposure.causalExposure,
+        eligibleForSeriousSignal: Boolean(primaryExposure) || exposurePublishers.size >= 2,
+        evidenceText: `${selectedExposure.causalExposure.evidenceText} Exposure proof publishers: ${exposurePublishers.size}; primary-source proof: ${Boolean(primaryExposure)}.`,
+      }
+    : selectedExposure.causalExposure;
+  const relationship = causalExposure.status === "event_specific"
+    ? "second_order" as const
+    : anchor.relationship;
+  const causalChain = causalExposure.status === "event_specific"
+    ? selectedExposure.causalChain
+    : anchor.causalChain;
+  const rootEventKey = crypto.createHash("sha256").update(`${classification.family}|${canonicalEventIdentity(anchor.receipt)}`).digest("hex").slice(0, 20);
   const historicalAnalog = analyzeHistoricalAnalogs({
-    eventKey,
+    eventKey: rootEventKey,
+    rootEventKey,
     eventFamily: classification.family,
     direction: anchor.classification.direction === "downside" ? "downside" : "upside",
-    relationship: anchor.relationship,
-    causalChain: anchor.causalChain,
+    relationship,
+    causalChain,
     macroRegime: macro.regime,
     asOf: now.toISOString(),
     featuresAsOf: now.toISOString(),
@@ -179,13 +659,27 @@ function candidateFromCluster(cluster: MappedEvent[], macro: MacroContext, histo
   const gate = eventFirstGate({ eventTruth, mappingConfidence, materiality, transmissionConfidence, fresh, primarySource, independentPublishers: publishers.size, unresolvedSevereContradiction: false, rumour });
   const score = computeEventFirstStrength({ eventTruth, mappingConfidence, materiality, transmissionConfidence, historicalSupport, evidenceIndependence, contradictionPenalty: contradiction, pricedInPenalty, rumour });
   const direction = anchor.classification.direction === "downside" ? "downside" : "upside";
+  const knockOnCausalPathVerified = relationship === "direct"
+    || (causalExposure.eligibleForSeriousSignal
+      && mappingConfidence >= 95
+      && transmissionConfidence >= 75
+      && causalChain.length >= 3);
+  const gateChecks = {
+    ...gate.checks,
+    knockOnCausalPathVerified,
+    eventMagnitudeActionable: eventMagnitudeActionable(classification.family, eventMagnitude, receipts),
+    currentEvidenceScoreAtLeast72: score >= 72,
+    historicalComparisonRequired: false,
+  };
+  const disposition = trackingDisposition({ eventTruth, mappingConfidence, materiality, transmissionConfidence, evidenceIndependence, score, gateChecks, eventMagnitude });
   return {
     ticker: anchor.equity.ticker,
     company: anchor.equity.name,
     cik: anchor.equity.cik,
+    rootEventKey,
     eventFamily: classification.family,
     direction,
-    relationship: anchor.relationship,
+    relationship,
     eventHeadline: anchor.receipt.title,
     whatHappened: `${anchor.receipt.primarySource ? "Official source" : `${publishers.size} independent publisher(s)`}: ${anchor.receipt.summary || anchor.receipt.title}`,
     eventObservedAt: anchor.receipt.publishedAt,
@@ -201,20 +695,16 @@ function candidateFromCluster(cluster: MappedEvent[], macro: MacroContext, histo
     contradictionPenalty: contradiction,
     pricedInPenalty,
     rumour,
-    causalChain: anchor.causalChain,
+    causalChain,
+    causalExposure,
+    eventMagnitude,
     falsifiers: ["The official event is corrected, withdrawn, or shown to be immaterial.", "The stated causal link does not affect revenue, costs, financing, or valuation in the expected horizon.", "Fresh market data shows the opportunity was already fully repriced before a safe entry."],
     timeHorizon: anchor.relationship === "direct" ? "hours_to_10_trading_days" : "1_to_20_trading_days",
     score,
-    gateChecks: {
-      ...gate.checks,
-      knockOnCausalPathVerified: anchor.relationship === "direct"
-        || (mappingConfidence >= 95 && transmissionConfidence >= 75 && anchor.causalChain.length >= 3),
-      historicalComparisonRequired: false,
-    },
-    gatePassed: gate.passed
-      && score >= 72
-      && (anchor.relationship === "direct"
-        || (mappingConfidence >= 95 && transmissionConfidence >= 75 && anchor.causalChain.length >= 3)),
+    gateChecks,
+    gatePassed: disposition.disposition === "qualified",
+    trackingDisposition: disposition.disposition,
+    failedGateChecks: disposition.failedGateChecks,
     quote: null,
     fundamentals: null,
     historicalAnalog: { ...historicalAnalog, source: "Cloudflare R2 point-in-time forward outcome memory" },
@@ -233,10 +723,29 @@ export function buildImpactCandidates(receipts: EventReceipt[], universe: Equity
     const classification = classify(receipt);
     const direct = mapDirect(receipt, index);
     if (classification.direction !== "unknown") {
-      for (const value of direct) mapped.push({ receipt, classification, equity: value.equity, relationship: "direct", mappingConfidence: value.confidence, causalChain: [classification.terms[0] || "verified company event", "revenue/cost/capital or valuation impact", `${value.equity.ticker} expected ${classification.direction} sensitivity`] });
-      mapped.push(...rippleMappings(receipt, classification, index));
+      for (const value of direct) {
+        const causalExposure = directExposure(receipt, classification, value.equity);
+        const relationship = causalExposure.status === "direct_issuer" ? "direct" as const : "second_order" as const;
+        const mappedClassification = causalExposure.status === "event_specific" && causalExposure.sensitivityDirection
+          ? { ...classification, direction: causalExposure.sensitivityDirection }
+          : classification;
+        mapped.push({
+          receipt,
+          classification: mappedClassification,
+          equity: value.equity,
+          relationship,
+          mappingConfidence: Math.min(value.confidence, causalExposure.confidence),
+          causalChain: relationship === "direct"
+            ? [classification.terms[0] || "verified company event", "revenue/cost/capital or valuation impact", `${value.equity.ticker} expected ${classification.direction} sensitivity`]
+            : [classification.terms[0] || "verified external event", causalExposure.evidenceText, `${value.equity.ticker} explicitly evidenced ${mappedClassification.direction} company effect`],
+          causalExposure,
+        });
+      }
+      const ripples = rippleMappings(receipt, classification, index);
+      mapped.push(...ripples);
+      if (!direct.length && !ripples.length) unmapped += 1;
     } else directionUnknown += 1;
-    if (!direct.length && !rippleMappings(receipt, classification, index).length) unmapped += 1;
+    if (classification.direction === "unknown" && !direct.length) unmapped += 1;
   }
   const clusters: MappedEvent[][] = [];
   for (const item of mapped) {
@@ -249,19 +758,114 @@ export function buildImpactCandidates(receipts: EventReceipt[], universe: Equity
       && other.ticker === candidate.ticker
       && other.eventFamily === candidate.eventFamily
       && other.direction !== candidate.direction
+      && other.mappingConfidence >= 95
+      && other.causalExposure.status !== "generic_sector_proxy"
       && Math.abs(Date.parse(other.eventObservedAt) - Date.parse(candidate.eventObservedAt)) <= 18 * 60 * 60 * 1000);
     if (!severeContradiction) continue;
     candidate.contradictionPenalty = 70;
     candidate.gateChecks.noSevereContradiction = false;
     candidate.gatePassed = false;
     candidate.score = computeEventFirstStrength({ eventTruth: candidate.eventTruth, mappingConfidence: candidate.mappingConfidence, materiality: candidate.materiality, transmissionConfidence: candidate.transmissionConfidence, historicalSupport: candidate.historicalSupport, evidenceIndependence: candidate.evidenceIndependence, contradictionPenalty: candidate.contradictionPenalty, pricedInPenalty: candidate.pricedInPenalty, rumour: candidate.rumour });
+    candidate.gateChecks.currentEvidenceScoreAtLeast72 = candidate.score >= 72;
+    const disposition = trackingDisposition(candidate);
+    candidate.trackingDisposition = disposition.disposition;
+    candidate.failedGateChecks = disposition.failedGateChecks;
   }
-  candidates.sort((left, right) => right.score - left.score || right.eventTruth - left.eventTruth).splice(100);
-  const unique = [...new Map(candidates.map((candidate) => [`${candidate.ticker}|${candidate.direction}|${candidate.eventFamily}|${canonicalEventIdentity(candidate.receipts[0])}`, candidate])).values()];
+  const uniqueAll = [...new Map(candidates.map((candidate) => [`${candidate.ticker}|${candidate.direction}|${candidate.eventFamily}|${canonicalEventIdentity(candidate.receipts[0])}`, candidate])).values()]
+    .sort((left, right) => right.score - left.score || right.eventTruth - left.eventTruth);
+  const findingAuditLedger = uniqueAll.map((candidate) => ({
+    ticker: candidate.ticker,
+    company: candidate.company,
+    rootEventKey: candidate.rootEventKey,
+    eventFamily: candidate.eventFamily,
+    direction: candidate.direction,
+    relationship: candidate.relationship,
+    eventHeadline: candidate.eventHeadline,
+    eventObservedAt: candidate.eventObservedAt,
+    score: candidate.score,
+    gatePassed: candidate.gatePassed,
+    trackingDisposition: candidate.trackingDisposition,
+    failedGateChecks: candidate.failedGateChecks,
+    gateChecks: candidate.gateChecks,
+    eventMagnitude: candidate.eventMagnitude,
+    causalExposure: candidate.causalExposure,
+    receiptIds: candidate.receipts.map((receipt) => receipt.id),
+  }));
+  const findingReceiptProofDictionary = Object.fromEntries(receipts.map((receipt) => [receipt.id, {
+    id: receipt.id,
+    title: receipt.title.slice(0, 500),
+    summary: receipt.summary?.slice(0, 1_000) ?? null,
+    publisher: receipt.publisher.slice(0, 200),
+    url: receipt.url,
+    publishedAt: receipt.publishedAt,
+    channel: receipt.channel,
+    official: receipt.official,
+    primarySource: receipt.primarySource,
+    symbolHints: receipt.symbolHints.slice(0, 20),
+    companyHints: receipt.companyHints.slice(0, 20),
+    rawEventType: receipt.rawEventType,
+  }]));
+  const unique = uniqueAll.slice(0, 100);
   return {
     candidates: unique,
+    findingAuditLedger,
+    findingReceiptProofDictionary,
     diagnostics: { receiptsConsidered: receipts.length, noiseRejected, directionUnknown, unmapped, mappedRelationships: mapped.length, eventClusters: clusters.length, directCandidates: unique.filter((candidate) => candidate.relationship === "direct").length, rippleCandidates: unique.filter((candidate) => candidate.relationship !== "direct").length, gatePassed: unique.filter((candidate) => candidate.gatePassed).length },
   };
+}
+
+export function reassessCandidateAfterFundamentals(candidate: ImpactCandidate | null, now: Date) {
+  if (!candidate) return null;
+  const relative = candidate.eventMagnitude.relativeToCompany;
+  if (relative && MAGNITUDE_SENSITIVE_FAMILIES.has(candidate.eventFamily)) {
+    const ratio = relative.ratioPercent;
+    candidate.materiality = ratio >= 10 ? 95 : ratio >= 5 ? 90 : ratio >= 2 ? 82 : ratio >= 0.5 ? 72 : 55;
+    candidate.eventMagnitude.materialityBasis = `${candidate.eventMagnitude.materialityBasis} Measured event scale is ${ratio}% of ${relative.metric.replace(/_/g, " ")}.`;
+  }
+  const magnitudeVerified = eventMagnitudeActionable(candidate.eventFamily, candidate.eventMagnitude, candidate.receipts);
+  if (MAGNITUDE_SENSITIVE_FAMILIES.has(candidate.eventFamily) && candidate.eventMagnitude.relativeToCompany) {
+    candidate.eventMagnitude.status = magnitudeVerified ? "verified_material" : "verified_below_threshold";
+  }
+  const fresh = now.getTime() - Math.max(...candidate.receipts.map((receipt) => Date.parse(receipt.publishedAt))) <= 24 * 60 * 60 * 1000;
+  const gate = eventFirstGate({
+    eventTruth: candidate.eventTruth,
+    mappingConfidence: candidate.mappingConfidence,
+    materiality: candidate.materiality,
+    transmissionConfidence: candidate.transmissionConfidence,
+    fresh,
+    primarySource: candidate.primarySource,
+    independentPublishers: candidate.independentPublishers,
+    unresolvedSevereContradiction: candidate.contradictionPenalty >= 50,
+    rumour: candidate.rumour,
+  });
+  candidate.score = computeEventFirstStrength({
+    eventTruth: candidate.eventTruth,
+    mappingConfidence: candidate.mappingConfidence,
+    materiality: candidate.materiality,
+    transmissionConfidence: candidate.transmissionConfidence,
+    historicalSupport: candidate.historicalSupport,
+    evidenceIndependence: candidate.evidenceIndependence,
+    contradictionPenalty: candidate.contradictionPenalty,
+    pricedInPenalty: candidate.pricedInPenalty,
+    rumour: candidate.rumour,
+  });
+  candidate.gateChecks = {
+    ...candidate.gateChecks,
+    ...gate.checks,
+    knockOnCausalPathVerified: candidate.relationship === "direct"
+      || (candidate.causalExposure.eligibleForSeriousSignal
+        && candidate.mappingConfidence >= 95
+        && candidate.transmissionConfidence >= 75
+        && candidate.causalChain.length >= 3),
+    eventMagnitudeActionable: magnitudeVerified,
+    currentEvidenceScoreAtLeast72: candidate.score >= 72,
+    historicalComparisonRequired: false,
+  };
+  const disposition = trackingDisposition(candidate);
+  candidate.gatePassed = disposition.disposition === "qualified";
+  candidate.trackingDisposition = disposition.disposition;
+  candidate.failedGateChecks = disposition.failedGateChecks;
+  return candidate;
 }
 
 export function fingerprintCandidate(candidate: ImpactCandidate) {

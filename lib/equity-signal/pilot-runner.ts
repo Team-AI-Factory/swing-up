@@ -15,6 +15,7 @@ import {
 } from "@/lib/equity-signal/runner";
 import { buildApprovedUsWatchOutReview } from "@/lib/equity-signal/us-watch-out-engine";
 import { promoteApprovedWatchOutRules } from "@/lib/equity-signal/us-watch-out-serious-promotion";
+import { runUsValueInvestingCycle } from "@/lib/opportunity-engine/us-value-investing-engine";
 
 export type PilotEquityProviderCallDecision = EquityProviderCallDecision;
 export type PilotEquityProviderCallRequest = EquityProviderCallRequest;
@@ -32,6 +33,13 @@ function strings(value: unknown) {
 
 function historicalRecords(value: unknown): HistoricalSignalRecord[] {
   return Array.isArray(value) ? value.filter((item): item is HistoricalSignalRecord => Boolean(item) && typeof item === "object") : [];
+}
+
+function adaptiveArticleBudget(candidateCount: number) {
+  if (candidateCount >= 60) return 24;
+  if (candidateCount >= 30) return 20;
+  if (candidateCount >= 12) return 16;
+  return 12;
 }
 
 export async function runPilotEquitySignalLab(input: PilotEquitySignalLabInput = {}) {
@@ -54,15 +62,37 @@ export async function runPilotEquitySignalLab(input: PilotEquitySignalLabInput =
     earningsBootstrap.records,
     regulatoryApprovalBootstrap.records,
   );
+  const articleBudget = adaptiveArticleBudget(rankedCandidates.length);
 
-  const [pilotHistoricalGate, rawWatchOutReview, articleEvidence] = await Promise.all([
+  const [pilotHistoricalGate, rawWatchOutReview, articleEvidence, rawValueInvesting] = await Promise.all([
     evaluateIndustryPeerPilotGate({ candidate: selectedCandidate, historicalSignals, fetchImpl, now }),
     buildApprovedUsWatchOutReview({ rankedCandidates, now, fetchImpl }),
-    buildArticleEvidenceReport({ candidates: rankedCandidates, selectedCandidate, fetchImpl, maximumArticles: 12 }),
+    buildArticleEvidenceReport({ candidates: rankedCandidates, selectedCandidate, fetchImpl, maximumArticles: articleBudget }),
+    runUsValueInvestingCycle({ fetchImpl, now, persist: true }),
   ]);
   const watchOutReview = promoteApprovedWatchOutRules({ watchOutReview: rawWatchOutReview, articleEvidence });
   const selectedArticleEvidence = articleEvidenceForCandidate(articleEvidence, selectedCandidate);
   const seriousWatchOutAlerts = Array.isArray(watchOutReview.seriousSignals) ? watchOutReview.seriousSignals : [];
+  const seriousFoundationAlerts = [
+    ...rawValueInvesting.seriousAlerts.buy,
+    ...rawValueInvesting.seriousAlerts.sell,
+    ...rawValueInvesting.seriousAlerts.watchOut,
+  ];
+  const valueInvesting = {
+    ok: rawValueInvesting.ok,
+    checkedAt: rawValueInvesting.checkedAt,
+    marketScope: rawValueInvesting.marketScope,
+    methodology: rawValueInvesting.methodology,
+    coverage: rawValueInvesting.coverage,
+    seriousAlerts: rawValueInvesting.seriousAlerts,
+    watchlists: {
+      qualityWaitingForPrice: rawValueInvesting.watchlists.qualityWaitingForPrice.slice(0, 250),
+      researchOnlyCount: rawValueInvesting.watchlists.researchOnly.length,
+    },
+    warehouse: rawValueInvesting.warehouse,
+    cacheUsed: rawValueInvesting.cacheUsed,
+    safety: rawValueInvesting.safety,
+  };
 
   const common = {
     ...baseResult,
@@ -70,6 +100,9 @@ export async function runPilotEquitySignalLab(input: PilotEquitySignalLabInput =
     confidenceTier: US_SERIOUS_SIGNAL_PILOT_POLICY.confidenceTier,
     pilotHistoricalGate,
     articleEvidence,
+    valueInvesting,
+    seriousFoundationAlerts,
+    seriousFoundationSignalFound: seriousFoundationAlerts.length > 0,
     pilotHistoricalBootstrap: {
       earningsGuidance: {
         requestedSeeds: earningsBootstrap.requestedSeeds,
@@ -99,6 +132,7 @@ export async function runPilotEquitySignalLab(input: PilotEquitySignalLabInput =
       forwardOutcomeRequiredBeforeAlert: false,
       swingUpForwardTrackingRole: "transparent_ledger_and_future_self_improvement_only",
       pilotPublicHistoricalSignalsAddedThisRun: earningsBootstrap.records.length + regulatoryApprovalBootstrap.records.length,
+      foundationWarehouseRole: "pre_analyzed_company_fair_value_watchlists_and_immediate_margin_of_safety_alerts",
     },
     liveSourcePolicy: {
       ...liveSourcePolicy,
@@ -108,11 +142,24 @@ export async function runPilotEquitySignalLab(input: PilotEquitySignalLabInput =
       analystExpectationsRole: "optional context only",
       headlineAloneCanPromoteSeriousSignal: false,
       fullArticleOrDetailedOfficialContentRequired: true,
+      minimumFullArticlesReadPerScan: 12,
       maximumFullArticlesReadPerScan: articleEvidence.maximumFullArticlesPerScan,
+      articleBudgetMode: "adaptive_12_to_24_decision_relevant_pages_with_six_hour_cache",
+      foundationNewsRequired: false,
+      foundationFairValueCanTriggerImmediately: true,
     },
     watchOutReview,
     seriousWatchOutAlerts,
     seriousWatchOutSignalFound: seriousWatchOutAlerts.length > 0,
+    allSeriousInternalSignals: {
+      eventBuySell: base.seriousSignalFound === true ? 1 : 0,
+      foundationBuy: rawValueInvesting.seriousAlerts.buy.length,
+      foundationSell: rawValueInvesting.seriousAlerts.sell.length,
+      foundationWatchOut: rawValueInvesting.seriousAlerts.watchOut.length,
+      approvedWatchOut: seriousWatchOutAlerts.length,
+      publishing: false,
+      notifications: false,
+    },
     _historicalSignalLibraryAdditions: libraryAdditions,
   };
 
@@ -129,7 +176,7 @@ export async function runPilotEquitySignalLab(input: PilotEquitySignalLabInput =
       alertType: null,
       blockers: [...new Set([
         ...strings(base.blockers),
-        "Buy and Sell require the same-company or same-industry Pilot 5 gate. P0/P1 Watch Out alerts are emitted separately by the approved Watch Out engine.",
+        "Event Buy and Sell require the same-company or same-industry Pilot 5 gate. Foundation valuation and P0/P1 Watch Out alerts are emitted separately by their approved engines.",
       ])],
     };
   }

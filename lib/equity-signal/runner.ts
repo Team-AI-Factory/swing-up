@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { runAiCommittee, TRUSTED_IN_MEMORY_EVIDENCE } from "@/lib/ai-committee/orchestrator";
 import type { AiCommitteeEvidencePack, EvidenceStrength } from "@/lib/ai-committee/evidence-pack";
 import { getAiCommitteeProviderStatus } from "@/lib/ai-committee/provider";
-import { buildImpactCandidates, fingerprintCandidate } from "@/lib/equity-signal/analysis";
+import { buildImpactCandidates, fingerprintCandidate, reassessCandidateAfterFundamentals } from "@/lib/equity-signal/analysis";
 import { collectEventSources } from "@/lib/equity-signal/event-sources";
 import { enrichCandidateFundamentals } from "@/lib/equity-signal/fundamentals";
 import { bootstrapPublicHistoricalSignals, mergeHistoricalSignals } from "@/lib/equity-signal/historical-bootstrap";
@@ -87,10 +87,10 @@ function withPriceForecast(candidate: ImpactCandidate, now: Date): ImpactCandida
       forecastExpiresAt: new Date(now.getTime() + horizonDays * 24 * 60 * 60 * 1000).toISOString(),
       basedOnMarketRelativeOutcomes: (analog.marketRelative?.sampleSize ?? 0) >= 3,
       warning: status === "provisional"
-        ? "Provisional range from fewer than eight independent historical events; use as an early watch, not a proven buy/sell alert."
+        ? "Provisional range from fewer than eight independent historical events. This affects range uncertainty only; it never blocks or permits a serious current signal."
         : status === "calibrating"
-          ? "The range is still calibrating and is not yet backed by twenty independent historical events."
-          : "Calibrated from point-in-time real outcomes; it remains probabilistic and can be wrong.",
+          ? "The range is still calibrating and is not yet backed by twenty independent historical events. Current-signal permission remains independent."
+          : "Calibrated from point-in-time real outcomes; it remains probabilistic, can be wrong, and is not an alert gate.",
     },
   };
 }
@@ -134,6 +134,7 @@ function providerConfiguration() {
 }
 
 function evidencePack(candidate: ImpactCandidate, providers: ProviderResult[], macro: MacroContext, now: Date, fingerprint: string, benchmarkQuote: MarketQuote | null): AiCommitteeEvidencePack {
+  const currentEvidenceProviders = providers.filter((provider) => provider.provider !== "public_historical_price_bootstrap");
   const receipts = candidate.receipts;
   const filingItems = receipts.filter((receipt) => receipt.channel === "sec_current_filings").map((receipt) => ({ title: receipt.title, summary: receipt.summary, url: receipt.url, publisher: receipt.publisher, publishedAt: receipt.publishedAt, form: receipt.rawEventType }));
   const newsItems = receipts.map((receipt) => ({ title: receipt.title, summary: receipt.summary, url: receipt.url, publisher: receipt.publisher, publishedAt: receipt.publishedAt, channel: receipt.channel, primarySource: receipt.primarySource, official: receipt.official }));
@@ -144,9 +145,8 @@ function evidencePack(candidate: ImpactCandidate, providers: ProviderResult[], m
     ...(candidate.quote ? [{ ...candidate.quote, role: "candidate_entry_anchor" }] : []),
     ...(benchmarkQuote ? [{ ...benchmarkQuote, role: "broad_market_benchmark" }] : []),
   ];
-  const historicalItems = candidate.historicalAnalog.items;
-  const sourceNames = [...new Set(receipts.map((receipt) => receipt.publisher).concat(providers.map((provider) => provider.provider), historicalItems.map((item) => item.provenance?.eventPublisher ?? "").filter(Boolean), ["Nasdaq Trader equity universe", "FRED macro regime"]))];
-  const sourceLinks = [...new Set(receipts.map((receipt) => receipt.url).concat(macro.series.map((item) => item.sourceUrl), historicalItems.map((item) => item.provenance?.eventSourceUrl ?? "")).filter(Boolean))];
+  const sourceNames = [...new Set(receipts.map((receipt) => receipt.publisher).concat(currentEvidenceProviders.map((provider) => provider.provider), ["Nasdaq Trader equity universe", "FRED macro regime"]))];
+  const sourceLinks = [...new Set(receipts.map((receipt) => receipt.url).concat(macro.series.map((item) => item.sourceUrl)).filter(Boolean))];
   const filingRelevant = ["earnings_guidance", "financing_dilution", "insider_ownership", "merger_acquisition", "leadership_change"].includes(candidate.eventFamily);
   const fundamentalsRelevant = ["earnings_guidance", "financing_dilution", "contract_award", "merger_acquisition"].includes(candidate.eventFamily);
   const missingEvidence = [
@@ -172,7 +172,7 @@ function evidencePack(candidate: ImpactCandidate, providers: ProviderResult[], m
     sourceNames,
     sourceLinks,
     sourceFreshness: receipts.map((receipt) => ({ source: receipt.publisher, collectedAt: receipt.publishedAt, ...freshness(now, receipt.publishedAt) })),
-    sourceHealth: providers.map((provider) => ({ source: provider.provider, status: provider.status, checkedAt: provider.checkedAt, lastSuccessAt: provider.status === "connected" ? provider.checkedAt : null, responseTimeMs: null, problem: provider.error, notes: `${provider.recordsRead} real record(s) read; cached=${provider.cached}. Connectivity alone adds no score.` })),
+    sourceHealth: currentEvidenceProviders.map((provider) => ({ source: provider.provider, status: provider.status, checkedAt: provider.checkedAt, lastSuccessAt: provider.status === "connected" ? provider.checkedAt : null, responseTimeMs: null, problem: provider.error, notes: `${provider.recordsRead} real record(s) read; cached=${provider.cached}. Connectivity alone adds no score.` })),
     proofBundleSummary: { proofCount: sourceLinks.length, proofTypes: ["official_event", "independent_news", "macro_regime", ...(candidate.quote ? ["market_snapshot"] : [])], uniquePublishers: candidate.independentPublishers, liveOnly: true, priorPriceMoveRequired: false },
     filingEvidence: section(filingItems.length > 0, filingItems.length ? "strong" : "missing", filingItems.length ? `${filingItems.length} official SEC filing receipt(s) are linked.` : "No event-specific SEC filing receipt was matched.", filingItems),
     newsEvidence: section(newsItems.length > 0, candidate.primarySource || candidate.independentPublishers >= 2 ? "strong" : "weak", `${newsItems.length} event receipt(s), ${candidate.independentPublishers} independent publisher(s), primarySource=${candidate.primarySource}.`, newsItems),
@@ -183,10 +183,20 @@ function evidencePack(candidate: ImpactCandidate, providers: ProviderResult[], m
     cryptoFxEvidence: section(false, "missing", "Digital-asset evidence is not applicable; this branch scans public equities only.", []),
     finraShortPressureEvidence: section(false, "missing", "Short-pressure data is optional and no short-squeeze claim is made.", []),
     wikidataRippleRelationships: section(candidate.relationship !== "direct", candidate.relationship === "direct" ? "missing" : "medium", candidate.causalChain.join(" -> "), [{ relationship: candidate.relationship, causalChain: candidate.causalChain, transmissionConfidence: candidate.transmissionConfidence }]),
-    historicalPatternMatch: section(candidate.historicalAnalog.available, candidate.historicalAnalog.strength, `${candidate.historicalAnalog.summary} Forecast status: ${candidate.priceForecast.status}. ${candidate.priceForecast.warning}`, historicalItems),
-    previousSimilarOutcomes: section(candidate.historicalAnalog.available && candidate.historicalAnalog.sampleSize > 0, candidate.historicalAnalog.strength, `${candidate.historicalAnalog.summary} Only outcomes observable before this scan were eligible.`, historicalItems),
-    score: { actionStrength: candidate.score, profitPotential: candidate.score, evidenceConfidence: Math.round((candidate.eventTruth + candidate.evidenceIndependence + candidate.mappingConfidence) / 3), riskLevel: candidate.contradictionPenalty >= 50 ? "high" : candidate.relationship === "direct" ? "medium" : "medium_high", pricedInCheck: candidate.quote ? "market_snapshot_checked_but_no_prior_move_required" : "not_checked", eventTruth: candidate.eventTruth, mappingConfidence: candidate.mappingConfidence, materiality: candidate.materiality, transmissionConfidence: candidate.transmissionConfidence, historicalSupport: candidate.historicalSupport, contradictionPenalty: candidate.contradictionPenalty, priorPriceMoveRequired: false, gateChecks: candidate.gateChecks, createdAt: now.toISOString(), persisted: false },
-    currentRiskLabels: [`direction:${candidate.direction}`, `relationship:${candidate.relationship}`, `event_family:${candidate.eventFamily}`, `historical_support:${candidate.historicalAnalog.strength}`, `historical_comparison_required:false`, `alert_readiness:${seriousActionEligible(candidate) ? "actionable_candidate" : "watch_only"}`, ...(candidate.rumour ? ["rumour"] : []), ...(!candidate.quote ? ["market_quote_unavailable"] : [])],
+    historicalPatternMatch: section(
+      false,
+      "missing",
+      "Historical outcomes are deliberately excluded from this committee pack, permission decision, and current-evidence score. They remain in R2 only for separate forecast calibration.",
+      [],
+    ),
+    previousSimilarOutcomes: section(
+      false,
+      "missing",
+      "Previous outcomes cannot make a current event serious and are not supplied to the approval committee. They are retained in R2 for later forecast calibration only.",
+      [],
+    ),
+    score: { actionStrength: candidate.score, profitPotential: candidate.score, evidenceConfidence: Math.round((candidate.eventTruth + candidate.evidenceIndependence + candidate.mappingConfidence) / 3), riskLevel: candidate.contradictionPenalty >= 50 ? "high" : candidate.relationship === "direct" ? "medium" : "medium_high", pricedInCheck: candidate.quote ? "market_snapshot_checked_but_no_prior_move_required" : "not_checked", eventTruth: candidate.eventTruth, mappingConfidence: candidate.mappingConfidence, materiality: candidate.materiality, transmissionConfidence: candidate.transmissionConfidence, historicalSupport: 0, contradictionPenalty: candidate.contradictionPenalty, priorPriceMoveRequired: false, gateChecks: candidate.gateChecks, createdAt: now.toISOString(), persisted: false },
+    currentRiskLabels: [`direction:${candidate.direction}`, `relationship:${candidate.relationship}`, `event_family:${candidate.eventFamily}`, `historical_comparison_required:false`, `historical_permission_weight:0`, `alert_readiness:${seriousActionEligible(candidate) ? "actionable_candidate" : "watch_only"}`, ...(candidate.rumour ? ["rumour"] : []), ...(!candidate.quote ? ["market_quote_unavailable"] : [])],
     missingEvidence,
     dataFreshnessWarnings,
     compatibility: { callsOpenAi: false, publishes: false, sendsTelegram: false, writesDatabase: false },
@@ -199,6 +209,45 @@ function sourceSummary(providers: ProviderResult[]) {
 
 function providerDetails(providers: ProviderResult[]) {
   return Object.fromEntries(providers.map((provider) => [provider.provider, { status: provider.status, checkedAt: provider.checkedAt, nextRetryAt: provider.nextRetryAt, cached: provider.cached, realReceipts: provider.receipts.length, recordsRead: provider.recordsRead, error: provider.error, entitlementVerified: provider.entitlementVerified, sourceUrls: provider.sourceUrls }]));
+}
+
+function outcomeTrackingCandidate(
+  candidate: ImpactCandidate,
+  fingerprint: string,
+  macro: MacroContext,
+  benchmarkTicker: string,
+  benchmarkQuote: MarketQuote | null,
+  now: Date,
+) {
+  return {
+    ticker: candidate.ticker,
+    company: candidate.company,
+    cik: candidate.cik,
+    price: candidate.quote?.price ?? null,
+    marketObservedAt: candidate.quote?.observedAt ?? null,
+    marketSource: candidate.quote?.source ?? null,
+    benchmarkTicker,
+    benchmarkPrice: benchmarkQuote?.price ?? null,
+    benchmarkObservedAt: benchmarkQuote?.observedAt ?? null,
+    benchmarkSource: benchmarkQuote?.source ?? null,
+    direction: candidate.direction,
+    eventFamily: candidate.eventFamily,
+    relationship: candidate.relationship,
+    eventHeadline: candidate.eventHeadline,
+    eventObservedAt: candidate.eventObservedAt,
+    evidenceFingerprint: fingerprint,
+    rootEventKey: candidate.rootEventKey,
+    findingDisposition: candidate.trackingDisposition,
+    learningUse: candidate.trackingDisposition === "qualified" ? "pending_committee_review" : "diagnostics_only",
+    causalChain: candidate.causalChain,
+    causalExposure: candidate.causalExposure,
+    eventMagnitude: candidate.eventMagnitude,
+    failedGateChecks: candidate.failedGateChecks,
+    macroRegime: macro.regime,
+    featuresAsOf: now.toISOString(),
+    receipts: candidate.receipts,
+    priceForecast: candidate.priceForecast,
+  };
 }
 
 export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
@@ -220,18 +269,60 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
     const swingUpForwardSignals = realHistoricalSignals.filter((record) => record.provenance?.origin === "swing_up_forward_outcome");
     const publicBootstrapSignals = realHistoricalSignals.filter((record) => record.provenance?.origin === "public_historical_bootstrap");
     const mapped = buildImpactCandidates(eventResult.receipts, universeResult.snapshot, macroResult.context, now, historicalSignals);
-    const quoted = await enrichCandidateQuotes(mapped.candidates, fetchImpl, now, 3, input.outcomeTickers ?? []);
-    const ranked = quoted.candidates.map((candidate) => withPriceForecast(candidate, now));
-    const gatePassed = ranked.filter((candidate) => candidate.gatePassed);
     const reviewedFingerprints = new Set(input.skipOpenAiCandidateFingerprints ?? []);
+    const quotePriorityCandidates = mapped.candidates
+      .map((candidate, originalIndex) => ({
+        candidate,
+        originalIndex,
+        priority: candidate.gatePassed && !reviewedFingerprints.has(fingerprintCandidate(candidate))
+          ? 0
+          : candidate.gatePassed
+            ? 1
+            : candidate.trackingDisposition === "shadow_near_miss"
+              ? 2
+              : 3,
+      }))
+      .sort((left, right) => left.priority - right.priority || left.originalIndex - right.originalIndex)
+      .map((item) => item.candidate);
+    const quoted = await enrichCandidateQuotes(quotePriorityCandidates, fetchImpl, now, 3, input.outcomeTickers ?? []);
+    const ranked = quoted.candidates.map((candidate) => withPriceForecast(candidate, now));
+    const scaleDependentShadows = ranked.filter((candidate) => candidate.quote
+      && candidate.trackingDisposition === "shadow_near_miss"
+      && candidate.failedGateChecks.includes("eventMagnitudeActionable"))
+      .slice(0, 2);
+    const initiallyQualified = ranked.filter((candidate) => candidate.gatePassed);
+    const initiallyQuotedQualified = initiallyQualified.filter((candidate) => candidate.quote);
+    const preferredQualified = initiallyQuotedQualified.find((candidate) => !reviewedFingerprints.has(fingerprintCandidate(candidate)))
+      ?? initiallyQuotedQualified[0]
+      ?? initiallyQualified[0]
+      ?? null;
+    const seenFundamentalsCandidates = new Set<string>();
+    const fundamentalsCandidates = [...scaleDependentShadows, preferredQualified]
+      .filter((candidate): candidate is ImpactCandidate => Boolean(candidate))
+      .filter((candidate) => {
+        const fingerprint = fingerprintCandidate(candidate);
+        if (seenFundamentalsCandidates.has(fingerprint)) return false;
+        seenFundamentalsCandidates.add(fingerprint);
+        return true;
+      })
+      .slice(0, 3);
+    const fundamentalsResults = fundamentalsCandidates.length
+      ? await Promise.all(fundamentalsCandidates.map((candidate) => enrichCandidateFundamentals(candidate, fetchImpl, now)))
+      : [await enrichCandidateFundamentals(null, fetchImpl, now)];
+    for (const result of fundamentalsResults) reassessCandidateAfterFundamentals(result.candidate, now);
+    ranked.sort((left, right) => right.score - left.score || right.eventTruth - left.eventTruth);
+    const gatePassed = ranked.filter((candidate) => candidate.gatePassed);
     const qualifiedWithFingerprints = gatePassed.map((candidate) => ({ candidate, fingerprint: fingerprintCandidate(candidate) }));
     const quotedQualified = qualifiedWithFingerprints.filter((item) => item.candidate.quote);
     const unreviewedQuoted = quotedQualified.filter((item) => !reviewedFingerprints.has(item.fingerprint));
     const selectedForReview = input.allowOpenAi ? unreviewedQuoted[0] ?? quotedQualified[0] : quotedQualified[0];
-    const bestBeforeFundamentals = selectedForReview?.candidate ?? gatePassed[0] ?? null;
-    const fundamentalsResult = await enrichCandidateFundamentals(bestBeforeFundamentals, fetchImpl, now);
-    const best = fundamentalsResult.candidate;
-    const providers = [...eventResult.providers, historicalBootstrap.provider, quoted.provider, fundamentalsResult.provider];
+    const best = selectedForReview?.candidate ?? gatePassed[0] ?? null;
+    const shadowTracked = ranked
+      .filter((candidate) => candidate.trackingDisposition === "shadow_near_miss" && candidate.quote)
+      .slice(0, 2)
+      .map((candidate) => ({ candidate, fingerprint: fingerprintCandidate(candidate) }));
+    const baseProviders = [...eventResult.providers, historicalBootstrap.provider, quoted.provider];
+    const providers = [...baseProviders, ...fundamentalsResults.map((result) => result.provider)];
     const common = {
       ok: true,
       mode,
@@ -241,10 +332,33 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       durationMs: Date.now() - startedAt,
       sources: sourceSummary(providers),
       providerDetails: providerDetails(providers),
+      fundamentalsCandidateChecks: fundamentalsResults.map((result) => ({
+        ticker: result.candidate?.ticker ?? null,
+        status: result.provider.status,
+        checkedAt: result.provider.checkedAt,
+        recordsRead: result.provider.recordsRead,
+        error: result.provider.error,
+        sourceUrls: result.provider.sourceUrls,
+      })),
       secFilingDetails: eventResult.secFilingDetails,
       providerConfiguration: providerConfiguration(),
       universe: { constructionMode: universeResult.snapshot.constructionMode, refreshedAt: universeResult.snapshot.refreshedAt, cache: universeResult.cache, refreshedThisRun: universeResult.refreshed, r2Write: universeResult.r2Write, coverage: universeResult.snapshot.coverage, sources: universeResult.snapshot.sources },
-      candidateFunnel: { stocksInUniverse: universeResult.snapshot.entries.length, realEventReceipts: eventResult.receipts.length, mappedRelationships: mapped.diagnostics.mappedRelationships, eventClusters: mapped.diagnostics.eventClusters, directCandidates: mapped.diagnostics.directCandidates, knockOnCandidates: mapped.diagnostics.rippleCandidates, candidatesPassingEventFirstGate: gatePassed.length, candidatesWithMarketQuote: quotedQualified.length, candidatesSkippedBecauseRecentlyReviewed: quotedQualified.length - unreviewedQuoted.length, unreviewedCandidatesAvailable: unreviewedQuoted.length, committeeCandidates: best?.quote && !reviewedFingerprints.has(fingerprintCandidate(best)) ? 1 : 0 },
+      mappedFindingReceiptProofDictionary: mapped.findingReceiptProofDictionary,
+      candidateFunnel: {
+        stocksInUniverse: universeResult.snapshot.entries.length,
+        realEventReceipts: eventResult.receipts.length,
+        mappedRelationships: mapped.diagnostics.mappedRelationships,
+        mappedFindingsPermanentlyAudited: mapped.findingAuditLedger.length,
+        eventClusters: mapped.diagnostics.eventClusters,
+        directCandidates: mapped.diagnostics.directCandidates,
+        knockOnCandidates: mapped.diagnostics.rippleCandidates,
+        candidatesPassingCurrentEvidenceGate: gatePassed.length,
+        shadowNearMissesTracked: shadowTracked.length,
+        candidatesWithMarketQuote: quotedQualified.length,
+        candidatesSkippedBecauseRecentlyReviewed: quotedQualified.length - unreviewedQuoted.length,
+        unreviewedCandidatesAvailable: unreviewedQuoted.length,
+        committeeCandidates: best?.quote && !reviewedFingerprints.has(fingerprintCandidate(best)) ? 1 : 0,
+      },
       historicalLearning: {
         realPointInTimeSignalsAvailable: realHistoricalSignals.length,
         swingUpForwardSignalsAvailable: swingUpForwardSignals.length,
@@ -258,16 +372,25 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
         checkpointsUsedOnlyAfterTheyAreObservable: true,
         numericForecastRequiresIndependentRealEvents: 3,
         historicalComparisonRequiredForSeriousSignal: false,
+        historicalPermissionWeight: 0,
         findingsAndLaterOutcomesStoredInR2: true,
         actionableBuySellRequiresCalibratedHistory: false,
+        outcomeUsefulnessRule: "at_least_0.5_percent_in_predicted_direction_and_better_than_SPY",
+        forecastEligibleRecords: realHistoricalSignals.filter((record) => record.learningUse === "forecast_eligible" || (!record.learningUse && record.provenance?.origin === "public_historical_bootstrap")).length,
+        diagnosticOnlyRecords: realHistoricalSignals.filter((record) => record.learningUse === "diagnostics_only").length,
+        quarantinedRecords: realHistoricalSignals.filter((record) => record.learningUse === "quarantined").length,
+        automaticRuleRewritingEnabled: false,
+        learningPolicy: "Outcomes update forecast context only after strict trust and point-in-time checks; they never rewrite the serious-signal gate automatically.",
       },
       _historicalSignalLibraryAdditions: historicalBootstrap.records,
-      outcomeTrackingCandidates: quotedQualified.map(({ candidate, fingerprint }) => ({ ticker: candidate.ticker, company: candidate.company, cik: candidate.cik, price: candidate.quote?.price ?? null, marketObservedAt: candidate.quote?.observedAt ?? null, marketSource: candidate.quote?.source ?? null, benchmarkTicker: quoted.benchmarkTicker, benchmarkPrice: quoted.benchmarkQuote?.price ?? null, benchmarkObservedAt: quoted.benchmarkQuote?.observedAt ?? null, benchmarkSource: quoted.benchmarkQuote?.source ?? null, direction: candidate.direction, eventFamily: candidate.eventFamily, relationship: candidate.relationship, eventHeadline: candidate.eventHeadline, eventObservedAt: candidate.eventObservedAt, evidenceFingerprint: fingerprint, causalChain: candidate.causalChain, macroRegime: macroResult.context.regime, featuresAsOf: now.toISOString(), receipts: candidate.receipts, priceForecast: candidate.priceForecast })),
+      mappedFindingAuditLedger: mapped.findingAuditLedger,
+      outcomeTrackingCandidates: quotedQualified.map(({ candidate, fingerprint }) => outcomeTrackingCandidate(candidate, fingerprint, macroResult.context, quoted.benchmarkTicker, quoted.benchmarkQuote, now)),
+      shadowOutcomeTrackingCandidates: shadowTracked.map(({ candidate, fingerprint }) => outcomeTrackingCandidate(candidate, fingerprint, macroResult.context, quoted.benchmarkTicker, quoted.benchmarkQuote, now)),
       scheduledEventWatchlist: eventResult.receipts.filter((receipt) => receipt.scheduled).slice(0, 100).map((receipt) => ({ title: receipt.title, scheduledAt: receipt.publishedAt, tickerHints: receipt.symbolHints, companyHints: receipt.companyHints, publisher: receipt.publisher, sourceUrl: receipt.url, predictionStatus: "awaiting_verified_event_content_and_direction" })),
       unmappedOfficialEventWatchlist: eventResult.receipts.filter((receipt) => receipt.official && !receipt.symbolHints.length && !receipt.companyHints.length).slice(0, 100).map((receipt) => ({ title: receipt.title, summary: receipt.summary, observedAt: receipt.publishedAt, publisher: receipt.publisher, channel: receipt.channel, sourceUrl: receipt.url, predictionStatus: "global_event_seen_mapping_or_direction_not_yet_proven" })),
       macroContext: macroResult.context,
       macroProvider: macroResult.provider,
-      liveSourcePolicy: { eventFirst: true, priorTwoPercentMoveRequired: false, postEventOnePercentMoveRequired: false, priceUsedForDiscovery: false, priceUsedForExecutionAndOutcomeTrackingOnly: true, primarySourceCanAdvanceWithoutSecondaryNews: true, unofficialClaimRequiresIndependentPublishers: 2, cryptoScanningEnabled: false, providerFailureIsolation: true, connectivityAloneAddsScore: false },
+      liveSourcePolicy: { eventFirst: true, priorTwoPercentMoveRequired: false, postEventOnePercentMoveRequired: false, waitsForOutcomeCheckpointBeforeSeriousSignal: false, historicalComparisonRequiredForSeriousSignal: false, priceUsedForDiscovery: false, priceUsedForExecutionAndOutcomeTrackingOnly: true, primarySourceCanAdvanceWithoutSecondaryNews: true, unofficialClaimRequiresIndependentPublishers: 2, genericSectorBasketsCanQualify: false, companyRelativeMagnitudeRequiredForContractAndDilution: true, cryptoScanningEnabled: false, providerFailureIsolation: true, connectivityAloneAddsScore: false },
       assetsChecked: universeResult.snapshot.entries.length,
       candidatesChecked: ranked.length,
       databaseWrites: false,
@@ -278,21 +401,27 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       repairEligible: false,
       marketSnapshot: quoted.marketSnapshot,
       benchmarkSnapshot: quoted.benchmarkQuote,
-      rankedCandidates: ranked.slice(0, 100).map((candidate) => ({ ticker: candidate.ticker, company: candidate.company, cik: candidate.cik, direction: candidate.direction, eventFamily: candidate.eventFamily, relationship: candidate.relationship, eventHeadline: candidate.eventHeadline, eventObservedAt: candidate.eventObservedAt, primarySource: candidate.primarySource, independentPublishers: candidate.independentPublishers, eventTruth: candidate.eventTruth, mappingConfidence: candidate.mappingConfidence, materiality: candidate.materiality, transmissionConfidence: candidate.transmissionConfidence, historicalSupport: candidate.historicalSupport, evidenceIndependence: candidate.evidenceIndependence, contradictionPenalty: candidate.contradictionPenalty, pricedInPenalty: candidate.pricedInPenalty, score: candidate.score, gateChecks: candidate.gateChecks, gatePassed: candidate.gatePassed, quote: candidate.quote, fundamentals: candidate.fundamentals, causalChain: candidate.causalChain, falsifiers: candidate.falsifiers, historicalAnalog: candidate.historicalAnalog, priceForecast: candidate.priceForecast, alertReadiness: seriousActionEligible(candidate) ? "actionable_candidate" : "watch_only" })),
+      rankedCandidates: ranked.slice(0, 100).map((candidate) => ({ ticker: candidate.ticker, company: candidate.company, cik: candidate.cik, rootEventKey: candidate.rootEventKey, direction: candidate.direction, eventFamily: candidate.eventFamily, relationship: candidate.relationship, eventHeadline: candidate.eventHeadline, eventObservedAt: candidate.eventObservedAt, primarySource: candidate.primarySource, independentPublishers: candidate.independentPublishers, eventTruth: candidate.eventTruth, mappingConfidence: candidate.mappingConfidence, materiality: candidate.materiality, transmissionConfidence: candidate.transmissionConfidence, historicalSupport: candidate.historicalSupport, evidenceIndependence: candidate.evidenceIndependence, contradictionPenalty: candidate.contradictionPenalty, pricedInPenalty: candidate.pricedInPenalty, score: candidate.score, gateChecks: candidate.gateChecks, gatePassed: candidate.gatePassed, trackingDisposition: candidate.trackingDisposition, failedGateChecks: candidate.failedGateChecks, eventMagnitude: candidate.eventMagnitude, causalExposure: candidate.causalExposure, quote: candidate.quote, fundamentals: candidate.fundamentals, causalChain: candidate.causalChain, falsifiers: candidate.falsifiers, historicalAnalog: candidate.historicalAnalog, priceForecast: candidate.priceForecast, alertReadiness: seriousActionEligible(candidate) ? "actionable_candidate" : candidate.trackingDisposition === "shadow_near_miss" ? "diagnostic_shadow" : "watch_only" })),
       sourceFailures: providers.filter((provider) => !["connected", "not_due"].includes(provider.status)).map((provider) => ({ provider: provider.provider, status: provider.status, error: provider.error, nextRetryAt: provider.nextRetryAt })),
     };
     if (!best) {
-      return { ...common, status: "no_qualified_signal", seriousSignalFound: false, openAiCalled: false, qualityScore: ranked[0]?.score ?? 0, blockers: ["No current event passed verified event truth, exact issuer mapping, materiality, causal transmission, freshness, and contradiction gates. Price movement was not required."], technicalFailureFingerprint: null };
+      return { ...common, status: "no_qualified_signal", seriousSignalFound: false, openAiCalled: false, qualityScore: ranked[0]?.score ?? 0, blockers: ["No current event passed verified event truth, exact issuer mapping, company-relative materiality where required, causal transmission, freshness, and contradiction gates. No price move, historical comparison, or later outcome was required."], technicalFailureFingerprint: null };
     }
     const fingerprint = fingerprintCandidate(best);
-    const selectedCandidate = { ticker: best.ticker, company: best.company, cik: best.cik, price: best.quote?.price ?? null, marketObservedAt: best.quote?.observedAt ?? null, marketSource: best.quote?.source ?? null, benchmarkTicker: quoted.benchmarkTicker, benchmarkPrice: quoted.benchmarkQuote?.price ?? null, benchmarkObservedAt: quoted.benchmarkQuote?.observedAt ?? null, benchmarkSource: quoted.benchmarkQuote?.source ?? null, direction: best.direction, eventFamily: best.eventFamily, relationship: best.relationship, eventHeadline: best.eventHeadline, eventObservedAt: best.eventObservedAt, evidenceFingerprint: fingerprint, score: best.score, gateChecks: best.gateChecks, causalChain: best.causalChain, falsifiers: best.falsifiers, receipts: best.receipts, quote: best.quote, fundamentals: best.fundamentals, historicalAnalog: best.historicalAnalog, priceForecast: best.priceForecast, alertReadiness: seriousActionEligible(best) ? "actionable_candidate" : "watch_only" };
+    const selectedCandidate = { ticker: best.ticker, company: best.company, cik: best.cik, rootEventKey: best.rootEventKey, price: best.quote?.price ?? null, marketObservedAt: best.quote?.observedAt ?? null, marketSource: best.quote?.source ?? null, benchmarkTicker: quoted.benchmarkTicker, benchmarkPrice: quoted.benchmarkQuote?.price ?? null, benchmarkObservedAt: quoted.benchmarkQuote?.observedAt ?? null, benchmarkSource: quoted.benchmarkQuote?.source ?? null, direction: best.direction, eventFamily: best.eventFamily, relationship: best.relationship, eventHeadline: best.eventHeadline, eventObservedAt: best.eventObservedAt, evidenceFingerprint: fingerprint, score: best.score, gateChecks: best.gateChecks, trackingDisposition: best.trackingDisposition, failedGateChecks: best.failedGateChecks, eventMagnitude: best.eventMagnitude, causalExposure: best.causalExposure, causalChain: best.causalChain, falsifiers: best.falsifiers, receipts: best.receipts, quote: best.quote, fundamentals: best.fundamentals, historicalAnalog: best.historicalAnalog, priceForecast: best.priceForecast, alertReadiness: seriousActionEligible(best) ? "actionable_candidate" : "watch_only" };
     if (!best.quote) return { ...common, status: "qualified_event_market_quote_unavailable", seriousSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, blockers: ["The event qualified before the market moved, but no usable price anchor was available for a safe entry or outcome record. The event remains on the watch queue; no OpenAI budget was spent."], technicalFailureFingerprint: null };
     if (input.skipOpenAiCandidateFingerprints?.includes(fingerprint)) return { ...common, status: "qualified_candidate_already_reviewed", seriousSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, blockers: ["The same event evidence was reviewed recently, so OpenAI was not called again."], technicalFailureFingerprint: null };
     const aiProvider = getAiCommitteeProviderStatus();
     if (!input.allowOpenAi) return { ...common, status: "qualified_signal_openai_not_requested", seriousSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, committee: { configured: aiProvider.configured, enabled: aiProvider.enabled }, blockers: ["The rolling OpenAI review budget was not available; the qualified event remains recorded without another paid call."], technicalFailureFingerprint: null };
     if (!aiProvider.configured || !aiProvider.enabled) return { ...common, ok: false, status: "configuration_blocker", seriousSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, blockers: [aiProvider.configured ? "AI committee is disabled." : "OPENAI_API_KEY is not available in this deployment."], technicalFailureFingerprint: aiProvider.configured ? "ai_committee_disabled" : "openai_key_missing", failureScope: "configuration", repairEligible: false };
     if (input.beforeOpenAiCall && !await input.beforeOpenAiCall({ candidateFingerprint: fingerprint, checkedAt: now.toISOString(), ticker: best.ticker, direction: best.direction })) return { ...common, status: "qualified_signal_openai_reservation_denied", seriousSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, blockers: ["The durable committee budget or same-evidence lock denied this paid review."], technicalFailureFingerprint: null };
-    const pack = evidencePack(best, providers, macroResult.context, now, fingerprint, quoted.benchmarkQuote);
+    const selectedFundamentalsProvider = fundamentalsResults
+      .find((result) => result.candidate === best)?.provider;
+    const committeeProviders = [
+      ...baseProviders,
+      ...(selectedFundamentalsProvider ? [selectedFundamentalsProvider] : []),
+    ];
+    const pack = evidencePack(best, committeeProviders, macroResult.context, now, fingerprint, quoted.benchmarkQuote);
     const committee = await runAiCommittee({ [TRUSTED_IN_MEMORY_EVIDENCE]: pack, persistResult: false, dryRun: false, confirmRun: true, mode: "preview", maxAgents: 13, maxCostUsd: 0.75 });
     const results = Array.isArray(committee.agentResults) ? committee.agentResults : [];
     const completed = results.filter((result) => result.status === "completed").length;

@@ -1,7 +1,9 @@
 {
-  "version": 1,
+  "version": 2,
   "branchOnly": true,
   "protectedBranch": "main",
+  "marketScope": "US listed common stocks and ADRs only",
+  "nonUsScanningEnabled": false,
   "maxIterationAttempts": 3,
   "maxSameFailureWithoutGain": 3,
   "minimumConsistentValidatedSignals": 3,
@@ -14,6 +16,28 @@
   "minimumIndependentReceipts": 2,
   "minimumProfitPotentialScore": 60,
   "minimumEvidenceConfidenceScore": 60,
+  "seriousBuySellPilot": {
+    "minimumIndependentRealHistoricalEvents": 5,
+    "minimumObservedDirectionalSuccessPercent": 90,
+    "requireSameDirection": true,
+    "requireLeakageSafeHistory": true,
+    "requireUsableHistoricalHorizon": true,
+    "requireNonNegativeLowerQuartileOutcome": true,
+    "statisticallyEquivalentToThirtySamples": false,
+    "analystExpectationsCanVetoBuy": false
+  },
+  "watchOutPolicy": {
+    "activeCertifiedRuleIds": [
+      "extreme_120_session_drawdown_volatility"
+    ],
+    "approvedReviewOnlyP0AndP1Rules": 16,
+    "newRulesPromotionMode": "review_only_until_rule_specific_forward_validation",
+    "heldRuleIds": [
+      "crowded_short_or_squeeze",
+      "rate_inflation_or_commodity_sensitivity_break",
+      "extreme_valuation_with_momentum_reversal"
+    ]
+  },
   "requireLiveInputProvenance": true,
   "requireLivePriceAtAlert": true,
   "allowMockFallback": false,

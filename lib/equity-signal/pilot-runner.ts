@@ -36,7 +36,6 @@ function historicalRecords(value: unknown): HistoricalSignalRecord[] {
 }
 
 function adaptiveArticleBudget(candidateCount: number) {
-  if (candidateCount >= 60) return 24;
   if (candidateCount >= 30) return 20;
   if (candidateCount >= 12) return 16;
   return 12;
@@ -144,7 +143,7 @@ export async function runPilotEquitySignalLab(input: PilotEquitySignalLabInput =
       fullArticleOrDetailedOfficialContentRequired: true,
       minimumFullArticlesReadPerScan: 12,
       maximumFullArticlesReadPerScan: articleEvidence.maximumFullArticlesPerScan,
-      articleBudgetMode: "adaptive_12_to_24_decision_relevant_pages_with_six_hour_cache",
+      articleBudgetMode: "adaptive_12_to_20_decision_relevant_pages_with_six_hour_cache",
       foundationNewsRequired: false,
       foundationFairValueCanTriggerImmediately: true,
     },

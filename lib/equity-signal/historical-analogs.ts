@@ -2,6 +2,7 @@ export type HistoricalAnalogDirection = "upside" | "downside";
 export type HistoricalAnalogRelationship = "direct" | "second_order" | "third_order";
 export type HistoricalAnalogHorizon = "1D" | "3D" | "7D" | "30D" | "90D";
 export type HistoricalAnalogStrength = "missing" | "weak" | "medium" | "strong";
+export type HistoricalLearningUse = "forecast_eligible" | "diagnostics_only" | "quarantined";
 
 export type HistoricalAnalogCheckpoint = {
   /** Raw security return. For example, 4.2 means +4.2%, not 0.042. */
@@ -17,6 +18,11 @@ export type HistoricalSignalRecord = {
   id: string;
   /** Stable event-cluster identity. Duplicate articles for one event must share this key. */
   eventKey: string;
+  /**
+   * Stable identity of the real-world root event across all affected tickers.
+   * Older records may omit this and fall back to eventKey.
+   */
+  rootEventKey?: string;
   ticker: string;
   eventFamily: string;
   direction: HistoricalAnalogDirection;
@@ -29,6 +35,13 @@ export type HistoricalSignalRecord = {
   featuresAsOf: string;
   /** Only real records are eligible. Mock, synthetic, and unknown records are rejected. */
   dataQuality: "real" | "mock" | "synthetic" | "unknown";
+  /**
+   * Diagnostics and quarantined findings stay in R2 for audit and
+   * missed-opportunity review, but only forecast-eligible records calibrate.
+   */
+  learningUse?: HistoricalLearningUse;
+  learningReasons?: string[];
+  findingDisposition?: "qualified" | "shadow_near_miss";
   /** Receipts that prove the event and price history used to build this record. */
   provenance?: {
     origin: "swing_up_forward_outcome" | "public_historical_bootstrap";
@@ -43,6 +56,7 @@ export type HistoricalSignalRecord = {
 
 export type HistoricalAnalogQuery = {
   eventKey: string;
+  rootEventKey?: string;
   eventFamily: string;
   direction: HistoricalAnalogDirection;
   relationship: HistoricalAnalogRelationship;
@@ -104,12 +118,14 @@ export type HistoricalAnalogDiagnostics = {
   groupedIndependentEvents: number;
   duplicateRecordsCollapsed: number;
   excludedNonReal: number;
+  excludedUntrusted: number;
   excludedInvalidTimestamp: number;
   excludedFutureSignal: number;
   excludedSameEvent: number;
   excludedPostSignalFeatures: number;
   excludedLowSimilarity: number;
   excludedUnavailableOutcome: number;
+  excludedMissingBenchmark: number;
   horizonCoverage: Record<HistoricalAnalogHorizon, number>;
   queryFeatureCutoffValid: boolean;
 };
@@ -140,7 +156,9 @@ export type HistoricalAnalogAnalysis = {
 };
 
 type SafeRecord = HistoricalSignalRecord & { signalTime: number; featureTime: number };
-type GroupedRecord = { eventKey: string; canonical: SafeRecord; records: SafeRecord[]; similarity: ReturnType<typeof comparePreEventFeatures> };
+type MatchedRecord = { record: SafeRecord; similarity: ReturnType<typeof comparePreEventFeatures> };
+type GroupedRecord = { eventKey: string; records: MatchedRecord[] };
+type GroupOutcome = MatchedRecord & { checkpoint: HistoricalAnalogCheckpoint; observedAt: number };
 type WeightedValue = { value: number; weight: number };
 
 const HORIZON_PLANS: Record<HistoricalAnalogRelationship, HistoricalAnalogHorizon[]> = {
@@ -154,7 +172,7 @@ const DEFAULT_OPTIONS: Required<HistoricalAnalogOptions> = {
   maximumAnalogs: 50,
   maximumAnalogsPerTicker: 3,
   minimumSamplesForPreferredHorizon: 3,
-  hitThresholdPercent: 0,
+  hitThresholdPercent: 0.5,
   priorAlpha: 2,
   priorBeta: 2,
 };
@@ -245,17 +263,19 @@ function validCheckpoint(checkpoint: HistoricalAnalogCheckpoint | undefined, sig
   if (!checkpoint || !Number.isFinite(checkpoint.returnPercent)) return null;
   const observedAt = timestamp(checkpoint.observedAt);
   if (observedAt === null || observedAt < signalTime || observedAt >= asOf) return null;
-  if (checkpoint.benchmarkReturnPercent != null && !Number.isFinite(checkpoint.benchmarkReturnPercent)) return null;
+  if (checkpoint.benchmarkReturnPercent == null || !Number.isFinite(checkpoint.benchmarkReturnPercent)) return null;
   return { checkpoint, observedAt };
 }
 
-function checkpointForGroup(group: GroupedRecord, horizon: HistoricalAnalogHorizon, asOf: number) {
+function checkpointForGroup(group: GroupedRecord, horizon: HistoricalAnalogHorizon, asOf: number): GroupOutcome | null {
   return group.records
-    .flatMap((record) => {
-      const value = validCheckpoint(record.checkpoints[horizon], group.canonical.signalTime, asOf);
-      return value ? [{ ...value, record }] : [];
+    .flatMap((match) => {
+      const value = validCheckpoint(match.record.checkpoints[horizon], match.record.signalTime, asOf);
+      return value ? [{ ...match, ...value }] : [];
     })
-    .sort((left, right) => left.observedAt - right.observedAt || left.record.id.localeCompare(right.record.id))[0] ?? null;
+    .sort((left, right) => right.similarity.total - left.similarity.total
+      || left.observedAt - right.observedAt
+      || left.record.id.localeCompare(right.record.id))[0] ?? null;
 }
 
 function directionAdjusted(value: number, direction: HistoricalAnalogDirection) {
@@ -350,7 +370,10 @@ function resolvedOptions(options: HistoricalAnalogOptions): Required<HistoricalA
     maximumAnalogs: Math.max(1, Math.min(500, Math.floor(options.maximumAnalogs ?? DEFAULT_OPTIONS.maximumAnalogs))),
     maximumAnalogsPerTicker: Math.max(1, Math.min(50, Math.floor(options.maximumAnalogsPerTicker ?? DEFAULT_OPTIONS.maximumAnalogsPerTicker))),
     minimumSamplesForPreferredHorizon: Math.max(1, Math.min(100, Math.floor(options.minimumSamplesForPreferredHorizon ?? DEFAULT_OPTIONS.minimumSamplesForPreferredHorizon))),
-    hitThresholdPercent: Number.isFinite(options.hitThresholdPercent) ? options.hitThresholdPercent! : DEFAULT_OPTIONS.hitThresholdPercent,
+    hitThresholdPercent: Math.max(
+      DEFAULT_OPTIONS.hitThresholdPercent,
+      Number.isFinite(options.hitThresholdPercent) ? options.hitThresholdPercent! : DEFAULT_OPTIONS.hitThresholdPercent,
+    ),
     priorAlpha: Math.max(0.1, Number.isFinite(options.priorAlpha) ? options.priorAlpha! : DEFAULT_OPTIONS.priorAlpha),
     priorBeta: Math.max(0.1, Number.isFinite(options.priorBeta) ? options.priorBeta! : DEFAULT_OPTIONS.priorBeta),
   };
@@ -370,12 +393,14 @@ export function analyzeHistoricalAnalogs(
     groupedIndependentEvents: 0,
     duplicateRecordsCollapsed: 0,
     excludedNonReal: 0,
+    excludedUntrusted: 0,
     excludedInvalidTimestamp: 0,
     excludedFutureSignal: 0,
     excludedSameEvent: 0,
     excludedPostSignalFeatures: 0,
     excludedLowSimilarity: 0,
     excludedUnavailableOutcome: 0,
+    excludedMissingBenchmark: 0,
     horizonCoverage,
     queryFeatureCutoffValid: false,
   };
@@ -393,13 +418,20 @@ export function analyzeHistoricalAnalogs(
       continue;
     }
     diagnostics.realRecords += 1;
+    const forecastEligible = record.learningUse === "forecast_eligible"
+      || (!record.learningUse && record.provenance?.origin === "public_historical_bootstrap");
+    if (!forecastEligible) {
+      diagnostics.excludedUntrusted += 1;
+      continue;
+    }
     const signalTime = timestamp(record.signalObservedAt);
     const featureTime = timestamp(record.featuresAsOf);
     if (signalTime === null || featureTime === null) {
       diagnostics.excludedInvalidTimestamp += 1;
       continue;
     }
-    if (record.eventKey.trim() === query.eventKey.trim()) {
+    const rootEventKey = (record.rootEventKey || record.eventKey).trim();
+    if (rootEventKey === (query.rootEventKey || query.eventKey).trim()) {
       diagnostics.excludedSameEvent += 1;
       continue;
     }
@@ -415,27 +447,46 @@ export function analyzeHistoricalAnalogs(
   }
 
   const grouped = new Map<string, SafeRecord[]>();
-  for (const record of safeRecords) grouped.set(record.eventKey, [...(grouped.get(record.eventKey) ?? []), record]);
+  for (const record of safeRecords) {
+    const rootEventKey = (record.rootEventKey || record.eventKey).trim();
+    grouped.set(rootEventKey, [...(grouped.get(rootEventKey) ?? []), record]);
+  }
   diagnostics.groupedIndependentEvents = grouped.size;
   diagnostics.duplicateRecordsCollapsed = safeRecords.length - grouped.size;
   const groups: GroupedRecord[] = [];
   for (const [eventKey, groupRecords] of grouped) {
-    const ordered = [...groupRecords].sort((left, right) => left.signalTime - right.signalTime || left.id.localeCompare(right.id));
-    const canonical = ordered[0];
-    const similarity = comparePreEventFeatures(query, canonical);
-    if (similarity.total < settings.minimumSimilarity) {
+    const matches = groupRecords
+      .map((record) => ({ record, similarity: comparePreEventFeatures(query, record) }))
+      .filter((match) => match.similarity.total >= settings.minimumSimilarity)
+      .sort((left, right) => right.similarity.total - left.similarity.total
+        || left.record.signalTime - right.record.signalTime
+        || left.record.id.localeCompare(right.record.id));
+    if (!matches.length) {
       diagnostics.excludedLowSimilarity += 1;
       continue;
     }
-    groups.push({ eventKey, canonical, records: ordered, similarity });
+    groups.push({ eventKey, records: matches });
   }
 
   for (const horizon of horizonPlan) {
+    diagnostics.excludedMissingBenchmark += groups.reduce((count, group) => count + group.records.filter(({ record }) => {
+      const checkpoint = record.checkpoints[horizon];
+      const observedAt = checkpoint ? timestamp(checkpoint.observedAt) : null;
+      return checkpoint
+        && Number.isFinite(checkpoint.returnPercent)
+        && observedAt !== null
+        && observedAt >= record.signalTime
+        && observedAt < asOf
+        && (checkpoint.benchmarkReturnPercent == null || !Number.isFinite(checkpoint.benchmarkReturnPercent));
+    }).length, 0);
     horizonCoverage[horizon] = groups.filter((group) => checkpointForGroup(group, horizon, asOf) !== null).length;
   }
-  let selectedHorizon = horizonPlan.find((horizon) => horizonCoverage[horizon] >= settings.minimumSamplesForPreferredHorizon) ?? null;
+  let selectedHorizon: HistoricalAnalogHorizon | null = horizonPlan.find(
+    (horizon) => horizonCoverage[horizon] >= settings.minimumSamplesForPreferredHorizon,
+  ) ?? null;
   if (!selectedHorizon) {
-    selectedHorizon = [...horizonPlan].sort((left, right) => horizonCoverage[right] - horizonCoverage[left] || horizonPlan.indexOf(left) - horizonPlan.indexOf(right))[0] ?? null;
+    selectedHorizon = [...horizonPlan]
+      .sort((left, right) => horizonCoverage[right] - horizonCoverage[left] || horizonPlan.indexOf(left) - horizonPlan.indexOf(right))[0] ?? null;
     if (selectedHorizon && horizonCoverage[selectedHorizon] === 0) selectedHorizon = null;
   }
   if (!selectedHorizon) {
@@ -448,12 +499,14 @@ export function analyzeHistoricalAnalogs(
       const outcome = checkpointForGroup(group, selectedHorizon!, asOf);
       return outcome ? [{ group, outcome }] : [];
     })
-    .sort((left, right) => right.group.similarity.total - left.group.similarity.total || right.group.canonical.signalTime - left.group.canonical.signalTime || left.group.eventKey.localeCompare(right.group.eventKey));
+    .sort((left, right) => right.outcome.similarity.total - left.outcome.similarity.total
+      || right.outcome.record.signalTime - left.outcome.record.signalTime
+      || left.group.eventKey.localeCompare(right.group.eventKey));
   diagnostics.excludedUnavailableOutcome = groups.length - candidates.length;
   const tickerCounts = new Map<string, number>();
   const selected: typeof candidates = [];
   for (const candidate of candidates) {
-    const ticker = candidate.group.canonical.ticker.trim().toUpperCase();
+    const ticker = candidate.outcome.record.ticker.trim().toUpperCase();
     if ((tickerCounts.get(ticker) ?? 0) >= settings.maximumAnalogsPerTicker) continue;
     tickerCounts.set(ticker, (tickerCounts.get(ticker) ?? 0) + 1);
     selected.push(candidate);
@@ -462,23 +515,25 @@ export function analyzeHistoricalAnalogs(
 
   const items: HistoricalAnalogItem[] = selected.map(({ group, outcome }) => {
     const rawReturn = outcome.checkpoint.returnPercent;
-    const adjusted = directionAdjusted(rawReturn, group.canonical.direction);
+    const adjusted = directionAdjusted(rawReturn, outcome.record.direction);
     const benchmark = outcome.checkpoint.benchmarkReturnPercent;
-    const marketRelative = benchmark == null ? null : directionAdjusted(rawReturn - benchmark, group.canonical.direction);
+    const marketRelative = benchmark == null ? null : directionAdjusted(rawReturn - benchmark, outcome.record.direction);
     return {
-      recordId: group.canonical.id,
+      recordId: outcome.record.id,
       eventKey: group.eventKey,
-      ticker: group.canonical.ticker,
-      signalObservedAt: group.canonical.signalObservedAt,
+      ticker: outcome.record.ticker,
+      signalObservedAt: outcome.record.signalObservedAt,
       outcomeObservedAt: outcome.checkpoint.observedAt,
       horizon: selectedHorizon!,
-      similarity: group.similarity.total,
-      similarityComponents: group.similarity.components,
-      matchedFeatures: group.similarity.matchedFeatures,
-      provenance: group.canonical.provenance ?? null,
+      similarity: outcome.similarity.total,
+      similarityComponents: outcome.similarity.components,
+      matchedFeatures: outcome.similarity.matchedFeatures,
+      provenance: outcome.record.provenance ?? null,
       directionAdjustedReturnPercent: rounded(adjusted),
       marketRelativeDirectionAdjustedReturnPercent: marketRelative == null ? null : rounded(marketRelative),
-      hit: adjusted > settings.hitThresholdPercent,
+      hit: adjusted >= settings.hitThresholdPercent
+        && marketRelative !== null
+        && marketRelative > 0,
     };
   });
   if (!items.length) return emptyResult(query, diagnostics, true, "No independent analogue remained after point-in-time, similarity, outcome, and concentration safeguards.");
@@ -499,11 +554,11 @@ export function analyzeHistoricalAnalogs(
   const strength = strengthFor(sampleSize, historicalSupport);
   const returnValues = weightedItems.map((item) => ({ value: item.directionAdjustedReturnPercent, weight: item.weight }));
   const marketItems = weightedItems.filter((item): item is typeof item & { marketRelativeDirectionAdjustedReturnPercent: number } => item.marketRelativeDirectionAdjustedReturnPercent !== null);
-  const marketPosterior = posterior(marketItems.map((item) => ({ weight: item.weight, hit: item.marketRelativeDirectionAdjustedReturnPercent > settings.hitThresholdPercent })), settings.priorAlpha, settings.priorBeta);
+  const marketPosterior = posterior(marketItems.map((item) => ({ weight: item.weight, hit: item.hit })), settings.priorAlpha, settings.priorBeta);
   const marketValues = marketItems.map((item) => ({ value: item.marketRelativeDirectionAdjustedReturnPercent, weight: item.weight }));
   const marketRelative: HistoricalAnalogMarketRelativeStats | null = marketItems.length ? {
     sampleSize: marketItems.length,
-    hitRatePercent: rounded((marketItems.filter((item) => item.marketRelativeDirectionAdjustedReturnPercent > settings.hitThresholdPercent).length / marketItems.length) * 100),
+    hitRatePercent: rounded((marketItems.filter((item) => item.hit).length / marketItems.length) * 100),
     posteriorHitProbabilityPercent: rounded(Math.min(maximumProbabilityForSample(marketItems.length) / 100, marketPosterior.probability) * 100),
     medianDirectionAdjustedReturnPercent: weightedQuantile(marketValues, 0.5)!,
     p25DirectionAdjustedReturnPercent: weightedQuantile(marketValues, 0.25)!,
@@ -532,7 +587,7 @@ export function analyzeHistoricalAnalogs(
     marketRelative,
     historicalSupport,
     leakageSafe: true,
-    summary: `${sampleSize} independent real analogue(s) were measured at ${selectedHorizon}${usedFallbackHorizon ? `, an earlier observable fallback from ${requestedHorizon}` : ""}. Posterior hit probability is ${rounded(posteriorProbability * 100)}%; small samples remain heavily capped and shrunk toward 50%.`,
+    summary: `${sampleSize} independent trusted root event(s) were measured at ${selectedHorizon}${usedFallbackHorizon ? `, an earlier observable fallback from ${requestedHorizon}` : ""}. A useful hit requires at least ${settings.hitThresholdPercent}% in the predicted direction and a better result than SPY. Posterior hit probability is ${rounded(posteriorProbability * 100)}%; small samples remain heavily capped and shrunk toward 50%.`,
     items,
     diagnostics,
   };

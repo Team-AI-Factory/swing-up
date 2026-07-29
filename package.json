@@ -35,6 +35,7 @@
     "smoke:equity-article-evidence": "node scripts/equity-article-evidence-smoke.mjs",
     "smoke:us-watch-out-engine": "node scripts/us-watch-out-engine-smoke.mjs",
     "smoke:watch-out-serious-promotion": "node scripts/us-watch-out-serious-promotion-smoke.mjs",
+    "smoke:us-value-investing-engine": "node scripts/us-value-investing-engine-smoke.mjs",
     "smoke:equity-historical-analogs": "node scripts/equity-historical-analogs-smoke.mjs",
     "smoke:equity-historical-bootstrap": "node scripts/equity-historical-bootstrap-smoke.mjs",
     "smoke:equity-sec-filing-details": "node scripts/equity-sec-filing-details-smoke.mjs",
@@ -56,7 +57,7 @@
     "@types/node": "^22.10.2",
     "@types/react": "^19.0.2",
     "@types/react-dom": "^19.0.2",
-    "eslint": "^9.17.0",
+    "eslint": "^9.17.2",
     "eslint-config-next": "^15.1.3",
     "typescript": "^5.7.2",
     "prisma": "^6.10.1"

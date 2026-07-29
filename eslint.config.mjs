@@ -20,6 +20,12 @@ const eslintConfig = [
       "scripts/combined-opportunity-engine-smoke.ts",
     ],
   },
+  {
+    files: ["lib/equity-signal/us-watch-out-engine.ts"],
+    rules: {
+      "@typescript-eslint/no-unused-vars": ["error", { varsIgnorePattern: "^ImpactCandidate$" }],
+    },
+  },
 ];
 
 export default eslintConfig;

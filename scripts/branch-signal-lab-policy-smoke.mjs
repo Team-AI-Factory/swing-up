@@ -10,6 +10,43 @@ const cjsModule = { exports: {} };
 vm.runInNewContext(`(function (exports, module) { ${compiled}\n})(cjsModule.exports, cjsModule);`, { cjsModule, URL });
 const policy = cjsModule.exports;
 
+const routeTestSource = `${routeSource}
+export const __routeStateTest = {
+  outcomeTrackingEntries,
+  historicalSignalRecords,
+  pruneHistory,
+  updateForwardOutcomes,
+  validatedSeriousSignalEffects,
+  aggregateValidatedRootSignals,
+  mergeHistoricalSignalRecordsForRoute,
+};`;
+const routeCompiled = ts.transpileModule(routeTestSource, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
+const routeCjsModule = { exports: {} };
+const routeRequire = (specifier) => {
+  if (specifier === "node:fs/promises") return { readFile: async () => "" };
+  if (specifier === "node:path") return { isAbsolute: () => true, join: (...parts) => parts.join("/") };
+  if (specifier === "next/server") return { NextResponse: { json: (body, init) => ({ body, init }) } };
+  if (specifier === "@/lib/branch-signal-lab") return { runBranchSignalLab: async () => ({}) };
+  if (specifier === "@/lib/branch-signal-lab-policy") return {
+    isLegacyExternalStopReason: () => false,
+    noGainRepairAttempts: () => 0,
+    providerCallBudgetDecision: () => ({ allowed: false }),
+    repairEligibleFailure: () => null,
+  };
+  if (specifier === "@/lib/equity-signal/historical-bootstrap") return { mergeHistoricalSignals: (...groups) => groups.flat() };
+  if (specifier === "@/lib/r2-warehouse") return {
+    getR2Config: () => ({ configured: false }),
+    readVersionedTextFromR2: async () => ({ found: false, text: null, etag: null }),
+    writeVersionedJsonToR2: async () => ({ conflict: false, etag: "test" }),
+  };
+  throw new Error(`Unexpected route dependency in smoke test: ${specifier}`);
+};
+vm.runInNewContext(
+  `(function (exports, module, require) { ${routeCompiled}\n})(routeCjsModule.exports, routeCjsModule, routeRequire);`,
+  { routeCjsModule, routeRequire, process, console, URL, queueMicrotask, AbortSignal },
+);
+const routePolicy = routeCjsModule.exports.__routeStateTest;
+
 const at = "2026-07-19T00:00:00.000Z";
 const manyGoogle = Array.from({ length: 16 }, (_, index) => ({ title: `Company event ${index}`, publisher: `g${index}.example`, publishedAt: at, channel: "google_news_rss" }));
 const otherChannels = [
@@ -40,6 +77,9 @@ const verifiedEarlyEvent = {
 assert.ok(policy.computeEventFirstStrength(verifiedEarlyEvent) >= 60);
 assert.doesNotMatch(policy.computeEventFirstStrength.toString(), /absoluteMove|post.?event.?move|priceVolumeConfirmation/i);
 assert.doesNotMatch(policy.eventFirstGate.toString(), /absoluteMove|post.?event.?move|priceVolumeConfirmation/i);
+const noHistoryScore = policy.computeEventFirstStrength({ ...verifiedEarlyEvent, historicalSupport: 0 });
+const abundantHistoryScore = policy.computeEventFirstStrength({ ...verifiedEarlyEvent, historicalSupport: 100 });
+assert.equal(noHistoryScore, abundantHistoryScore);
 
 const officialEvidenceGate = policy.eventFirstGate({
   eventTruth: 94,
@@ -136,9 +176,327 @@ const migratedMarketauxBudget = policy.providerCallBudgetDecision([
 ], { quotaKey: "marketaux_free_100_daily", cadenceKey: "marketaux_equity_news_v2", rollingWindowMs: 24 * 60 * 60_000, maximumCallsInWindow: 2, minimumIntervalMs: 0 }, Date.parse(at) + 60_000);
 assert.equal(migratedMarketauxBudget.reason, "rolling_quota_guard");
 
+const trackedCandidate = ({
+  fingerprint,
+  ticker,
+  price,
+  rootEventKey = fingerprint,
+  findingDisposition = "qualified",
+}) => ({
+  evidenceFingerprint: fingerprint,
+  rootEventKey,
+  ticker,
+  price,
+  benchmarkTicker: "SPY",
+  benchmarkPrice: 100,
+  direction: "upside",
+  relationship: "direct",
+  eventFamily: "contract_award",
+  causalChain: ["verified event", "issuer revenue changes"],
+  macroRegime: ["neutral"],
+  findingDisposition,
+  receipts: [{ primarySource: true, publisher: "issuer.example", url: `https://issuer.example/${fingerprint}` }],
+});
+const performanceRun = (overrides = {}) => ({
+  mode: "railway_branch_live_read_only",
+  assetClass: "public_equity",
+  realProviderResponsesOnly: true,
+  databaseWrites: false,
+  publishing: false,
+  notifications: false,
+  seriousSignalFound: false,
+  openAiCalled: false,
+  checkedAt: "2026-01-01T00:00:00.000Z",
+  ...overrides,
+});
+const routeHistory = (runs) => ({
+  version: 6,
+  branch: "agent/live-signal-evaluation-automation",
+  deploymentId: "test",
+  stopped: false,
+  stopReason: null,
+  scanLease: null,
+  totalRunCount: runs.length,
+  runs,
+  openAiReservations: [],
+  providerCallReservations: [],
+  updatedAt: "2026-07-29T00:00:00.000Z",
+});
+
+const promotedFingerprint = "promoted-fingerprint";
+const earlierShadow = performanceRun({
+  checkedAt: "2026-01-01T00:00:00.000Z",
+  shadowOutcomeTrackingCandidates: [trackedCandidate({
+    fingerprint: promotedFingerprint,
+    ticker: "AAA",
+    price: 100,
+    findingDisposition: "shadow_near_miss",
+  })],
+});
+const approvedCandidate = trackedCandidate({ fingerprint: promotedFingerprint, ticker: "AAA", price: 110 });
+const laterApproved = performanceRun({
+  checkedAt: "2026-01-02T00:00:00.000Z",
+  seriousSignalFound: true,
+  openAiCalled: true,
+  candidateFingerprint: promotedFingerprint,
+  selectedCandidate: approvedCandidate,
+  outcomeTrackingCandidates: [{ ...approvedCandidate }],
+  runArchiveObject: "branch-labs/pr-261/serious-signal/runs/2026-01-02/approved.json",
+});
+const promotedHistory = routeHistory([earlierShadow, laterApproved]);
+routePolicy.updateForwardOutcomes(promotedHistory, performanceRun({
+  checkedAt: "2026-01-03T00:00:00.000Z",
+  marketSnapshot: [
+    { ticker: "AAA", price: 121, observedAt: "2026-01-03T00:00:00.000Z", source: "test equity quote" },
+    { ticker: "SPY", price: 101, observedAt: "2026-01-03T00:00:00.000Z", source: "test benchmark quote" },
+  ],
+}));
+const promotedEntries = routePolicy.outcomeTrackingEntries(promotedHistory);
+assert.equal(promotedEntries.length, 1);
+assert.equal(promotedEntries[0].committeeApproved, true);
+assert.equal(promotedEntries[0].candidate.price, 110);
+assert.equal(promotedEntries[0].run.checkedAt, "2026-01-02T00:00:00.000Z");
+const promotedRecords = routePolicy.historicalSignalRecords(promotedHistory);
+assert.equal(promotedRecords.length, 1);
+assert.equal(promotedRecords[0].learningUse, "forecast_eligible");
+assert.equal(promotedRecords[0].signalObservedAt, "2026-01-02T00:00:00.000Z");
+assert.equal(promotedRecords[0].checkpoints["1D"].returnPercent, 10);
+
+const unrelatedFingerprint = "unrelated-shadow";
+const otherApprovedFingerprint = "other-approved";
+const otherApprovedCandidate = trackedCandidate({ fingerprint: otherApprovedFingerprint, ticker: "BBB", price: 50 });
+const unrelatedApprovalRun = performanceRun({
+  checkedAt: "2026-02-01T00:00:00.000Z",
+  seriousSignalFound: true,
+  openAiCalled: true,
+  candidateFingerprint: otherApprovedFingerprint,
+  selectedCandidate: otherApprovedCandidate,
+  shadowOutcomeTrackingCandidates: [trackedCandidate({
+    fingerprint: unrelatedFingerprint,
+    ticker: "CCC",
+    price: 75,
+    findingDisposition: "shadow_near_miss",
+  })],
+  runArchiveObject: "branch-labs/pr-261/serious-signal/runs/2026-02-01/other.json",
+});
+const unrelatedRecord = routePolicy.historicalSignalRecords(routeHistory([unrelatedApprovalRun]))
+  .find((item) => item.eventKey === unrelatedFingerprint);
+assert.equal(unrelatedRecord?.learningUse, "diagnostics_only");
+
+const unarchivedApproved = { ...laterApproved, runArchiveObject: undefined };
+const unarchivedRecord = routePolicy.historicalSignalRecords(routeHistory([unarchivedApproved]))[0];
+assert.equal(unarchivedRecord.learningUse, "diagnostics_only");
+assert.ok(unarchivedRecord.learningReasons.includes("approved_occurrence_pending_immutable_run_archive"));
+assert.doesNotMatch(routeSource, /historyIncludingCurrentReport/);
+assert.match(routeSource, /forwardOutcomeAdditions\s*=\s*historicalSignalRecords\(history\)/);
+
+const trustedLegacyOneDay = {
+  ...promotedRecords[0],
+  checkpoints: { "1D": promotedRecords[0].checkpoints["1D"] },
+};
+const diagnosticSameRecordThreeDay = {
+  ...trustedLegacyOneDay,
+  learningUse: "diagnostics_only",
+  learningReasons: ["approved_occurrence_pending_immutable_run_archive", "diagnostics_only"],
+  checkpoints: {
+    "3D": {
+      returnPercent: 14,
+      benchmarkReturnPercent: 2,
+      observedAt: "2026-01-05T00:00:00.000Z",
+      source: "test three-day quote",
+    },
+  },
+};
+const mergedLegacyCheckpoints = routePolicy.mergeHistoricalSignalRecordsForRoute(
+  [trustedLegacyOneDay],
+  [diagnosticSameRecordThreeDay],
+);
+assert.equal(mergedLegacyCheckpoints.length, 1);
+assert.equal(mergedLegacyCheckpoints[0].learningUse, "forecast_eligible");
+assert.deepEqual(Object.keys(mergedLegacyCheckpoints[0].checkpoints).sort(), ["1D", "3D"]);
+const differentShadowOccurrence = {
+  ...diagnosticSameRecordThreeDay,
+  id: `${promotedFingerprint}:2026-01-01T00:00:00.000Z`,
+  signalObservedAt: "2026-01-01T00:00:00.000Z",
+  featuresAsOf: "2026-01-01T00:00:00.000Z",
+  findingDisposition: "shadow_near_miss",
+};
+const separatedShadowOccurrence = routePolicy.mergeHistoricalSignalRecordsForRoute(
+  [trustedLegacyOneDay],
+  [differentShadowOccurrence],
+);
+assert.equal(separatedShadowOccurrence.length, 2);
+assert.equal(separatedShadowOccurrence.find((item) => item.id === differentShadowOccurrence.id)?.learningUse, "diagnostics_only");
+
+const pruningNow = Date.parse("2026-07-29T00:00:00.000Z");
+const duplicateShadowRuns = Array.from({ length: 100 }, (_, index) => performanceRun({
+  checkedAt: new Date(Date.parse("2026-07-01T00:00:00.000Z") + index * 5 * 60_000).toISOString(),
+  shadowDuplicateIndex: index,
+  shadowOutcomeTrackingCandidates: [trackedCandidate({
+    fingerprint: "old-duplicate-shadow",
+    ticker: "DDD",
+    price: 40,
+    findingDisposition: "shadow_near_miss",
+  })],
+}));
+const recentQuietRuns = Array.from({ length: 576 }, (_, index) => performanceRun({
+  checkedAt: new Date(Date.parse("2026-07-27T00:00:00.000Z") + index * 5 * 60_000).toISOString(),
+  recentQuietIndex: index,
+}));
+const prunedDuplicateHistory = routeHistory([...duplicateShadowRuns, ...recentQuietRuns]);
+routePolicy.pruneHistory(prunedDuplicateHistory, pruningNow);
+assert.equal(prunedDuplicateHistory.runs.length, 577);
+assert.deepEqual(
+  prunedDuplicateHistory.runs.filter((run) => Number.isInteger(run.shadowDuplicateIndex)).map((run) => run.shadowDuplicateIndex),
+  [0],
+);
+
+const replacementCandidate = trackedCandidate({ fingerprint: "old-duplicate-shadow", ticker: "DDD", price: 44 });
+const approvedReplacementRun = performanceRun({
+  checkedAt: "2026-07-02T00:00:00.000Z",
+  seriousSignalFound: true,
+  openAiCalled: true,
+  candidateFingerprint: "old-duplicate-shadow",
+  selectedCandidate: replacementCandidate,
+  runArchiveObject: "branch-labs/pr-261/serious-signal/runs/2026-07-02/replacement.json",
+  approvedReplacement: true,
+});
+const replacedOwnerHistory = routeHistory([...duplicateShadowRuns, approvedReplacementRun, ...recentQuietRuns]);
+routePolicy.pruneHistory(replacedOwnerHistory, pruningNow);
+assert.equal(replacedOwnerHistory.runs.length, 577);
+assert.equal(replacedOwnerHistory.runs.filter((run) => Number.isInteger(run.shadowDuplicateIndex)).length, 0);
+assert.equal(replacedOwnerHistory.runs.filter((run) => run.approvedReplacement === true).length, 1);
+
+const oneDayOutcome = ({ checkedAt, evaluationPrice, benchmarkEvaluationPrice, usefulAtCheckpoint }) => {
+  const targetAt = new Date(Date.parse(checkedAt) + 24 * 60 * 60_000).toISOString();
+  const forwardReturnPercent = evaluationPrice - 100;
+  const benchmarkReturnPercent = benchmarkEvaluationPrice - 100;
+  const marketRelativeReturnPercent = forwardReturnPercent - benchmarkReturnPercent;
+  return {
+    checkpoint: "1D",
+    targetAt,
+    evaluatedAt: targetAt,
+    evaluationPollCheckedAt: targetAt,
+    evaluationDelayMs: 0,
+    evaluationPollDelayMs: 0,
+    maximumEvaluationDelayMs: 72 * 60 * 60_000,
+    priceAtSignal: 100,
+    evaluationPrice,
+    forwardReturnPercent,
+    directionAdjustedReturnPercent: forwardReturnPercent,
+    benchmarkTicker: "SPY",
+    benchmarkPriceAtSignal: 100,
+    benchmarkEvaluationPrice,
+    benchmarkObservedAt: targetAt,
+    benchmarkReturnPercent,
+    marketRelativeReturnPercent,
+    directionAdjustedMarketRelativeReturnPercent: marketRelativeReturnPercent,
+    usefulAtCheckpoint,
+    source: "test outcome quote",
+    benchmarkSource: "test benchmark quote",
+  };
+};
+const validatedEffectRun = ({ fingerprint, ticker, checkedAt, evaluationPrice, benchmarkEvaluationPrice, usefulAtCheckpoint, rootEventKey = "shared-root-event" }) => {
+  const selectedCandidate = trackedCandidate({ fingerprint, ticker, price: 100, rootEventKey });
+  return performanceRun({
+    checkedAt,
+    seriousSignalFound: true,
+    openAiCalled: true,
+    candidateFingerprint: fingerprint,
+    selectedCandidate,
+    runArchiveObject: `branch-labs/pr-261/serious-signal/runs/${fingerprint}.json`,
+    outcomeEvaluations: [oneDayOutcome({ checkedAt, evaluationPrice, benchmarkEvaluationPrice, usefulAtCheckpoint })],
+  });
+};
+const usefulEffect = validatedEffectRun({
+  fingerprint: "root-effect-useful",
+  ticker: "EEE",
+  checkedAt: "2026-03-01T00:00:00.000Z",
+  evaluationPrice: 101.2,
+  benchmarkEvaluationPrice: 100.1,
+  usefulAtCheckpoint: true,
+});
+const nonUsefulEffect = validatedEffectRun({
+  fingerprint: "root-effect-not-useful",
+  ticker: "FFF",
+  checkedAt: "2026-03-02T00:00:00.000Z",
+  evaluationPrice: 99.6,
+  benchmarkEvaluationPrice: 100.1,
+  usefulAtCheckpoint: false,
+});
+const aggregateRoots = (runs) => routePolicy.aggregateValidatedRootSignals(routePolicy.validatedSeriousSignalEffects(routeHistory(runs)));
+const forwardRootAggregation = aggregateRoots([usefulEffect, nonUsefulEffect]);
+const reverseRootAggregation = aggregateRoots([nonUsefulEffect, usefulEffect]);
+assert.deepEqual(JSON.parse(JSON.stringify(forwardRootAggregation)), JSON.parse(JSON.stringify(reverseRootAggregation)));
+assert.equal(forwardRootAggregation.length, 1);
+assert.equal(forwardRootAggregation[0].effectCount, 2);
+assert.equal(forwardRootAggregation[0].jointUsefulEffectCount, 1);
+assert.equal(forwardRootAggregation[0].jointUsefulEffectRate, 0.5);
+assert.ok(Math.abs(forwardRootAggregation[0].medianDirectionAdjustedReturnPercent - 0.4) < 0.0001);
+assert.ok(Math.abs(forwardRootAggregation[0].medianDirectionAdjustedMarketRelativeReturnPercent - 0.3) < 0.0001);
+assert.equal(forwardRootAggregation[0].usefulAtCheckpoint, false);
+
+const secondUsefulEffect = validatedEffectRun({
+  fingerprint: "root-effect-useful-2",
+  ticker: "GGG",
+  checkedAt: "2026-03-03T00:00:00.000Z",
+  evaluationPrice: 100.8,
+  benchmarkEvaluationPrice: 100.1,
+  usefulAtCheckpoint: true,
+});
+const majorityRootAggregation = aggregateRoots([nonUsefulEffect, secondUsefulEffect, usefulEffect]);
+assert.equal(majorityRootAggregation[0].jointUsefulEffectCount, 2);
+assert.equal(majorityRootAggregation[0].effectCount, 3);
+assert.equal(majorityRootAggregation[0].usefulAtCheckpoint, true);
+
+const disjointAbsoluteEffect = validatedEffectRun({
+  fingerprint: "disjoint-absolute-only",
+  ticker: "HHH",
+  checkedAt: "2026-04-01T00:00:00.000Z",
+  evaluationPrice: 101,
+  benchmarkEvaluationPrice: 101.1,
+  usefulAtCheckpoint: false,
+  rootEventKey: "disjoint-threshold-root",
+});
+const disjointRelativeEffect = validatedEffectRun({
+  fingerprint: "disjoint-relative-only",
+  ticker: "III",
+  checkedAt: "2026-04-02T00:00:00.000Z",
+  evaluationPrice: 100,
+  benchmarkEvaluationPrice: 99,
+  usefulAtCheckpoint: false,
+  rootEventKey: "disjoint-threshold-root",
+});
+const disjointForward = aggregateRoots([disjointAbsoluteEffect, disjointRelativeEffect]);
+const disjointReverse = aggregateRoots([disjointRelativeEffect, disjointAbsoluteEffect]);
+assert.deepEqual(JSON.parse(JSON.stringify(disjointForward)), JSON.parse(JSON.stringify(disjointReverse)));
+assert.equal(disjointForward.length, 1);
+assert.equal(disjointForward[0].jointUsefulEffectCount, 0);
+assert.ok(disjointForward[0].medianDirectionAdjustedReturnPercent >= 0.5);
+assert.ok(disjointForward[0].medianDirectionAdjustedMarketRelativeReturnPercent > 0);
+assert.equal(disjointForward[0].usefulAtCheckpoint, false);
+
 assert.match(routeSource, /pendingProviderReservations/);
 assert.match(routeSource, /queueMicrotask\(flushProviderReservations\)/);
 assert.match(routeSource, /if \(addedReservation\) storage = await saveHistory\(history, storage\)/);
+assert.match(routeSource, /shadowOutcomeTrackingCandidates/);
+assert.match(routeSource, /findingDisposition:\s*FindingDisposition/);
+assert.match(routeSource, /learningUse:\s*LearningUse/);
+assert.match(routeSource, /exactApprovedFingerprint/);
+assert.match(routeSource, /committeeApproved/);
+assert.match(routeSource, /selectedOutcomeOwnerRuns/);
+assert.match(routeSource, /rootEventKey/);
+assert.match(routeSource, /rootUsefulnessAggregation/);
+assert.match(routeSource, /alertWaitsForOutcomes:\s*false/);
+assert.match(routeSource, /checkpointsArePostSignalLearningOnly:\s*true/);
+assert.match(routeSource, /containsCompleteFindingAuditLedger:\s*true/);
+assert.match(routeSource, /containsCompleteMappedFindingReceiptProofDictionary:\s*true/);
+assert.match(routeSource, /mappedFindingAuditLedger:\s*undefined/);
+assert.match(routeSource, /mappedFindingReceiptProofDictionary:\s*undefined/);
+assert.ok(
+  routeSource.indexOf("const runArchiveObject = await archiveCompletedRun(runNumber, invocation, completedRun);")
+    < routeSource.indexOf("mappedFindingReceiptProofDictionary: undefined"),
+);
 
 const externalFailure = { status: "source_temporarily_unavailable", failureScope: "external_provider", repairEligible: false, technicalFailureFingerprint: "external_provider_gdelt" };
 assert.equal(policy.noGainRepairAttempts([externalFailure, externalFailure], externalFailure), 0);
@@ -150,6 +508,7 @@ assert.equal(policy.noGainRepairAttempts([applicationFailure, applicationFailure
 console.log(JSON.stringify({
   ok: true,
   eventFirstWithoutPriceMove: officialEvidenceGate.passed,
+  currentEvidenceDecisionInvariantToHistory: true,
   strictIssuerMatching: true,
   officialOrIndependentEvidenceRequired: true,
   rumourScoreCappedBelowSerious: true,
@@ -157,6 +516,19 @@ console.log(JSON.stringify({
   stableEventFingerprint: true,
   durableProviderBudgetPolicy: true,
   concurrentProviderReservationsPersistedInOneBatch: true,
+  qualifiedAndShadowTrackersPersistedSeparately: true,
+  onlyExactApprovedSeriousFingerprintCanTeachForecasts: true,
+  approvedOccurrenceOwnsOutcomeTracking: true,
+  unarchivedCurrentRunCannotTeachForecasts: true,
+  trustedLegacyCheckpointsContinueAccumulating: true,
+  shadowOccurrencesCannotInheritTrust: true,
+  duplicateTrackerRunsPrunedFromRollingState: true,
+  consistencyGroupedByRootEvent: true,
+  rootUsefulnessAggregationOrderIndependent: true,
+  rootUsefulnessRequiresJointPerEffectSuccess: true,
+  rootUsefulnessMajorityRequiredAndTiesFail: true,
+  checkpointsNeverGateImmediateSignals: true,
+  completeFindingProofArchivedWithoutBloatedRollingState: true,
   legacyMarketauxReservationsCountTowardCurrentPlan: true,
   externalFailuresNotRepairEligible: true,
   applicationFailureStopPolicy: true,

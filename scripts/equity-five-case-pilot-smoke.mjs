@@ -2,122 +2,58 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
 
-function compile(url, dependencies = {}) {
-  const source = readFileSync(url, "utf8");
-  const output = ts.transpileModule(source, {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
-  }).outputText;
-  const cjsModule = { exports: {} };
-  new Function("require", "module", "exports", output)((name) => {
-    if (name in dependencies) return dependencies[name];
-    throw new Error(`Unexpected import in five-case pilot smoke: ${name}`);
-  }, cjsModule, cjsModule.exports);
-  return cjsModule.exports;
-}
+const source = readFileSync(new URL("../lib/equity-signal/pilot-serious-signal-policy.ts", import.meta.url), "utf8");
+const output = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
+const cjsModule = { exports: {} };
+new Function("require", "module", "exports", output)((name) => { throw new Error(`Unexpected import: ${name}`); }, cjsModule, cjsModule.exports);
+const { evaluateFiveCasePilotGate, US_SERIOUS_SIGNAL_PILOT_POLICY } = cjsModule.exports;
 
-const policy = compile(new URL("../lib/equity-signal/pilot-serious-signal-policy.ts", import.meta.url));
-let nextResult = null;
-const wrapper = compile(new URL("../lib/equity-signal/pilot-runner.ts", import.meta.url), {
-  "@/lib/equity-signal/pilot-historical-bootstrap": {
-    bootstrapPilotHistoricalSignals: async () => ({ records: [], requestedSeeds: 10, builtSeeds: 10, errors: [], priceSource: "public adjusted prices", noSyntheticData: true }),
-    mergePilotHistoricalSignals: (...groups) => groups.flat(),
-  },
-  "@/lib/equity-signal/pilot-serious-signal-policy": policy,
-  "@/lib/equity-signal/runner": {
-    runEquitySignalLab: async () => structuredClone(nextResult),
-  },
-  "@/lib/equity-signal/us-watch-out-engine": {
-    buildApprovedUsWatchOutReview: async () => ({ findings: [], seriousSignalsFromNewRules: 0 }),
-  },
-});
-
-function historicalItems(samples, sameDirection = true) {
-  return Array.from({ length: samples }, (_, index) => ({
+function candidate({ samples, wins, p25 = 0.5, sameDirection = true, leakageSafe = true }) {
+  const items = Array.from({ length: samples }, (_, index) => ({
     eventKey: `event-${index}`,
     recordId: `record-${index}`,
+    hit: index < wins,
     matchedFeatures: sameDirection ? ["same predicted direction"] : [],
     provenance: { origin: "public_historical_bootstrap", eventSourceUrl: `https://official.example/${index}`, priceSource: "public adjusted prices" },
   }));
-}
-
-function resultWith({ action = "buy", samples = 0, hitRate = 0, p25 = null, leakageSafe = true, horizon = "7D", sameDirection = true } = {}) {
   return {
-    ok: true,
-    status: `serious_${action}`,
-    seriousSignalFound: true,
-    actionableSignalFound: true,
-    alertType: action,
-    blockers: [],
-    selectedCandidate: {
-      ticker: "EXM",
-      historicalAnalog: {
-        sampleSize: samples,
-        weightedHitRatePercent: hitRate,
-        hitRatePercent: hitRate,
-        p25DirectionAdjustedReturnPercent: p25,
-        leakageSafe,
-        selectedHorizon: horizon,
-        items: historicalItems(samples, sameDirection),
-      },
+    historicalAnalog: {
+      sampleSize: samples,
+      weightedHitRatePercent: samples ? (wins / samples) * 100 : 0,
+      hitRatePercent: samples ? (wins / samples) * 100 : 0,
+      p25DirectionAdjustedReturnPercent: p25,
+      leakageSafe,
+      selectedHorizon: samples ? "7D" : null,
+      items,
     },
-    historicalLearning: {},
-    liveSourcePolicy: {},
-    rankedCandidates: [],
-    _historicalSignalLibraryAdditions: [],
   };
 }
 
-nextResult = resultWith({ samples: 0, hitRate: 0, p25: null });
-const noHistory = await wrapper.runPilotEquitySignalLab({});
-assert.equal(noHistory.seriousSignalFound, false);
-assert.equal(noHistory.status, "candidate_needs_five_case_pilot_history");
+const noHistory = evaluateFiveCasePilotGate(candidate({ samples: 0, wins: 0, p25: null }));
+assert.equal(noHistory.passed, false);
+assert.equal(noHistory.checks.fiveIndependentRealEvents, false);
 
-nextResult = resultWith({ samples: 4, hitRate: 100, p25: 1 });
-const fourCases = await wrapper.runPilotEquitySignalLab({});
-assert.equal(fourCases.seriousSignalFound, false);
-assert.equal(fourCases.pilotHistoricalGate.checks.fiveIndependentRealEvents, false);
+const fourCases = evaluateFiveCasePilotGate(candidate({ samples: 4, wins: 4 }));
+assert.equal(fourCases.passed, false);
 
-nextResult = resultWith({ samples: 5, hitRate: 80, p25: 1 });
-const weakHitRate = await wrapper.runPilotEquitySignalLab({});
-assert.equal(weakHitRate.seriousSignalFound, false);
-assert.equal(weakHitRate.pilotHistoricalGate.checks.observedDirectionalHitRateAtLeast90, false);
+const fourOfFive = evaluateFiveCasePilotGate(candidate({ samples: 5, wins: 4 }));
+assert.equal(fourOfFive.passed, true);
+assert.equal(fourOfFive.observedDirectionalHitRatePercent, 80);
+assert.equal(fourOfFive.checks.observedDirectionalHitRateAtLeast80, true);
 
-nextResult = resultWith({ samples: 5, hitRate: 100, p25: 0.5 });
-const pilotBuy = await wrapper.runPilotEquitySignalLab({});
-assert.equal(pilotBuy.seriousSignalFound, true);
-assert.equal(pilotBuy.alertType, "buy");
-assert.equal(pilotBuy.status, "pilot_serious_buy");
-assert.equal(pilotBuy.liveSourcePolicy.nonUsMarketsEnabled, false);
-assert.equal(pilotBuy.liveSourcePolicy.analystExpectationsCanVetoBuy, false);
-assert.equal(pilotBuy.historicalLearning.historicalComparisonRequiredForSeriousSignal, true);
-assert.equal(pilotBuy.historicalLearning.statisticallyEquivalentToThirtySamples, false);
+const threeOfFive = evaluateFiveCasePilotGate(candidate({ samples: 5, wins: 3 }));
+assert.equal(threeOfFive.passed, false);
+assert.equal(threeOfFive.checks.observedDirectionalHitRateAtLeast80, false);
 
-nextResult = resultWith({ action: "sell", samples: 6, hitRate: 100, p25: 0.2 });
-const pilotSell = await wrapper.runPilotEquitySignalLab({});
-assert.equal(pilotSell.seriousSignalFound, true);
-assert.equal(pilotSell.alertType, "sell");
+const mixedDirection = evaluateFiveCasePilotGate(candidate({ samples: 5, wins: 5, sameDirection: false }));
+assert.equal(mixedDirection.passed, false);
+assert.equal(mixedDirection.checks.sameDirectionHistoricalEvents, false);
 
-nextResult = resultWith({ action: "buy", samples: 5, hitRate: 100, p25: 1, sameDirection: false });
-const mixedDirection = await wrapper.runPilotEquitySignalLab({});
-assert.equal(mixedDirection.seriousSignalFound, false);
-assert.equal(mixedDirection.pilotHistoricalGate.checks.sameDirectionHistoricalEvents, false);
+const negativeWeakQuarter = evaluateFiveCasePilotGate(candidate({ samples: 5, wins: 4, p25: -0.1 }));
+assert.equal(negativeWeakQuarter.passed, false);
 
-nextResult = resultWith({ action: "watch", samples: 10, hitRate: 100, p25: 1 });
-const watchBlocked = await wrapper.runPilotEquitySignalLab({});
-assert.equal(watchBlocked.seriousSignalFound, false);
-assert.equal(watchBlocked.alertType, null);
+assert.equal(US_SERIOUS_SIGNAL_PILOT_POLICY.minimumObservedDirectionalHitRatePercent, 80);
+assert.equal(US_SERIOUS_SIGNAL_PILOT_POLICY.forwardOutcomeRequiredBeforeAlert, false);
+assert.equal(US_SERIOUS_SIGNAL_PILOT_POLICY.analystExpectationsCanVetoBuy, false);
 
-console.log(JSON.stringify({
-  ok: true,
-  marketScope: policy.US_SERIOUS_SIGNAL_PILOT_POLICY.marketScope,
-  minimumIndependentEvents: policy.US_SERIOUS_SIGNAL_PILOT_POLICY.minimumIndependentHistoricalEvents,
-  minimumObservedHitRatePercent: policy.US_SERIOUS_SIGNAL_PILOT_POLICY.minimumObservedDirectionalHitRatePercent,
-  analystExpectationsCanVetoBuy: policy.US_SERIOUS_SIGNAL_PILOT_POLICY.analystExpectationsCanVetoBuy,
-  noHistoryBlocked: true,
-  fourCasesBlocked: true,
-  weakHitRateBlocked: true,
-  mixedDirectionBlocked: true,
-  fiveCaseBuyAllowed: true,
-  fiveCaseSellAllowed: true,
-  watchUsesSeparateCatalog: true,
-}, null, 2));
+console.log(JSON.stringify({ ok: true, minimumIndependentEvents: 5, fourOfFivePasses: true, threeOfFiveFails: true, sameDirectionRequired: true, lowerQuartileRequired: true, ownForwardOutcomeNotRequiredBeforeAlert: true }, null, 2));

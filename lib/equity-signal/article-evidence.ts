@@ -56,11 +56,7 @@ const MATERIAL_TERMS: Record<string, string[]> = {
   trading_halt: ["trading halt", "trading suspension", "resumption", "halted"],
 };
 
-const BLOCKED_HOSTS = new Set([
-  "news.google.com",
-  "www.alphavantage.co",
-]);
-
+const BLOCKED_HOSTS = new Set(["news.google.com", "www.alphavantage.co"]);
 const MAX_ARTICLES = 12;
 const MAX_BYTES = 300_000;
 const MIN_ARTICLE_CHARS = 450;
@@ -114,13 +110,11 @@ function safeHttpUrl(value: string) {
 }
 
 function decodeEntities(value: string) {
-  const named: Record<string, string> = {
-    amp: "&", lt: "<", gt: ">", quot: "\"", apos: "'", nbsp: " ", ndash: "–", mdash: "—", hellip: "…",
-  };
+  const named: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: "\"", apos: "'", nbsp: " ", ndash: "–", mdash: "—", hellip: "…" };
   return value
     .replace(/&([a-z]+);/gi, (_, name: string) => named[name.toLowerCase()] ?? " ")
-    .replace(/&#(\d+);/g, (_, value: string) => String.fromCodePoint(Number(value)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, value: string) => String.fromCodePoint(Number.parseInt(value, 16)));
+    .replace(/&#(\d+);/g, (_, item: string) => String.fromCodePoint(Number(item)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, item: string) => String.fromCodePoint(Number.parseInt(item, 16)));
 }
 
 function stripHtml(value: string) {
@@ -148,11 +142,7 @@ function jsonStrings(value: unknown, depth = 0): string[] {
 
 function extractArticleText(raw: string, contentType: string) {
   if (/json/i.test(contentType) || /^[\s\r\n]*[\[{]/.test(raw)) {
-    try {
-      return text(jsonStrings(JSON.parse(raw) as unknown).join(" "), 25_000);
-    } catch {
-      return "";
-    }
+    try { return text(jsonStrings(JSON.parse(raw) as unknown).join(" "), 25_000); } catch { return ""; }
   }
   const jsonLdBodies = [...raw.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)]
     .flatMap((match) => {
@@ -165,7 +155,7 @@ function extractArticleText(raw: string, contentType: string) {
   const article = raw.match(/<article\b[^>]*>([\s\S]*?)<\/article>/i)?.[1]
     ?? raw.match(/<main\b[^>]*>([\s\S]*?)<\/main>/i)?.[1]
     ?? raw;
-  const paragraphs = [...article.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/gi)].map((match) => stripHtml(match[1])).filter((value) => value.length >= 35);
+  const paragraphs = [...article.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/gi)].map((match) => stripHtml(match[1])).filter((item) => item.length >= 35);
   const parsed = text(paragraphs.length >= 3 ? paragraphs.join(" ") : stripHtml(article), 25_000);
   return parsed.length >= MIN_ARTICLE_CHARS ? parsed : "";
 }
@@ -188,7 +178,8 @@ function bodySupport(candidateValue: unknown, body: string) {
   const sourceText = [candidate.eventHeadline, candidate.whatHappened, ...(Array.isArray(candidate.causalChain) ? candidate.causalChain : [])].map((item) => text(item)).join(" ");
   const lowerBody = body.toLowerCase();
   const companyTokens = meaningfulTokens(company).slice(0, 3);
-  const tickerMatched = ticker.length >= 2 && new RegExp(`\\b${ticker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(body);
+  const escapedTicker = ticker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const tickerMatched = ticker.length >= 2 && new RegExp(`\\b${escapedTicker}\\b`, "i").test(body);
   const companyMatched = companyTokens.length > 0 && companyTokens.filter((token) => lowerBody.includes(token)).length >= Math.min(2, companyTokens.length);
   const issuerMatched = relationship !== "direct" || tickerMatched || companyMatched;
   const familyTerms = MATERIAL_TERMS[family] ?? [];
@@ -218,10 +209,10 @@ async function fetchArticle(url: URL, fetchImpl: typeof fetch) {
   const raw = (await response.text()).slice(0, MAX_BYTES);
   const articleText = extractArticleText(raw, contentType);
   if (!articleText) throw new Error("article_text_unavailable");
-  const value = { fetchedAt: Date.now(), text: articleText, contentType };
-  scanCache.set(cacheKey, value);
+  const result = { fetchedAt: Date.now(), text: articleText, contentType };
+  scanCache.set(cacheKey, result);
   if (scanCache.size > 200) scanCache = new Map([...scanCache.entries()].slice(-100));
-  return value;
+  return result;
 }
 
 function structuredOfficialEvidence(candidateValue: unknown) {
@@ -233,7 +224,7 @@ export async function buildArticleEvidenceReport(input: {
   selectedCandidate?: unknown;
   fetchImpl?: typeof fetch;
   maximumArticles?: number;
-+}) {
+}) {
   const fetchImpl = input.fetchImpl ?? fetch;
   const maximumArticles = Math.max(1, Math.min(input.maximumArticles ?? MAX_ARTICLES, 20));
   const orderedCandidates = [input.selectedCandidate, ...input.candidates].filter(Boolean);
@@ -255,14 +246,15 @@ export async function buildArticleEvidenceReport(input: {
     const relationship = text(value.relationship) || "direct";
     const structured = structuredOfficialEvidence(candidate);
     if (structured.length) officialStructuredCandidates += 1;
-    const candidatesUrls = receipts(candidate)
+    const candidateUrls = receipts(candidate)
       .filter((receipt) => safeHttpUrl(receipt.url))
       .sort((left, right) => Number(right.primarySource) - Number(left.primarySource) || Number(right.official) - Number(left.official))
       .slice(0, 2);
     const excerpts: CandidateArticleEvidence["excerpts"] = [];
     const failedUrls: string[] = [];
     const sourceUrls: string[] = [];
-    for (const receipt of candidatesUrls) {
+    let fetchedForCandidate = 0;
+    for (const receipt of candidateUrls) {
       if (budget <= 0) break;
       const url = safeHttpUrl(receipt.url);
       if (!url) continue;
@@ -271,6 +263,7 @@ export async function buildArticleEvidenceReport(input: {
       sourceUrls.push(url.toString());
       try {
         const article = await fetchArticle(url, fetchImpl);
+        fetchedForCandidate += 1;
         urlsFetched += 1;
         const support = bodySupport(candidate, article.text);
         if (support.issuerMatched && support.eventMatched && !support.contradicted) {
@@ -295,7 +288,7 @@ export async function buildArticleEvidenceReport(input: {
       relationship,
       decisionGrade,
       basis: fullArticleSupported ? "full_article" : structuredSupported ? "official_structured_content" : "headline_only_blocked",
-      fullArticlesRead: candidatesUrls.length - failedUrls.length,
+      fullArticlesRead: fetchedForCandidate,
       supportedArticles: excerpts.length,
       officialStructuredReceipts: structured.length,
       failedUrls,
@@ -311,14 +304,7 @@ export async function buildArticleEvidenceReport(input: {
     maximumBytesPerArticle: MAX_BYTES,
     headlineAloneCanPromoteSeriousSignal: false as const,
     candidates: Object.fromEntries(reports),
-    diagnostics: {
-      candidatesConsidered: uniqueCandidates.length,
-      urlsSelected,
-      urlsFetched,
-      urlsSupported,
-      urlsFailed,
-      officialStructuredCandidates,
-    },
+    diagnostics: { candidatesConsidered: uniqueCandidates.length, urlsSelected, urlsFetched, urlsSupported, urlsFailed, officialStructuredCandidates },
   } satisfies ArticleEvidenceReport;
 }
 

@@ -67,27 +67,28 @@ const sell = analyzeValueCompanyForTest({
   volume: 5_000_000,
   relativeVolume10d: 1,
   totalRevenue: 8_000_000_000,
-  netIncome: 400_000_000,
-  freeCashFlow: 200_000_000,
-  dilutedEpsTtm: 2,
+  netIncome: 800_000_000,
+  freeCashFlow: 800_000_000,
+  dilutedEpsTtm: 4,
   revenueGrowthTtmPercent: -15,
   revenueGrowthFyPercent: -12,
   netIncomeGrowthTtmPercent: -25,
   epsGrowthTtmPercent: -30,
   grossMarginPercent: 20,
-  operatingMarginPercent: 5,
-  netMarginPercent: 4,
+  operatingMarginPercent: 8,
+  netMarginPercent: 8,
   debtToEquity: 2.5,
   currentRatio: 0.8,
-  returnOnEquityPercent: 6,
-  returnOnAssetsPercent: 2,
-  priceToEarnings: 100,
-  priceToBook: 10,
+  returnOnEquityPercent: 10,
+  returnOnAssetsPercent: 4,
+  priceToEarnings: 50,
+  priceToBook: 5,
   priceToSales: 3,
   enterpriseValueToEbitda: 40,
 });
 assert.equal(sell.decision.tier, "serious_foundation_sell");
 assert.equal(sell.decision.seriousSignal, true);
+assert.ok((sell.fairValue.baseValue ?? Infinity) < sell.currentPrice);
 
 const watch = analyzeValueCompanyForTest({
   ...qualityBase,

@@ -27,8 +27,11 @@ const wrapper = compile(new URL("../lib/equity-signal/pilot-runner.ts", import.m
   },
   "@/lib/equity-signal/industry-peer-pilot": { evaluateIndustryPeerPilotGate: async () => structuredClone(pilotGate) },
   "@/lib/equity-signal/pilot-historical-bootstrap": {
-    bootstrapPilotHistoricalSignals: async () => ({ records: [{ id: "public-peer" }], requestedSeeds: 1, builtSeeds: 1, errors: [], priceSource: "public adjusted prices", noSyntheticData: true }),
-    mergePilotHistoricalSignals: (left, right) => [...left, ...right],
+    bootstrapPilotHistoricalSignals: async () => ({ records: [{ id: "earnings-peer" }], requestedSeeds: 1, builtSeeds: 1, errors: [], priceSource: "public adjusted prices", noSyntheticData: true }),
+    mergePilotHistoricalSignals: (...groups) => groups.flat(),
+  },
+  "@/lib/equity-signal/pilot-regulatory-approval-bootstrap": {
+    bootstrapRegulatoryApprovalPeerHistory: async () => ({ records: [{ id: "fda-peer" }], requestedSeeds: 1, builtSeeds: 1, errors: [], eventFamily: "regulatory_approval", priceSource: "public adjusted prices", officialEventSource: "FDA", noSyntheticData: true }),
   },
   "@/lib/equity-signal/pilot-serious-signal-policy": { US_SERIOUS_SIGNAL_PILOT_POLICY: policy },
   "@/lib/equity-signal/runner": {
@@ -58,7 +61,8 @@ nextResult = approved("buy");
 const fourCases = await wrapper.runPilotEquitySignalLab({ historicalSignals: [] });
 assert.equal(fourCases.seriousSignalFound, false);
 assert.equal(fourCases.status, "candidate_needs_same_company_or_industry_pilot_history");
-assert.equal(receivedHistory.length, 1);
+assert.equal(receivedHistory.length, 2);
+assert.deepEqual(fourCases.historicalLearning.publicHistoricalFamiliesBuilt, ["earnings_guidance", "regulatory_approval"]);
 
 pilotGate = { passed: true, blockers: [], independentRealEventCount: 5, observedDirectionalHitRatePercent: 80, statisticallyEquivalentToThirtySamples: false };
 const fourOfFive = await wrapper.runPilotEquitySignalLab({ historicalSignals: [] });
@@ -73,4 +77,4 @@ const headlineOnly = await wrapper.runPilotEquitySignalLab({ historicalSignals: 
 assert.equal(headlineOnly.seriousSignalFound, false);
 assert.equal(headlineOnly.status, "candidate_needs_full_article_confirmation");
 
-console.log(JSON.stringify({ ok: true, historicalPeerGateMandatory: true, fourOfFivePasses: true, ownForwardOutcomeNotRequiredBeforeAlert: true, analystExpectationsCannotVetoBuy: true, headlineOnlyBlocked: true }, null, 2));
+console.log(JSON.stringify({ ok: true, historicalPeerGateMandatory: true, publicFamiliesBuilt: ["earnings_guidance", "regulatory_approval"], fourOfFivePasses: true, ownForwardOutcomeNotRequiredBeforeAlert: true, analystExpectationsCannotVetoBuy: true, headlineOnlyBlocked: true }, null, 2));

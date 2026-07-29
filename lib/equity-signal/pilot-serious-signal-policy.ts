@@ -1,14 +1,15 @@
 export const US_SERIOUS_SIGNAL_PILOT_POLICY = {
-  version: 2,
+  version: 3,
   marketScope: "active_us_exchange_listed_common_equities_and_adrs" as const,
   confidenceTier: "pilot_five_independent_cases" as const,
   minimumIndependentHistoricalEvents: 5,
-  minimumObservedDirectionalHitRatePercent: 90,
+  minimumObservedDirectionalHitRatePercent: 80,
   requireLeakageSafeHistory: true,
   requireUsableHistoricalHorizon: true,
   requireNonNegativeLowerQuartileOutcome: true,
   analystExpectationsCanVetoBuy: false,
-  warning: "Pilot serious signal based on at least five independent real cases. This is not statistically equivalent to a 30-plus-sample certificate.",
+  forwardOutcomeRequiredBeforeAlert: false,
+  warning: "Pilot serious signal based on at least five independent real same-company or same-industry cases. Four wins out of five pass the 80% pilot threshold. This is not statistically equivalent to a 30-plus-sample certificate.",
 };
 
 type Json = Record<string, unknown>;
@@ -53,7 +54,7 @@ export function evaluateFiveCasePilotGate(candidateValue: unknown) {
     fiveIndependentRealEvents: independentRealEventCount >= US_SERIOUS_SIGNAL_PILOT_POLICY.minimumIndependentHistoricalEvents,
     sameDirectionHistoricalEvents: items.length ? sameDirectionItems.length >= US_SERIOUS_SIGNAL_PILOT_POLICY.minimumIndependentHistoricalEvents : reportedSampleSize >= US_SERIOUS_SIGNAL_PILOT_POLICY.minimumIndependentHistoricalEvents,
     leakageSafeHistory: leakageSafe,
-    observedDirectionalHitRateAtLeast90: hitRate >= US_SERIOUS_SIGNAL_PILOT_POLICY.minimumObservedDirectionalHitRatePercent,
+    observedDirectionalHitRateAtLeast80: hitRate >= US_SERIOUS_SIGNAL_PILOT_POLICY.minimumObservedDirectionalHitRatePercent,
     usableHistoricalHorizon: selectedHorizon !== null,
     nonNegativeLowerQuartileOutcome: lowerQuartile !== null && lowerQuartile >= 0,
   };
@@ -61,7 +62,7 @@ export function evaluateFiveCasePilotGate(candidateValue: unknown) {
     ...(!checks.fiveIndependentRealEvents ? [`Fewer than ${US_SERIOUS_SIGNAL_PILOT_POLICY.minimumIndependentHistoricalEvents} independent real historical events support this setup.`] : []),
     ...(!checks.sameDirectionHistoricalEvents ? ["The historical examples do not all support the same Buy or Sell direction."] : []),
     ...(!checks.leakageSafeHistory ? ["Historical evidence is not proven free of future-information leakage."] : []),
-    ...(!checks.observedDirectionalHitRateAtLeast90 ? [`Observed directional success is ${hitRate.toFixed(2)}%, below the 90% pilot requirement.`] : []),
+    ...(!checks.observedDirectionalHitRateAtLeast80 ? [`Observed directional success is ${hitRate.toFixed(2)}%, below the 80% pilot requirement.`] : []),
     ...(!checks.usableHistoricalHorizon ? ["No usable historical outcome horizon is available."] : []),
     ...(!checks.nonNegativeLowerQuartileOutcome ? ["The weaker quarter of historical outcomes is negative."] : []),
   ];

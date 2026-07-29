@@ -151,6 +151,11 @@ export function computeEventFirstStrength(input: {
   mappingConfidence: number;
   materiality: number;
   transmissionConfidence: number;
+  /**
+   * Retained for report compatibility only. Historical outcomes may describe
+   * uncertainty and forecast ranges, but they cannot change whether today's
+   * evidence is allowed to advance.
+   */
   historicalSupport: number;
   evidenceIndependence: number;
   contradictionPenalty: number;
@@ -158,12 +163,11 @@ export function computeEventFirstStrength(input: {
   rumour: boolean;
 }) {
   const weighted =
-    input.eventTruth * 0.24
-    + input.mappingConfidence * 0.17
-    + input.materiality * 0.16
-    + input.transmissionConfidence * 0.18
-    + input.historicalSupport * 0.1
-    + input.evidenceIndependence * 0.15
+    input.eventTruth * 0.27
+    + input.mappingConfidence * 0.19
+    + input.materiality * 0.18
+    + input.transmissionConfidence * 0.2
+    + input.evidenceIndependence * 0.16
     - input.contradictionPenalty * 0.18
     - input.pricedInPenalty * 0.08;
   let score = clamp(weighted);

@@ -16,6 +16,7 @@ import {
 import { buildApprovedUsWatchOutReview } from "@/lib/equity-signal/us-watch-out-engine";
 import { promoteApprovedWatchOutRules } from "@/lib/equity-signal/us-watch-out-serious-promotion";
 import { runUsValueInvestingCycle } from "@/lib/opportunity-engine/us-value-investing-engine";
+import { hardenAndPersistUsValueInvestingCycle } from "@/lib/opportunity-engine/us-value-investing-safety";
 
 export type PilotEquityProviderCallDecision = EquityProviderCallDecision;
 export type PilotEquityProviderCallRequest = EquityProviderCallRequest;
@@ -67,30 +68,31 @@ export async function runPilotEquitySignalLab(input: PilotEquitySignalLabInput =
     evaluateIndustryPeerPilotGate({ candidate: selectedCandidate, historicalSignals, fetchImpl, now }),
     buildApprovedUsWatchOutReview({ rankedCandidates, now, fetchImpl }),
     buildArticleEvidenceReport({ candidates: rankedCandidates, selectedCandidate, fetchImpl, maximumArticles: articleBudget }),
-    runUsValueInvestingCycle({ fetchImpl, now, persist: true }),
+    runUsValueInvestingCycle({ fetchImpl, now, persist: false }),
   ]);
+  const hardenedValueInvesting = await hardenAndPersistUsValueInvestingCycle(rawValueInvesting, { persist: true });
   const watchOutReview = promoteApprovedWatchOutRules({ watchOutReview: rawWatchOutReview, articleEvidence });
   const selectedArticleEvidence = articleEvidenceForCandidate(articleEvidence, selectedCandidate);
   const seriousWatchOutAlerts = Array.isArray(watchOutReview.seriousSignals) ? watchOutReview.seriousSignals : [];
   const seriousFoundationAlerts = [
-    ...rawValueInvesting.seriousAlerts.buy,
-    ...rawValueInvesting.seriousAlerts.sell,
-    ...rawValueInvesting.seriousAlerts.watchOut,
+    ...hardenedValueInvesting.seriousAlerts.buy,
+    ...hardenedValueInvesting.seriousAlerts.sell,
+    ...hardenedValueInvesting.seriousAlerts.watchOut,
   ];
   const valueInvesting = {
-    ok: rawValueInvesting.ok,
-    checkedAt: rawValueInvesting.checkedAt,
-    marketScope: rawValueInvesting.marketScope,
-    methodology: rawValueInvesting.methodology,
-    coverage: rawValueInvesting.coverage,
-    seriousAlerts: rawValueInvesting.seriousAlerts,
+    ok: hardenedValueInvesting.ok,
+    checkedAt: hardenedValueInvesting.checkedAt,
+    marketScope: hardenedValueInvesting.marketScope,
+    methodology: hardenedValueInvesting.methodology,
+    coverage: hardenedValueInvesting.coverage,
+    seriousAlerts: hardenedValueInvesting.seriousAlerts,
     watchlists: {
-      qualityWaitingForPrice: rawValueInvesting.watchlists.qualityWaitingForPrice.slice(0, 250),
-      researchOnlyCount: rawValueInvesting.watchlists.researchOnly.length,
+      qualityWaitingForPrice: hardenedValueInvesting.watchlists.qualityWaitingForPrice.slice(0, 250),
+      researchOnlyCount: hardenedValueInvesting.watchlists.researchOnly.length,
     },
-    warehouse: rawValueInvesting.warehouse,
-    cacheUsed: rawValueInvesting.cacheUsed,
-    safety: rawValueInvesting.safety,
+    warehouse: hardenedValueInvesting.warehouse,
+    cacheUsed: hardenedValueInvesting.cacheUsed,
+    safety: hardenedValueInvesting.safety,
   };
 
   const common = {
@@ -132,6 +134,7 @@ export async function runPilotEquitySignalLab(input: PilotEquitySignalLabInput =
       swingUpForwardTrackingRole: "transparent_ledger_and_future_self_improvement_only",
       pilotPublicHistoricalSignalsAddedThisRun: earningsBootstrap.records.length + regulatoryApprovalBootstrap.records.length,
       foundationWarehouseRole: "pre_analyzed_company_fair_value_watchlists_and_immediate_margin_of_safety_alerts",
+      foundationSafetyOverlay: "us_value_alert_safety_v2",
     },
     liveSourcePolicy: {
       ...liveSourcePolicy,
@@ -146,15 +149,17 @@ export async function runPilotEquitySignalLab(input: PilotEquitySignalLabInput =
       articleBudgetMode: "adaptive_12_to_20_decision_relevant_pages_with_six_hour_cache",
       foundationNewsRequired: false,
       foundationFairValueCanTriggerImmediately: true,
+      foundationEligibleExchanges: ["NASDAQ", "NYSE", "AMEX", "NYSEAMERICAN"],
+      foundationSpecialistSectorModelsRequired: true,
     },
     watchOutReview,
     seriousWatchOutAlerts,
     seriousWatchOutSignalFound: seriousWatchOutAlerts.length > 0,
     allSeriousInternalSignals: {
       eventBuySell: base.seriousSignalFound === true ? 1 : 0,
-      foundationBuy: rawValueInvesting.seriousAlerts.buy.length,
-      foundationSell: rawValueInvesting.seriousAlerts.sell.length,
-      foundationWatchOut: rawValueInvesting.seriousAlerts.watchOut.length,
+      foundationBuy: hardenedValueInvesting.seriousAlerts.buy.length,
+      foundationSell: hardenedValueInvesting.seriousAlerts.sell.length,
+      foundationWatchOut: hardenedValueInvesting.seriousAlerts.watchOut.length,
       approvedWatchOut: seriousWatchOutAlerts.length,
       publishing: false,
       notifications: false,

@@ -24,7 +24,11 @@ new Function("require", "module", "exports", output)((name) => {
   };
   throw new Error(`Unexpected import in value safety smoke: ${name}`);
 }, cjsModule, cjsModule.exports);
-const { hardenAndPersistUsValueInvestingCycle, hardenUsValueInvestingCycleForTest } = cjsModule.exports;
+const {
+  hardenAndPersistUsValueInvestingCycle,
+  hardenUsValueInvestingCycleForTest,
+  persistHardenedUsValueInvestingCycle,
+} = cjsModule.exports;
 
 function item(overrides = {}) {
   return {
@@ -207,6 +211,11 @@ assert.equal(reusedPersist.warehouse.persistedThisCycle, false);
 assert.equal(reusedPersist.warehouse.companyRecordsStored, 1_200);
 assert.deepEqual(reusedPersist.warehouse.shardKeys, firstPersist.warehouse.shardKeys);
 assert.equal(reusedPersist.warehouse.immutableRunKey, firstPersist.warehouse.immutableRunKey);
+assert.equal(writeCount, writesAfterFirstPersist);
+
+const alreadyHardened = hardenUsValueInvestingCycleForTest(largeRaw);
+const persistedSameReference = await persistHardenedUsValueInvestingCycle(alreadyHardened);
+assert.equal(persistedSameReference, alreadyHardened);
 assert.equal(writeCount, writesAfterFirstPersist);
 
 console.log(JSON.stringify({

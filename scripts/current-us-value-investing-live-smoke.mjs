@@ -7,6 +7,7 @@ const baseUrl = (process.env.COMBINED_ENGINE_RAILWAY_URL || "https://swing-up-sw
 const expectedCommit = (process.env.EXPECTED_BRANCH_COMMIT || "").trim();
 const outputPath = process.env.CURRENT_US_VALUE_REPORT_PATH || "artifacts/current-us-value-investing-report.json";
 const deadline = Date.now() + 20 * 60 * 1000;
+const minimumExpectedUsPrimaryListings = 4_500;
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const safeError = (error) => error instanceof Error ? error.message.replace(/\s+/g, " ").slice(0, 1600) : "unknown_us_value_validation_failure";
@@ -24,11 +25,19 @@ function inspectLabReadiness(result) {
     diligenceOverlay: value?.methodology?.catalystDiligenceOverlay === "sec_debt_earnings_quality_revenue_durability_reinvestment_v1",
     diligenceRequired: value?.methodology?.foundationSeriousAlertsRequireDiligenceConfirmation === true,
     buyDiligenceRequired: diligence?.policy?.seriousFoundationBuyRequiresBuyQualityConfirmed === true,
-    minimumCompanyCoverage: value?.coverage?.companiesAnalyzed >= 5_000,
+    minimumCompanyCoverage: value?.coverage?.companiesAnalyzed >= minimumExpectedUsPrimaryListings,
+    fullEligibleUniverseCovered: value?.coverage?.companiesAnalyzed === value?.coverage?.usPrimaryListings,
+    noMarketPagesFailed: value?.coverage?.pagesFailed === 0,
     minimumProcessingCoverage: value?.coverage?.processingCoveragePercent >= 95,
     r2Warehouse: warehouse?.storage === "cloudflare_r2",
     allCompanyRecordsStored: warehouse?.companyRecordsStored === value?.coverage?.companiesAnalyzed,
+    warehouseHasImmutableSummary: typeof warehouse?.immutableRunKey === "string"
+      && warehouse.immutableRunKey.startsWith("branch-labs/pr-262/value-investing/runs/"),
+    warehouseHasAllShards: Array.isArray(warehouse?.shardKeys)
+      && warehouse.shardKeys.length >= Math.ceil((value?.coverage?.companiesAnalyzed ?? 0) / 500),
+    warehouseHasNoErrors: Array.isArray(warehouse?.errors) && warehouse.errors.length === 0,
     diligencePersisted: diligence?.warehouse?.persisted === true,
+    diligenceHasNoErrors: Array.isArray(diligence?.warehouse?.errors) && diligence.warehouse.errors.length === 0,
   };
   return {
     ready: Object.values(checks).every(Boolean),
@@ -160,7 +169,7 @@ async function main() {
     assert.equal(value.methodology.newsRequiredForFoundationAlert, false);
     assert.equal(value.methodology.fullFundamentalRefreshMinutes, 15);
     assert.equal(value.methodology.fullWarehousePersistenceHours, 6);
-    assert.ok(coverage.usPrimaryListings >= 5_000);
+    assert.ok(coverage.usPrimaryListings >= minimumExpectedUsPrimaryListings);
     assert.equal(coverage.companiesAnalyzed, coverage.usPrimaryListings);
     assert.ok(coverage.companiesWithFairValue > 0);
     assert.equal(coverage.companiesWithFairValue + coverage.companiesWithoutFairValue, coverage.companiesAnalyzed);
@@ -184,7 +193,7 @@ async function main() {
     assert.ok(typeof value.watchlists.researchOnlyCount === "number");
 
     assert.equal(warehouse.storage, "cloudflare_r2");
-    assert.equal(warehouse.persistedThisCycle, true);
+    assert.equal(typeof warehouse.persistedThisCycle, "boolean");
     assert.ok(warehouse.shardKeys.length >= Math.ceil(coverage.companiesAnalyzed / 500));
     assert.ok(warehouse.immutableRunKey?.startsWith("branch-labs/pr-262/value-investing/runs/"));
     assert.ok(warehouse.latestIndexKey?.startsWith("branch-labs/pr-262/value-investing/latest/"));

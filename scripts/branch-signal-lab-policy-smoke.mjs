@@ -15,6 +15,8 @@ export const __routeStateTest = {
   outcomeTrackingEntries,
   historicalSignalRecords,
   pruneHistory,
+  pruneProviderCallReservations,
+  providerQuotaUsage,
   updateForwardOutcomes,
   validatedSeriousSignalEffects,
   aggregateValidatedRootSignals,
@@ -186,6 +188,68 @@ const migratedMarketauxBudget = policy.providerCallBudgetDecision([
   { quotaKey: "marketaux_free_100_daily", cadenceKey: "marketaux_equity_news", reservedAt: new Date(Date.parse(at) + 30_000).toISOString() },
 ], { quotaKey: "marketaux_free_100_daily", cadenceKey: "marketaux_equity_news_v2", rollingWindowMs: 24 * 60 * 60_000, maximumCallsInWindow: 2, minimumIntervalMs: 0 }, Date.parse(at) + 60_000);
 assert.equal(migratedMarketauxBudget.reason, "rolling_quota_guard");
+
+const unitQuotaNow = Date.parse("2026-07-19T12:00:00.000Z");
+const secGrantBudgetRequest = {
+  quotaKey: "sec_filing_details",
+  cadenceKey: "sec_filing_detail:accession-c",
+  rollingWindowMs: 24 * 60 * 60_000,
+  maximumCallsInWindow: 6,
+  minimumIntervalMs: 0,
+  reservationUnits: 3,
+};
+const firstSecGrant = {
+  quotaKey: "sec_filing_details",
+  cadenceKey: "sec_filing_detail:accession-a",
+  reservedAt: "2026-07-19T10:00:00.000Z",
+  reservationUnits: 3,
+};
+const secondSecGrant = {
+  quotaKey: "sec_filing_details",
+  cadenceKey: "sec_filing_detail:accession-b",
+  reservedAt: "2026-07-19T11:00:00.000Z",
+  reservationUnits: 3,
+};
+assert.equal(
+  policy.providerCallBudgetDecision([firstSecGrant], secGrantBudgetRequest, unitQuotaNow).allowed,
+  true,
+);
+const overCapacitySecGrant = policy.providerCallBudgetDecision(
+  [firstSecGrant, secondSecGrant],
+  secGrantBudgetRequest,
+  unitQuotaNow,
+);
+assert.equal(overCapacitySecGrant.allowed, false);
+assert.equal(overCapacitySecGrant.reason, "rolling_quota_guard");
+assert.equal(overCapacitySecGrant.nextRetryAt, "2026-07-20T10:00:00.000Z");
+
+const retentionNow = Date.parse("2026-07-30T12:00:00.000Z");
+const retentionHistory = {
+  providerCallReservations: [
+    { id: "expired_rolling", provider: "test", quotaKey: "expired_rolling", cadenceKey: "expired_rolling", reservedAt: "2026-07-29T11:00:00.000Z", rollingWindowMs: 24 * 60 * 60_000, maximumCallsInWindow: 10, minimumIntervalMs: 5 * 60_000 },
+    { id: "retained_rolling", provider: "test", quotaKey: "retained_rolling", cadenceKey: "retained_rolling", reservedAt: "2026-07-29T11:00:00.000Z", rollingWindowMs: 48 * 60 * 60_000, maximumCallsInWindow: 10, minimumIntervalMs: 5 * 60_000 },
+    { id: "retained_cadence", provider: "test", quotaKey: "retained_cadence", cadenceKey: "retained_cadence", reservedAt: "2026-07-30T10:00:00.000Z", rollingWindowMs: 60 * 60_000, maximumCallsInWindow: 10, minimumIntervalMs: 6 * 60 * 60_000 },
+    { id: "expired_cadence", provider: "test", quotaKey: "expired_cadence", cadenceKey: "expired_cadence", reservedAt: "2026-07-30T05:00:00.000Z", rollingWindowMs: 60 * 60_000, maximumCallsInWindow: 10, minimumIntervalMs: 6 * 60 * 60_000 },
+    { id: "legacy_fallback", provider: "test", quotaKey: "legacy_fallback", cadenceKey: "legacy_fallback", reservedAt: "2026-07-20T12:00:00.000Z" },
+    { id: "invalid_date", provider: "test", quotaKey: "invalid_date", cadenceKey: "invalid_date", reservedAt: "not-a-date", rollingWindowMs: 24 * 60 * 60_000, maximumCallsInWindow: 10, minimumIntervalMs: 5 * 60_000 },
+  ],
+};
+routePolicy.pruneProviderCallReservations(retentionHistory, retentionNow);
+assert.deepEqual(
+  Array.from(retentionHistory.providerCallReservations, (reservation) => reservation.id),
+  ["retained_rolling", "retained_cadence", "legacy_fallback"],
+);
+const quotaTelemetryHistory = {
+  providerCallReservations: [
+    { provider: "sec_edgar", quotaKey: "sec_filing_details", cadenceKey: "accession-a", reservedAt: "2026-07-30T11:58:00.000Z", rollingWindowMs: 24 * 60 * 60_000, maximumCallsInWindow: 1_800, minimumIntervalMs: 59 * 60_000, reservationUnits: 3 },
+    { provider: "sec_edgar", quotaKey: "sec_filing_details", cadenceKey: "accession-b", reservedAt: "2026-07-30T11:59:00.000Z", rollingWindowMs: 24 * 60 * 60_000, maximumCallsInWindow: 1_800, minimumIntervalMs: 59 * 60_000, reservationUnits: 3 },
+  ],
+};
+const secGrantTelemetry = Array.from(routePolicy.providerQuotaUsage(quotaTelemetryHistory, retentionNow))
+  .find((usage) => usage.quotaKey === "sec_filing_details");
+assert.equal(secGrantTelemetry?.callsInWindow, 6);
+assert.equal(secGrantTelemetry?.reservationObjectsInWindow, 2);
+assert.equal(secGrantTelemetry?.remainingCallsInWindow, 1_794);
 
 const trackedCandidate = ({
   fingerprint,
@@ -491,10 +555,126 @@ assert.match(routeSource, /pendingProviderReservations/);
 assert.match(routeSource, /queueMicrotask\(flushProviderReservations\)/);
 assert.match(routeSource, /if \(addedReservation\) storage = await saveHistory\(history, storage\)/);
 assert.match(routeSource, /shadowOutcomeTrackingCandidates/);
+const branchSignalLabSource = readFileSync(new URL("../lib/branch-signal-lab.ts", import.meta.url), "utf8");
 assert.match(
-  readFileSync(new URL("../lib/branch-signal-lab.ts", import.meta.url), "utf8"),
+  branchSignalLabSource,
+  /\["m\.nasdaqtrader\.com", "www\.nasdaqtrader\.com"\]\.includes\(host\)[\s\S]{0,300}quotaKey: "nasdaq_trader_trade_halts"[\s\S]{0,120}cadenceKey: "nasdaq_trader_trade_halts"/,
+);
+assert.match(
+  branchSignalLabSource,
   /quotaKey: "nasdaq_trader_trade_halts"[\s\S]{0,180}maximumCallsInWindow: 300[\s\S]{0,100}minimumIntervalMs: 4\.5 \* minute/,
 );
+
+const grantContext = Symbol("sec-filing-detail-grant-test");
+const branchSignalLabCompiled = ts.transpileModule(branchSignalLabSource, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText;
+const grantEvents = [];
+const grantReservations = [];
+const rawGrantFetches = [];
+const rejectedGrantScopes = [];
+let wrappedGrantFetch = null;
+const grantAccessions = [
+  {
+    filingKey: "accession:000100000126000001",
+    indexUrl: "https://www.sec.gov/Archives/edgar/data/1000001/000100000126000001/example-index.html",
+    maximumRequests: 3,
+  },
+  {
+    filingKey: "accession:000200000226000002",
+    indexUrl: "https://www.sec.gov/Archives/edgar/data/2000002/000200000226000002/example-index.html",
+    maximumRequests: 3,
+  },
+];
+const branchSignalLabCjs = { exports: {} };
+const branchSignalLabRequire = (specifier) => {
+  if (specifier === "@/lib/equity-signal/sec-filing-details") {
+    return { SEC_FILING_DETAIL_GRANT_CONTEXT: grantContext };
+  }
+  if (specifier === "@/lib/equity-signal/runner") {
+    return {
+      runEquitySignalLab: async (input) => {
+        wrappedGrantFetch = input.fetchImpl;
+        const decisions = await input.reserveSecFilingDetailAccessions(grantAccessions);
+        assert.equal(decisions.every((decision) => decision.allowed), true);
+        await assert.rejects(
+          () => input.fetchImpl(
+            "https://www.sec.gov/Archives/edgar/data/9999999/000999999926000001/other.htm",
+            { [grantContext]: grantAccessions[0].filingKey },
+          ),
+          /sec_filing_detail_grant_scope_mismatch/,
+        );
+        rejectedGrantScopes.push("cross_accession");
+        await assert.rejects(
+          () => input.fetchImpl(
+            "https://example.com/not-sec.htm",
+            { [grantContext]: grantAccessions[1].filingKey },
+          ),
+          /sec_filing_detail_grant_scope_mismatch/,
+        );
+        rejectedGrantScopes.push("non_sec");
+        for (const accession of grantAccessions) {
+          const archiveDirectory = accession.indexUrl.slice(0, accession.indexUrl.lastIndexOf("/") + 1);
+          for (const filename of ["example-index.html", "primary.htm", "exhibit99-1.htm"]) {
+            await input.fetchImpl(
+              `${archiveDirectory}${filename}`,
+              { [grantContext]: accession.filingKey },
+            );
+          }
+        }
+        return { ok: true };
+      },
+    };
+  }
+  throw new Error(`Unexpected branch signal lab dependency in smoke test: ${specifier}`);
+};
+vm.runInNewContext(
+  `(function (exports, module, require) { ${branchSignalLabCompiled}\n})(branchSignalLabCjs.exports, branchSignalLabCjs, branchSignalLabRequire);`,
+  { branchSignalLabCjs, branchSignalLabRequire, URL, console },
+);
+const pendingGrantReservations = [];
+await branchSignalLabCjs.exports.runBranchSignalLab({
+  now: new Date("2026-07-30T12:00:00.000Z"),
+  fetchImpl: async (request, init = {}) => {
+    grantEvents.push(`fetch:${String(request)}`);
+    rawGrantFetches.push({ request: String(request), leakedGrantContext: init[grantContext] });
+    assert.equal(grantReservations.length, 2);
+    return { ok: true };
+  },
+  beforeProviderCall: (request) => new Promise((resolve) => {
+    grantEvents.push(`reserve:${request.cadenceKey}`);
+    grantReservations.push(request);
+    pendingGrantReservations.push(resolve);
+    if (grantReservations.length === 2) {
+      queueMicrotask(() => {
+        for (const settle of pendingGrantReservations.splice(0)) {
+          settle({ allowed: true, nextRetryAt: null, reason: "reserved" });
+        }
+      });
+    } else if (grantReservations.length > 2) {
+      resolve({ allowed: true, nextRetryAt: null, reason: "reserved" });
+    }
+  }),
+});
+assert.equal(grantReservations.length, 2);
+assert.equal(grantReservations.every((request) => request.quotaKey === "sec_filing_details"), true);
+assert.equal(grantReservations.every((request) => request.reservationUnits === 3), true);
+assert.equal(grantEvents.slice(0, 2).every((event) => event.startsWith("reserve:")), true);
+assert.equal(grantEvents.slice(2).every((event) => event.startsWith("fetch:")), true);
+assert.equal(rawGrantFetches.length, 6);
+assert.equal(rawGrantFetches.every((call) => call.leakedGrantContext === undefined), true);
+assert.deepEqual(rejectedGrantScopes, ["cross_accession", "non_sec"]);
+const rawGrantFetchCount = rawGrantFetches.length;
+await assert.rejects(
+  () => wrappedGrantFetch(
+    "https://www.sec.gov/Archives/edgar/data/9999999/000999999926000001/other.htm",
+    { [grantContext]: grantAccessions[0].filingKey },
+  ),
+  /sec_filing_detail_grant_missing/,
+);
+assert.equal(rawGrantFetches.length, rawGrantFetchCount);
+assert.equal(grantReservations.length, 2);
+
 assert.match(routeSource, /findingDisposition:\s*FindingDisposition/);
 assert.match(routeSource, /learningUse:\s*LearningUse/);
 assert.match(routeSource, /exactApprovedFingerprint/);
@@ -532,7 +712,13 @@ console.log(JSON.stringify({
   balancedEvidenceChannels: true,
   stableEventFingerprint: true,
   durableProviderBudgetPolicy: true,
+  reservationUnitsEnforceQuotaCapacity: true,
+  reservationTelemetryCountsUnits: true,
+  providerReservationsPrunedByOwnPolicy: true,
   concurrentProviderReservationsPersistedInOneBatch: true,
+  secAccessionGrantsPrecedeRawFetches: true,
+  secGrantChildrenDoNotReserveAgain: true,
+  secGrantScopeRejectsCrossAccessionAndNonSecUrls: true,
   qualifiedAndShadowTrackersPersistedSeparately: true,
   onlyExactApprovedSeriousFingerprintCanTeachForecasts: true,
   approvedOccurrenceOwnsOutcomeTracking: true,

@@ -8,6 +8,7 @@ import { enrichCandidateFundamentals } from "@/lib/equity-signal/fundamentals";
 import { bootstrapPublicHistoricalSignals, mergeHistoricalSignals } from "@/lib/equity-signal/historical-bootstrap";
 import { fetchMacroContext } from "@/lib/equity-signal/macro";
 import { enrichCandidateQuotes } from "@/lib/equity-signal/market";
+import type { ReserveSecFilingDetailAccessions } from "@/lib/equity-signal/sec-filing-details";
 import { summarizeEarlyOneDayOutcomes, type HistoricalSignalRecord } from "@/lib/equity-signal/historical-analogs";
 import type { ImpactCandidate, MacroContext, MarketQuote, ProviderResult } from "@/lib/equity-signal/types";
 import { loadEquityUniverse } from "@/lib/equity-signal/universe";
@@ -20,6 +21,7 @@ export type EquityProviderCallRequest = {
   rollingWindowMs: number;
   maximumCallsInWindow: number;
   minimumIntervalMs: number;
+  reservationUnits?: number;
 };
 
 export type EquityProviderCallDecision = {
@@ -37,6 +39,7 @@ export type EquitySignalLabInput = {
   skipOpenAiCandidateFingerprints?: string[];
   beforeOpenAiCall?: (reservation: { candidateFingerprint: string; checkedAt: string; ticker: string; direction: "upside" | "downside" }) => Promise<boolean>;
   beforeProviderCall?: (request: EquityProviderCallRequest) => Promise<EquityProviderCallDecision>;
+  reserveSecFilingDetailAccessions?: ReserveSecFilingDetailAccessions;
 };
 
 const FORECAST_HORIZON_DAYS = { "1D": 1, "3D": 3, "7D": 7, "30D": 30, "90D": 90 } as const;
@@ -155,6 +158,7 @@ function seriousActionEligible(candidate: ImpactCandidate) {
   return candidate.gatePassed
     && Boolean(candidate.quote)
     && candidate.quote?.marketSession !== "halted"
+    && candidate.quote?.marketSession !== "unknown"
     && !["financing_proposal", "regulatory_advisory"].includes(candidate.eventFamily)
     && candidate.eventTruth >= 80
     && candidate.mappingConfidence >= 95
@@ -169,6 +173,7 @@ function seriousActionEligible(candidate: ImpactCandidate) {
 function alertReadiness(candidate: ImpactCandidate) {
   if (!candidate.quote) return "watch_quote_unavailable";
   if (candidate.quote.marketSession === "halted") return "watch_trading_halt";
+  if (candidate.quote.marketSession === "unknown") return "watch_trading_status_unknown";
   if (["financing_proposal", "regulatory_advisory"].includes(candidate.eventFamily)) return "watch_event_stage";
   if (candidate.pricedInPenalty >= 50) return "watch_already_repriced";
   return seriousActionEligible(candidate) ? "actionable_candidate" : "watch_only";
@@ -293,6 +298,16 @@ function providerDetails(providers: ProviderResult[]) {
   return Object.fromEntries(providers.map((provider) => [provider.provider, { status: provider.status, checkedAt: provider.checkedAt, nextRetryAt: provider.nextRetryAt, cached: provider.cached, cacheAgeMs: provider.cacheAgeMs ?? null, consecutiveFailures: provider.consecutiveFailures ?? 0, responseTimeMs: provider.responseTimeMs ?? null, realReceipts: provider.receipts.length, recordsRead: provider.recordsRead, error: provider.error, entitlementVerified: provider.entitlementVerified, sourceUrls: provider.sourceUrls }]));
 }
 
+function authoritativeTradingHaltStateKnown(provider: ProviderResult | undefined) {
+  if (!provider) return false;
+  if (provider.status === "connected") return true;
+  return provider.status === "not_due"
+    && provider.cached
+    && provider.cacheAgeMs !== null
+    && provider.cacheAgeMs !== undefined
+    && provider.cacheAgeMs <= 15 * 60 * 1000;
+}
+
 function outcomeTrackingCandidate(
   candidate: ImpactCandidate,
   fingerprint: string,
@@ -342,7 +357,7 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
     // so a missing universe cannot consume news or price-history allowances.
     const universeResult = await loadEquityUniverse(fetchImpl, now);
     const [eventResult, macroResult, historicalBootstrap] = await Promise.all([
-      collectEventSources(fetchImpl, now),
+      collectEventSources(fetchImpl, now, input.reserveSecFilingDetailAccessions),
       fetchMacroContext(fetchImpl, now),
       bootstrapPublicHistoricalSignals(input.historicalSignals ?? [], fetchImpl, now),
     ]);
@@ -357,6 +372,8 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       && receipt.rawEventType?.endsWith(":active"));
     const activeHaltByTicker = new Map(activeHaltReceipts.flatMap((receipt) =>
       receipt.symbolHints.map((ticker) => [ticker, receipt] as const)));
+    const haltProvider = eventResult.providers.find((provider) => provider.provider === "nasdaq_trade_halts");
+    const tradingHaltStateKnown = authoritativeTradingHaltStateKnown(haltProvider);
     for (const candidate of mapped.candidates) {
       const haltReceipt = activeHaltByTicker.get(candidate.ticker);
       if (haltReceipt && !candidate.receipts.some((receipt) => receipt.id === haltReceipt.id)) candidate.receipts.push(haltReceipt);
@@ -378,7 +395,9 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       .map((item) => item.candidate);
     const quoted = await enrichCandidateQuotes(quotePriorityCandidates, fetchImpl, now, 3, input.outcomeTickers ?? []);
     for (const candidate of quoted.candidates) {
-      if (candidate.quote && activeHaltByTicker.has(candidate.ticker)) candidate.quote.marketSession = "halted";
+      if (!candidate.quote) continue;
+      if (activeHaltByTicker.has(candidate.ticker)) candidate.quote.marketSession = "halted";
+      else if (!tradingHaltStateKnown) candidate.quote.marketSession = "unknown";
     }
     const ranked = quoted.candidates.map((candidate) => withPriceForecast(candidate, now));
     const scaleDependentShadows = ranked.filter((candidate) => candidate.quote
@@ -453,6 +472,15 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
         sourceUrls: result.provider.sourceUrls,
       })),
       secFilingDetails: eventResult.secFilingDetails,
+      tradingHaltSafety: {
+        providerStatus: haltProvider?.status ?? "missing",
+        checkedAt: haltProvider?.checkedAt ?? null,
+        cached: haltProvider?.cached ?? false,
+        cacheAgeMs: haltProvider?.cacheAgeMs ?? null,
+        currentStateKnown: tradingHaltStateKnown,
+        activeHaltCount: activeHaltByTicker.size,
+        unknownStateForcesWatch: true,
+      },
       providerConfiguration: providerConfiguration(),
       universe: { constructionMode: universeResult.snapshot.constructionMode, refreshedAt: universeResult.snapshot.refreshedAt, cache: universeResult.cache, refreshedThisRun: universeResult.refreshed, r2Write: universeResult.r2Write, coverage: universeResult.snapshot.coverage, sources: universeResult.snapshot.sources },
       mappedFindingReceiptProofDictionary: mapped.findingReceiptProofDictionary,
@@ -504,7 +532,7 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       unmappedOfficialEventWatchlist: eventResult.receipts.filter((receipt) => receipt.official && !receipt.symbolHints.length && !receipt.companyHints.length).slice(0, 100).map((receipt) => ({ title: receipt.title, summary: receipt.summary, observedAt: receipt.publishedAt, publisher: receipt.publisher, channel: receipt.channel, sourceUrl: receipt.url, predictionStatus: "global_event_seen_mapping_or_direction_not_yet_proven" })),
       macroContext: macroResult.context,
       macroProvider: macroResult.provider,
-      liveSourcePolicy: { eventFirst: true, priorTwoPercentMoveRequired: false, postEventOnePercentMoveRequired: false, waitsForOutcomeCheckpointBeforeSeriousSignal: false, historicalComparisonRequiredForSeriousSignal: false, priceUsedForDiscovery: false, priceUsedForExecutionAndOutcomeTrackingOnly: true, extendedHoursPriceAnchorsEnabled: true, materiallyRepricedEventsBecomeWatchInsteadOfBuySell: true, stagedOfferingProposalCanBecomeWatch: true, fdaAdvisoryVoteCanBecomeWatch: true, officialTradingHaltForcesWatch: true, primarySourceCanAdvanceWithoutSecondaryNews: true, unofficialClaimRequiresIndependentPublishers: 2, genericSectorBasketsCanQualify: false, companyRelativeMagnitudeRequiredForContractAndDilution: true, cryptoScanningEnabled: false, providerFailureIsolation: true, connectivityAloneAddsScore: false },
+      liveSourcePolicy: { eventFirst: true, priorTwoPercentMoveRequired: false, postEventOnePercentMoveRequired: false, waitsForOutcomeCheckpointBeforeSeriousSignal: false, historicalComparisonRequiredForSeriousSignal: false, priceUsedForDiscovery: false, priceUsedForExecutionAndOutcomeTrackingOnly: true, extendedHoursPriceAnchorsEnabled: true, materiallyRepricedEventsBecomeWatchInsteadOfBuySell: true, stagedOfferingProposalCanBecomeWatch: true, fdaAdvisoryVoteCanBecomeWatch: true, officialTradingHaltForcesWatch: true, unknownTradingHaltStateForcesWatch: true, actionableBuySellRequiresKnownTradingState: true, primarySourceCanAdvanceWithoutSecondaryNews: true, unofficialClaimRequiresIndependentPublishers: 2, genericSectorBasketsCanQualify: false, companyRelativeMagnitudeRequiredForContractAndDilution: true, cryptoScanningEnabled: false, providerFailureIsolation: true, connectivityAloneAddsScore: false },
       assetsChecked: universeResult.snapshot.entries.length,
       candidatesChecked: ranked.length,
       databaseWrites: false,

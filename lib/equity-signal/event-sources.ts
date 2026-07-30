@@ -1,6 +1,11 @@
 import crypto from "node:crypto";
 import { normalizeEquitySymbol, providerFailurePolicy, selectBalancedReceipts, type BranchNewsChannel } from "@/lib/branch-signal-lab-policy";
-import { enrichSecFilingDetails } from "@/lib/equity-signal/sec-filing-details";
+import {
+  enrichSecFilingDetails,
+  SEC_FILING_ANALYSIS_TEXT_MAX_CHARS,
+  type ReserveSecFilingDetailAccessions,
+  type SecFilingDetail,
+} from "@/lib/equity-signal/sec-filing-details";
 import type { EventReceipt, ProviderResult, ProviderStatus } from "@/lib/equity-signal/types";
 
 const SEC_AGENT = "SwingUp/1.0 support@swingup.app";
@@ -11,7 +16,13 @@ const COMMERCE_NEWS_API_URL = "https://api.commerce.gov/api/news";
 const ALPHA_VANTAGE_URL = "https://www.alphavantage.co/query";
 const FEDERAL_REGISTER_URL = "https://www.federalregister.gov/api/v1/documents.json";
 const OPENFDA_URL = "https://api.fda.gov/drug/enforcement.json";
-const NASDAQ_TRADE_HALTS_URL = "https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts";
+const NASDAQ_TRADE_HALTS_URLS = [
+  "https://m.nasdaqtrader.com/rss.aspx?feed=tradehalts",
+  "https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts",
+] as const;
+const NASDAQ_TRADE_HALTS_CANONICAL_URL = NASDAQ_TRADE_HALTS_URLS[1];
+const NASDAQ_TRADE_HALTS_TIMEOUT_MS = 12_000;
+const NASDAQ_ACTIVE_HALT_MAX_AGE_MS = 10 * 365 * 24 * 60 * 60 * 1000;
 const SEC_FORMS = ["8-K", "6-K", "424B5", "424B3", "10-Q", "10-K", "S-1", "S-3", "SC 13D", "SC 13G", "4"] as const;
 
 type OfficialFeed = { provider: string; channel: BranchNewsChannel; url: string; publisher: string };
@@ -48,6 +59,7 @@ const PROVIDER_RECEIPT_FRESHNESS_MS: Record<string, number> = {
 };
 const lastGoodProviderResults = new Map<string, ProviderResult>();
 const providerFailureStreaks = new Map<string, number>();
+let nasdaqTradeHaltEndpointIndex = 0;
 
 function text(value: unknown, maximum = 2_000) {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, maximum) : "";
@@ -99,6 +111,42 @@ function safeUrl(value: string) {
   } catch {
     return "";
   }
+}
+
+function secFilingEvidenceKey(receipt: EventReceipt) {
+  if (receipt.channel !== "sec_current_filings") return `receipt:${receipt.id}`;
+  try {
+    const pathname = new URL(receipt.url).pathname.toLowerCase();
+    const accession = (pathname.match(/^\/archives\/edgar\/data\/\d+\/([^/]+)\/[^/]+-index\.html?$/)?.[1]
+      ?? pathname.match(/^\/archives\/edgar\/data\/\d+\/([^/]+)-index\.html?$/)?.[1])?.replace(/-/g, "");
+    return accession ? `sec-accession:${accession}` : `sec-index:${pathname}`;
+  } catch {
+    return `receipt:${receipt.id}`;
+  }
+}
+
+export function mergeSecFilingDetails(receipts: EventReceipt[], details: SecFilingDetail[]) {
+  const combined = new Map<string, EventReceipt>();
+  for (const receipt of receipts) {
+    const key = secFilingEvidenceKey(receipt);
+    const existing = combined.get(key);
+    if (!existing) {
+      combined.set(key, receipt);
+      continue;
+    }
+    combined.set(key, {
+      ...existing,
+      symbolHints: [...new Set([...existing.symbolHints, ...receipt.symbolHints])],
+      companyHints: [...new Set([...existing.companyHints, ...receipt.companyHints])],
+    });
+  }
+  for (const detail of details) {
+    const key = secFilingEvidenceKey(detail.receipt);
+    const receipt = combined.get(key) ?? detail.receipt;
+    const summary = (receipt.summary ?? receipt.title).split(" Official filing content:", 1)[0];
+    combined.set(key, { ...receipt, summary: `${summary} Official filing content: ${detail.text.slice(0, SEC_FILING_ANALYSIS_TEXT_MAX_CHARS)}` });
+  }
+  return [...combined.values()];
 }
 
 function parseRss(xml: string, input: { channel: BranchNewsChannel; publisher: string; official: boolean; now: Date; scheduled?: boolean }) {
@@ -159,7 +207,7 @@ function result(input: Partial<ProviderResult> & Pick<ProviderResult, "provider"
 function providerStatus(rows: ProviderResult[]): ProviderStatus {
   if (rows.some((row) => row.status === "connected")) return "connected";
   if (rows.every((row) => row.status === "not_due")) return "not_due";
-  const priority: ProviderStatus[] = ["rate_limited", "temporarily_unavailable", "failed", "not_entitled", "not_configured", "not_due"];
+  const priority: ProviderStatus[] = ["rate_limited", "temporarily_unavailable", "failed", "partial", "not_entitled", "not_configured", "not_due"];
   return priority.find((status) => rows.some((row) => row.status === status)) ?? "failed";
 }
 
@@ -222,10 +270,36 @@ function cachedReceiptsStillFresh(provider: string, receipts: EventReceipt[], no
 function withLastGoodCache(current: ProviderResult, now: Date): ProviderResult {
   if (current.status === "connected") {
     providerFailureStreaks.set(current.provider, 0);
-    if (current.receipts.length > 0) lastGoodProviderResults.set(current.provider, cloneProviderResult(current));
+    // An empty connected trade-halt feed is a meaningful current snapshot: it
+    // must clear an older active-halt snapshot rather than resurrect it later.
+    if (current.receipts.length > 0 || current.provider === "nasdaq_trade_halts") {
+      lastGoodProviderResults.set(current.provider, cloneProviderResult(current));
+    }
     return { ...current, consecutiveFailures: 0 };
   }
   if (current.status === "not_due") {
+    if (current.provider === "nasdaq_trade_halts") {
+      const previous = lastGoodProviderResults.get(current.provider);
+      const previousCheckedAt = previous?.checkedAt ? Date.parse(previous.checkedAt) : Number.NaN;
+      const cacheAgeMs = Number.isFinite(previousCheckedAt) ? Math.max(0, now.getTime() - previousCheckedAt) : null;
+      if (previous && cacheAgeMs !== null && cacheAgeMs <= PROVIDER_RECEIPT_FRESHNESS_MS.nasdaq_trade_halts) {
+        return result({
+          ...current,
+          checkedAt: previous.checkedAt,
+          sourceUrls: [...new Set([...current.sourceUrls, ...previous.sourceUrls])],
+          receipts: previous.receipts.map((receipt) => ({
+            ...receipt,
+            symbolHints: [...receipt.symbolHints],
+            companyHints: [...receipt.companyHints],
+          })),
+          recordsRead: previous.receipts.length,
+          entitlementVerified: previous.entitlementVerified,
+          cached: true,
+          cacheAgeMs,
+          consecutiveFailures: providerFailureStreaks.get(current.provider) ?? 0,
+        });
+      }
+    }
     return { ...current, consecutiveFailures: providerFailureStreaks.get(current.provider) ?? 0 };
   }
   const consecutiveFailures = (providerFailureStreaks.get(current.provider) ?? 0) + 1;
@@ -234,12 +308,20 @@ function withLastGoodCache(current: ProviderResult, now: Date): ProviderResult {
   if (!CACHEABLE_FAILURES.has(current.status)) return current;
   const previous = lastGoodProviderResults.get(current.provider);
   if (!previous) return current;
-  const receipts = cachedReceiptsStillFresh(current.provider, previous.receipts, now).map((receipt) => ({
+  const previousCheckedAt = previous.checkedAt ? Date.parse(previous.checkedAt) : Number.NaN;
+  const cacheAgeMs = Number.isFinite(previousCheckedAt) ? Math.max(0, now.getTime() - previousCheckedAt) : null;
+  const snapshotFresh = current.provider === "nasdaq_trade_halts"
+    && cacheAgeMs !== null
+    && cacheAgeMs <= PROVIDER_RECEIPT_FRESHNESS_MS.nasdaq_trade_halts;
+  const previousReceipts = snapshotFresh
+    ? previous.receipts
+    : cachedReceiptsStillFresh(current.provider, previous.receipts, now);
+  const receipts = previousReceipts.map((receipt) => ({
     ...receipt,
     symbolHints: [...receipt.symbolHints],
     companyHints: [...receipt.companyHints],
   }));
-  if (!receipts.length) {
+  if (!receipts.length && !snapshotFresh) {
     lastGoodProviderResults.delete(current.provider);
     return current;
   }
@@ -253,7 +335,7 @@ function withLastGoodCache(current: ProviderResult, now: Date): ProviderResult {
     entitlementVerified: current.entitlementVerified || previous.entitlementVerified,
     cached: true,
     responseTimeMs: current.responseTimeMs,
-    cacheAgeMs: previous.checkedAt ? Math.max(0, now.getTime() - Date.parse(previous.checkedAt)) : null,
+    cacheAgeMs,
     consecutiveFailures,
   });
 }
@@ -615,21 +697,30 @@ export async function fetchOpenFdaRecalls(fetchImpl: typeof fetch, now: Date): P
 }
 
 export async function fetchNasdaqTradeHalts(fetchImpl: typeof fetch, now: Date): Promise<ProviderResult> {
+  const sourceUrl = NASDAQ_TRADE_HALTS_URLS[nasdaqTradeHaltEndpointIndex];
   try {
-    const { body } = await fetchText(fetchImpl, NASDAQ_TRADE_HALTS_URL, "application/rss+xml,text/xml", 15_000);
+    const { body } = await fetchText(fetchImpl, sourceUrl, "application/rss+xml,text/xml", NASDAQ_TRADE_HALTS_TIMEOUT_MS);
     if (!isSyndicationFeed(body)) throw new Error("invalid_trade_halt_feed");
     const blocks = [...body.matchAll(/<item\b[\s\S]*?<\/item>/gi)].map((match) => match[0]);
-    const receipts = blocks.flatMap((block): EventReceipt[] => {
+    const parsedReceipts = blocks.flatMap((block): EventReceipt[] => {
       const symbol = normalizeEquitySymbol(xmlTag(block, "IssueSymbol") || xmlTag(block, "symbol"));
       const company = (xmlTag(block, "IssueName") || xmlTag(block, "title")).slice(0, 180);
       const reasonCode = (xmlTag(block, "ReasonCode") || xmlTag(block, "reason")).slice(0, 40).toUpperCase();
-      const publishedAt = validDate(xmlTag(block, "pubDate") || xmlTag(block, "date"), now, 3 * 24 * 60 * 60 * 1000);
       const resumed = Boolean(xmlTag(block, "ResumptionDate") || xmlTag(block, "ResumptionTradeTime") || xmlTag(block, "ResumptionQuoteTime"));
+      // A still-active halt is current safety state even when the original
+      // halt began days ago. Preserve that original date so it cannot satisfy
+      // the scanner's separate 24-hour fresh-catalyst gate.
+      const publishedAt = validDate(
+        xmlTag(block, "pubDate") || xmlTag(block, "date"),
+        now,
+        resumed ? 3 * 24 * 60 * 60 * 1000 : NASDAQ_ACTIVE_HALT_MAX_AGE_MS,
+      );
       if (!symbol || !publishedAt) return [];
       return [makeReceipt({
         title: `${symbol} ${resumed ? "trading halt resumed" : "official trading halt"}${reasonCode ? ` (${reasonCode})` : ""}`,
         summary: `${company || symbol} is listed in Nasdaq Trader's official trade-halt feed${reasonCode ? ` with reason code ${reasonCode}` : ""}.${resumed ? " A resumption time is present." : " No resumption time is present."}`,
-        url: NASDAQ_TRADE_HALTS_URL,
+        // Keep receipt identities stable when the transport host fails over.
+        url: NASDAQ_TRADE_HALTS_CANONICAL_URL,
         publisher: "Nasdaq Trader",
         publishedAt,
         channel: "nasdaq_trade_halts",
@@ -641,14 +732,38 @@ export async function fetchNasdaqTradeHalts(fetchImpl: typeof fetch, now: Date):
         rawEventType: `halt:${reasonCode || "unknown"}:${resumed ? "resumed" : "active"}`,
       })];
     });
-    return result({ provider: "nasdaq_trade_halts", status: "connected", checkedAt: now.toISOString(), sourceUrls: [NASDAQ_TRADE_HALTS_URL], receipts, recordsRead: receipts.length, entitlementVerified: true });
+    const latestBySymbol = new Map<string, EventReceipt>();
+    for (const receipt of parsedReceipts) {
+      const symbol = receipt.symbolHints[0];
+      if (!symbol) continue;
+      const existing = latestBySymbol.get(symbol);
+      const receiptResumed = receipt.rawEventType?.endsWith(":resumed") === true;
+      const existingResumed = existing?.rawEventType?.endsWith(":resumed") === true;
+      if (!existing
+        || Date.parse(receipt.publishedAt) > Date.parse(existing.publishedAt)
+        || (receipt.publishedAt === existing.publishedAt && receiptResumed && !existingResumed)) {
+        latestBySymbol.set(symbol, receipt);
+      }
+    }
+    const receipts = [...latestBySymbol.values()];
+    return result({ provider: "nasdaq_trade_halts", status: "connected", checkedAt: now.toISOString(), sourceUrls: [sourceUrl], receipts, recordsRead: receipts.length, entitlementVerified: true });
   } catch (error) {
     const failure = publicFeedErrorCategory(error);
-    return result({ provider: "nasdaq_trade_halts", status: failure.status, sourceUrls: [NASDAQ_TRADE_HALTS_URL], error: failure.error });
+    // Do not issue a second request in this scan. Rotate the official hostname
+    // only after an endpoint failure, for the next scheduled invocation. A
+    // cadence or quota decision is not evidence that the hostname failed.
+    if (["temporarily_unavailable", "failed"].includes(failure.status)) {
+      nasdaqTradeHaltEndpointIndex = (nasdaqTradeHaltEndpointIndex + 1) % NASDAQ_TRADE_HALTS_URLS.length;
+    }
+    return result({ provider: "nasdaq_trade_halts", status: failure.status, sourceUrls: [sourceUrl], error: failure.error });
   }
 }
 
-export async function collectEventSources(fetchImpl: typeof fetch, now: Date) {
+export async function collectEventSources(
+  fetchImpl: typeof fetch,
+  now: Date,
+  reserveSecFilingDetailAccessions?: ReserveSecFilingDetailAccessions,
+) {
   const tasks: Array<{ provider: string; sourceUrls: string[]; run: () => Promise<ProviderResult> }> = [
     { provider: "sec_edgar_current_filings", sourceUrls: ["https://www.sec.gov/cgi-bin/browse-edgar"], run: () => fetchSecCurrentFilings(fetchImpl, now) },
     { provider: "google_news_rss", sourceUrls: [GOOGLE_NEWS_URL], run: () => fetchGoogleDiscovery(fetchImpl, now) },
@@ -659,7 +774,7 @@ export async function collectEventSources(fetchImpl: typeof fetch, now: Date) {
     { provider: "alpha_vantage_earnings_calendar", sourceUrls: [ALPHA_VANTAGE_URL], run: () => fetchAlphaEarningsCalendar(fetchImpl, now) },
     { provider: "federal_register", sourceUrls: [FEDERAL_REGISTER_URL], run: () => fetchFederalRegister(fetchImpl, now) },
     { provider: "openfda", sourceUrls: [OPENFDA_URL], run: () => fetchOpenFdaRecalls(fetchImpl, now) },
-    { provider: "nasdaq_trade_halts", sourceUrls: [NASDAQ_TRADE_HALTS_URL], run: () => fetchNasdaqTradeHalts(fetchImpl, now) },
+    { provider: "nasdaq_trade_halts", sourceUrls: [...NASDAQ_TRADE_HALTS_URLS], run: () => fetchNasdaqTradeHalts(fetchImpl, now) },
   ];
   const timedTask = async (task: typeof tasks[number]) => {
     const startedAt = Date.now();
@@ -680,16 +795,16 @@ export async function collectEventSources(fetchImpl: typeof fetch, now: Date) {
   ]);
   const baseProviders = aggregateProviderRows([...taskResults, ...officialFeedResult]).map((provider) => withLastGoodCache(provider, now));
   const baseReceipts = selectBalancedReceipts(baseProviders.flatMap((provider) => provider.receipts), 500);
-  const detailRunDue = Math.floor(now.getTime() / (5 * 60_000)) % 12 === 0;
-  const detailResult = detailRunDue ? await enrichSecFilingDetails(baseReceipts, fetchImpl, now) : null;
-  const detailProvider = detailResult
-    ? result({ ...detailResult.provider, status: detailResult.provider.status === "partial" ? "connected" : detailResult.provider.status, error: detailResult.provider.status === "partial" ? "some_selected_filings_failed" : detailResult.provider.error, receipts: [] })
-    : result({ provider: "sec_filing_details", status: "not_due", checkedAt: null, sourceUrls: [], receipts: [], recordsRead: 0, error: null, entitlementVerified: true });
-  const detailByReceipt = new Map(detailResult?.details.map((detail) => [detail.receipt.id, detail]) ?? []);
-  const receipts = selectBalancedReceipts(baseReceipts.map((receipt) => {
-    const detail = detailByReceipt.get(receipt.id);
-    if (!detail) return receipt;
-    return { ...receipt, summary: `${receipt.summary ?? receipt.title} Official filing content: ${detail.text.slice(0, 12_000)}` };
-  }), 500);
-  return { providers: [...baseProviders, detailProvider], receipts, secFilingDetails: detailResult?.diagnostics ?? { selected: 0, enriched: 0, failed: 0, scheduledForThisRun: false } };
+  // Detail enrichment runs in every five-minute scan. Its own bounded queue
+  // fetches at most two new filings, reuses successful in-process details, and
+  // defers partial or failed receipts so fresh filings can keep advancing.
+  const detailResult = await enrichSecFilingDetails(
+    baseReceipts,
+    fetchImpl,
+    now,
+    reserveSecFilingDetailAccessions,
+  );
+  const detailProvider = result({ ...detailResult.provider, receipts: [] });
+  const receipts = selectBalancedReceipts(mergeSecFilingDetails(baseReceipts, detailResult.details), 500);
+  return { providers: [...baseProviders, detailProvider], receipts, secFilingDetails: { ...detailResult.diagnostics, scheduledForThisRun: true } };
 }

@@ -65,6 +65,7 @@ function provider(name) {
   return { provider: name, status: "connected", checkedAt: "2026-07-22T10:00:00.000Z", nextRetryAt: null, sourceUrls: ["https://example.com"], receipts: [receipt], recordsRead: 1, error: null, entitlementVerified: true, cached: false };
 }
 
+let haltProviderFixture = { ...provider("nasdaq_trade_halts"), receipts: [], recordsRead: 0 };
 const agentResults = Array.from({ length: 13 }, (_, index) => ({ agentId: `agent_${index}`, status: "completed", verdict: "positive", confidence: 82, concerns: [], missingData: [], followUpChecks: [] })).concat({ agentId: "final_judge", status: "completed", verdict: "positive", confidence: 85, concerns: [], missingData: [], followUpChecks: [] });
 const committeePacks = [];
 const fundamentalsCandidates = [];
@@ -89,7 +90,7 @@ const stubs = {
       diagnostics: { mappedRelationships: values.length, eventClusters: values.length, directCandidates: values.length, rippleCandidates: 0 },
     };
   }, fingerprintCandidate: (value) => `event-${value.rootEventKey}`, reassessCandidateAfterFundamentals: (value) => value },
-  "@/lib/equity-signal/event-sources": { collectEventSources: async () => ({ providers: [provider("official_events")], receipts: structuredClone(sourceReceiptFixtures), secFilingDetails: { selected: 0, enriched: 0, failed: 0 } }) },
+  "@/lib/equity-signal/event-sources": { collectEventSources: async () => ({ providers: [provider("official_events"), structuredClone(haltProviderFixture)], receipts: structuredClone(sourceReceiptFixtures), secFilingDetails: { selected: 0, enriched: 0, failed: 0 } }) },
   "@/lib/equity-signal/fundamentals": { enrichCandidateFundamentals: async (value) => {
     fundamentalsCandidates.push(value?.ticker ?? null);
     const result = provider("sec_company_facts");
@@ -323,6 +324,7 @@ sourceReceiptFixtures = [receipt, {
   summary: "No resumption time is present.",
   url: "https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts",
   publisher: "Nasdaq Trader",
+  publishedAt: "2026-06-01T10:00:00.000Z",
   channel: "nasdaq_trade_halts",
   symbolHints: ["EXM"],
   rawEventType: "halt:T1:active",
@@ -340,4 +342,28 @@ assert.equal(haltedWatch.selectedCandidate.alertReadiness, "watch_trading_halt")
 assert.equal(haltedWatch.selectedCandidate.quote.marketSession, "halted");
 assert.equal(haltedWatch.selectedCandidate.receipts.some((item) => item.id === "halt-exm"), true);
 
-console.log(JSON.stringify({ ok: true, eventQualifiedAtZeroPercentMove: true, cryptoDisabled: true, priorMoveNotRequired: true, strictCommitteeStillRequired: true, buyWithoutHistoricalComparison: true, committeeDecisionInvariantToHistory: true, historyStillStoredAndRefined: true, buyAfterCalibration: true, higherRankedImmaterialCandidateSkipped: true, shadowNearMissTrackedSeparately: true, actionableCandidateReviewedBeforeWatchOnly: true, stagedOfferingCanBecomeWatch: true, materiallyRepricedEventCannotBecomeBuySell: true, officialTradingHaltForcesWatch: true, noWritesOrPublishing: true }, null, 2));
+sourceReceiptFixtures = [receipt];
+haltProviderFixture = {
+  ...provider("nasdaq_trade_halts"),
+  status: "temporarily_unavailable",
+  checkedAt: null,
+  receipts: [],
+  recordsRead: 0,
+  error: "timeout",
+  cached: false,
+};
+candidateFixtures = [{ ...candidate, rootEventKey: "unknown-trading-state", pricedInPenalty: 0 }];
+const unknownTradingStateWatch = await runEquitySignalLab({
+  now: new Date("2026-07-22T10:00:00.000Z"),
+  allowOpenAi: true,
+  beforeOpenAiCall: async () => true,
+});
+assert.equal(unknownTradingStateWatch.seriousSignalFound, true);
+assert.equal(unknownTradingStateWatch.actionableSignalFound, false);
+assert.equal(unknownTradingStateWatch.alertType, "watch");
+assert.equal(unknownTradingStateWatch.selectedCandidate.alertReadiness, "watch_trading_status_unknown");
+assert.equal(unknownTradingStateWatch.selectedCandidate.quote.marketSession, "unknown");
+assert.equal(unknownTradingStateWatch.tradingHaltSafety.currentStateKnown, false);
+assert.equal(unknownTradingStateWatch.liveSourcePolicy.actionableBuySellRequiresKnownTradingState, true);
+
+console.log(JSON.stringify({ ok: true, eventQualifiedAtZeroPercentMove: true, cryptoDisabled: true, priorMoveNotRequired: true, strictCommitteeStillRequired: true, buyWithoutHistoricalComparison: true, committeeDecisionInvariantToHistory: true, historyStillStoredAndRefined: true, buyAfterCalibration: true, higherRankedImmaterialCandidateSkipped: true, shadowNearMissTrackedSeparately: true, actionableCandidateReviewedBeforeWatchOnly: true, stagedOfferingCanBecomeWatch: true, materiallyRepricedEventCannotBecomeBuySell: true, olderOfficialTradingHaltStillForcesWatch: true, unknownTradingStateForcesWatch: true, noWritesOrPublishing: true }, null, 2));

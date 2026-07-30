@@ -578,13 +578,38 @@ function reviewedFingerprintsInWindow(history: History, now: number, windowMs: n
   ])];
 }
 
+function providerReservationUnits(reservation: { reservationUnits?: number }) {
+  return Number.isInteger(reservation.reservationUnits) && Number(reservation.reservationUnits) > 0
+    ? Number(reservation.reservationUnits)
+    : 1;
+}
+
+function providerReservationRetentionMs(reservation: ProviderCallReservation) {
+  const rollingWindowMs = Number.isFinite(reservation.rollingWindowMs) && reservation.rollingWindowMs > 0
+    ? reservation.rollingWindowMs
+    : 0;
+  const minimumIntervalMs = Number.isFinite(reservation.minimumIntervalMs) && reservation.minimumIntervalMs > 0
+    ? reservation.minimumIntervalMs
+    : 0;
+  return Math.max(rollingWindowMs, minimumIntervalMs) || 31 * 24 * 60 * 60 * 1000;
+}
+
+function pruneProviderCallReservations(history: History, now: number) {
+  history.providerCallReservations = history.providerCallReservations.filter((reservation) => {
+    const reservedAtMs = Date.parse(reservation.reservedAt);
+    if (!Number.isFinite(reservedAtMs)) return false;
+    return now - reservedAtMs < providerReservationRetentionMs(reservation);
+  });
+}
+
 function providerQuotaUsage(history: History, now: number) {
   const latestPolicy = new Map<string, ProviderCallReservation>();
   for (const reservation of history.providerCallReservations) latestPolicy.set(reservation.quotaKey, reservation);
   return [...latestPolicy.values()].map((policy) => {
-    const callsInWindow = history.providerCallReservations.filter((reservation) => reservation.quotaKey === policy.quotaKey && now - Date.parse(reservation.reservedAt) >= 0 && now - Date.parse(reservation.reservedAt) < policy.rollingWindowMs).length;
+    const reservationsInWindow = history.providerCallReservations.filter((reservation) => reservation.quotaKey === policy.quotaKey && now - Date.parse(reservation.reservedAt) >= 0 && now - Date.parse(reservation.reservedAt) < policy.rollingWindowMs);
+    const callsInWindow = reservationsInWindow.reduce((total, reservation) => total + providerReservationUnits(reservation), 0);
     const latestCall = [...history.providerCallReservations].reverse().find((reservation) => reservation.quotaKey === policy.quotaKey);
-    return { provider: policy.provider, quotaKey: policy.quotaKey, rollingWindowHours: policy.rollingWindowMs / (60 * 60 * 1000), maximumCallsInWindow: policy.maximumCallsInWindow, callsInWindow, remainingCallsInWindow: Math.max(0, policy.maximumCallsInWindow - callsInWindow), latestReservedAt: latestCall?.reservedAt ?? null };
+    return { provider: policy.provider, quotaKey: policy.quotaKey, rollingWindowHours: policy.rollingWindowMs / (60 * 60 * 1000), maximumCallsInWindow: policy.maximumCallsInWindow, callsInWindow, reservationObjectsInWindow: reservationsInWindow.length, remainingCallsInWindow: Math.max(0, policy.maximumCallsInWindow - callsInWindow), latestReservedAt: latestCall?.reservedAt ?? null };
   }).sort((left, right) => left.provider.localeCompare(right.provider));
 }
 
@@ -600,7 +625,7 @@ function pruneHistory(history: History, now: number) {
     return withinOutcomeWindow && (actualCommitteeOrSeriousRun || selectedOutcomeOwnerRuns.has(run));
   });
   history.openAiReservations = history.openAiReservations.filter((reservation) => now - Date.parse(reservation.reservedAt) < 31 * 24 * 60 * 60 * 1000);
-  history.providerCallReservations = history.providerCallReservations.filter((reservation) => now - Date.parse(reservation.reservedAt) < 31 * 24 * 60 * 60 * 1000);
+  pruneProviderCallReservations(history, now);
 }
 
 function validOneDayOutcome(run: JsonRecord) {
@@ -1053,14 +1078,18 @@ async function executePost(request: NextRequest) {
     providerReservationQueue = providerReservationQueue.then(async () => {
       const decisions: BranchProviderCallDecision[] = [];
       let addedReservation = false;
+      const batchNow = Math.max(...batch.map((item) => {
+        const reservationNow = Date.parse(item.request.checkedAt);
+        return Number.isFinite(reservationNow) ? reservationNow : Date.now();
+      }));
+      pruneProviderCallReservations(history, batchNow);
       for (const item of batch) {
         const reservationNow = Date.parse(item.request.checkedAt);
         const effectiveNow = Number.isFinite(reservationNow) ? reservationNow : Date.now();
-        history.providerCallReservations = history.providerCallReservations.filter((reservation) => effectiveNow - Date.parse(reservation.reservedAt) < 31 * 24 * 60 * 60 * 1000);
         const decision = providerCallBudgetDecision(history.providerCallReservations, item.request, effectiveNow);
         decisions.push(decision);
         if (!decision.allowed) continue;
-        history.providerCallReservations.push({ provider: item.request.provider, quotaKey: item.request.quotaKey, cadenceKey: item.request.cadenceKey, reservedAt: new Date(effectiveNow).toISOString(), rollingWindowMs: item.request.rollingWindowMs, maximumCallsInWindow: item.request.maximumCallsInWindow, minimumIntervalMs: item.request.minimumIntervalMs });
+        history.providerCallReservations.push({ provider: item.request.provider, quotaKey: item.request.quotaKey, cadenceKey: item.request.cadenceKey, reservedAt: new Date(effectiveNow).toISOString(), rollingWindowMs: item.request.rollingWindowMs, maximumCallsInWindow: item.request.maximumCallsInWindow, minimumIntervalMs: item.request.minimumIntervalMs, reservationUnits: item.request.reservationUnits });
         addedReservation = true;
       }
       if (addedReservation) storage = await saveHistory(history, storage);

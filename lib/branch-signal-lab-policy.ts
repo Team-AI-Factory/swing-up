@@ -216,20 +216,35 @@ export function providerCooldownMs(input: { failureCount: number; refreshMs: num
   return Math.min(input.maximumCooldownMs, Math.max(input.minimumCooldownMs ?? 0, input.refreshMs * 2 ** Math.min(4, Math.max(0, input.failureCount - 1))));
 }
 
-export type ProviderBudgetReservation = { quotaKey: string; cadenceKey: string; reservedAt: string };
-export type ProviderBudgetRequest = { quotaKey: string; cadenceKey: string; rollingWindowMs: number; maximumCallsInWindow: number; minimumIntervalMs: number };
+export type ProviderBudgetReservation = { quotaKey: string; cadenceKey: string; reservedAt: string; reservationUnits?: number };
+export type ProviderBudgetRequest = { quotaKey: string; cadenceKey: string; rollingWindowMs: number; maximumCallsInWindow: number; minimumIntervalMs: number; reservationUnits?: number };
 
 function canonicalQuotaKey(value: string) {
   if (value === "marketaux_free") return "marketaux_free_100_daily";
   return value;
 }
 
+function providerReservationUnits(value: unknown) {
+  return Number.isInteger(value) && Number(value) > 0 ? Number(value) : 1;
+}
+
 export function providerCallBudgetDecision(reservations: ProviderBudgetReservation[], request: ProviderBudgetRequest, now: number) {
   const requestedQuotaKey = canonicalQuotaKey(request.quotaKey);
-  const callsInWindow = reservations.filter((reservation) => canonicalQuotaKey(reservation.quotaKey) === requestedQuotaKey && now - Date.parse(reservation.reservedAt) >= 0 && now - Date.parse(reservation.reservedAt) < request.rollingWindowMs);
-  if (callsInWindow.length >= request.maximumCallsInWindow) {
-    const oldest = callsInWindow.map((reservation) => Date.parse(reservation.reservedAt)).filter(Number.isFinite).sort((left, right) => left - right)[0] ?? now;
-    return { allowed: false as const, nextRetryAt: new Date(oldest + request.rollingWindowMs).toISOString(), reason: "rolling_quota_guard" as const };
+  const callsInWindow = reservations
+    .filter((reservation) => canonicalQuotaKey(reservation.quotaKey) === requestedQuotaKey
+      && now - Date.parse(reservation.reservedAt) >= 0
+      && now - Date.parse(reservation.reservedAt) < request.rollingWindowMs);
+  const requestedUnits = providerReservationUnits(request.reservationUnits);
+  const usedUnits = callsInWindow.reduce((total, reservation) => total + providerReservationUnits(reservation.reservationUnits), 0);
+  if (usedUnits + requestedUnits > request.maximumCallsInWindow) {
+    let unitsAfterExpiry = usedUnits;
+    let nextRetryAtMs = now + request.rollingWindowMs;
+    for (const reservation of [...callsInWindow].sort((left, right) => Date.parse(left.reservedAt) - Date.parse(right.reservedAt))) {
+      unitsAfterExpiry -= providerReservationUnits(reservation.reservationUnits);
+      nextRetryAtMs = Date.parse(reservation.reservedAt) + request.rollingWindowMs;
+      if (unitsAfterExpiry + requestedUnits <= request.maximumCallsInWindow) break;
+    }
+    return { allowed: false as const, nextRetryAt: new Date(nextRetryAtMs).toISOString(), reason: "rolling_quota_guard" as const };
   }
   const latestCadenceAt = reservations
     .filter((reservation) => reservation.cadenceKey === request.cadenceKey)

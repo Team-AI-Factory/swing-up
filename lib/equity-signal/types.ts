@@ -1,7 +1,7 @@
 import type { BranchNewsChannel } from "@/lib/branch-signal-lab-policy";
 import type { HistoricalAnalogAnalysis } from "@/lib/equity-signal/historical-analogs";
 
-export type ProviderStatus = "connected" | "not_due" | "rate_limited" | "temporarily_unavailable" | "not_configured" | "not_entitled" | "failed";
+export type ProviderStatus = "connected" | "partial" | "not_due" | "rate_limited" | "temporarily_unavailable" | "not_configured" | "not_entitled" | "failed";
 export type EventDirection = "upside" | "downside" | "mixed" | "unknown";
 export type EventFamily =
   | "earnings_guidance"

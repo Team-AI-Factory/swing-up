@@ -15,6 +15,7 @@ const marketOutput = ts.transpileModule(marketSource, {
 }).outputText;
 
 const loaded = { exports: {} };
+let detailProviderStatus = "not_due";
 const stubs = {
   "node:crypto": await import("node:crypto"),
   "@/lib/branch-signal-lab-policy": {
@@ -31,8 +32,9 @@ const stubs = {
     selectBalancedReceipts: (rows, maximum) => rows.slice(0, maximum),
   },
   "@/lib/equity-signal/sec-filing-details": {
+    SEC_FILING_ANALYSIS_TEXT_MAX_CHARS: 12_000,
     enrichSecFilingDetails: async () => ({
-      provider: { provider: "sec_filing_details", status: "not_due", checkedAt: null, sourceUrls: [], receipts: [], recordsRead: 0, error: null, entitlementVerified: true, cached: false },
+      provider: { provider: "sec_filing_details", status: detailProviderStatus, checkedAt: null, sourceUrls: [], receipts: [], recordsRead: 0, error: detailProviderStatus === "partial" ? "some_selected_filings_incomplete" : null, entitlementVerified: true, cached: false },
       details: [],
       diagnostics: { selected: 0, enriched: 0, failed: 0, scheduledForThisRun: false },
     }),
@@ -43,8 +45,36 @@ new Function("require", "module", "exports", output)((name) => {
   throw new Error(`Unexpected event-source import: ${name}`);
 }, loaded, loaded.exports);
 
-const { fetchCommerceNews, fetchGdeltDiscovery, fetchGoogleDiscovery, fetchMarketauxDiscovery, fetchNasdaqTradeHalts } = loaded.exports;
+const { collectEventSources, fetchCommerceNews, fetchGdeltDiscovery, fetchGoogleDiscovery, fetchMarketauxDiscovery, fetchNasdaqTradeHalts, mergeSecFilingDetails } = loaded.exports;
 const now = new Date("2026-07-22T14:00:00.000Z");
+
+const coRegistrantReceipt = (id, cik) => ({
+  id,
+  title: "Co-registrant offering filing",
+  summary: "Official SEC 424B5 filing.",
+  url: `https://www.sec.gov/Archives/edgar/data/${cik}/000100000526000001/offering-index.html`,
+  publisher: "U.S. Securities and Exchange Commission",
+  publishedAt: "2026-07-22T13:50:00.000Z",
+  channel: "sec_current_filings",
+  official: true,
+  primarySource: true,
+  scheduled: false,
+  symbolHints: [],
+  companyHints: [`CIK${cik}`],
+  rawEventType: "424B5",
+});
+const coRegistrantA = coRegistrantReceipt("co-registrant-a", "1000005");
+const coRegistrantB = coRegistrantReceipt("co-registrant-b", "9999999");
+const mergedCachedReplay = mergeSecFilingDetails(
+  [coRegistrantA, coRegistrantB],
+  [
+    { receipt: coRegistrantA, text: "Offering priced at $10 per share." },
+    { receipt: coRegistrantA, text: "Offering priced at $10 per share." },
+  ],
+);
+assert.equal(mergedCachedReplay.length, 1);
+assert.equal(mergedCachedReplay[0].publisher, "U.S. Securities and Exchange Commission");
+assert.equal((mergedCachedReplay[0].summary.match(/Official filing content:/g) ?? []).length, 1);
 
 let gdeltUrl;
 const gdelt = await fetchGdeltDiscovery(async (value) => {
@@ -74,7 +104,7 @@ assert.match(googleUrl.searchParams.get("q"), /FDA panel vote/);
 assert.match(googleUrl.searchParams.get("q"), /public offering pricing/);
 assert.match(googleUrl.searchParams.get("q"), /trading halt/);
 
-const tradeHalts = await fetchNasdaqTradeHalts(async () => new Response(`<?xml version="1.0"?>
+const activeHaltFeed = `<?xml version="1.0"?>
   <rss xmlns:ndaq="http://www.nasdaqtrader.com/"><channel><item>
     <title>CAPR</title>
     <pubDate>Wed, 22 Jul 2026 13:55:00 GMT</pubDate>
@@ -82,12 +112,146 @@ const tradeHalts = await fetchNasdaqTradeHalts(async () => new Response(`<?xml v
     <ndaq:IssueName>Capricor Therapeutics Inc.</ndaq:IssueName>
     <ndaq:ReasonCode>T1</ndaq:ReasonCode>
     <ndaq:ResumptionDate></ndaq:ResumptionDate>
-  </item></channel></rss>`, { status: 200, headers: { "content-type": "text/xml" } }), now);
+  </item><item>
+    <title>OLD</title>
+    <pubDate>Wed, 01 Jul 2026 13:55:00 GMT</pubDate>
+    <ndaq:IssueSymbol>OLD</ndaq:IssueSymbol>
+    <ndaq:IssueName>Older Active Halt Corporation</ndaq:IssueName>
+    <ndaq:ReasonCode>H4</ndaq:ReasonCode>
+    <ndaq:ResumptionDate></ndaq:ResumptionDate>
+  </item><item>
+    <title>RES</title>
+    <pubDate>Wed, 22 Jul 2026 13:50:00 GMT</pubDate>
+    <ndaq:IssueSymbol>RES</ndaq:IssueSymbol>
+    <ndaq:IssueName>Resumption Test Corporation</ndaq:IssueName>
+    <ndaq:ReasonCode>T1</ndaq:ReasonCode>
+    <ndaq:ResumptionDate></ndaq:ResumptionDate>
+  </item><item>
+    <title>RES</title>
+    <pubDate>Wed, 22 Jul 2026 13:50:00 GMT</pubDate>
+    <ndaq:IssueSymbol>RES</ndaq:IssueSymbol>
+    <ndaq:IssueName>Resumption Test Corporation</ndaq:IssueName>
+    <ndaq:ReasonCode>T3</ndaq:ReasonCode>
+    <ndaq:ResumptionDate>07/22/2026</ndaq:ResumptionDate>
+    <ndaq:ResumptionTradeTime>10:05:00</ndaq:ResumptionTradeTime>
+  </item></channel></rss>`;
+let directHaltCalls = 0;
+let directHaltUrl;
+const tradeHalts = await fetchNasdaqTradeHalts(async (value) => {
+  directHaltCalls += 1;
+  directHaltUrl = new URL(String(value));
+  return new Response(activeHaltFeed, { status: 200, headers: { "content-type": "text/xml" } });
+}, now);
 assert.equal(tradeHalts.status, "connected");
-assert.equal(tradeHalts.receipts.length, 1);
+assert.equal(directHaltCalls, 1);
+assert.equal(directHaltUrl.hostname, "m.nasdaqtrader.com");
+assert.equal(tradeHalts.receipts.length, 3);
 assert.equal(tradeHalts.receipts[0].symbolHints[0], "CAPR");
 assert.equal(tradeHalts.receipts[0].channel, "nasdaq_trade_halts");
 assert.equal(tradeHalts.receipts[0].rawEventType, "halt:T1:active");
+assert.equal(new URL(tradeHalts.receipts[0].url).hostname, "www.nasdaqtrader.com");
+const oldActiveHalt = tradeHalts.receipts.find((receipt) => receipt.symbolHints.includes("OLD"));
+assert.equal(oldActiveHalt?.publishedAt, "2026-07-01T13:55:00.000Z");
+assert.equal(oldActiveHalt?.rawEventType, "halt:H4:active");
+assert.ok(now.getTime() - Date.parse(oldActiveHalt.publishedAt) > 24 * 60 * 60 * 1000);
+const resumedHalt = tradeHalts.receipts.find((receipt) => receipt.symbolHints.includes("RES"));
+assert.equal(resumedHalt?.rawEventType, "halt:T3:resumed");
+assert.equal(tradeHalts.receipts.filter((receipt) => receipt.symbolHints.includes("RES")).length, 1);
+
+let haltMode = "active";
+const haltUrls = [];
+const collectionFetch = async (value) => {
+  const url = new URL(String(value));
+  if (["m.nasdaqtrader.com", "www.nasdaqtrader.com"].includes(url.hostname) && url.pathname.toLowerCase() === "/rss.aspx") {
+    haltUrls.push(url.toString());
+    if (haltMode === "failure") throw new Error("The operation was aborted due to timeout");
+    if (haltMode === "not_due") throw new Error("nasdaq_trader_cadence_guard");
+    const body = haltMode === "empty"
+      ? `<?xml version="1.0"?><rss xmlns:ndaq="http://www.nasdaqtrader.com/"><channel></channel></rss>`
+      : activeHaltFeed;
+    return new Response(body, { status: 200, headers: { "content-type": "text/xml" } });
+  }
+  if (url.hostname === "api.gdeltproject.org") return new Response(JSON.stringify({ articles: [] }), { status: 200 });
+  if (url.hostname === "api.commerce.gov") return new Response(JSON.stringify({ data: [] }), { status: 200 });
+  if (url.hostname === "www.federalregister.gov") return new Response(JSON.stringify({ results: [] }), { status: 200 });
+  if (url.hostname === "api.fda.gov") return new Response(JSON.stringify({ results: [] }), { status: 200 });
+  if (url.hostname === "www.alphavantage.co") return new Response(JSON.stringify({ Information: "test" }), { status: 200 });
+  return new Response(`<?xml version="1.0"?><rss><channel></channel></rss>`, { status: 200, headers: { "content-type": "text/xml" } });
+};
+
+const firstSnapshotAt = new Date("2026-07-22T14:05:00.000Z");
+const firstSnapshot = await collectEventSources(collectionFetch, firstSnapshotAt);
+const firstHaltProvider = firstSnapshot.providers.find((provider) => provider.provider === "nasdaq_trade_halts");
+assert.equal(firstHaltProvider?.status, "connected");
+assert.equal(firstHaltProvider?.cached, false);
+assert.equal(firstHaltProvider?.receipts.some((receipt) => receipt.symbolHints.includes("OLD")), true);
+assert.equal(haltUrls.length, 1);
+assert.equal(new URL(haltUrls[0]).hostname, "m.nasdaqtrader.com");
+
+haltMode = "failure";
+const cachedSnapshot = await collectEventSources(collectionFetch, new Date("2026-07-22T14:10:00.000Z"));
+const cachedHaltProvider = cachedSnapshot.providers.find((provider) => provider.provider === "nasdaq_trade_halts");
+assert.equal(haltUrls.length, 2);
+assert.equal(new URL(haltUrls[1]).hostname, "m.nasdaqtrader.com");
+assert.equal(cachedHaltProvider?.status, "temporarily_unavailable");
+assert.equal(cachedHaltProvider?.cached, true);
+assert.equal(cachedHaltProvider?.cacheAgeMs, 5 * 60 * 1000);
+assert.equal(cachedHaltProvider?.checkedAt, firstSnapshotAt.toISOString());
+assert.equal(cachedHaltProvider?.receipts.some((receipt) => receipt.symbolHints.includes("OLD")), true);
+
+haltMode = "empty";
+const emptySnapshotAt = new Date("2026-07-22T14:15:00.000Z");
+const emptySnapshot = await collectEventSources(collectionFetch, emptySnapshotAt);
+const emptyHaltProvider = emptySnapshot.providers.find((provider) => provider.provider === "nasdaq_trade_halts");
+assert.equal(haltUrls.length, 3);
+assert.equal(new URL(haltUrls[2]).hostname, "www.nasdaqtrader.com");
+assert.equal(emptyHaltProvider?.status, "connected");
+assert.equal(emptyHaltProvider?.receipts.length, 0);
+
+haltMode = "not_due";
+const notDueSnapshot = await collectEventSources(collectionFetch, new Date("2026-07-22T14:17:00.000Z"));
+const notDueHaltProvider = notDueSnapshot.providers.find((provider) => provider.provider === "nasdaq_trade_halts");
+assert.equal(haltUrls.length, 4);
+assert.equal(new URL(haltUrls[3]).hostname, "www.nasdaqtrader.com");
+assert.equal(notDueHaltProvider?.status, "not_due");
+assert.equal(notDueHaltProvider?.cached, true);
+assert.equal(notDueHaltProvider?.cacheAgeMs, 2 * 60 * 1000);
+assert.equal(notDueHaltProvider?.receipts.length, 0);
+
+haltMode = "failure";
+const cachedEmptySnapshot = await collectEventSources(collectionFetch, new Date("2026-07-22T14:20:00.000Z"));
+const cachedEmptyHaltProvider = cachedEmptySnapshot.providers.find((provider) => provider.provider === "nasdaq_trade_halts");
+assert.equal(haltUrls.length, 5);
+assert.equal(new URL(haltUrls[4]).hostname, "www.nasdaqtrader.com");
+assert.equal(cachedEmptyHaltProvider?.status, "temporarily_unavailable");
+assert.equal(cachedEmptyHaltProvider?.cached, true);
+assert.equal(cachedEmptyHaltProvider?.receipts.length, 0);
+
+const expiredSnapshot = await collectEventSources(collectionFetch, new Date("2026-07-22T14:31:00.001Z"));
+const expiredHaltProvider = expiredSnapshot.providers.find((provider) => provider.provider === "nasdaq_trade_halts");
+assert.equal(haltUrls.length, 6);
+assert.equal(new URL(haltUrls[5]).hostname, "m.nasdaqtrader.com");
+assert.equal(expiredHaltProvider?.status, "temporarily_unavailable");
+assert.equal(expiredHaltProvider?.cached, false);
+assert.equal(expiredHaltProvider?.receipts.length, 0);
+
+let invalidFeedCalls = 0;
+const invalidFeed = await fetchNasdaqTradeHalts(async () => {
+  invalidFeedCalls += 1;
+  return new Response("<html><body>Current Trading Halts</body></html>", { status: 200, headers: { "content-type": "text/html" } });
+}, new Date("2026-07-22T14:35:00.000Z"));
+assert.equal(invalidFeedCalls, 1);
+assert.equal(invalidFeed.status, "temporarily_unavailable");
+assert.equal(invalidFeed.receipts.length, 0);
+assert.equal(invalidFeed.error, "invalid_trade_halt_feed");
+
+detailProviderStatus = "partial";
+haltMode = "empty";
+const partialDetailSnapshot = await collectEventSources(collectionFetch, new Date("2026-07-22T14:40:00.000Z"));
+const partialDetailProvider = partialDetailSnapshot.providers.find((provider) => provider.provider === "sec_filing_details");
+assert.equal(partialDetailProvider?.status, "partial");
+assert.equal(partialDetailProvider?.error, "some_selected_filings_incomplete");
+detailProviderStatus = "not_due";
 
 const previousMarketauxKey = process.env.MARKETAUX_API_KEY;
 process.env.MARKETAUX_API_KEY = "test-token-not-a-secret";
@@ -155,6 +319,21 @@ assert.equal(commerceMalformed.error, "invalid_commerce_payload");
 
 assert.doesNotMatch(source, /www\.commerce\.gov\/feeds\/news/);
 assert.match(quotaSource, /host === "api\.commerce\.gov"[\s\S]{0,240}quotaKey: "commerce_demo_key_50_daily"[\s\S]{0,180}maximumCallsInWindow: 48, minimumIntervalMs: 29 \* minute/);
+assert.match(source, /const NASDAQ_TRADE_HALTS_TIMEOUT_MS = 12_000/);
+assert.match(source, /https:\/\/m\.nasdaqtrader\.com\/rss\.aspx\?feed=tradehalts/);
+assert.match(source, /https:\/\/www\.nasdaqtrader\.com\/rss\.aspx\?feed=tradehalts/);
+assert.doesNotMatch(source, /Trader\.aspx\?id=TradeHalts/);
+assert.match(
+  quotaSource,
+  /\["m\.nasdaqtrader\.com", "www\.nasdaqtrader\.com"\]\.includes\(host\)[\s\S]{0,300}quotaKey: "nasdaq_trader_trade_halts"[\s\S]{0,120}cadenceKey: "nasdaq_trader_trade_halts"/,
+);
+assert.match(quotaSource, /secArchiveHost && path\.startsWith\("\/archives\/edgar\/data\/"\)[\s\S]{0,620}cadenceKey: `sec_filing_detail:\$\{path\}`[\s\S]{0,180}maximumCallsInWindow: 1_800, minimumIntervalMs: 59 \* minute/);
+assert.match(
+  source,
+  /const detailResult = await enrichSecFilingDetails\([\s\S]{0,180}baseReceipts,[\s\S]{0,80}fetchImpl,[\s\S]{0,80}now,[\s\S]{0,120}reserveSecFilingDetailAccessions/,
+);
+assert.doesNotMatch(source, /detailRunDue/);
+assert.doesNotMatch(source, /detailResult\.provider\.status === "partial" \? "connected"/);
 assert.match(marketSource, /status: !settled\.length \? "not_due"/);
 
 const marketLoaded = { exports: {} };
@@ -225,6 +404,15 @@ console.log(JSON.stringify({
   marketauxFailureCategoryIsActionableAndSecretSafe: true,
   commerceUsesOfficialBudgetedJsonApi: true,
   commerceReceiptsRemainPrimaryOfficialEvidence: true,
+  nasdaqHaltRequestIsSingleBoundedAndReserved: true,
+  nasdaqHaltHostFailoverOccursNextInvocation: true,
+  nasdaqHaltSnapshotCacheUsesCheckTime: true,
+  nasdaqEmptySnapshotClearsActiveCache: true,
+  olderActiveHaltsRemainSafetyState: true,
+  resumedHaltsReplaceActiveState: true,
+  nasdaqHtmlPageIsNotAFeedFallback: true,
+  secDetailsRunEveryCycleWithDurableQuotaPolicy: true,
+  cachedSecDetailReplayDoesNotDuplicateEvidence: true,
   successfulHttpWithoutRecordsIsNotCountedAsConnected: true,
   unusedQuoteChainIsNotMisreportedAsUnconfigured: true,
   oneQuoteServesEveryDistinctSameTickerEvent: true,

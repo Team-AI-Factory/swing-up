@@ -128,6 +128,7 @@ function fingerprintAccessKeyId(accessKeyId: string) {
 }
 
 const R2_MUTATION_METHODS = new Set(["DELETE", "PATCH", "POST", "PUT"]);
+const R2_REQUEST_TIMEOUT_MS = 20_000;
 
 export function normalizeR2WritePrefix(value: string | null | undefined) {
   const prefix = value?.trim() ?? "";
@@ -245,6 +246,7 @@ async function signedFetch(
     headers,
     body: body as BodyInit | undefined,
     cache: "no-store",
+    signal: AbortSignal.timeout(R2_REQUEST_TIMEOUT_MS),
   });
 }
 export function computeContentHash(payload: unknown) {

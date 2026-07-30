@@ -382,24 +382,30 @@ async function persistHardened(result: HardenedUsValueInvestingCycle) {
   }
 }
 
+export async function persistHardenedUsValueInvestingCycle(
+  result: HardenedUsValueInvestingCycle,
+): Promise<HardenedUsValueInvestingCycle> {
+  const persisted = await persistHardened(result);
+  result.warehouse = {
+    ...result.warehouse,
+    storage: persisted.available ? "cloudflare_r2" : "not_persisted",
+    immutableRunKey: persisted.immutableRunKey,
+    shardKeys: persisted.shardKeys,
+    persistedThisCycle: persisted.persistedThisCycle,
+    companyRecordsStored: persisted.companyRecordsStored,
+    errors: persisted.errors,
+  };
+  return result;
+}
+
 export async function hardenAndPersistUsValueInvestingCycle(
   raw: UsValueInvestingCycle,
   options: { persist?: boolean } = {},
 ): Promise<HardenedUsValueInvestingCycle> {
   const result = buildHardened(raw);
-  if (options.persist !== false) {
-    const persisted = await persistHardened(result);
-    result.warehouse = {
-      ...result.warehouse,
-      storage: persisted.available ? "cloudflare_r2" : "not_persisted",
-      immutableRunKey: persisted.immutableRunKey,
-      shardKeys: persisted.shardKeys,
-      persistedThisCycle: persisted.persistedThisCycle,
-      companyRecordsStored: persisted.companyRecordsStored,
-      errors: persisted.errors,
-    };
-  }
-  return result;
+  return options.persist === false
+    ? result
+    : persistHardenedUsValueInvestingCycle(result);
 }
 
 export function hardenUsValueInvestingCycleForTest(raw: UsValueInvestingCycle) {

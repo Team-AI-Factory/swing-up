@@ -162,7 +162,10 @@ const fetchImpl = async (value, init = {}) => {
             { url: eightKExhibit992, type: "EX-99.2", sequence: "3", description: "OTHER EVENT EXHIBIT" },
           ]
         : [];
-      return new Response(filingIndexHtml(forms.get(url), primaryUrls.get(url), exhibits), {
+      const primaryLink = url === eightK.url
+        ? `/ix?doc=${new URL(primaryUrls.get(url)).pathname}`
+        : primaryUrls.get(url);
+      return new Response(filingIndexHtml(forms.get(url), primaryLink, exhibits), {
         status: 200,
         headers: { "content-type": "text/html" },
       });
@@ -208,6 +211,9 @@ assert.equal(first.provider.status, "connected");
 assert.equal(first.provider.cached, false);
 assert.deepEqual(first.policy.priorityOrder, ["424B5", "8-K", "6-K", "424B3", "10-Q", "10-K"]);
 assert.equal(first.policy.fairFormRotation, true);
+assert.equal(first.policy.freshTimeSensitiveSlot, true);
+assert.deepEqual(first.policy.freshPriorityForms, ["424B5", "8-K", "6-K", "424B3"]);
+assert.equal(first.policy.freshPriorityWindowMinutes, 15);
 assert.equal(first.policy.maximumQueuedFilings, 1_000);
 assert.equal(first.policy.maximumCachedReplayPerRun, 24);
 assert.equal(first.policy.maximumFilingsPerRun, 2);
@@ -241,6 +247,8 @@ assert.equal(eightKDetail.documentsFetched, 2);
 assert.equal(eightKDiagnostic?.status, "enriched");
 assert.equal(calls.filter((call) => call.url === eightKExhibit992).length, 1);
 assert.equal(calls.some((call) => call.url === eightKExhibit991), false);
+assert.equal(calls.some((call) => call.url.includes("/ix?doc=")), false);
+assert.equal(calls.some((call) => call.url === primaryUrls.get(eightK.url)), true);
 const analysisWindow = eightKDetail.text.slice(0, SEC_FILING_ANALYSIS_TEXT_MAX_CHARS);
 assert.match(analysisWindow, /EXHIBIT_992_EVENT_FACT/);
 assert.doesNotMatch(analysisWindow, /LONG_PRIMARY_CONTEXT/);
@@ -798,8 +806,9 @@ const cooldownAtFiftyNine = await enrichSecFilingDetails(
 );
 assertMixedOrdinaryCooldown(cooldownAtFiftyNine);
 
-// Same-form arrivals are newest-first while fresh, but once queued receipts
-// age past the starvation bound they receive FIFO priority over new arrivals.
+// One just-filed time-sensitive accession always advances before an aged
+// same-form backlog. The second slot still drains that backlog FIFO, preserving
+// bounded fairness without making fresh market-moving filings wait for it.
 resetSecFilingDetailStateForTest();
 function sameFormReceipt(id, publishedAt, accession) {
   return receipt({
@@ -840,9 +849,67 @@ assert.deepEqual(sameFormSecond.diagnostics.selectedReceiptIds, [freshC.id, fres
 const sameFormThird = await enrichSecFilingDetails([freshE, freshF], sameFormFetch, new Date(now.getTime() + 10 * 60_000));
 assert.deepEqual(sameFormThird.diagnostics.selectedReceiptIds, [freshE.id, freshF.id]);
 const sameFormFourth = await enrichSecFilingDetails([freshG, freshH], sameFormFetch, new Date(now.getTime() + 16 * 60_000));
-assert.deepEqual(sameFormFourth.diagnostics.selectedReceiptIds, [originalOld.id, originalNew.id]);
+assert.deepEqual(sameFormFourth.diagnostics.selectedReceiptIds, [freshG.id, originalOld.id]);
 assert.equal(sameFormFourth.diagnostics.skipped.run_limit, 2);
 assert.equal(sameFormFourth.policy.starvationAgeMinutes, 15);
+
+// A continuous stream of fresh 8-Ks can occupy only the fresh slot. The
+// second slot must keep rotating through every aged form instead of letting
+// one high-volume form monopolize the backlog lane.
+resetSecFilingDetailStateForTest();
+const rotationForms = ["424B5", "8-K", "6-K", "424B3", "10-Q", "10-K"];
+const rotationReceiptsByUrl = new Map();
+function rotationReceipt(id, form, publishedAt, accession) {
+  const item = receipt({
+    id,
+    rawEventType: form,
+    publishedAt,
+    url: `https://www.sec.gov/Archives/edgar/data/6000000/${accession}/${id}-index.html`,
+  });
+  rotationReceiptsByUrl.set(item.url, item);
+  return item;
+}
+const agedRotationReceipts = rotationForms.map((form, index) => rotationReceipt(
+  `aged-${form.toLowerCase()}`,
+  form,
+  "2026-07-22T11:00:00.000Z",
+  `0006000000260000${String(index + 1).padStart(2, "0")}`,
+));
+const rotationFetch = async (value) => {
+  const url = String(value);
+  const queued = rotationReceiptsByUrl.get(url);
+  if (queued) {
+    return new Response(filingIndexHtml(queued.rawEventType, url.replace(/-index\.html$/i, ".htm")), {
+      status: 200,
+      headers: { "content-type": "text/html" },
+    });
+  }
+  if (/\.htm$/i.test(url)) {
+    return new Response("<html><body><p>Cross-form factual filing.</p></body></html>", {
+      status: 200,
+      headers: { "content-type": "text/html" },
+    });
+  }
+  throw new Error(`Unexpected rotation URL: ${url}`);
+};
+const agedSelections = [];
+for (let cycle = 0; cycle < rotationForms.length; cycle += 1) {
+  const cycleNow = new Date(now.getTime() + cycle * 5 * 60_000);
+  const fresh = rotationReceipt(
+    `continuous-fresh-8k-${cycle}`,
+    "8-K",
+    cycleNow.toISOString(),
+    `0006000000260001${String(cycle + 1).padStart(2, "0")}`,
+  );
+  const result = await enrichSecFilingDetails(
+    cycle === 0 ? [...agedRotationReceipts, fresh] : [fresh],
+    rotationFetch,
+    cycleNow,
+  );
+  assert.equal(result.diagnostics.selectedReceiptIds[0], fresh.id);
+  agedSelections.push(result.diagnostics.selectedReceiptIds[1]);
+}
+assert.deepEqual(agedSelections, agedRotationReceipts.map((item) => item.id));
 
 console.log(JSON.stringify({
   ok: true,
@@ -861,8 +928,11 @@ console.log(JSON.stringify({
   cachedPartialsRemainVisibleWithoutConsumingFetchSlots: true,
   freshPairsAdvanceWhilePartialsWait: true,
   bareSecHostCanonicalized: true,
+  secInlineXbrlIxLinksResolved: true,
+  freshTimeSensitiveFilingsBypassAgedBacklog: true,
   sustainedSameFormArrivalsCannotStarveAgedFilings: true,
   agedSameFormFilingsUseFifo: true,
+  continuousFreshArrivalsCannotStarveOtherForms: true,
   selectedAccessionsReservedInOneBatchBeforeFetch: true,
   eachAccessionGrantCoversAtMostThreeChildRequests: true,
   explicitExhibit992Selected: true,

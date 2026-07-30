@@ -5,10 +5,12 @@ const SEC_HOSTS = new Set(["sec.gov", "www.sec.gov"]);
 const SUPPORTED_FORMS = new Set(["8-K", "6-K", "424B5", "424B3", "10-Q", "10-K"]);
 const FORM_ROTATION = ["424B5", "8-K", "6-K", "424B3", "10-Q", "10-K"] as const;
 const FORM_PRIORITY = new Map<string, number>(FORM_ROTATION.map((form, index) => [form, index]));
+const FRESH_PRIORITY_FORMS = new Set(["424B5", "8-K", "6-K", "424B3"]);
 const MAX_NEW_FILINGS_PER_RUN = 2;
 const MAX_RECEIPT_AGE_MS = 48 * 60 * 60 * 1000;
 const MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
 const STARVATION_AGE_MS = 15 * 60 * 1000;
+const FRESH_PRIORITY_AGE_MS = 15 * 60 * 1000;
 const SUCCESS_CACHE_TTL_MS = MAX_RECEIPT_AGE_MS;
 const FAILURE_COOLDOWN_MS = 60 * 60 * 1000;
 const MAX_SUCCESS_CACHE_ENTRIES = 300;
@@ -124,6 +126,9 @@ export type SecFilingDetailsResult = {
     failedReceiptCooldownMinutes: number;
     priorityOrder: string[];
     fairFormRotation: true;
+    freshTimeSensitiveSlot: true;
+    freshPriorityForms: string[];
+    freshPriorityWindowMinutes: number;
     maximumQueuedFilings: number;
     maximumCachedReplayPerRun: number;
     starvationAgeMinutes: number;
@@ -271,6 +276,18 @@ function selectNextCandidate(candidates: EligibleReceipt[], nowMs: number) {
 function selectNextCandidates(candidates: EligibleReceipt[], nowMs: number) {
   const remaining = [...candidates];
   const selected: EligibleReceipt[] = [];
+  // Reserve one slot for a newly published, time-sensitive filing before
+  // draining the aged fairness queue. Without this lane, a continuous backlog
+  // of old 8-K or 6-K rows can delay a just-filed market-moving event for hours.
+  const fresh = remaining
+    .filter((item) => FRESH_PRIORITY_FORMS.has(item.form)
+      && nowMs - item.publishedAtMs >= -MAX_FUTURE_SKEW_MS
+      && nowMs - item.publishedAtMs < FRESH_PRIORITY_AGE_MS)
+    .sort(compareByRecency)[0] ?? null;
+  if (fresh) {
+    selected.push(fresh);
+    remaining.splice(remaining.findIndex((item) => item.filingKey === fresh.filingKey), 1);
+  }
   while (selected.length < MAX_NEW_FILINGS_PER_RUN && remaining.length) {
     const candidate = selectNextCandidate(remaining, nowMs);
     if (!candidate) break;
@@ -284,7 +301,7 @@ function resolvePrimaryDocumentHref(value: string, indexUrl: string) {
   try {
     const linked = new URL(decodeHtml(value), indexUrl);
     if (linked.protocol !== "https:" || !SEC_HOSTS.has(linked.hostname.toLowerCase())) return null;
-    if (linked.pathname.toLowerCase() === "/ixviewer/doc/action") {
+    if (["/ixviewer/doc/action", "/ix"].includes(linked.pathname.toLowerCase())) {
       return safeSecUrl(linked.searchParams.get("doc") ?? "", "https://www.sec.gov");
     }
     return safeSecUrl(linked.toString());
@@ -837,6 +854,9 @@ export async function enrichSecFilingDetails(
       failedReceiptCooldownMinutes: FAILURE_COOLDOWN_MS / 60_000,
       priorityOrder: [...FORM_ROTATION],
       fairFormRotation: true,
+      freshTimeSensitiveSlot: true,
+      freshPriorityForms: [...FRESH_PRIORITY_FORMS],
+      freshPriorityWindowMinutes: FRESH_PRIORITY_AGE_MS / 60_000,
       maximumQueuedFilings: MAX_ELIGIBLE_QUEUE_ENTRIES,
       maximumCachedReplayPerRun: MAX_CACHED_DETAILS_REPLAY_PER_RUN,
       starvationAgeMinutes: STARVATION_AGE_MS / 60_000,

@@ -11,6 +11,77 @@ const deadline = Date.now() + 20 * 60 * 1000;
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const safeError = (error) => error instanceof Error ? error.message.replace(/\s+/g, " ").slice(0, 1600) : "unknown_us_value_validation_failure";
 
+function inspectLabReadiness(result) {
+  const latest = result.json?.latest;
+  const value = latest?.valueInvesting;
+  const diligence = latest?.catalystCompanyDiligence;
+  const warehouse = value?.warehouse;
+  const checks = {
+    httpOk: result.status === 200,
+    responseOk: result.json?.ok === true,
+    isolatedBranch: result.json?.branch === "agent/combined-opportunity-engine",
+    hardenedValueSafety: value?.methodology?.safetyOverlay === "us_value_alert_safety_v2",
+    diligenceOverlay: value?.methodology?.catalystDiligenceOverlay === "sec_debt_earnings_quality_revenue_durability_reinvestment_v1",
+    diligenceRequired: value?.methodology?.foundationSeriousAlertsRequireDiligenceConfirmation === true,
+    buyDiligenceRequired: diligence?.policy?.seriousFoundationBuyRequiresBuyQualityConfirmed === true,
+    minimumCompanyCoverage: value?.coverage?.companiesAnalyzed >= 5_000,
+    minimumProcessingCoverage: value?.coverage?.processingCoveragePercent >= 95,
+    r2Warehouse: warehouse?.storage === "cloudflare_r2",
+    allCompanyRecordsStored: warehouse?.companyRecordsStored === value?.coverage?.companiesAnalyzed,
+    diligencePersisted: diligence?.warehouse?.persisted === true,
+  };
+  return {
+    ready: Object.values(checks).every(Boolean),
+    observed: {
+      observedAt: new Date().toISOString(),
+      status: result.status,
+      branch: result.json?.branch ?? null,
+      deploymentId: result.json?.deploymentId ?? result.json?.railway?.deploymentId ?? null,
+      runCount: result.json?.runCount ?? null,
+      runNumber: latest?.runNumber ?? null,
+      checkedAt: latest?.checkedAt ?? null,
+      scheduler: result.json?.scheduler ?? result.json?.pollingPolicy?.runtimeWorker ?? null,
+      valueInvesting: value ? {
+        methodology: {
+          safetyOverlay: value.methodology?.safetyOverlay ?? null,
+          catalystDiligenceOverlay: value.methodology?.catalystDiligenceOverlay ?? null,
+          foundationSeriousAlertsRequireDiligenceConfirmation: value.methodology?.foundationSeriousAlertsRequireDiligenceConfirmation ?? null,
+        },
+        coverage: {
+          companiesAnalyzed: value.coverage?.companiesAnalyzed ?? null,
+          processingCoveragePercent: value.coverage?.processingCoveragePercent ?? null,
+          usPrimaryListings: value.coverage?.usPrimaryListings ?? null,
+          pagesFailed: value.coverage?.pagesFailed ?? null,
+        },
+        warehouse: warehouse ? {
+          storage: warehouse.storage ?? null,
+          persistedThisCycle: warehouse.persistedThisCycle ?? null,
+          companyRecordsStored: warehouse.companyRecordsStored ?? null,
+          shardCount: Array.isArray(warehouse.shardKeys) ? warehouse.shardKeys.length : null,
+          immutableRunKey: warehouse.immutableRunKey ?? null,
+          errors: warehouse.errors ?? null,
+        } : null,
+      } : null,
+      catalystCompanyDiligence: diligence ? {
+        policy: {
+          maximumFreshSecCompaniesPerScan: diligence.policy?.maximumFreshSecCompaniesPerScan ?? null,
+          requestTimeoutSeconds: diligence.policy?.requestTimeoutSeconds ?? null,
+          maximumWorstCaseFreshSecStageSeconds: diligence.policy?.maximumWorstCaseFreshSecStageSeconds ?? null,
+          rotatesFoundationAndCatalystQueues: diligence.policy?.rotatesFoundationAndCatalystQueues ?? null,
+          seriousFoundationBuyRequiresBuyQualityConfirmed: diligence.policy?.seriousFoundationBuyRequiresBuyQualityConfirmed ?? null,
+        },
+        coverage: diligence.coverage ?? null,
+        warehouse: diligence.warehouse ? {
+          persisted: diligence.warehouse.persisted ?? null,
+          latestKey: diligence.warehouse.latestKey ?? null,
+          errors: diligence.warehouse.errors ?? null,
+        } : null,
+      } : null,
+      unmetConditions: Object.entries(checks).filter(([, passed]) => !passed).map(([name]) => name),
+    },
+  };
+}
+
 async function saveReport(report) {
   await mkdir(outputPath.split("/").slice(0, -1).join("/") || ".", { recursive: true });
   await writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
@@ -32,6 +103,7 @@ async function request(path, timeoutMs = 120_000) {
 async function main() {
   let runtime = null;
   let lab = null;
+  let lastObservedLab = null;
   let deploymentAttempts = 0;
   let labAttempts = 0;
   try {
@@ -56,31 +128,17 @@ async function main() {
       labAttempts += 1;
       try {
         const result = await request("/api/internal/railway-branch-signal-lab", 240_000);
-        const latest = result.json?.latest;
-        const value = latest?.valueInvesting;
-        const diligence = latest?.catalystCompanyDiligence;
-        const warehouse = value?.warehouse;
-        const hardened = value?.methodology?.safetyOverlay === "us_value_alert_safety_v2";
-        const diligenceEnabled = value?.methodology?.catalystDiligenceOverlay === "sec_debt_earnings_quality_revenue_durability_reinvestment_v1"
-          && value?.methodology?.foundationSeriousAlertsRequireDiligenceConfirmation === true
-          && diligence?.policy?.seriousFoundationBuyRequiresBuyQualityConfirmed === true;
-        if (
-          result.status === 200
-          && result.json?.ok === true
-          && result.json?.branch === "agent/combined-opportunity-engine"
-          && hardened
-          && diligenceEnabled
-          && value?.coverage?.companiesAnalyzed >= 5_000
-          && value?.coverage?.processingCoveragePercent >= 95
-          && warehouse?.storage === "cloudflare_r2"
-          && warehouse?.companyRecordsStored === value.coverage.companiesAnalyzed
-          && diligence?.warehouse?.persisted === true
-        ) {
+        const readiness = inspectLabReadiness(result);
+        lastObservedLab = readiness.observed;
+        if (readiness.ready) {
           lab = result.json;
           break;
         }
-      } catch {
-        // The five-minute worker may still be completing its first diligence-confirmed valuation cycle.
+      } catch (error) {
+        lastObservedLab = {
+          observedAt: new Date().toISOString(),
+          requestError: safeError(error),
+        };
       }
       await sleep(15_000);
     }
@@ -219,6 +277,7 @@ async function main() {
       labAttempts,
       error: safeError(error),
       latest: lab?.latest ?? null,
+      lastObservedLab,
       safety: { databaseWrites: false, publishing: false, notifications: false, trades: false },
     };
     await saveReport(failure);

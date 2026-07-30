@@ -90,7 +90,12 @@ function emptyHistory(): History {
 
 function errorCode(error: unknown) {
   if (error && typeof error === "object" && "code" in error && typeof error.code === "string") return error.code.toLowerCase();
-  if (error instanceof Error && /^r2_(?:state|equity_history|outcome_archive)_[a-z0-9_]+$/i.test(error.message)) return error.message.toLowerCase();
+  if (
+    error instanceof Error
+    && /^r2_(?:state|equity_history|outcome_archive|run_archive)_[a-z0-9_]+$/i.test(error.message)
+  ) {
+    return error.message.toLowerCase();
+  }
   return error instanceof SyntaxError ? "invalid_json" : "state_storage_error";
 }
 

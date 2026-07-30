@@ -23,6 +23,11 @@ export type HardenedUsValueInvestingCycle = UsValueInvestingCycle & {
 
 type OverlayState = {
   persistedAt?: number;
+  warehouse?: {
+    shardKeys: string[];
+    immutableRunKey: string;
+    companyRecordsStored: number;
+  };
 };
 
 const state = globalThis as typeof globalThis & {
@@ -36,6 +41,7 @@ const R2_PREFIX = "branch-labs/pr-262/value-investing" as const;
 const LATEST_INDEX_KEY = `${R2_PREFIX}/latest/index.json`;
 const SHARD_SIZE = 500;
 const PERSIST_MS = 6 * 60 * 60 * 1000;
+const SHARD_WRITE_CONCURRENCY = 4;
 
 function rounded(value: number | null, digits = 2) {
   if (value === null || !Number.isFinite(value)) return null;
@@ -280,22 +286,56 @@ async function persistHardened(result: HardenedUsValueInvestingCycle) {
   const shardKeys: string[] = [];
   const now = Date.now();
   const shouldPersist = !SAFETY_STATE.persistedAt || now - SAFETY_STATE.persistedAt >= PERSIST_MS;
-  if (!shouldPersist || !getR2Config().configured) {
-    return { persisted: false, shardKeys, immutableRunKey: null as string | null, errors };
+  if (!getR2Config().configured) {
+    return {
+      available: false,
+      persistedThisCycle: false,
+      shardKeys,
+      immutableRunKey: null as string | null,
+      companyRecordsStored: 0,
+      errors,
+    };
+  }
+  if (!shouldPersist && SAFETY_STATE.warehouse) {
+    return {
+      available: true,
+      persistedThisCycle: false,
+      shardKeys: SAFETY_STATE.warehouse.shardKeys,
+      immutableRunKey: SAFETY_STATE.warehouse.immutableRunKey,
+      companyRecordsStored: SAFETY_STATE.warehouse.companyRecordsStored,
+      errors,
+    };
   }
   try {
-    for (let index = 0; index < result.analyses.length; index += SHARD_SIZE) {
-      const shardNumber = Math.floor(index / SHARD_SIZE);
-      const key = `${R2_PREFIX}/latest/shard-${String(shardNumber).padStart(3, "0")}.json`;
-      await writeVersionedJsonToR2(key, {
-        version: 2,
-        safetyOverlay: "us_value_alert_safety_v2",
-        checkedAt: result.checkedAt,
-        shardNumber,
-        companies: result.analyses.slice(index, index + SHARD_SIZE),
-      });
-      shardKeys.push(key);
-    }
+    const shardNumbers = Array.from(
+      { length: Math.ceil(result.analyses.length / SHARD_SIZE) },
+      (_, shardNumber) => shardNumber,
+    );
+    let cursor = 0;
+    const shardWriteErrors: unknown[] = [];
+    await Promise.all(Array.from(
+      { length: Math.min(SHARD_WRITE_CONCURRENCY, Math.max(1, shardNumbers.length)) },
+      async () => {
+        while (cursor < shardNumbers.length) {
+          const shardNumber = shardNumbers[cursor++];
+          const index = shardNumber * SHARD_SIZE;
+          const key = `${R2_PREFIX}/latest/shard-${String(shardNumber).padStart(3, "0")}.json`;
+          try {
+            await writeVersionedJsonToR2(key, {
+              version: 2,
+              safetyOverlay: "us_value_alert_safety_v2",
+              checkedAt: result.checkedAt,
+              shardNumber,
+              companies: result.analyses.slice(index, index + SHARD_SIZE),
+            });
+            shardKeys[shardNumber] = key;
+          } catch (error) {
+            shardWriteErrors.push(error);
+          }
+        }
+      },
+    ));
+    if (shardWriteErrors.length) throw shardWriteErrors[0];
     const immutableRunKey = `${R2_PREFIX}/runs/${result.checkedAt.slice(0, 10)}/${dateKey(result.checkedAt)}.json`;
     const summary = {
       version: 2,
@@ -316,10 +356,29 @@ async function persistHardened(result: HardenedUsValueInvestingCycle) {
     await writeVersionedJsonToR2(LATEST_INDEX_KEY, summary);
     await writeVersionedJsonToR2(immutableRunKey, summary, { createOnly: true });
     SAFETY_STATE.persistedAt = now;
-    return { persisted: true, shardKeys, immutableRunKey, errors };
+    SAFETY_STATE.warehouse = {
+      shardKeys: [...shardKeys],
+      immutableRunKey,
+      companyRecordsStored: result.analyses.length,
+    };
+    return {
+      available: true,
+      persistedThisCycle: true,
+      shardKeys,
+      immutableRunKey,
+      companyRecordsStored: result.analyses.length,
+      errors,
+    };
   } catch (error) {
     errors.push(safeError(error));
-    return { persisted: false, shardKeys, immutableRunKey: null, errors };
+    return {
+      available: Boolean(SAFETY_STATE.warehouse),
+      persistedThisCycle: false,
+      shardKeys: SAFETY_STATE.warehouse?.shardKeys ?? shardKeys,
+      immutableRunKey: SAFETY_STATE.warehouse?.immutableRunKey ?? null,
+      companyRecordsStored: SAFETY_STATE.warehouse?.companyRecordsStored ?? 0,
+      errors,
+    };
   }
 }
 
@@ -332,11 +391,11 @@ export async function hardenAndPersistUsValueInvestingCycle(
     const persisted = await persistHardened(result);
     result.warehouse = {
       ...result.warehouse,
-      storage: persisted.persisted ? "cloudflare_r2" : "not_persisted",
+      storage: persisted.available ? "cloudflare_r2" : "not_persisted",
       immutableRunKey: persisted.immutableRunKey,
       shardKeys: persisted.shardKeys,
-      persistedThisCycle: persisted.persisted,
-      companyRecordsStored: persisted.persisted ? result.analyses.length : 0,
+      persistedThisCycle: persisted.persistedThisCycle,
+      companyRecordsStored: persisted.companyRecordsStored,
       errors: persisted.errors,
     };
   }

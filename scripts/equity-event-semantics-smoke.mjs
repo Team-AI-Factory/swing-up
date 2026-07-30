@@ -472,6 +472,410 @@ analysis.reassessCandidateAfterFundamentals(proposedPrimaryOffering, new Date("2
 assert.equal(proposedPrimaryOffering.gateChecks.eventMagnitudeActionable, true);
 assert.equal(proposedPrimaryOffering.gatePassed, true);
 
+for (const [id, title] of [
+  ["plans-offer", "Freedom Holding plans to offer 20 million new shares in a proposed public offering"],
+  ["plans-issue", "Freedom Holding plans to issue 20 million new shares through a proposed public offering"],
+  ["announces-sell", "Freedom Holding announces plans to sell 20 million new shares in a public offering"],
+]) {
+  const actionBeforeOffering = build([receipt({
+    title,
+    summary: "Final price terms will be determined later.",
+    symbolHints: ["FRHC"],
+    companyHints: ["Freedom Holding Corp."],
+  })]).candidates.find((item) => item.ticker === "FRHC");
+  assert.ok(actionBeforeOffering, id);
+  assert.equal(actionBeforeOffering.eventFamily, "financing_proposal", id);
+  assert.equal(actionBeforeOffering.gatePassed, true, id);
+}
+
+for (const [id, owner] of [
+  ["selling-stockholders", "Selling stockholders"],
+  ["existing-shareholders", "Existing shareholders"],
+  ["certain-shareholders", "Certain shareholders"],
+]) {
+  const secondarySale = build([receipt({
+    title: `${owner} plan to sell 20 million shares in a proposed public offering`,
+    summary: "The company will not receive any proceeds from the sale.",
+    symbolHints: ["FRHC"],
+    companyHints: ["Freedom Holding Corp."],
+  })]);
+  assert.equal(secondarySale.candidates.some((item) => item.eventFamily === "financing_proposal"), false, id);
+}
+
+for (const [id, ownerAction] of [
+  ["major-shareholder-plans", "A major shareholder plans"],
+  ["shareholder-intends", "A shareholder intends"],
+  ["stockholder-seeks", "A stockholder seeks"],
+]) {
+  const inflectedHolderSale = build([receipt({
+    title: `${ownerAction} to sell 5 million shares in a proposed public offering`,
+    summary: "Final price terms have not been disclosed.",
+    symbolHints: ["FRHC"],
+    companyHints: ["Freedom Holding Corp."],
+  })]);
+  assert.equal(inflectedHolderSale.candidates.some((item) => item.eventFamily === "financing_proposal"), false, id);
+}
+
+for (const [id, ownerAction] of [
+  ["shareholder-proposes", "A shareholder proposes"],
+  ["major-stockholder-proposes", "A major stockholder proposes"],
+  ["shareholder-announces-plans", "A shareholder announces plans"],
+]) {
+  const holderProposalVerb = build([receipt({
+    title: `${ownerAction} to sell 5 million shares in a public offering`,
+    summary: "Final price terms have not been disclosed.",
+    symbolHints: ["FRHC"],
+    companyHints: ["Freedom Holding Corp."],
+  })]);
+  assert.equal(holderProposalVerb.candidates.some((item) => item.eventFamily === "financing_proposal"), false, id);
+}
+
+const issuerProposalAfterShareholderApproval = build([receipt({
+  title: "Shareholders approve Freedom Holding plans to sell 20 million new shares in a proposed public offering",
+  summary: "The company expects to receive the net proceeds.",
+  symbolHints: ["FRHC"],
+  companyHints: ["Freedom Holding Corp."],
+})]).candidates.find((item) => item.ticker === "FRHC");
+assert.ok(issuerProposalAfterShareholderApproval);
+assert.equal(issuerProposalAfterShareholderApproval.eventFamily, "financing_proposal");
+assert.equal(issuerProposalAfterShareholderApproval.gatePassed, true);
+
+const holderSaleOfPreviouslyIssuedShares = build([receipt({
+  title: "Selling stockholders plan to sell 20 million newly issued shares in a proposed public offering",
+  summary: "The selling stockholders will receive the proceeds.",
+  symbolHints: ["FRHC"],
+  companyHints: ["Freedom Holding Corp."],
+})]);
+assert.equal(holderSaleOfPreviouslyIssuedShares.candidates.some((item) => item.eventFamily === "financing_proposal"), false);
+
+const negatedIssuerSupplyWithHolderSale = build([receipt({
+  title: "Freedom Holding confirms no new shares will be issued; existing shareholders plan to sell 20 million shares in a proposed public offering",
+  summary: "The company will receive no proceeds from the shares sold by existing shareholders.",
+  symbolHints: ["FRHC"],
+  companyHints: ["Freedom Holding Corp."],
+})]);
+assert.equal(negatedIssuerSupplyWithHolderSale.candidates.some((item) => item.eventFamily === "financing_proposal"), false);
+
+const activeNegatedIssuerSupplyWithHolderSale = build([receipt({
+  title: "Freedom Holding will issue no new shares; existing shareholders plan to sell 20 million shares in a proposed public offering",
+  summary: "The company will receive no proceeds from the shares sold by existing shareholders.",
+  symbolHints: ["FRHC"],
+  companyHints: ["Freedom Holding Corp."],
+})]);
+assert.equal(activeNegatedIssuerSupplyWithHolderSale.candidates.some((item) => item.eventFamily === "financing_proposal"), false);
+
+const holderAssignedNewShares = build([receipt({
+  title: "Freedom Holding announces proposed offering of 20 million new shares to be sold by existing shareholders",
+  summary: "The company will not receive proceeds from shares sold by existing shareholders.",
+  symbolHints: ["FRHC"],
+  companyHints: ["Freedom Holding Corp."],
+})]);
+assert.equal(holderAssignedNewShares.candidates.some((item) => item.eventFamily === "financing_proposal"), false);
+
+for (const [id, proceedsLanguage] of [
+  ["warrant-exercise-proceeds", "The company expects to receive proceeds upon exercise of outstanding warrants but will not receive proceeds from shares sold by selling stockholders."],
+  ["conditional-warrant-proceeds", "The company will receive proceeds only if warrants are exercised and will not receive proceeds from the offered shares."],
+]) {
+  const holderSaleWithUnrelatedProceeds = build([receipt({
+    title: "Selling stockholders plan to sell 5 million shares in a proposed public offering",
+    summary: proceedsLanguage,
+    symbolHints: ["FRHC"],
+    companyHints: ["Freedom Holding Corp."],
+  })]);
+  assert.equal(holderSaleWithUnrelatedProceeds.candidates.some((item) => item.eventFamily === "financing_proposal"), false, id);
+}
+
+for (const [id, summary] of [
+  ["receive-no-proceeds", "The company will receive no proceeds from the offering."],
+  ["not-any-of-proceeds", "The company will not receive any of the proceeds from the offering."],
+]) {
+  const noIssuerProceeds = build([receipt({
+    title: "Freedom Holding announces proposed public offering of 20 million common shares",
+    summary,
+    symbolHints: ["FRHC"],
+    companyHints: ["Freedom Holding Corp."],
+  })]);
+  assert.equal(noIssuerProceeds.candidates.some((item) => item.eventFamily === "financing_proposal"), false, id);
+}
+
+const issuerShareSale = build([receipt({
+  title: "Freedom Holding plans to sell 20 million newly issued shares in a proposed public offering",
+  summary: "The company expects to receive the net proceeds; final price terms will be determined later.",
+  symbolHints: ["FRHC"],
+  companyHints: ["Freedom Holding Corp."],
+})]).candidates.find((item) => item.ticker === "FRHC");
+assert.ok(issuerShareSale);
+assert.equal(issuerShareSale.eventFamily, "financing_proposal");
+assert.equal(issuerShareSale.gatePassed, true);
+
+for (const [id, title, summary] of [
+  [
+    "mixed-issuer-and-selling-stockholders",
+    "Freedom Holding plans to issue 20 million new shares and selling stockholders plan to sell 5 million shares in a proposed public offering",
+    "The company expects to receive proceeds from the issuer tranche but not from the holder tranche.",
+  ],
+  [
+    "mixed-new-and-existing-shares",
+    "Freedom Holding announces proposed offering of 20 million new shares plus 5 million shares by existing shareholders",
+    "The company will not receive any proceeds from the shares sold by existing shareholders.",
+  ],
+]) {
+  const mixedGenericOffering = build([receipt({
+    title,
+    summary,
+    symbolHints: ["FRHC"],
+    companyHints: ["Freedom Holding Corp."],
+  })]).candidates.find((item) => item.ticker === "FRHC");
+  assert.ok(mixedGenericOffering, id);
+  assert.equal(mixedGenericOffering.eventFamily, "financing_proposal", id);
+  assert.equal(mixedGenericOffering.gatePassed, true, id);
+}
+
+const proposedDebtOffering = build([receipt({
+  title: "Freedom Holding announces proposed public offering of senior notes",
+  summary: "The company plans to offer $500 million of senior notes.",
+  symbolHints: ["FRHC"],
+  companyHints: ["Freedom Holding Corp."],
+})]).candidates.find((item) => item.ticker === "FRHC");
+assert.ok(proposedDebtOffering);
+assert.notEqual(proposedDebtOffering.eventFamily, "financing_proposal");
+assert.equal(proposedDebtOffering.gatePassed, false);
+
+for (const [id, title, summary] of [
+  ["shares-fall-notes", "Freedom Holding shares fall after company announces proposed public offering of senior notes", "The company plans to offer $500 million of senior notes."],
+  ["unspecified-equity-investors", "Freedom Holding announces proposed public offering", "Equity investors are evaluating the company."],
+  ["unspecified-shares-fell", "Freedom Holding announces proposed public offering", "Shares fell after the announcement; terms were not disclosed."],
+  ["unspecified-common-stock-investors", "Freedom Holding announces proposed public offering", "Common stock investors are evaluating the company."],
+  ["comma-reaction", "Freedom Holding announces proposed public offering, sending shares lower", "Terms and securities to be offered have not yet been disclosed."],
+]) {
+  const contextualEquityDebt = build([receipt({
+    title,
+    summary,
+    symbolHints: ["FRHC"],
+    companyHints: ["Freedom Holding Corp."],
+  })]);
+  assert.equal(contextualEquityDebt.candidates.some((item) => item.eventFamily === "financing_proposal"), false, id);
+}
+
+const preliminaryProspectus = build([receipt({
+  title: "424B5 - Freedom Holding Corp. (Filer)",
+  summary: [
+    "Official SEC 424B5 filing by Freedom Holding Corp.",
+    "We are offering shares of our common stock and accompanying pre-funded warrants.",
+    "The combined public offering price for each share and accompanying warrant is $ .",
+    "Our common stock has $0.001 par value and its last reported sale price was $1.03.",
+    "The warrant exercise price will be $ .",
+    "In April, 12.5 million shares were issued and sold in an earlier offering at $1.40.",
+  ].join(" "),
+  url: "https://www.sec.gov/Archives/edgar/data/1000000/000100000026000001/preliminary-424b5-index.html",
+  publisher: "U.S. Securities and Exchange Commission",
+  channel: "sec_current_filings",
+  symbolHints: ["FRHC"],
+  companyHints: ["Freedom Holding Corp."],
+  rawEventType: "424B5",
+})]).candidates.find((item) => item.ticker === "FRHC");
+assert.ok(preliminaryProspectus);
+assert.equal(preliminaryProspectus.eventFamily, "financing_proposal");
+assert.equal(preliminaryProspectus.gateChecks.eventMagnitudeActionable, true);
+assert.equal(preliminaryProspectus.gatePassed, true);
+
+const blankCurrentPriceWithHistoricalPrice = build([receipt({
+  title: "424B5 - Freedom Holding Corp. (Filer)",
+  summary: "We are offering shares of our common stock. The combined public offering price is $ . In April, the public offering price was $1.40 per share.",
+  url: "https://www.sec.gov/Archives/edgar/data/1000000/000100000026000010/blank-current-price-424b5-index.html",
+  publisher: "U.S. Securities and Exchange Commission",
+  channel: "sec_current_filings",
+  symbolHints: ["FRHC"],
+  companyHints: ["Freedom Holding Corp."],
+  rawEventType: "424B5",
+})]).candidates.find((item) => item.ticker === "FRHC");
+assert.ok(blankCurrentPriceWithHistoricalPrice);
+assert.equal(blankCurrentPriceWithHistoricalPrice.eventFamily, "financing_proposal");
+
+const undeterminedCurrentPriceWithHistoricalPrice = build([receipt({
+  title: "424B5 - Freedom Holding Corp. (Filer)",
+  summary: "We are offering shares of our common stock. We have commenced a public offering expected to cause dilution of 20%. The public offering price remains to be determined. In April, the public offering price was $1.40 per share.",
+  url: "https://www.sec.gov/Archives/edgar/data/1000000/000100000026000012/undetermined-current-price-424b5-index.html",
+  publisher: "U.S. Securities and Exchange Commission",
+  channel: "sec_current_filings",
+  symbolHints: ["FRHC"],
+  companyHints: ["Freedom Holding Corp."],
+  rawEventType: "424B5",
+})]).candidates.find((item) => item.ticker === "FRHC");
+assert.ok(undeterminedCurrentPriceWithHistoricalPrice);
+assert.equal(undeterminedCurrentPriceWithHistoricalPrice.eventFamily, "financing_proposal");
+
+const fixedPriceProspectus = build([receipt({
+  title: "424B5 - Freedom Holding Corp. (Filer)",
+  summary: "We are offering 21,052,632 shares of common stock. The combined public offering price is $0.95 per share. The company has priced this public offering.",
+  url: "https://www.sec.gov/Archives/edgar/data/1000000/000100000026000002/fixed-424b5-index.html",
+  publisher: "U.S. Securities and Exchange Commission",
+  channel: "sec_current_filings",
+  symbolHints: ["FRHC"],
+  companyHints: ["Freedom Holding Corp."],
+  rawEventType: "424B5",
+})]).candidates.find((item) => item.ticker === "FRHC");
+assert.ok(fixedPriceProspectus);
+assert.equal(fixedPriceProspectus.eventFamily, "financing_dilution");
+
+const priceRangeProspectus = build([receipt({
+  title: "424B5 - Freedom Holding Corp. (Filer)",
+  summary: "We are offering shares of our common stock. The public offering price is expected to be in a range between $0.90 and $1.10 per share.",
+  url: "https://www.sec.gov/Archives/edgar/data/1000000/000100000026000005/range-424b5-index.html",
+  publisher: "U.S. Securities and Exchange Commission",
+  channel: "sec_current_filings",
+  symbolHints: ["FRHC"],
+  companyHints: ["Freedom Holding Corp."],
+  rawEventType: "424B5",
+})]).candidates.find((item) => item.ticker === "FRHC");
+assert.ok(priceRangeProspectus);
+assert.equal(priceRangeProspectus.eventFamily, "financing_proposal");
+
+const formulaPriceProspectus = build([receipt({
+  title: "424B5 - Freedom Holding Corp. (Filer)",
+  summary: "We are offering shares of our common stock. The public offering price equals 90% of VWAP, currently $0.95 per share.",
+  url: "https://www.sec.gov/Archives/edgar/data/1000000/000100000026000006/formula-424b5-index.html",
+  publisher: "U.S. Securities and Exchange Commission",
+  channel: "sec_current_filings",
+  symbolHints: ["FRHC"],
+  companyHints: ["Freedom Holding Corp."],
+  rawEventType: "424B5",
+})]).candidates.find((item) => item.ticker === "FRHC");
+assert.ok(formulaPriceProspectus);
+assert.equal(formulaPriceProspectus.eventFamily, "financing_proposal");
+
+const pricedStatusProspectus = build([receipt({
+  title: "424B5 - Freedom Holding Corp. (Filer)",
+  summary: "We are offering 20 million shares of our common stock. We have priced a public offering; settlement is expected shortly.",
+  url: "https://www.sec.gov/Archives/edgar/data/1000000/000100000026000007/priced-status-424b5-index.html",
+  publisher: "U.S. Securities and Exchange Commission",
+  channel: "sec_current_filings",
+  symbolHints: ["FRHC"],
+  companyHints: ["Freedom Holding Corp."],
+  rawEventType: "424B5",
+})]).candidates.find((item) => item.ticker === "FRHC");
+assert.ok(pricedStatusProspectus);
+assert.equal(pricedStatusProspectus.eventFamily, "financing_dilution");
+
+const commencedUnpricedProspectus = build([receipt({
+  title: "424B5 - Freedom Holding Corp. (Filer)",
+  summary: "We are offering shares of our common stock. We have commenced a public offering, but its final pricing has not been fixed.",
+  url: "https://www.sec.gov/Archives/edgar/data/1000000/000100000026000008/commenced-424b5-index.html",
+  publisher: "U.S. Securities and Exchange Commission",
+  channel: "sec_current_filings",
+  symbolHints: ["FRHC"],
+  companyHints: ["Freedom Holding Corp."],
+  rawEventType: "424B5",
+})]).candidates.find((item) => item.ticker === "FRHC");
+assert.ok(commencedUnpricedProspectus);
+assert.equal(commencedUnpricedProspectus.eventFamily, "financing_proposal");
+
+const commencedUnpricedUnitsProspectus = build([receipt({
+  title: "424B5 - Freedom Holding Corp. (Filer)",
+  summary: "We are offering 5,000,000 units, each consisting of one share of common stock and one pre-funded warrant. We have commenced a public offering expected to cause dilution of 20%. The public offering price remains to be determined.",
+  url: "https://www.sec.gov/Archives/edgar/data/1000000/000100000026000015/units-424b5-index.html",
+  publisher: "U.S. Securities and Exchange Commission",
+  channel: "sec_current_filings",
+  symbolHints: ["FRHC"],
+  companyHints: ["Freedom Holding Corp."],
+  rawEventType: "424B5",
+})]).candidates.find((item) => item.ticker === "FRHC");
+assert.ok(commencedUnpricedUnitsProspectus);
+assert.equal(commencedUnpricedUnitsProspectus.eventFamily, "financing_proposal");
+
+const convertibleDebtProspectus = build([receipt({
+  title: "424B5 - Freedom Holding Corp. (Filer)",
+  summary: "We are offering $500 million aggregate principal amount of convertible senior notes in a proposed public offering. The notes may later be converted into shares of common stock.",
+  url: "https://www.sec.gov/Archives/edgar/data/1000000/000100000026000013/convertible-notes-424b5-index.html",
+  publisher: "U.S. Securities and Exchange Commission",
+  channel: "sec_current_filings",
+  symbolHints: ["FRHC"],
+  companyHints: ["Freedom Holding Corp."],
+  rawEventType: "424B5",
+})]);
+assert.equal(convertibleDebtProspectus.candidates.some((item) => item.eventFamily === "financing_proposal"), false);
+
+for (const [id, offeredNotes] of [
+  ["equity-linked", "equity-linked senior notes"],
+  ["common-stock-linked", "common stock-linked senior notes"],
+]) {
+  const linkedDebtProspectus = build([receipt({
+    title: "424B5 - Freedom Holding Corp. (Filer)",
+    summary: `We are offering $500 million of ${offeredNotes} in a proposed public offering. The notes are unsecured debt obligations and may later reference shares of common stock.`,
+    url: `https://www.sec.gov/Archives/edgar/data/1000000/000100000026000014/${id}-notes-424b5-index.html`,
+    publisher: "U.S. Securities and Exchange Commission",
+    channel: "sec_current_filings",
+    symbolHints: ["FRHC"],
+    companyHints: ["Freedom Holding Corp."],
+    rawEventType: "424B5",
+  })]);
+  assert.equal(linkedDebtProspectus.candidates.some((item) => item.eventFamily === "financing_proposal"), false, id);
+}
+
+const mixedPrimaryAndResaleProspectus = build([receipt({
+  title: "424B3 - Freedom Holding Corp. (Filer)",
+  summary: "We are offering shares of our common stock at a public offering price of $ . Selling stockholders may also resell shares, and we will not receive proceeds from their shares.",
+  url: "https://www.sec.gov/Archives/edgar/data/1000000/000100000026000004/mixed-424b3-index.html",
+  publisher: "U.S. Securities and Exchange Commission",
+  channel: "sec_current_filings",
+  symbolHints: ["FRHC"],
+  companyHints: ["Freedom Holding Corp."],
+  rawEventType: "424B3",
+})]).candidates.find((item) => item.ticker === "FRHC");
+assert.ok(mixedPrimaryAndResaleProspectus);
+assert.equal(mixedPrimaryAndResaleProspectus.eventFamily, "financing_proposal");
+
+const sellingStockholderResale = build([receipt({
+  title: "424B3 - Freedom Holding Corp. (Filer)",
+  summary: "This prospectus relates solely to the resale of common stock by selling stockholders. Freedom Holding will not receive any proceeds and is not offering securities.",
+  url: "https://www.sec.gov/Archives/edgar/data/1000000/000100000026000003/resale-424b3-index.html",
+  publisher: "U.S. Securities and Exchange Commission",
+  channel: "sec_current_filings",
+  symbolHints: ["FRHC"],
+  companyHints: ["Freedom Holding Corp."],
+  rawEventType: "424B3",
+})]);
+assert.equal(sellingStockholderResale.candidates.some((item) => item.eventFamily === "financing_proposal"), false);
+
+const negatedSellingStockholderResale = build([receipt({
+  title: "424B3 - Freedom Holding Corp. (Filer)",
+  summary: "None of the shares are being offered by us. Common stock may be resold solely by the selling stockholders.",
+  url: "https://www.sec.gov/Archives/edgar/data/1000000/000100000026000009/negated-resale-424b3-index.html",
+  publisher: "U.S. Securities and Exchange Commission",
+  channel: "sec_current_filings",
+  symbolHints: ["FRHC"],
+  companyHints: ["Freedom Holding Corp."],
+  rawEventType: "424B3",
+})]);
+assert.equal(negatedSellingStockholderResale.candidates.some((item) => item.eventFamily === "financing_proposal"), false);
+
+for (const [id, summary] of [
+  ["issuer-no-shares", "We are offering no shares of common stock. Common stock may be resold solely by selling stockholders."],
+  ["no-common-stock", "No common stock is being offered by us. Common stock may be resold solely by selling stockholders."],
+  ["none-common-shares", "None of the common shares are being offered by us. Common shares may be resold solely by selling stockholders."],
+]) {
+  const negatedResale = build([receipt({
+    title: "424B3 - Freedom Holding Corp. (Filer)",
+    summary,
+    url: `https://www.sec.gov/Archives/edgar/data/1000000/000100000026000011/${id}-424b3-index.html`,
+    publisher: "U.S. Securities and Exchange Commission",
+    channel: "sec_current_filings",
+    symbolHints: ["FRHC"],
+    companyHints: ["Freedom Holding Corp."],
+    rawEventType: "424B3",
+  })]);
+  assert.equal(negatedResale.candidates.some((item) => item.eventFamily === "financing_proposal"), false, id);
+}
+
+const nonSecUnpricedOffering = build([receipt({
+  title: "Freedom Holding public offering",
+  summary: "We are offering shares of common stock, but final price terms are not stated.",
+  symbolHints: ["FRHC"],
+  companyHints: ["Freedom Holding Corp."],
+})]).candidates.find((item) => item.ticker === "FRHC");
+assert.ok(nonSecUnpricedOffering);
+assert.equal(nonSecUnpricedOffering.eventFamily, "financing_dilution");
+
 const negativeFdaAdvisoryVote = build([receipt({
   title: "FDA advisory panel votes 9-3 against evidence of effectiveness for Capricor therapy",
   summary: "The advisory committee concluded that the available evidence does not support effectiveness. The FDA has not made its final decision.",
@@ -897,6 +1301,32 @@ console.log(JSON.stringify({
   materialContractCanQualifyBeforePriceMove: true,
   immaterialContractRejected: true,
   pricedPrimaryDilutionMeasured: true,
+  unpricedPrimarySecProspectusBecomesWatchStage: true,
+  blankCurrentPriceCannotUseHistoricalPrice: true,
+  undeterminedCurrentPriceCannotUseHistoricalPrice: true,
+  debtAndConvertibleNoteOfferingsCannotBecomeProposal: true,
+  contextualEquityWordsCannotRetypeDebtOrUnknownOfferings: true,
+  actionBeforeOfferingEquityProposalsRemainWatchStage: true,
+  secondaryOwnersCannotBecomeIssuerProposal: true,
+  inflectedHolderSaleVerbsCannotBecomeIssuerProposal: true,
+  holderProposalVerbsCannotBecomeIssuerProposal: true,
+  shareholderApprovalCannotRetypeIssuerProposal: true,
+  holderNewShareWordingCannotCreateIssuerTranche: true,
+  negatedNewSharesCannotCreateIssuerTranche: true,
+  activeNegatedIssuanceCannotCreateIssuerTranche: true,
+  holderAssignedNewSharesCannotCreateIssuerTranche: true,
+  unrelatedWarrantProceedsCannotCreateIssuerTranche: true,
+  issuerNoProceedsCannotBecomeProposal: true,
+  issuerNewShareSaleRemainsWatchStage: true,
+  mixedIssuerAndHolderOfferingKeepsIssuerWatch: true,
+  fixedPriceProspectusRemainsDilution: true,
+  priceRangeAndFormulaProspectusesRemainWatchStage: true,
+  pricedStatusProspectusRemainsDilution: true,
+  commencedUnpricedProspectusRemainsWatchStage: true,
+  commencedUnpricedEquityUnitsRemainWatchStage: true,
+  mixedPrimaryAndSecondaryProspectusKeepsPrimaryWatch: true,
+  secondaryOnlyAndNegatedProspectusesCannotBecomeProposal: true,
+  nonSecOfferingDoesNotGainSecFallback: true,
   vagueGuidanceRejected: true,
   measuredGuidanceAccepted: true,
   investigationNotTreatedAsFinalEnforcement: true,

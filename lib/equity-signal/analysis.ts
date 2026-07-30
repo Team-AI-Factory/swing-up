@@ -32,8 +32,22 @@ const MAGNITUDE_SENSITIVE_FAMILIES = new Set<EventFamily>(["contract_award", "fi
 const EXTERNAL_EXPOSURE_FAMILIES = new Set<EventFamily>(["macro_rates", "macro_inflation", "geopolitical_conflict", "sanctions_trade", "energy_commodity", "supply_chain"]);
 const NON_ACTIONABLE_OFFERING = /\b(shelf|at-the-market|ATM program|proposed|planned|plans? to|intends? to|seeks? to|may offer|might offer|could offer|selling stockholder|secondary offering|secondary sale)\b/i;
 const ACTIONABLE_OFFERING = /\b(priced|completed|closed|issued|company is issuing|commenced)\b/i;
-const PROPOSED_DILUTIVE_OFFERING = /\b(?:announces?|launches?|proposes?|plans?|intends?|seeks?)\b.{0,80}\b(?:proposed\s+)?(?:underwritten\s+)?(?:public|primary|share)\s+offering\b|\bproposed\s+(?:underwritten\s+)?(?:public|primary|share)\s+offering\b/i;
-const SECONDARY_ONLY_OFFERING = /\b(selling stockholder|secondary offering|secondary sale)\b/i;
+const PROPOSED_OFFERING = /\b(?:announces?|launches?|proposes?|plans?|intends?|seeks?)\b.{0,100}?\b(?:proposed\s+)?(?:underwritten\s+)?(?:public|primary|share|equity|common stock|ordinary shares?|common shares?|american depositary shares?|ADSs?|pre-funded warrants?)?\s*offering\b|\bproposed\s+(?:underwritten\s+)?(?:public|primary|share|equity|common stock|ordinary shares?|common shares?|american depositary shares?|ADSs?|pre-funded warrants?)?\s*offering\b/i;
+const SECONDARY_ONLY_OFFERING = /\b(?:selling (?:stockholders?|shareholders?)|(?:existing|certain) (?:stockholders?|shareholders?)|secondary offering|secondary sale|resale by (?:the )?(?:(?:selling|existing|certain) )?(?:stockholders?|shareholders?)|(?:stockholders?|shareholders?)\s+(?:(?:now|today|currently|reportedly)\s+)?(?:(?:proposes?|plans?|intends?|seeks?)\s+to\s+sell|announces?\s+(?:its\s+)?plans?\s+to\s+sell))\b/i;
+const NO_ISSUER_PROCEEDS = /\b(?:we|the company|the issuer)\s+(?:(?:will|would|does|do)\s+not\s+receive\s+(?:(?:any(?:\s+of\s+the)?|the)\s+)?(?:net\s+)?proceeds|(?:will|would)\s+receive\s+(?:no|none\s+of\s+the)\s+(?:net\s+)?proceeds)\b|\b(?:no|none\s+of\s+the)\s+(?:net\s+)?proceeds\s+(?:will|would|are|is)\s+(?:be\s+)?received\s+by\s+(?:us|the company|the issuer)\b/i;
+const HOLDER_SCOPED_NO_PROCEEDS = /\b(?:not receive|receive no|none of the)\b.{0,55}\b(?:from|on)\b.{0,65}\b(?:selling|existing|certain|holder|stockholder|shareholder)\b|\bno proceeds\b.{0,65}\b(?:selling|existing|certain|holder|stockholder|shareholder)\b|\b(?:selling|existing|certain|holder|stockholder|shareholder)\b.{0,65}\b(?:no proceeds|not receive)\b/i;
+const NEW_ISSUER_EQUITY = /\b(?:newly issued|new)\s+(?:shares?|common stock|ordinary shares?|common shares?|american depositary shares?|ADSs?)\b/gi;
+const SEC_EQUITY_PROSPECTUS_FORMS = new Set(["424B5", "424B3"]);
+const ISSUER_OFFERING_START = /\b(?:we are offering|the company is offering|the issuer is offering)\b/gi;
+const DIRECT_OFFERING_ACTION = /\bto\s+(?:offer|issue|sell)\b/gi;
+const DIRECTLY_OFFERED_EQUITY = /\b(?:common stock|ordinary shares?|common shares?|american depositary shares?|ADSs?|equity securities|(?:new\s+)?shares?|convertible preferred stock|pre-funded warrants?|warrants?)\b/i;
+const EQUITY_COMPOSED_UNITS = /\bunits?\s*,?\s*(?:(?:with\s+)?each(?:\s+unit)?\s+)?(?:consisting|comprised)\s+of\b.{0,120}\b(?:common stock|ordinary shares?|common shares?|american depositary shares?|ADSs?|shares?|pre-funded warrants?|warrants?)\b/i;
+const DIRECTLY_OFFERED_DEBT = /\b(?:(?:convertible|senior|subordinated|secured|unsecured)\s+)*(?:notes?|debentures?|bonds?|debt securities)\b/i;
+const EXPLICIT_EQUITY_OFFERING = /\b(?:share|equity|common stock|ordinary shares?|common shares?|american depositary shares?|ADSs?|pre-funded warrants?)\s+offering\b/i;
+const CURRENT_ISSUER_EQUITY_OFFERING = /\b(?:common stock|ordinary shares?|common shares?|american depositary shares?|ADSs?|units?|pre-funded warrants?|convertible preferred stock)\b.{0,160}\b(?:are|is|will be)\s+(?:being\s+)?offered by us\b/i;
+const NO_CURRENT_ISSUER_SUPPLY = /\b(?:none|no)\s+of\s+the\s+(?:shares|securities|units|common stock|common shares?|ordinary shares?|ADSs?)\s+(?:are|will be)\s+(?:being\s+)?(?:offered|sold)\s+by\s+us\b|\b(?:no|none of the)\s+(?:shares|securities|units|common stock|common shares?|ordinary shares?|ADSs?)\s+(?:are|is|will be)\s+(?:being\s+)?(?:offered|sold)\s+by\s+us\b|\b(?:the\s+)?(?:shares|securities|units|common stock|common shares?|ordinary shares?|ADSs?)\s+(?:are|is|will be)\s+not\s+(?:being\s+)?(?:offered|sold)\s+by\s+us\b|\b(?:we|the company|the issuer)\s+(?:are|is|will)\s+(?:not\s+(?:offering|selling)|offering\s+(?:no|none)\b)/i;
+const CURRENT_FINAL_OFFERING = /\b(?:we|the company|the issuer)\s+(?:have|has)?\s*(?:priced|completed|closed)\s+(?:this|the|a|an)\s+(?:public|primary|underwritten|share|common stock)?\s*offering\b|\b(?:this|the|a|an)\s+(?:public|primary|underwritten|share|common stock)?\s*offering\s+(?:has been|was|is)\s+(?:priced|completed|closed)\b/i;
+const CURRENT_OFFERING_PRICE_LABEL = /\b(?:combined\s+)?(?:public offering price|price to public|purchase price|subscription price)\b/gi;
 const FDA_ADVISORY_VOTE = /\b(?:fda|food and drug administration)\b.{0,180}\b(?:advisory (?:committee|panel)|panel)\b.{0,120}\b(?:votes?|voted|recommends?|recommended)\b|\b(?:fda\s+)?(?:advisory (?:committee|panel)|panel)\b.{0,120}\b(?:votes?|voted|recommends?|recommended)\b/i;
 const FDA_ADVISORY_DOWNSIDE = /\b(?:votes?|voted|recommends?|recommended)\s+(?:overwhelmingly\s+)?against\b|\b(?:insufficient|inadequate)\s+evidence\b|\b(?:does|do|did)\s+not\s+(?:support|demonstrate|show)\b|\bnot\s+(?:effective|efficacious)\b/i;
 const FDA_ADVISORY_UPSIDE = /\b(?:votes?|voted)\s+(?:overwhelmingly\s+)?in\s+favou?r\b|\brecommends?\s+approval\b|\bevidence\s+(?:supports?|demonstrates?|shows?)\s+(?:effectiveness|efficacy)\b/i;
@@ -60,6 +74,131 @@ function scaledNumber(raw: string, scale: string | undefined) {
         ? 1_000
         : 1;
   return value * multiplier;
+}
+
+function hasCurrentFixedOfferingPrice(value: string) {
+  const labels = [...value.matchAll(CURRENT_OFFERING_PRICE_LABEL)];
+  const label = labels[0];
+  if (!label) return false;
+  const tailStart = (label.index ?? 0) + label[0].length;
+  const nextLabelStart = labels[1]?.index ?? tailStart + 180;
+  const rawTail = value.slice(tailStart, Math.min(tailStart + 180, nextLabelStart));
+  const sentenceBoundary = rawTail.search(/[.;]\s+/);
+  const tail = sentenceBoundary >= 0 ? rawTail.slice(0, sentenceBoundary) : rawTail;
+  const firstCurrency = tail.match(/(?:US\$|\$|USD|€|£)/i);
+  if (!firstCurrency) return false;
+  const currencyIndex = firstCurrency.index ?? 0;
+  const afterCurrency = tail.slice(currencyIndex);
+  const price = afterCurrency.match(/^(?:US\$|\$|USD\s*|€|£)\s*(\d[\d,]*(?:\.\d+)?)/i);
+  if (!price) return false;
+  const throughPrice = tail.slice(0, currencyIndex + price[0].length + 50);
+  if (/\b(?:between|from|range|up to|vwap|volume-weighted|market price|lower of|greater of|lesser of|formula)\b|%\s+of\b/i.test(throughPrice)) return false;
+  if (/^(?:US\$|\$|USD\s*|€|£)\s*\d[\d,]*(?:\.\d+)?\s*(?:-|–|—|to|through|and)\s*(?:US\$|\$|USD\s*|€|£)?\s*\d/i.test(afterCurrency)) return false;
+  return true;
+}
+
+function offeringObject(value: string, maxLength = 240) {
+  const raw = value.slice(0, maxLength);
+  // A standard SEC unit description uses a composition comma ("units, each
+  // consisting of..."). Preserve only that grammatical comma; reaction and
+  // contextual comma clauses still terminate the offered object.
+  const boundaryInput = raw.replace(
+    /(\bunits?\s*),(?=\s*(?:(?:with\s+)?each(?:\s+unit)?\s+)?(?:consisting|comprised)\s+of\b)/i,
+    (_match, units) => `${units} `,
+  );
+  const boundary = boundaryInput.search(/(?:,(?!\d)|;|[—–]|\.\s+)/);
+  return boundary >= 0 ? raw.slice(0, boundary) : raw;
+}
+
+function offeredSecurityKind(value: string) {
+  const object = offeringObject(value);
+  // Notes remain debt even when described as equity-linked, common-stock-linked,
+  // or convertible into shares later.
+  if (DIRECTLY_OFFERED_DEBT.test(object)) return "debt" as const;
+  if (DIRECTLY_OFFERED_EQUITY.test(object) || EQUITY_COMPOSED_UNITS.test(object)) return "equity" as const;
+  return "other" as const;
+}
+
+function hasAffirmativeCurrentIssuerEquityOffering(value: string) {
+  for (const start of value.matchAll(ISSUER_OFFERING_START)) {
+    const tailStart = (start.index ?? 0) + start[0].length;
+    const tail = value.slice(tailStart, tailStart + 320);
+    if (/^\s+(?:no\b|none\b|not\b)/i.test(tail)) continue;
+    if (offeredSecurityKind(tail) === "equity") return true;
+  }
+  return false;
+}
+
+function isProposedDilutiveOffering(value: string) {
+  const proposal = value.match(PROPOSED_OFFERING);
+  if (!proposal) return false;
+  const proposalStart = proposal.index ?? 0;
+  for (const action of proposal[0].matchAll(DIRECT_OFFERING_ACTION)) {
+    const actionKind = offeredSecurityKind(proposal[0].slice((action.index ?? 0) + action[0].length));
+    if (actionKind === "debt") return false;
+    if (actionKind === "equity") return true;
+  }
+  const priorStart = Math.max(0, proposalStart - 240);
+  const prior = value.slice(priorStart, proposalStart);
+  const issuerStarts = [...prior.matchAll(ISSUER_OFFERING_START)];
+  const issuerStart = issuerStarts.at(-1);
+  if (issuerStart) {
+    const afterIssuerStart = prior.slice((issuerStart.index ?? 0) + issuerStart[0].length);
+    // Only bind the issuer phrase to this proposal when they are in the same
+    // sentence; an older offering elsewhere in the receipt cannot lend it type.
+    if (!/[.;]\s+/.test(afterIssuerStart)) {
+      return offeredSecurityKind(value.slice(priorStart + (issuerStart.index ?? 0) + issuerStart[0].length)) === "equity";
+    }
+  }
+  const remainder = value.slice(proposalStart + proposal[0].length, proposalStart + proposal[0].length + 180);
+  const objectIntroduction = remainder.match(/^\s*(?:(?:of|for)\s+|(?::|-)\s*|to\s+(?:offer|issue|sell)\s+)/i);
+  const remainderKind = objectIntroduction
+    ? offeredSecurityKind(remainder.slice(objectIntroduction[0].length))
+    : "other";
+  if (remainderKind === "debt") return false;
+  if (EXPLICIT_EQUITY_OFFERING.test(proposal[0])) return true;
+  return remainderKind === "equity";
+}
+
+function hasExplicitIssuerEquityTranche(value: string) {
+  const secondaryHolderIndex = value.search(SECONDARY_ONLY_OFFERING);
+  for (const newIssuerEquity of value.matchAll(NEW_ISSUER_EQUITY)) {
+    const newIssuerEquityIndex = newIssuerEquity.index ?? 0;
+    const prefix = value.slice(Math.max(0, newIssuerEquityIndex - 100), newIssuerEquityIndex);
+    const suffix = value.slice(newIssuerEquityIndex, newIssuerEquityIndex + 140);
+    const negated = /\b(?:no|not|none|without|neither)\b[^.;,]{0,35}$/i.test(prefix);
+    const tiedToIssuerAction = /\b(?:offering\s+of|to\s+(?:offer|issue|sell)|(?:will|would)\s+issue|(?:is|are)\s+issuing)\b[^.;,]{0,90}$/i.test(prefix);
+    const assignedToHolder = /\b(?:(?:to be|being)\s+)?(?:sold|offered|resold|held)\s+by\s+(?:(?:selling|existing|certain)\s+)?(?:stockholders?|shareholders?)\b|\bfor resale by\s+(?:(?:selling|existing|certain)\s+)?(?:stockholders?|shareholders?)\b/i.test(suffix);
+    // "New shares" overrides a later holder tranche only when an affirmative
+    // issuer action owns the phrase. A nearby "no new shares" never does.
+    if (!negated
+      && !assignedToHolder
+      && tiedToIssuerAction
+      && (secondaryHolderIndex < 0 || newIssuerEquityIndex < secondaryHolderIndex)) return true;
+  }
+  for (const action of value.matchAll(/\b(?:(?:to|will|would)\s+issue|(?:is|are)\s+issuing)\b/gi)) {
+    const tail = value.slice((action.index ?? 0) + action[0].length);
+    if (/^\s+(?:no\b|none\b|not\b|neither\b)/i.test(tail)) continue;
+    if (offeredSecurityKind(tail) === "equity") return true;
+  }
+  return false;
+}
+
+function isUnpricedPrimarySecEquityOffering(receipt: EventReceipt, value: string) {
+  if (receipt.channel !== "sec_current_filings"
+    || !receipt.official
+    || !receipt.primarySource
+    || !SEC_EQUITY_PROSPECTUS_FORMS.has((receipt.rawEventType ?? "").trim().toUpperCase())) {
+    return false;
+  }
+  // SEC filing details prepend the current prospectus cover. Keep status and
+  // price detection inside that bounded current-offering window so old ATM,
+  // warrant, par-value, and prior-offering boilerplate cannot finalize it.
+  const cover = value.slice(0, 6_000);
+  const affirmativeIssuerTranche = hasAffirmativeCurrentIssuerEquityOffering(cover);
+  const issuerSupply = affirmativeIssuerTranche || CURRENT_ISSUER_EQUITY_OFFERING.test(cover);
+  if (!issuerSupply || (NO_CURRENT_ISSUER_SUPPLY.test(cover) && !affirmativeIssuerTranche)) return false;
+  return !hasCurrentFixedOfferingPrice(cover) && !CURRENT_FINAL_OFFERING.test(cover);
 }
 
 function explicitCompanyEffectDirection(value: string) {
@@ -359,7 +498,18 @@ function classify(receipt: EventReceipt): ClassifiedEvent {
   const rumour = RUMOUR.test(value) && !receipt.primarySource;
   const hit = (pattern: RegExp) => pattern.test(value);
   const titleHit = (pattern: RegExp) => pattern.test(titleValue);
-  if (hit(PROPOSED_DILUTIVE_OFFERING) && !hit(SECONDARY_ONLY_OFFERING)) return { family: "financing_proposal", direction: "downside", materiality: 75, transmission: 80, rumour, terms: ["potential new share supply before final terms"] };
+  if (isUnpricedPrimarySecEquityOffering(receipt, value)) return { family: "financing_proposal", direction: "downside", materiality: 75, transmission: 80, rumour, terms: ["current issuer equity supply with final price terms still unobserved"] };
+  const proposedDilutiveOffering = isProposedDilutiveOffering(value);
+  if (proposedDilutiveOffering) {
+    const explicitIssuerTranche = hasExplicitIssuerEquityTranche(value);
+    const secondaryHolderMention = hit(SECONDARY_ONLY_OFFERING);
+    const issuerNoProceeds = hit(NO_ISSUER_PROCEEDS);
+    const holderScopedNoProceeds = hit(HOLDER_SCOPED_NO_PROCEEDS);
+    if ((!secondaryHolderMention || explicitIssuerTranche)
+      && (!issuerNoProceeds || (explicitIssuerTranche && holderScopedNoProceeds))) {
+      return { family: "financing_proposal", direction: "downside", materiality: 75, transmission: 80, rumour, terms: ["potential new share supply before final terms"] };
+    }
+  }
   if (hit(/\b(primary offering|secondary offering|public offering|share offering|shelf offering|shelf registration|at-the-market offering|dilution|bankruptcy|chapter 11)\b/)) return { family: "financing_dilution", direction: "downside", materiality: 88, transmission: 91, rumour, terms: ["new supply or solvency pressure"] };
   if (hit(/\b(cyberattack|ransomware|data breach|security breach|systems? outage|hack(?:ed|ing)?)\b/)) return { family: "cyber_incident", direction: "downside", materiality: 82, transmission: 84, rumour, terms: ["operational disruption", "remediation and trust cost"] };
   if (hit(FDA_ADVISORY_VOTE)) {

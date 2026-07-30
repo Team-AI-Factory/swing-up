@@ -29,6 +29,7 @@ export type CandidateArticleEvidence = {
 export type ArticleEvidenceReport = {
   policyVersion: 1;
   maximumFullArticlesPerScan: number;
+  maximumConcurrentArticleReads: number;
   maximumBytesPerArticle: number;
   headlineAloneCanPromoteSeriousSignal: false;
   candidates: Record<string, CandidateArticleEvidence>;
@@ -215,6 +216,26 @@ async function fetchArticle(url: URL, fetchImpl: typeof fetch) {
   return result;
 }
 
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T) => Promise<R>,
+) {
+  const output = new Array<R>(items.length);
+  let cursor = 0;
+  await Promise.all(Array.from(
+    { length: Math.min(concurrency, Math.max(1, items.length)) },
+    async () => {
+      while (cursor < items.length) {
+        const index = cursor;
+        cursor += 1;
+        output[index] = await worker(items[index]);
+      }
+    },
+  ));
+  return output;
+}
+
 function structuredOfficialEvidence(candidateValue: unknown) {
   return receipts(candidateValue).filter((receipt) => receipt.primarySource && receipt.official && (receipt.summary?.length ?? 0) >= 600);
 }
@@ -230,14 +251,7 @@ export async function buildArticleEvidenceReport(input: {
   const orderedCandidates = [input.selectedCandidate, ...input.candidates].filter(Boolean);
   const uniqueCandidates = [...new Map(orderedCandidates.map((candidate) => [candidateKey(candidate), candidate])).values()].filter((candidate) => candidateKey(candidate).split("|")[0]);
   const reports = new Map<string, CandidateArticleEvidence>();
-  let budget = maximumArticles;
-  let urlsSelected = 0;
-  let urlsFetched = 0;
-  let urlsSupported = 0;
-  let urlsFailed = 0;
-  let officialStructuredCandidates = 0;
-
-  for (const candidate of uniqueCandidates) {
+  const prepared = uniqueCandidates.map((candidate) => {
     const value = object(candidate);
     const key = candidateKey(candidate);
     const ticker = text(value.ticker).toUpperCase();
@@ -245,36 +259,59 @@ export async function buildArticleEvidenceReport(input: {
     const eventFamily = text(value.eventFamily) || "unknown";
     const relationship = text(value.relationship) || "direct";
     const structured = structuredOfficialEvidence(candidate);
-    if (structured.length) officialStructuredCandidates += 1;
     const candidateUrls = receipts(candidate)
       .filter((receipt) => safeHttpUrl(receipt.url))
       .sort((left, right) => Number(right.primarySource) - Number(left.primarySource) || Number(right.official) - Number(left.official))
       .slice(0, 2);
+    return { candidate, key, ticker, company, eventFamily, relationship, structured, candidateUrls };
+  });
+  const selectedTasks: Array<{ key: string; candidate: unknown; receipt: ReturnType<typeof receipts>[number]; url: URL }> = [];
+  for (const item of prepared) {
+    for (const receipt of item.candidateUrls) {
+      if (selectedTasks.length >= maximumArticles) break;
+      const url = safeHttpUrl(receipt.url);
+      if (url) selectedTasks.push({ key: item.key, candidate: item.candidate, receipt, url });
+    }
+  }
+  const fetched = await mapWithConcurrency(selectedTasks, 4, async (task) => {
+    try {
+      const article = await fetchArticle(task.url, fetchImpl);
+      return { ...task, article, error: null as string | null };
+    } catch (error) {
+      return { ...task, article: null, error: error instanceof Error ? error.message : "article_fetch_failed" };
+    }
+  });
+  const fetchedByCandidate = new Map<string, typeof fetched>();
+  for (const item of fetched) {
+    const current = fetchedByCandidate.get(item.key) ?? [];
+    current.push(item);
+    fetchedByCandidate.set(item.key, current);
+  }
+  let urlsFetched = 0;
+  let urlsSupported = 0;
+  let urlsFailed = 0;
+
+  for (const item of prepared) {
+    const { candidate, key, ticker, company, eventFamily, relationship, structured } = item;
     const excerpts: CandidateArticleEvidence["excerpts"] = [];
     const failedUrls: string[] = [];
     const sourceUrls: string[] = [];
     let fetchedForCandidate = 0;
-    for (const receipt of candidateUrls) {
-      if (budget <= 0) break;
-      const url = safeHttpUrl(receipt.url);
-      if (!url) continue;
-      budget -= 1;
-      urlsSelected += 1;
-      sourceUrls.push(url.toString());
-      try {
-        const article = await fetchArticle(url, fetchImpl);
-        fetchedForCandidate += 1;
-        urlsFetched += 1;
-        const support = bodySupport(candidate, article.text);
-        if (support.issuerMatched && support.eventMatched && !support.contradicted) {
-          urlsSupported += 1;
-          excerpts.push({ url: url.toString(), publisher: receipt.publisher, excerpt: article.text.slice(0, MAX_EXCERPT_CHARS), issuerMatched: support.issuerMatched, eventMatched: support.eventMatched });
-        } else {
-          failedUrls.push(`${url.toString()}:${support.contradicted ? "article_contradicts_event" : !support.issuerMatched ? "issuer_not_confirmed_in_article" : "event_not_confirmed_in_article"}`);
-        }
-      } catch (error) {
+    for (const result of fetchedByCandidate.get(key) ?? []) {
+      sourceUrls.push(result.url.toString());
+      if (!result.article) {
         urlsFailed += 1;
-        failedUrls.push(`${url.toString()}:${error instanceof Error ? error.message : "article_fetch_failed"}`);
+        failedUrls.push(`${result.url.toString()}:${result.error}`);
+        continue;
+      }
+      fetchedForCandidate += 1;
+      urlsFetched += 1;
+      const support = bodySupport(candidate, result.article.text);
+      if (support.issuerMatched && support.eventMatched && !support.contradicted) {
+        urlsSupported += 1;
+        excerpts.push({ url: result.url.toString(), publisher: result.receipt.publisher, excerpt: result.article.text.slice(0, MAX_EXCERPT_CHARS), issuerMatched: support.issuerMatched, eventMatched: support.eventMatched });
+      } else {
+        failedUrls.push(`${result.url.toString()}:${support.contradicted ? "article_contradicts_event" : !support.issuerMatched ? "issuer_not_confirmed_in_article" : "event_not_confirmed_in_article"}`);
       }
     }
     const fullArticleSupported = excerpts.length > 0;
@@ -301,10 +338,18 @@ export async function buildArticleEvidenceReport(input: {
   return {
     policyVersion: 1 as const,
     maximumFullArticlesPerScan: maximumArticles,
+    maximumConcurrentArticleReads: 4,
     maximumBytesPerArticle: MAX_BYTES,
     headlineAloneCanPromoteSeriousSignal: false as const,
     candidates: Object.fromEntries(reports),
-    diagnostics: { candidatesConsidered: uniqueCandidates.length, urlsSelected, urlsFetched, urlsSupported, urlsFailed, officialStructuredCandidates },
+    diagnostics: {
+      candidatesConsidered: uniqueCandidates.length,
+      urlsSelected: selectedTasks.length,
+      urlsFetched,
+      urlsSupported,
+      urlsFailed,
+      officialStructuredCandidates: prepared.filter((item) => item.structured.length > 0).length,
+    },
   } satisfies ArticleEvidenceReport;
 }
 

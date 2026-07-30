@@ -163,5 +163,7 @@ child.on("exit", (code, signal) => {
   clearWorkerRestart();
   if (workerWatchdog) clearInterval(workerWatchdog);
   if (worker && !worker.killed) worker.kill("SIGTERM");
-  process.exitCode = code ?? (signal ? 1 : 0);
+  const exitCode = code ?? (signal ? 1 : 0);
+  console.error(`[swing-up-start] application child exited code=${exitCode}; terminating supervisor so Railway can apply its restart policy.`);
+  process.exit(exitCode);
 });

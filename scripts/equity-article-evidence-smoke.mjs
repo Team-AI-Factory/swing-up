@@ -42,6 +42,7 @@ assert.equal(evidence.basis, "full_article");
 assert.equal(evidence.supportedArticles, 1);
 assert.equal(report.headlineAloneCanPromoteSeriousSignal, false);
 assert.equal(report.maximumFullArticlesPerScan, 2);
+assert.equal(report.maximumConcurrentArticleReads, 4);
 
 const failedReport = await buildArticleEvidenceReport({
   candidates: [{ ...candidate, ticker: "NOPE", company: "Nope Corp", receipts: [{ ...candidate.receipts[0], url: "https://publisher.example/blocked" }] }],
@@ -51,4 +52,31 @@ const failedReport = await buildArticleEvidenceReport({
 assert.equal(Object.values(failedReport.candidates)[0].decisionGrade, false);
 assert.equal(Object.values(failedReport.candidates)[0].basis, "headline_only_blocked");
 
-console.log(JSON.stringify({ ok: true, fullArticleRequired: true, headlineOnlyBlocked: true, articleBudgetEnforced: true }, null, 2));
+let inFlight = 0;
+let maximumInFlight = 0;
+const concurrentCandidates = Array.from({ length: 8 }, (_, index) => ({
+  ...candidate,
+  ticker: `C${index}`,
+  company: `Concurrent Company ${index}`,
+  eventObservedAt: `2026-07-29T06:00:0${index}.000Z`,
+  receipts: [{
+    ...candidate.receipts[0],
+    title: `Concurrent Company ${index} receives FDA clinical hold`,
+    url: `https://issuer.example/concurrent-${index}`,
+  }],
+}));
+const concurrentReport = await buildArticleEvidenceReport({
+  candidates: concurrentCandidates,
+  fetchImpl: async () => {
+    inFlight += 1;
+    maximumInFlight = Math.max(maximumInFlight, inFlight);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    inFlight -= 1;
+    return new Response(`${html} Concurrent Company 0 1 2 3 4 5 6 7`, { status: 200, headers: { "content-type": "text/html" } });
+  },
+  maximumArticles: 8,
+});
+assert.equal(concurrentReport.diagnostics.urlsSelected, 8);
+assert.equal(maximumInFlight, 4);
+
+console.log(JSON.stringify({ ok: true, fullArticleRequired: true, headlineOnlyBlocked: true, articleBudgetEnforced: true, maximumConcurrentArticleReads: maximumInFlight }, null, 2));

@@ -136,7 +136,14 @@ async function main() {
     assert.equal(diligence.policy.primarySource, "SEC Company Facts");
     assert.equal(diligence.policy.revenueDurabilityIsOnlyAProxy, true);
     assert.equal(diligence.policy.noSyntheticData, true);
+    assert.equal(diligence.policy.rotatesFoundationAndCatalystQueues, true);
+    assert.ok(diligence.policy.maximumFreshSecCompaniesPerScan <= 12);
+    assert.ok(diligence.policy.requestTimeoutSeconds <= 8);
+    assert.ok(diligence.policy.maximumWorstCaseFreshSecStageSeconds < 60);
+    assert.ok(diligence.policy.reservedCatalystSlotsWhenBothQueuesNonEmpty >= 1);
     assert.ok(diligence.coverage.companiesCompleted > 0);
+    assert.ok(typeof diligence.coverage.foundationCompaniesQueuedForLaterScan === "number");
+    assert.ok(typeof diligence.coverage.catalystCompaniesQueuedForLaterScan === "number");
     assert.equal(diligence.warehouse.persisted, true);
     assert.ok(diligence.warehouse.latestKey.startsWith("branch-labs/pr-262/value-investing/catalyst-diligence/"));
     assert.deepEqual(diligence.warehouse.errors, []);

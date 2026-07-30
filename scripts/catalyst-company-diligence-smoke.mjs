@@ -13,7 +13,11 @@ new Function("require", "module", "exports", output)((name) => {
   throw new Error(`Unexpected import in catalyst diligence smoke: ${name}`);
 }, cjsModule, cjsModule.exports);
 
-const { evaluateCatalystDiligenceMetricsForTest } = cjsModule.exports;
+const {
+  CATALYST_DILIGENCE_EXECUTION_POLICY,
+  evaluateCatalystDiligenceMetricsForTest,
+  selectCatalystDiligenceTickersForTest,
+} = cjsModule.exports;
 
 const durable = evaluateCatalystDiligenceMetricsForTest({
   revenueCurrent: 12_000,
@@ -82,10 +86,47 @@ assert.equal(capitalHungry.fundamentalRiskConfirmed, true);
 assert.equal(capitalHungry.checks.debtLoad, "blocked");
 assert.equal(capitalHungry.checks.reinvestmentBurden, "blocked");
 
+const priorityTickers = Array.from({ length: 18 }, (_, index) => `P${String(index).padStart(2, "0")}`);
+const catalystTickers = Array.from({ length: 12 }, (_, index) => `C${String(index).padStart(2, "0")}`);
+const cycleOne = selectCatalystDiligenceTickersForTest({
+  priorityTickers,
+  catalystTickers,
+  now: new Date("2026-07-30T09:00:00.000Z"),
+});
+const cycleOneRepeated = selectCatalystDiligenceTickersForTest({
+  priorityTickers,
+  catalystTickers,
+  now: new Date("2026-07-30T09:00:00.000Z"),
+});
+const cycleTwo = selectCatalystDiligenceTickersForTest({
+  priorityTickers,
+  catalystTickers,
+  now: new Date("2026-07-30T09:05:00.000Z"),
+});
+const cycleThree = selectCatalystDiligenceTickersForTest({
+  priorityTickers,
+  catalystTickers,
+  now: new Date("2026-07-30T09:10:00.000Z"),
+});
+assert.deepEqual(cycleOneRepeated, cycleOne);
+assert.equal(cycleOne.length, 12);
+assert.equal(cycleOne.filter((ticker) => ticker.startsWith("P")).length, 8);
+assert.equal(cycleOne.filter((ticker) => ticker.startsWith("C")).length, 4);
+assert.equal(new Set([...cycleOne, ...cycleTwo, ...cycleThree].filter((ticker) => ticker.startsWith("P"))).size, priorityTickers.length);
+assert.equal(new Set([...cycleOne, ...cycleTwo, ...cycleThree].filter((ticker) => ticker.startsWith("C"))).size, catalystTickers.length);
+assert.equal(CATALYST_DILIGENCE_EXECUTION_POLICY.maximumFreshSecCompaniesPerScan, 12);
+assert.equal(CATALYST_DILIGENCE_EXECUTION_POLICY.requestTimeoutSeconds, 8);
+assert.ok(CATALYST_DILIGENCE_EXECUTION_POLICY.maximumWorstCaseFreshSecStageSeconds < 60);
+assert.equal(CATALYST_DILIGENCE_EXECUTION_POLICY.reservedCatalystSlotsWhenBothQueuesNonEmpty, 4);
+assert.equal(CATALYST_DILIGENCE_EXECUTION_POLICY.rotatesFoundationAndCatalystQueues, true);
+
 console.log(JSON.stringify({
   ok: true,
   durableCompanyConfirmed: true,
   oneTimeProfitBlocked: true,
   debtAndReinvestmentStressBlocked: true,
   directCustomerRetentionNeverInvented: true,
+  deterministicFiveMinuteRotation: true,
+  bothQueuesAdvance: true,
+  maximumWorstCaseFreshSecStageSeconds: CATALYST_DILIGENCE_EXECUTION_POLICY.maximumWorstCaseFreshSecStageSeconds,
 }, null, 2));

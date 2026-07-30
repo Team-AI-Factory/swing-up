@@ -3,7 +3,7 @@ import { isAbsolute, join } from "node:path";
 import { NextRequest, NextResponse } from "next/server";
 import { runBranchSignalLab, type BranchProviderCallDecision, type BranchProviderCallRequest } from "@/lib/branch-signal-lab";
 import { isLegacyExternalStopReason, noGainRepairAttempts, providerCallBudgetDecision, repairEligibleFailure } from "@/lib/branch-signal-lab-policy";
-import type { HistoricalAnalogHorizon, HistoricalSignalRecord } from "@/lib/equity-signal/historical-analogs";
+import { summarizeEarlyOneDayOutcomes, type HistoricalAnalogHorizon, type HistoricalSignalRecord } from "@/lib/equity-signal/historical-analogs";
 import { getR2Config, readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 
 export const dynamic = "force-dynamic";
@@ -907,6 +907,10 @@ export async function GET() {
     && lastRunAgeSeconds <= effectiveIntervalSeconds + 120;
   const runtimeWorker = await runtimeWorkerStatus();
   const scanLease = activeScanLease(history, Date.now());
+  const earlyOneDayOutcomeTelemetry = summarizeEarlyOneDayOutcomes(
+    historicalLibrary.library.records,
+    { asOf: new Date().toISOString() },
+  );
   return NextResponse.json({
     ok: true,
     mode: "railway_branch_live_read_only",
@@ -960,6 +964,7 @@ export async function GET() {
       distinctRootEventCount: new Set(historicalLibrary.library.records.map((item) => item.rootEventKey?.trim() || item.eventKey.trim()).filter(Boolean)).size,
       earliestSignalObservedAt: historicalLibrary.library.records[0]?.signalObservedAt ?? null,
       latestSignalObservedAt: historicalLibrary.library.records.at(-1)?.signalObservedAt ?? null,
+      earlyOneDayOutcomeTelemetry,
       updatedAt: historicalLibrary.library.updatedAt,
       error: historicalLibrary.error,
       mockOrSyntheticRecordCount: historicalLibrary.library.records.filter((item) => item.dataQuality !== "real").length,
@@ -1133,6 +1138,14 @@ async function executePost(request: NextRequest) {
     r2LibraryQuarantinedRecordCount: historicalLibrary.library.records.filter((item) => historicalLearningUse(item) === "quarantined").length,
     r2LibraryDistinctRootEventCount: new Set(historicalLibrary.library.records.map((item) => item.rootEventKey?.trim() || item.eventKey.trim()).filter(Boolean)).size,
     r2LibraryMockOrSyntheticRecordCount: historicalLibrary.library.records.filter((item) => item.dataQuality !== "real").length,
+    earlyOneDayOutcomeTelemetry: summarizeEarlyOneDayOutcomes(
+      historicalLibrary.library.records,
+      {
+        asOf: typeof report.checkedAt === "string" && Number.isFinite(Date.parse(report.checkedAt))
+          ? report.checkedAt
+          : new Date().toISOString(),
+      },
+    ),
     r2LibraryError: historicalLibrary.error,
   };
   const repairFailure = repairEligibleFailure(report);

@@ -13,7 +13,8 @@ export type BranchNewsChannel =
   | "federal_register"
   | "bls"
   | "bea"
-  | "openfda";
+  | "openfda"
+  | "nasdaq_trade_halts";
 
 export type BalancedReceipt = {
   title: string;
@@ -30,7 +31,7 @@ function clamp(value: number) {
 const HEADLINE_STOP_WORDS = new Set(["a", "an", "and", "as", "at", "by", "for", "from", "in", "is", "of", "on", "or", "the", "to", "with"]);
 const COMPANY_SUFFIXES = /\b(?:incorporated|inc|corporation|corp|company|co|limited|ltd|plc|holdings?|group|class [a-z])\b/gi;
 const AMBIGUOUS_EQUITY_TICKERS = new Set(["A", "AI", "ALL", "ARE", "ARM", "CAN", "CAT", "CAR", "COST", "FOR", "IT", "LIFE", "LOVE", "ON", "OPEN", "OR", "SEE", "SO", "T", "UP", "W"]);
-const AMBIGUOUS_COMPANY_NAMES = new Set(["american", "capital", "central", "digital", "eastern", "energy", "financial", "first", "freedom", "general", "global", "health", "international", "national", "new", "northern", "pacific", "people", "resources", "royal", "services", "southern", "systems", "technology", "technologies", "trust", "united", "western", "world"]);
+const AMBIGUOUS_COMPANY_NAMES = new Set(["american", "capital", "central", "digital", "eastern", "energy", "financial", "first", "freedom", "general", "global", "health", "international", "joint", "national", "new", "northern", "pacific", "people", "resources", "royal", "services", "southern", "systems", "technology", "technologies", "trust", "united", "western", "world"]);
 const INTEL_ISSUER_CONTEXT = /\b(?:intel(?:['’]s)?(?:\s+(?:corp(?:oration)?))?\s+(?:announces?|launches?|unveils?|reports?|earnings|guidance|shares?|stock|chips?|semiconductors?|processors?|cpus?|foundry)|(?:shares?|stock|chips?|semiconductors?|processors?|cpus?|foundry)\s+(?:(?:from|of|at|by)\s+)?intel)\b/i;
 const SINGLE_TOKEN_ISSUER_ACTIONS = "announces?|appoints?|awards?|closes?|completes?|cuts?|declares?|expands?|files?|guidance|launches?|merges?|raises?|recalls?|reports?|resigns?|secures?|shares?|stock|unveils?|wins?";
 

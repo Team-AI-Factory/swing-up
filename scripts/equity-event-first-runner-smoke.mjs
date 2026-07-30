@@ -70,6 +70,7 @@ const committeePacks = [];
 const fundamentalsCandidates = [];
 const failedFundamentalsTickers = new Set();
 let candidateFixtures = [candidate];
+let sourceReceiptFixtures = [receipt];
 const stubs = {
   "@/lib/ai-committee/orchestrator": { TRUSTED_IN_MEMORY_EVIDENCE: trusted, runAiCommittee: async (input) => {
     committeePacks.push(structuredClone(input[trusted]));
@@ -83,12 +84,12 @@ const stubs = {
     }
     return {
       candidates: values,
-      findingAuditLedger: values.map((value) => ({ ticker: value.ticker, rootEventKey: value.rootEventKey, trackingDisposition: value.trackingDisposition, receiptIds: [receipt.id] })),
+      findingAuditLedger: values.map((value) => ({ ticker: value.ticker, rootEventKey: value.rootEventKey, trackingDisposition: value.trackingDisposition, failedGateChecks: value.failedGateChecks, receiptIds: [receipt.id] })),
       findingReceiptProofDictionary: { [receipt.id]: { id: receipt.id, title: receipt.title, summary: receipt.summary, publisher: receipt.publisher, url: receipt.url, publishedAt: receipt.publishedAt, channel: receipt.channel, official: receipt.official, primarySource: receipt.primarySource } },
       diagnostics: { mappedRelationships: values.length, eventClusters: values.length, directCandidates: values.length, rippleCandidates: 0 },
     };
   }, fingerprintCandidate: (value) => `event-${value.rootEventKey}`, reassessCandidateAfterFundamentals: (value) => value },
-  "@/lib/equity-signal/event-sources": { collectEventSources: async () => ({ providers: [provider("official_events")], receipts: [receipt], secFilingDetails: { selected: 0, enriched: 0, failed: 0 } }) },
+  "@/lib/equity-signal/event-sources": { collectEventSources: async () => ({ providers: [provider("official_events")], receipts: structuredClone(sourceReceiptFixtures), secFilingDetails: { selected: 0, enriched: 0, failed: 0 } }) },
   "@/lib/equity-signal/fundamentals": { enrichCandidateFundamentals: async (value) => {
     fundamentalsCandidates.push(value?.ticker ?? null);
     const result = provider("sec_company_facts");
@@ -102,6 +103,16 @@ const stubs = {
   "@/lib/equity-signal/historical-bootstrap": {
     bootstrapPublicHistoricalSignals: async () => ({ records: [], provider: provider("public_historical_price_bootstrap"), seedsAvailable: 5, seedsRemaining: 0 }),
     mergeHistoricalSignals: (...groups) => groups.flat(),
+  },
+  "@/lib/equity-signal/historical-analogs": {
+    summarizeEarlyOneDayOutcomes: (records, { asOf }) => ({
+      reportingOnly: true,
+      changesSeriousSignalPermission: false,
+      changesMatureHorizonForecast: false,
+      horizon: "1D",
+      asOf,
+      independentRootEventCount: records.filter((item) => item.checkpoints?.["1D"]).length,
+    }),
   },
   "@/lib/equity-signal/macro": { fetchMacroContext: async () => ({ context: { checkedAt: "2026-07-22T10:00:00.000Z", status: "connected", series: [], regime: ["normal"], historicalComparisonAvailable: false, errors: [] }, provider: { provider: "fred", status: "connected" } }) },
   "@/lib/equity-signal/market": { enrichCandidateQuotes: async (values, _fetchImpl, _now, maximum = 3) => {
@@ -139,6 +150,10 @@ assert.equal(held.liveSourcePolicy.postEventOnePercentMoveRequired, false);
 assert.equal(held.selectedCandidate.quote.changePercent, 0);
 assert.equal(held.status, "qualified_signal_openai_not_requested");
 assert.equal(held.mappedFindingReceiptProofDictionary[receipt.id].title, receipt.title);
+assert.equal(held.candidateLearningTelemetry.reportingOnly, true);
+assert.equal(held.candidateLearningTelemetry.changesCurrentEvidenceGate, false);
+assert.equal(held.candidateLearningTelemetry.byDisposition.qualified.findingCount, 1);
+assert.equal(held.candidateLearningTelemetry.distinctRootEventCount, 1);
 
 const approved = await runEquitySignalLab({ now: new Date("2026-07-22T10:00:00.000Z"), allowOpenAi: true, beforeOpenAiCall: async () => true });
 assert.equal(approved.seriousSignalFound, true);
@@ -189,6 +204,18 @@ candidateFixtures = [
     quote: { ...candidate.quote, ticker: "SHD" },
   },
   { ...candidate, score: 84 },
+  {
+    ...candidate,
+    ticker: "REJ",
+    company: "Rejected Corp",
+    rootEventKey: "root-rejected",
+    score: 30,
+    gatePassed: false,
+    trackingDisposition: "rejected",
+    failedGateChecks: ["verifiedEventTruth", "eventMagnitudeActionable"],
+    gateChecks: { ...candidate.gateChecks, verifiedEventTruth: false, eventMagnitudeActionable: false },
+    quote: { ...candidate.quote, ticker: "REJ" },
+  },
 ];
 const skipImmaterial = await runEquitySignalLab({ now: new Date("2026-07-22T10:00:00.000Z"), allowOpenAi: true, beforeOpenAiCall: async () => true });
 assert.equal(skipImmaterial.selectedCandidate.ticker, "EXM");
@@ -197,6 +224,12 @@ assert.deepEqual(fundamentalsCandidates.sort(), ["EXM", "SHD"]);
 assert.equal(skipImmaterial.fundamentalsCandidateChecks.find((item) => item.ticker === "SHD")?.status, "temporarily_unavailable");
 assert.equal(committeePacks.at(-1).sourceHealth.find((item) => item.source === "sec_company_facts")?.status, "connected");
 assert.equal(committeePacks.at(-1).sourceHealth.some((item) => item.problem === "sec_timeout_SHD"), false);
+assert.equal(skipImmaterial.candidateLearningTelemetry.byDisposition.qualified.findingCount, 1);
+assert.equal(skipImmaterial.candidateLearningTelemetry.byDisposition.shadow_near_miss.findingCount, 1);
+assert.equal(skipImmaterial.candidateLearningTelemetry.byDisposition.rejected.findingCount, 1);
+assert.equal(skipImmaterial.candidateLearningTelemetry.failedGateGroups.find((item) => item.failedGateCheck === "eventMagnitudeActionable")?.findingCount, 2);
+assert.equal(skipImmaterial.candidateLearningTelemetry.failedGateGroups.find((item) => item.failedGateCheck === "verifiedEventTruth")?.rejectedFindingCount, 1);
+assert.equal(skipImmaterial.candidateLearningTelemetry.rootEventGroups.length, 3);
 
 candidateFixtures = [
   { ...candidate, rootEventKey: "same-ticker-event-a", eventHeadline: "Older reviewed event", score: 90 },
@@ -227,4 +260,84 @@ assert.equal(cooldownDoesNotStarveFreshEvent.selectedCandidate.rootEventKey, "fr
 assert.equal(cooldownDoesNotStarveFreshEvent.selectedCandidate.quote.ticker, "DDD");
 assert.equal(cooldownDoesNotStarveFreshEvent.openAiCalled, true);
 
-console.log(JSON.stringify({ ok: true, eventQualifiedAtZeroPercentMove: true, cryptoDisabled: true, priorMoveNotRequired: true, strictCommitteeStillRequired: true, buyWithoutHistoricalComparison: true, committeeDecisionInvariantToHistory: true, historyStillStoredAndRefined: true, buyAfterCalibration: true, higherRankedImmaterialCandidateSkipped: true, shadowNearMissTrackedSeparately: true, noWritesOrPublishing: true }, null, 2));
+candidateFixtures = [
+  {
+    ...candidate,
+    ticker: "WCH",
+    company: "Watch Stage Corp",
+    rootEventKey: "higher-score-watch",
+    eventFamily: "regulatory_advisory",
+    score: 99,
+  },
+  {
+    ...candidate,
+    rootEventKey: "lower-score-actionable",
+    score: 84,
+  },
+];
+const actionableCandidateReviewedBeforeWatchOnly = await runEquitySignalLab({
+  now: new Date("2026-07-22T10:00:00.000Z"),
+  allowOpenAi: true,
+  beforeOpenAiCall: async () => true,
+});
+assert.equal(actionableCandidateReviewedBeforeWatchOnly.selectedCandidate.rootEventKey, "lower-score-actionable");
+assert.equal(actionableCandidateReviewedBeforeWatchOnly.selectedCandidate.alertReadiness, "actionable_candidate");
+assert.equal(actionableCandidateReviewedBeforeWatchOnly.alertType, "buy");
+
+candidateFixtures = [{
+  ...candidate,
+  rootEventKey: "proposed-offering-watch",
+  eventFamily: "financing_proposal",
+  direction: "downside",
+  pricedInPenalty: 0,
+}];
+const stagedOfferingWatch = await runEquitySignalLab({
+  now: new Date("2026-07-22T10:00:00.000Z"),
+  allowOpenAi: true,
+  beforeOpenAiCall: async () => true,
+});
+assert.equal(stagedOfferingWatch.seriousSignalFound, true);
+assert.equal(stagedOfferingWatch.actionableSignalFound, false);
+assert.equal(stagedOfferingWatch.alertType, "watch");
+assert.equal(stagedOfferingWatch.selectedCandidate.alertReadiness, "watch_event_stage");
+
+candidateFixtures = [{
+  ...candidate,
+  rootEventKey: "already-repriced-watch",
+  pricedInPenalty: 70,
+}];
+const repricedWatch = await runEquitySignalLab({
+  now: new Date("2026-07-22T10:00:00.000Z"),
+  allowOpenAi: true,
+  beforeOpenAiCall: async () => true,
+});
+assert.equal(repricedWatch.seriousSignalFound, true);
+assert.equal(repricedWatch.actionableSignalFound, false);
+assert.equal(repricedWatch.alertType, "watch");
+assert.equal(repricedWatch.selectedCandidate.alertReadiness, "watch_already_repriced");
+
+sourceReceiptFixtures = [receipt, {
+  ...receipt,
+  id: "halt-exm",
+  title: "EXM official trading halt (T1)",
+  summary: "No resumption time is present.",
+  url: "https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts",
+  publisher: "Nasdaq Trader",
+  channel: "nasdaq_trade_halts",
+  symbolHints: ["EXM"],
+  rawEventType: "halt:T1:active",
+}];
+candidateFixtures = [{ ...candidate, rootEventKey: "halted-event", pricedInPenalty: 0 }];
+const haltedWatch = await runEquitySignalLab({
+  now: new Date("2026-07-22T10:00:00.000Z"),
+  allowOpenAi: true,
+  beforeOpenAiCall: async () => true,
+});
+assert.equal(haltedWatch.seriousSignalFound, true);
+assert.equal(haltedWatch.actionableSignalFound, false);
+assert.equal(haltedWatch.alertType, "watch");
+assert.equal(haltedWatch.selectedCandidate.alertReadiness, "watch_trading_halt");
+assert.equal(haltedWatch.selectedCandidate.quote.marketSession, "halted");
+assert.equal(haltedWatch.selectedCandidate.receipts.some((item) => item.id === "halt-exm"), true);
+
+console.log(JSON.stringify({ ok: true, eventQualifiedAtZeroPercentMove: true, cryptoDisabled: true, priorMoveNotRequired: true, strictCommitteeStillRequired: true, buyWithoutHistoricalComparison: true, committeeDecisionInvariantToHistory: true, historyStillStoredAndRefined: true, buyAfterCalibration: true, higherRankedImmaterialCandidateSkipped: true, shadowNearMissTrackedSeparately: true, actionableCandidateReviewedBeforeWatchOnly: true, stagedOfferingCanBecomeWatch: true, materiallyRepricedEventCannotBecomeBuySell: true, officialTradingHaltForcesWatch: true, noWritesOrPublishing: true }, null, 2));

@@ -33,6 +33,14 @@ const routeRequire = (specifier) => {
     providerCallBudgetDecision: () => ({ allowed: false }),
     repairEligibleFailure: () => null,
   };
+  if (specifier === "@/lib/equity-signal/historical-analogs") return {
+    summarizeEarlyOneDayOutcomes: () => ({
+      reportingOnly: true,
+      changesSeriousSignalPermission: false,
+      changesMatureHorizonForecast: false,
+      horizon: "1D",
+    }),
+  };
   if (specifier === "@/lib/equity-signal/historical-bootstrap") return { mergeHistoricalSignals: (...groups) => groups.flat() };
   if (specifier === "@/lib/r2-warehouse") return {
     getR2Config: () => ({ configured: false }),
@@ -140,6 +148,9 @@ assert.equal(policy.matchesEquityText("President declassifies intel on foreign e
 assert.equal(policy.matchesEquityText("Intel launches a new semiconductor processor", { name: "INTEL CORP", ticker: "INTC", aliases: ["Intel"] }), true);
 assert.equal(policy.matchesEquityText("People gathered for the government announcement", { name: "People Inc", ticker: "PPLI", aliases: ["People"] }), false);
 assert.equal(policy.matchesEquityText("People Inc announces quarterly earnings", { name: "People Inc", ticker: "PPLI", aliases: ["People"] }), true);
+assert.equal(policy.matchesEquityText("CISA and its partners publish joint guidance for corporate software users", { name: "JOINT Corp", ticker: "JYNT", aliases: ["The Joint"] }), false);
+assert.equal(policy.matchesEquityText("The Joint Corp reports quarterly earnings", { name: "JOINT Corp", ticker: "JYNT", aliases: ["The Joint"] }), true);
+assert.equal(policy.matchesEquityText("$JYNT shares react to new guidance", { name: "JOINT Corp", ticker: "JYNT", aliases: ["The Joint"] }), true);
 
 const eventReceipt = { title: "Microsoft signs major cloud agreement", publisher: "sec.gov", publishedAt: "2026-07-19T00:14:00.000Z", channel: "sec_current_filings", url: "https://www.sec.gov/Archives/example.htm?tracking=one" };
 const sameEventReceipt = { ...eventReceipt, publishedAt: "2026-07-19T00:58:00.000Z", url: "https://www.sec.gov/Archives/example.htm?tracking=two" };
@@ -480,6 +491,10 @@ assert.match(routeSource, /pendingProviderReservations/);
 assert.match(routeSource, /queueMicrotask\(flushProviderReservations\)/);
 assert.match(routeSource, /if \(addedReservation\) storage = await saveHistory\(history, storage\)/);
 assert.match(routeSource, /shadowOutcomeTrackingCandidates/);
+assert.match(
+  readFileSync(new URL("../lib/branch-signal-lab.ts", import.meta.url), "utf8"),
+  /quotaKey: "nasdaq_trader_trade_halts"[\s\S]{0,180}maximumCallsInWindow: 300[\s\S]{0,100}minimumIntervalMs: 4\.5 \* minute/,
+);
 assert.match(routeSource, /findingDisposition:\s*FindingDisposition/);
 assert.match(routeSource, /learningUse:\s*LearningUse/);
 assert.match(routeSource, /exactApprovedFingerprint/);
@@ -489,6 +504,8 @@ assert.match(routeSource, /rootEventKey/);
 assert.match(routeSource, /rootUsefulnessAggregation/);
 assert.match(routeSource, /alertWaitsForOutcomes:\s*false/);
 assert.match(routeSource, /checkpointsArePostSignalLearningOnly:\s*true/);
+assert.match(routeSource, /earlyOneDayOutcomeTelemetry:\s*summarizeEarlyOneDayOutcomes/);
+assert.match(routeSource, /historicalOutcomeLibrary:\s*\{/);
 assert.match(routeSource, /containsCompleteFindingAuditLedger:\s*true/);
 assert.match(routeSource, /containsCompleteMappedFindingReceiptProofDictionary:\s*true/);
 assert.match(routeSource, /mappedFindingAuditLedger:\s*undefined/);
@@ -528,6 +545,7 @@ console.log(JSON.stringify({
   rootUsefulnessRequiresJointPerEffectSuccess: true,
   rootUsefulnessMajorityRequiredAndTiesFail: true,
   checkpointsNeverGateImmediateSignals: true,
+  earlyOneDayLearningReportedWithoutChangingForecasts: true,
   completeFindingProofArchivedWithoutBloatedRollingState: true,
   legacyMarketauxReservationsCountTowardCurrentPlan: true,
   externalFailuresNotRepairEligible: true,

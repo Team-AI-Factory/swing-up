@@ -28,6 +28,9 @@ function providerCallRequest(value: RequestInfo | URL, now: Date): BranchProvide
   const host = url.hostname.toLowerCase();
   const path = url.pathname.toLowerCase();
 
+  if (host === "www.nasdaqtrader.com" && path === "/rss.aspx" && url.searchParams.get("feed")?.toLowerCase() === "tradehalts") {
+    return { ...base, provider: "nasdaq_trader", quotaKey: "nasdaq_trader_trade_halts", cadenceKey: "nasdaq_trader_trade_halts", rollingWindowMs: day, maximumCallsInWindow: 300, minimumIntervalMs: 4.5 * minute };
+  }
   if (host === "www.nasdaqtrader.com") {
     return { ...base, provider: "nasdaq_trader", quotaKey: "nasdaq_trader_equity_universe", cadenceKey: `nasdaq_trader:${path}`, rollingWindowMs: day, maximumCallsInWindow: 4, minimumIntervalMs: 4.5 * minute };
   }

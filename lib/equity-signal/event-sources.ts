@@ -11,6 +11,7 @@ const COMMERCE_NEWS_API_URL = "https://api.commerce.gov/api/news";
 const ALPHA_VANTAGE_URL = "https://www.alphavantage.co/query";
 const FEDERAL_REGISTER_URL = "https://www.federalregister.gov/api/v1/documents.json";
 const OPENFDA_URL = "https://api.fda.gov/drug/enforcement.json";
+const NASDAQ_TRADE_HALTS_URL = "https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts";
 const SEC_FORMS = ["8-K", "6-K", "424B5", "424B3", "10-Q", "10-K", "S-1", "S-3", "SC 13D", "SC 13G", "4"] as const;
 
 type OfficialFeed = { provider: string; channel: BranchNewsChannel; url: string; publisher: string };
@@ -33,6 +34,7 @@ const PROVIDER_RECEIPT_FRESHNESS_MS: Record<string, number> = {
   alpha_vantage_earnings_calendar: 8 * 24 * 60 * 60 * 1000,
   federal_register: 7 * 24 * 60 * 60 * 1000,
   openfda: 14 * 24 * 60 * 60 * 1000,
+  nasdaq_trade_halts: 15 * 60 * 1000,
   sec_edgar_current_filings: 48 * 60 * 60 * 1000,
   federal_reserve: 7 * 24 * 60 * 60 * 1000,
   bls: 7 * 24 * 60 * 60 * 1000,
@@ -45,6 +47,7 @@ const PROVIDER_RECEIPT_FRESHNESS_MS: Record<string, number> = {
   defense_department: 7 * 24 * 60 * 60 * 1000,
 };
 const lastGoodProviderResults = new Map<string, ProviderResult>();
+const providerFailureStreaks = new Map<string, number>();
 
 function text(value: unknown, maximum = 2_000) {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, maximum) : "";
@@ -147,6 +150,9 @@ function result(input: Partial<ProviderResult> & Pick<ProviderResult, "provider"
     error: input.error ?? null,
     entitlementVerified: input.entitlementVerified ?? input.status === "connected",
     cached: input.cached ?? false,
+    responseTimeMs: input.responseTimeMs ?? null,
+    cacheAgeMs: input.cacheAgeMs ?? null,
+    consecutiveFailures: input.consecutiveFailures ?? 0,
   };
 }
 
@@ -183,6 +189,9 @@ function aggregateProviderRows(rows: ProviderResult[]) {
       error: failures.length ? `${connectedRows.length ? "partial_source_failure" : "source_failure"}:${[...new Set(failures)].join("|")}` : null,
       entitlementVerified: connectedRows.some((row) => row.entitlementVerified),
       cached: providerRows.some((row) => row.cached),
+      responseTimeMs: Math.max(0, ...providerRows.map((row) => row.responseTimeMs ?? 0)),
+      cacheAgeMs: Math.max(0, ...providerRows.map((row) => row.cacheAgeMs ?? 0)),
+      consecutiveFailures: Math.max(0, ...providerRows.map((row) => row.consecutiveFailures ?? 0)),
     });
   });
 }
@@ -212,9 +221,16 @@ function cachedReceiptsStillFresh(provider: string, receipts: EventReceipt[], no
 
 function withLastGoodCache(current: ProviderResult, now: Date): ProviderResult {
   if (current.status === "connected") {
+    providerFailureStreaks.set(current.provider, 0);
     if (current.receipts.length > 0) lastGoodProviderResults.set(current.provider, cloneProviderResult(current));
-    return current;
+    return { ...current, consecutiveFailures: 0 };
   }
+  if (current.status === "not_due") {
+    return { ...current, consecutiveFailures: providerFailureStreaks.get(current.provider) ?? 0 };
+  }
+  const consecutiveFailures = (providerFailureStreaks.get(current.provider) ?? 0) + 1;
+  providerFailureStreaks.set(current.provider, consecutiveFailures);
+  current = { ...current, consecutiveFailures };
   if (!CACHEABLE_FAILURES.has(current.status)) return current;
   const previous = lastGoodProviderResults.get(current.provider);
   if (!previous) return current;
@@ -236,6 +252,9 @@ function withLastGoodCache(current: ProviderResult, now: Date): ProviderResult {
     recordsRead: receipts.length,
     entitlementVerified: current.entitlementVerified || previous.entitlementVerified,
     cached: true,
+    responseTimeMs: current.responseTimeMs,
+    cacheAgeMs: previous.checkedAt ? Math.max(0, now.getTime() - Date.parse(previous.checkedAt)) : null,
+    consecutiveFailures,
   });
 }
 
@@ -313,7 +332,8 @@ function compositeGoogleQuery(now: Date) {
     '("AI breakthrough" OR "technology breakthrough" OR semiconductor OR "clinical trial" OR keynote OR "investor day" OR "live conference") (company OR stocks)',
     '(Federal Reserve OR inflation OR jobs OR tariff OR sanctions OR war OR cyberattack OR oil OR Treasury OR "White House") (market OR stocks OR economy)',
   ];
-  return `${buckets[Math.floor(now.getTime() / (5 * 60_000)) % buckets.length]} when:1h`;
+  const urgent = '("FDA panel vote" OR "FDA advisory committee vote" OR "prices public offering" OR "public offering pricing" OR "trading halt")';
+  return `(${buckets[Math.floor(now.getTime() / (5 * 60_000)) % buckets.length]} OR ${urgent}) when:1h`;
 }
 
 export async function fetchGoogleDiscovery(fetchImpl: typeof fetch, now: Date): Promise<ProviderResult> {
@@ -335,8 +355,8 @@ export async function fetchGoogleDiscovery(fetchImpl: typeof fetch, now: Date): 
 export async function fetchGdeltDiscovery(fetchImpl: typeof fetch, now: Date): Promise<ProviderResult> {
   const url = new URL(GDELT_URL);
   const queryBuckets = [
-    '(earnings OR guidance OR acquisition OR merger OR "product launch" OR "contract award" OR recall OR investigation OR offering) sourcelang:english',
-    '("AI breakthrough" OR "technology breakthrough" OR semiconductor OR cyberattack OR "clinical trial" OR "FDA approval") sourcelang:english',
+    '(earnings OR guidance OR acquisition OR merger OR "product launch" OR "contract award" OR recall OR investigation OR offering OR "public offering pricing") sourcelang:english',
+    '("AI breakthrough" OR "technology breakthrough" OR semiconductor OR cyberattack OR "clinical trial" OR "FDA approval" OR "FDA panel vote" OR "FDA advisory committee vote" OR "trading halt") sourcelang:english',
     '(sanctions OR tariff OR "military strike" OR invasion OR oil OR "supply chain" OR "Federal Reserve" OR inflation OR jobs OR Treasury) sourcelang:english',
   ];
   url.searchParams.set("query", queryBuckets[Math.floor(now.getTime() / (15 * 60_000)) % queryBuckets.length]);
@@ -525,10 +545,11 @@ export async function fetchAlphaEarningsCalendar(fetchImpl: typeof fetch, now: D
 
 export async function fetchOfficialFeeds(fetchImpl: typeof fetch, now: Date): Promise<ProviderResult[]> {
   const settled = await Promise.allSettled(OFFICIAL_FEEDS.map(async (feed) => {
+    const startedAt = Date.now();
     const { body } = await fetchText(fetchImpl, feed.url, "application/rss+xml,application/atom+xml,text/xml", 15_000);
     if (!isSyndicationFeed(body)) throw new Error("invalid_feed_payload");
     const receipts = parseRss(body, { channel: feed.channel, publisher: feed.publisher, official: true, now });
-    return result({ provider: feed.provider, status: "connected", checkedAt: now.toISOString(), sourceUrls: [feed.url], receipts, recordsRead: receipts.length, entitlementVerified: true });
+    return result({ provider: feed.provider, status: "connected", checkedAt: now.toISOString(), sourceUrls: [feed.url], receipts, recordsRead: receipts.length, entitlementVerified: true, responseTimeMs: Date.now() - startedAt });
   }));
   const rows = settled.map((item, index) => {
     if (item.status === "fulfilled") return item.value;
@@ -593,6 +614,40 @@ export async function fetchOpenFdaRecalls(fetchImpl: typeof fetch, now: Date): P
   }
 }
 
+export async function fetchNasdaqTradeHalts(fetchImpl: typeof fetch, now: Date): Promise<ProviderResult> {
+  try {
+    const { body } = await fetchText(fetchImpl, NASDAQ_TRADE_HALTS_URL, "application/rss+xml,text/xml", 15_000);
+    if (!isSyndicationFeed(body)) throw new Error("invalid_trade_halt_feed");
+    const blocks = [...body.matchAll(/<item\b[\s\S]*?<\/item>/gi)].map((match) => match[0]);
+    const receipts = blocks.flatMap((block): EventReceipt[] => {
+      const symbol = normalizeEquitySymbol(xmlTag(block, "IssueSymbol") || xmlTag(block, "symbol"));
+      const company = (xmlTag(block, "IssueName") || xmlTag(block, "title")).slice(0, 180);
+      const reasonCode = (xmlTag(block, "ReasonCode") || xmlTag(block, "reason")).slice(0, 40).toUpperCase();
+      const publishedAt = validDate(xmlTag(block, "pubDate") || xmlTag(block, "date"), now, 3 * 24 * 60 * 60 * 1000);
+      const resumed = Boolean(xmlTag(block, "ResumptionDate") || xmlTag(block, "ResumptionTradeTime") || xmlTag(block, "ResumptionQuoteTime"));
+      if (!symbol || !publishedAt) return [];
+      return [makeReceipt({
+        title: `${symbol} ${resumed ? "trading halt resumed" : "official trading halt"}${reasonCode ? ` (${reasonCode})` : ""}`,
+        summary: `${company || symbol} is listed in Nasdaq Trader's official trade-halt feed${reasonCode ? ` with reason code ${reasonCode}` : ""}.${resumed ? " A resumption time is present." : " No resumption time is present."}`,
+        url: NASDAQ_TRADE_HALTS_URL,
+        publisher: "Nasdaq Trader",
+        publishedAt,
+        channel: "nasdaq_trade_halts",
+        official: true,
+        primarySource: true,
+        scheduled: false,
+        symbolHints: [symbol],
+        companyHints: company ? [company] : [],
+        rawEventType: `halt:${reasonCode || "unknown"}:${resumed ? "resumed" : "active"}`,
+      })];
+    });
+    return result({ provider: "nasdaq_trade_halts", status: "connected", checkedAt: now.toISOString(), sourceUrls: [NASDAQ_TRADE_HALTS_URL], receipts, recordsRead: receipts.length, entitlementVerified: true });
+  } catch (error) {
+    const failure = publicFeedErrorCategory(error);
+    return result({ provider: "nasdaq_trade_halts", status: failure.status, sourceUrls: [NASDAQ_TRADE_HALTS_URL], error: failure.error });
+  }
+}
+
 export async function collectEventSources(fetchImpl: typeof fetch, now: Date) {
   const tasks: Array<{ provider: string; sourceUrls: string[]; run: () => Promise<ProviderResult> }> = [
     { provider: "sec_edgar_current_filings", sourceUrls: ["https://www.sec.gov/cgi-bin/browse-edgar"], run: () => fetchSecCurrentFilings(fetchImpl, now) },
@@ -604,20 +659,26 @@ export async function collectEventSources(fetchImpl: typeof fetch, now: Date) {
     { provider: "alpha_vantage_earnings_calendar", sourceUrls: [ALPHA_VANTAGE_URL], run: () => fetchAlphaEarningsCalendar(fetchImpl, now) },
     { provider: "federal_register", sourceUrls: [FEDERAL_REGISTER_URL], run: () => fetchFederalRegister(fetchImpl, now) },
     { provider: "openfda", sourceUrls: [OPENFDA_URL], run: () => fetchOpenFdaRecalls(fetchImpl, now) },
+    { provider: "nasdaq_trade_halts", sourceUrls: [NASDAQ_TRADE_HALTS_URL], run: () => fetchNasdaqTradeHalts(fetchImpl, now) },
   ];
+  const timedTask = async (task: typeof tasks[number]) => {
+    const startedAt = Date.now();
+    try {
+      const provider = await task.run();
+      return { ...provider, responseTimeMs: Date.now() - startedAt };
+    } catch (error) {
+      const failure = errorCategory(error);
+      return result({ provider: task.provider, status: failure.status, sourceUrls: task.sourceUrls, error: failure.error, responseTimeMs: Date.now() - startedAt });
+    }
+  };
   const [taskResults, officialFeedResult] = await Promise.all([
-    Promise.allSettled(tasks.map((task) => task.run())),
+    Promise.all(tasks.map(timedTask)),
     fetchOfficialFeeds(fetchImpl, now).catch((error) => {
       const failure = publicFeedErrorCategory(error);
       return aggregateProviderRows(OFFICIAL_FEEDS.map((feed) => result({ provider: feed.provider, status: failure.status, sourceUrls: [feed.url], error: failure.error })));
     }),
   ]);
-  const isolatedResults = taskResults.map((item, index) => {
-    if (item.status === "fulfilled") return item.value;
-    const failure = errorCategory(item.reason);
-    return result({ provider: tasks[index].provider, status: failure.status, sourceUrls: tasks[index].sourceUrls, error: failure.error });
-  });
-  const baseProviders = aggregateProviderRows([...isolatedResults, ...officialFeedResult]).map((provider) => withLastGoodCache(provider, now));
+  const baseProviders = aggregateProviderRows([...taskResults, ...officialFeedResult]).map((provider) => withLastGoodCache(provider, now));
   const baseReceipts = selectBalancedReceipts(baseProviders.flatMap((provider) => provider.receipts), 500);
   const detailRunDue = Math.floor(now.getTime() / (5 * 60_000)) % 12 === 0;
   const detailResult = detailRunDue ? await enrichSecFilingDetails(baseReceipts, fetchImpl, now) : null;

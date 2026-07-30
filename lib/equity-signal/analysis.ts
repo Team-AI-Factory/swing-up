@@ -25,13 +25,18 @@ type MappedEvent = {
 
 const NOISE = /\b(price target|technical analysis|stock picks?|stocks? to buy|should you buy|prediction|opinion|sponsored|top \d+ stocks?|(?:increases?|decreases?|reduces?|raises?|cuts?) (?:its )?(?:stake|position) in)\b/i;
 const RUMOUR = /\b(rumou?r|reportedly considering|unconfirmed|sources? say|may be planning|could announce|speculation)\b/i;
-const GENERIC_COMPANY_TOKENS = new Set(["american", "capital", "company", "corp", "digital", "energy", "financial", "first", "freedom", "general", "global", "group", "health", "holding", "holdings", "international", "national", "resources", "royal", "services", "systems", "technology", "technologies", "trust", "united", "world"]);
+const GENERIC_COMPANY_TOKENS = new Set(["american", "capital", "company", "corp", "digital", "energy", "financial", "first", "freedom", "general", "global", "group", "health", "holding", "holdings", "international", "joint", "national", "resources", "royal", "services", "systems", "technology", "technologies", "trust", "united", "world"]);
 const ACTIVE_CONFLICT = /\b(military strikes?|airstrikes?|missile (?:attack|launch|strike)|invasion|armed conflict|shipping attack|red sea attack|hostilities|troops? (?:invade|deploy|mobilize)|war (?:erupts|escalates|breaks out|begins|widens|intensifies)|(?:declares?|declaration of) war|ceasefire (?:breaks|collapses)|conflict (?:erupts|escalates|widens|intensifies))\b/i;
 const EXPOSURE_LINK = /\b(customer|supplier|vendor|sole[- ]source|depends? on|reliant on|exposure to|derives? (?:about |approximately )?\d+(?:\.\d+)?% (?:of )?(?:its )?revenue from|operations? in|manufactur(?:es|ing) in|sources? from|fuel costs?|input costs?|policy exposure|tariff exposure|commodity exposure)\b/i;
 const MAGNITUDE_SENSITIVE_FAMILIES = new Set<EventFamily>(["contract_award", "financing_dilution", "earnings_guidance", "regulatory_enforcement"]);
 const EXTERNAL_EXPOSURE_FAMILIES = new Set<EventFamily>(["macro_rates", "macro_inflation", "geopolitical_conflict", "sanctions_trade", "energy_commodity", "supply_chain"]);
 const NON_ACTIONABLE_OFFERING = /\b(shelf|at-the-market|ATM program|proposed|planned|plans? to|intends? to|seeks? to|may offer|might offer|could offer|selling stockholder|secondary offering|secondary sale)\b/i;
 const ACTIONABLE_OFFERING = /\b(priced|completed|closed|issued|company is issuing|commenced)\b/i;
+const PROPOSED_DILUTIVE_OFFERING = /\b(?:announces?|launches?|proposes?|plans?|intends?|seeks?)\b.{0,80}\b(?:proposed\s+)?(?:underwritten\s+)?(?:public|primary|share)\s+offering\b|\bproposed\s+(?:underwritten\s+)?(?:public|primary|share)\s+offering\b/i;
+const SECONDARY_ONLY_OFFERING = /\b(selling stockholder|secondary offering|secondary sale)\b/i;
+const FDA_ADVISORY_VOTE = /\b(?:fda|food and drug administration)\b.{0,180}\b(?:advisory (?:committee|panel)|panel)\b.{0,120}\b(?:votes?|voted|recommends?|recommended)\b|\b(?:fda\s+)?(?:advisory (?:committee|panel)|panel)\b.{0,120}\b(?:votes?|voted|recommends?|recommended)\b/i;
+const FDA_ADVISORY_DOWNSIDE = /\b(?:votes?|voted|recommends?|recommended)\s+(?:overwhelmingly\s+)?against\b|\b(?:insufficient|inadequate)\s+evidence\b|\b(?:does|do|did)\s+not\s+(?:support|demonstrate|show)\b|\bnot\s+(?:effective|efficacious)\b/i;
+const FDA_ADVISORY_UPSIDE = /\b(?:votes?|voted)\s+(?:overwhelmingly\s+)?in\s+favou?r\b|\brecommends?\s+approval\b|\bevidence\s+(?:supports?|demonstrates?|shows?)\s+(?:effectiveness|efficacy)\b/i;
 const NON_FINAL_REGULATORY = /\b(investigation|investigating|subpoena|inquiry|proposed (?:fine|penalty|rule|order)|may fine|could fine)\b/i;
 const UNCERTAIN_REGULATORY = /\b(?:possible|potential|may|might|could|faces?|seeks?|seeking|considering|discussion|negotiation|under consideration|reportedly|expected to)\b.{0,60}\b(?:charges?|penalt(?:y|ies)|fines?|settlement|lawsuit|class i recall|recall|clinical hold|complete response letter|approval denial|approval denied|rejected application|final (?:enforcement )?order)\b|\b(?:charges?|penalt(?:y|ies)|fines?|settlement|lawsuit|class i recall|recall|clinical hold|complete response letter|approval denial|approval denied|rejected application|final (?:enforcement )?order)\b.{0,40}\b(?:possible|potential|proposed|expected|considered|under discussion|under negotiation|under consideration)\b/i;
 const FINAL_REGULATORY = /\b(final (?:enforcement )?(?:order|penalty|fine)|(?:sec|doj|ftc|regulator|government)\s+(?:charged|charges|sues)|lawsuit filed|settlement|agreed to pay|fined|class i recall|recall|clinical hold|complete response letter|approval denied|rejected application)\b/i;
@@ -173,9 +178,9 @@ function extractEventMagnitude(receipts: EventReceipt[], family: EventFamily): E
       }
     }
 
-    if (family === "financing_dilution") {
+    if (family === "financing_dilution" || family === "financing_proposal") {
       const nonActionable = NON_ACTIONABLE_OFFERING.test(value);
-      const secondaryOnly = /\b(selling stockholder|secondary offering|secondary sale)\b/i.test(value);
+      const secondaryOnly = SECONDARY_ONLY_OFFERING.test(value);
       const actionable = ACTIONABLE_OFFERING.test(value) && !nonActionable;
       if (nonActionable || !actionable) nonActionableStatus = true;
       for (const match of value.matchAll(/\b(?:priced|completed|closed|issued|primary offering of)[^.]{0,100}?(\d[\d,]*(?:\.\d+)?)\s*(billion|million|thousand|bn|mm|[bmk])?\s+(?:new |primary )?shares?\b/gi)) {
@@ -349,16 +354,29 @@ function directExposure(receipt: EventReceipt, classification: ClassifiedEvent, 
 }
 
 function classify(receipt: EventReceipt): ClassifiedEvent {
-  const value = `${receipt.title} ${receipt.summary ?? ""} ${receipt.rawEventType ?? ""}`.toLowerCase();
+  const titleValue = `${receipt.title} ${receipt.rawEventType ?? ""}`.toLowerCase();
+  const value = `${titleValue} ${receipt.summary ?? ""}`.toLowerCase();
   const rumour = RUMOUR.test(value) && !receipt.primarySource;
   const hit = (pattern: RegExp) => pattern.test(value);
+  const titleHit = (pattern: RegExp) => pattern.test(titleValue);
+  if (hit(PROPOSED_DILUTIVE_OFFERING) && !hit(SECONDARY_ONLY_OFFERING)) return { family: "financing_proposal", direction: "downside", materiality: 75, transmission: 80, rumour, terms: ["potential new share supply before final terms"] };
   if (hit(/\b(primary offering|secondary offering|public offering|share offering|shelf offering|shelf registration|at-the-market offering|dilution|bankruptcy|chapter 11)\b/)) return { family: "financing_dilution", direction: "downside", materiality: 88, transmission: 91, rumour, terms: ["new supply or solvency pressure"] };
   if (hit(/\b(cyberattack|ransomware|data breach|security breach|systems? outage|hack(?:ed|ing)?)\b/)) return { family: "cyber_incident", direction: "downside", materiality: 82, transmission: 84, rumour, terms: ["operational disruption", "remediation and trust cost"] };
+  if (hit(FDA_ADVISORY_VOTE)) {
+    const direction = hit(FDA_ADVISORY_DOWNSIDE) ? "downside" : hit(FDA_ADVISORY_UPSIDE) ? "upside" : "unknown";
+    return { family: "regulatory_advisory", direction, materiality: 90, transmission: 90, rumour, terms: ["material FDA advisory vote before a final agency decision"] };
+  }
   if (hit(/\b(fda|food and drug administration).{0,45}\b(approv(?:e|ed|al)|clearance|authoriz(?:e|ed|ation))\b|\b(phase (?:2|3|ii|iii)).{0,40}\b(met|positive|success)\b/)) return { family: "regulatory_approval", direction: "upside", materiality: 92, transmission: 94, rumour, terms: ["official approval or positive pivotal result"] };
   if (hit(/\b(recall|clinical hold|complete response letter|approval denied|rejected application)\b/)) return { family: "regulatory_enforcement", direction: "downside", materiality: 90, transmission: 93, rumour, terms: ["regulatory setback or recall"] };
   if (hit(/\b(sec (?:charges?|charged)|doj (?:charges?|charged)|ftc sues|investigation|subpoena|enforcement action|final (?:enforcement )?order|antitrust suit|fine[ds]?|penalt(?:y|ies)|settlement|sanctioned)\b/)) return { family: "regulatory_enforcement", direction: "downside", materiality: 82, transmission: 85, rumour, terms: ["enforcement or legal burden"] };
   if (hit(/\b(beat(?:s|ing)? expectations|raises? guidance|guidance raised|record revenue|profit surge|better than expected|upgrades? outlook)\b/)) return { family: "earnings_guidance", direction: "upside", materiality: 82, transmission: 88, rumour, terms: ["earnings or guidance positive surprise"] };
   if (hit(/\b(miss(?:es|ed)? expectations|cuts? guidance|guidance cut|profit warning|revenue warning|worse than expected|downgrades? outlook)\b/)) return { family: "earnings_guidance", direction: "downside", materiality: 84, transmission: 89, rumour, terms: ["earnings or guidance negative surprise"] };
+  // A headline that is plainly about issuer earnings or guidance must not be
+  // reclassified by an incidental tariff, sanctions, or macro sentence in the
+  // article summary. A range without a verified raise/cut remains directionless.
+  if (titleHit(/\b(?:forecasts?|guides?|provides?|updates?|reaffirms?|reports?)\b.{0,90}\b(?:adjusted\s+)?(?:eps|earnings|revenue|sales|organic growth|guidance|outlook)\b|\b(?:eps|earnings|revenue|sales|guidance|outlook)\b.{0,70}\b(?:forecast|range|guidance|outlook)\b/)) {
+    return { family: "earnings_guidance", direction: "unknown", materiality: 72, transmission: 78, rumour, terms: ["issuer earnings or guidance range without a verified directional change"] };
+  }
   if (hit(/\b(contract award|awarded (?:a |the )?contract|wins? contract|selected by|purchase order|multi-year deal)\b|\b(?:wins?|awarded)\s+(?:a\s+|the\s+)?(?:US\$|\$|USD\s*)\s?\d[\d,]*(?:\.\d+)?\s*(?:billion|million|thousand|bn|mm|[bmk])?\s+(?:contract|award|purchase order)\b/)) return { family: "contract_award", direction: "upside", materiality: 77, transmission: 84, rumour, terms: ["incremental contracted revenue"] };
   if (hit(/\b(product launch|launches|unveils|announces? (?:a )?new (?:product|platform|model|chip)|keynote|developer conference|investor day)\b/)) return { family: hit(/conference|keynote|investor day/) ? "live_conference" : "product_launch", direction: "upside", materiality: 68, transmission: 72, rumour, terms: ["new product or commercial catalyst"] };
   if (hit(/\b(ai breakthrough|artificial intelligence breakthrough|new ai model|foundation model|quantum breakthrough|technology breakthrough|scientific breakthrough)\b/)) return { family: hit(/\bai\b|artificial intelligence/) ? "ai_breakthrough" : "technology_breakthrough", direction: "upside", materiality: 76, transmission: 78, rumour, terms: ["technical capability improvement", "potential demand or cost advantage"] };
@@ -417,6 +435,10 @@ function mapDirect(receipt: EventReceipt, index: ReturnType<typeof buildIndex>) 
     const equity = symbol ? index.ticker.get(symbol) : null;
     if (equity) mapped.set(equity.ticker, { equity, confidence: 99 });
   }
+  // Structured ticker hints are more specific than shared issuer names. Once a
+  // known ticker is present, do not fan the receipt out to preferred shares,
+  // notes, or similarly named securities through the looser alias scan.
+  if (mapped.size > 0) return [...mapped.values()];
   for (const hint of receipt.companyHints) {
     const cikMatch = hint.match(/^CIK(\d{10})$/i)?.[1];
     const byCik = cikMatch ? index.cik.get(cikMatch) : null;
@@ -468,6 +490,54 @@ function eventTokens(receipt: EventReceipt) {
   return new Set(normalized(receipt.title).split(" ").filter((token) => token.length > 3 && !["announces", "company", "after", "with", "from", "will", "that"].includes(token)));
 }
 
+function explicitEventIdentifiers(receipt: EventReceipt) {
+  const value = `${receipt.url} ${receipt.title} ${receipt.summary ?? ""} ${receipt.rawEventType ?? ""}`;
+  const identifiers = new Set<string>();
+  for (const match of value.matchAll(/\b\d{10}-\d{2}-\d{6}\b/g)) identifiers.add(`sec:${match[0]}`);
+  for (const match of value.matchAll(/(?:\/|^)(\d{18})(?:\/|$)/g)) {
+    const compact = match[1];
+    identifiers.add(`sec:${compact.slice(0, 10)}-${compact.slice(10, 12)}-${compact.slice(12)}`);
+  }
+  for (const match of value.matchAll(/\bFDA-\d{4}-[A-Z]-\d{4,}\b/gi)) identifiers.add(`fda:${match[0].toUpperCase()}`);
+  for (const match of value.matchAll(/\bNCT\d{8}\b/gi)) identifiers.add(`trial:${match[0].toUpperCase()}`);
+  const rawReference = receipt.rawEventType?.trim().toLowerCase();
+  if (rawReference && rawReference.split(/[-_:]/).filter(Boolean).length >= 3) identifiers.add(`source:${rawReference}`);
+  return identifiers;
+}
+
+function quantifiedEventFacts(receipt: EventReceipt, family: EventFamily) {
+  return new Set(extractEventMagnitude([receipt], family).metrics.map((metric) => [
+    metric.kind,
+    metric.value,
+    metric.unit,
+    metric.eventStatus ?? "unspecified",
+    metric.termYears ?? "no-term",
+  ].join(":")));
+}
+
+const SUBJECT_SENSITIVE_ROOT_FAMILIES = new Set<EventFamily>(["contract_award", "merger_acquisition", "regulatory_enforcement"]);
+const GENERIC_EVENT_SUBJECT_TOKENS = new Set([
+  "acquire", "acquired", "acquisition", "agreed", "agreement", "announce", "announced", "award", "awarded",
+  "billion", "committed", "company", "complete", "completed", "contract", "corporation", "deal", "final",
+  "fine", "hundred", "million", "penalty", "service", "services", "settlement", "transaction", "valued", "worth",
+]);
+
+function eventSubjectTokens(receipt: EventReceipt, equity: EquityUniverseEntry) {
+  const issuerTokens = new Set([
+    equity.ticker.toLowerCase(),
+    ...normalized(equity.name).split(" "),
+    ...equity.aliases.flatMap((alias) => normalized(alias).split(" ")),
+  ]);
+  return new Set(normalized(receipt.title)
+    .split(" ")
+    .filter((token) => token.length >= 4)
+    .filter((token) => !issuerTokens.has(token) && !GENERIC_EVENT_SUBJECT_TOKENS.has(token)));
+}
+
+function intersects(left: Set<string>, right: Set<string>) {
+  return [...left].some((value) => right.has(value));
+}
+
 function similarity(left: EventReceipt, right: EventReceipt) {
   const a = eventTokens(left);
   const b = eventTokens(right);
@@ -476,11 +546,88 @@ function similarity(left: EventReceipt, right: EventReceipt) {
 }
 
 function related(left: MappedEvent, right: MappedEvent) {
-  return left.equity.ticker === right.equity.ticker
-    && left.classification.family === right.classification.family
-    && left.classification.direction === right.classification.direction
-    && Math.abs(Date.parse(left.receipt.publishedAt) - Date.parse(right.receipt.publishedAt)) <= 18 * 60 * 60 * 1000
-    && (similarity(left.receipt, right.receipt) >= 0.28 || left.receipt.rawEventType && left.receipt.rawEventType === right.receipt.rawEventType);
+  if (left.equity.ticker !== right.equity.ticker
+    || left.classification.family !== right.classification.family
+    || left.classification.direction !== right.classification.direction
+    || Math.abs(Date.parse(left.receipt.publishedAt) - Date.parse(right.receipt.publishedAt)) > 18 * 60 * 60 * 1000) return false;
+
+  const leftIdentifiers = explicitEventIdentifiers(left.receipt);
+  const rightIdentifiers = explicitEventIdentifiers(right.receipt);
+  // Two explicit but different filing, docket, or trial IDs are different
+  // events even when the issuer, family, day, and boilerplate are identical.
+  if (leftIdentifiers.size && rightIdentifiers.size) return intersects(leftIdentifiers, rightIdentifiers);
+
+  const leftFacts = quantifiedEventFacts(left.receipt, left.classification.family);
+  const rightFacts = quantifiedEventFacts(right.receipt, right.classification.family);
+  // Matching normalized facts (for example, $20m versus $20 million) are a
+  // stronger syndication signal than publisher wording. Conflicting facts are
+  // kept separate so two same-day contracts or offerings are not collapsed.
+  if (leftFacts.size && rightFacts.size) {
+    if (!intersects(leftFacts, rightFacts)) return false;
+    if (SUBJECT_SENSITIVE_ROOT_FAMILIES.has(left.classification.family)) {
+      return intersects(eventSubjectTokens(left.receipt, left.equity), eventSubjectTokens(right.receipt, right.equity));
+    }
+    return true;
+  }
+
+  return similarity(left.receipt, right.receipt) >= 0.28;
+}
+
+function canonicalRootEventIdentity(cluster: MappedEvent[], eventMagnitude: EventMagnitudeEvidence) {
+  const receipts = [...new Map(cluster.map((item) => [item.receipt.id, item.receipt])).values()];
+  const identifiers = new Set(receipts.flatMap((receipt) => [...explicitEventIdentifiers(receipt)]));
+  const authorityIdentifiers = [...identifiers].filter((value) => !value.startsWith("source:"));
+  if (authorityIdentifiers.length === 1) return `official-id|${authorityIdentifiers[0]}`;
+  const sourceIdentifiers = [...identifiers].filter((value) => value.startsWith("source:"));
+  if (!authorityIdentifiers.length && sourceIdentifiers.length === 1) return `source-id|${sourceIdentifiers[0]}`;
+
+  const factSupport = new Map<string, number>();
+  for (const receipt of receipts) {
+    for (const fact of quantifiedEventFacts(receipt, cluster[0].classification.family)) {
+      factSupport.set(fact, (factSupport.get(fact) ?? 0) + 1);
+    }
+  }
+  const verifiedFacts = new Set(eventMagnitude.metrics
+    .filter((metric) => metric.promotionEvidenceVerified)
+    .map((metric) => [
+      metric.kind,
+      metric.value,
+      metric.unit,
+      metric.eventStatus ?? "unspecified",
+      metric.termYears ?? "no-term",
+    ].join(":")));
+  const supportedFact = [...factSupport.entries()]
+    .filter(([fact, count]) => count >= 2 || verifiedFacts.has(fact))
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))[0]?.[0];
+  if (supportedFact) {
+    let subject = "";
+    if (SUBJECT_SENSITIVE_ROOT_FAMILIES.has(cluster[0].classification.family)) {
+      const subjectSets = receipts.map((receipt) => eventSubjectTokens(receipt, cluster[0].equity));
+      subject = subjectSets.length >= 2
+        ? [...subjectSets[0]].filter((token) => subjectSets.slice(1).every((tokens) => tokens.has(token))).sort()[0] ?? ""
+        : "";
+      // An amount alone is not enough to identify a contract, transaction, or
+      // enforcement action. Without a shared subject or official ID, retain the
+      // conservative receipt-specific identity.
+      if (!subject) {
+        const primary = receipts.filter((receipt) => receipt.primarySource);
+        const anchor = [...(primary.length ? primary : receipts)]
+          .sort((left, right) => Date.parse(right.publishedAt) - Date.parse(left.publishedAt))[0];
+        return canonicalEventIdentity(anchor);
+      }
+    }
+    const observedDates = receipts
+      .map((receipt) => Date.parse(receipt.publishedAt))
+      .filter(Number.isFinite)
+      .sort((left, right) => left - right);
+    const eventDay = observedDates.length ? new Date(observedDates[0]).toISOString().slice(0, 10) : "unknown-day";
+    return `issuer|${cluster[0].equity.ticker}|${cluster[0].classification.family}|${eventDay}|${supportedFact}|${subject}`;
+  }
+
+  const primary = receipts.filter((receipt) => receipt.primarySource);
+  const anchor = [...(primary.length ? primary : receipts)]
+    .sort((left, right) => Date.parse(right.publishedAt) - Date.parse(left.publishedAt))[0];
+  return canonicalEventIdentity(anchor);
 }
 
 const PERMISSION_GATE_KEYS = [
@@ -639,7 +786,10 @@ function candidateFromCluster(cluster: MappedEvent[], macro: MacroContext, histo
   const causalChain = causalExposure.status === "event_specific"
     ? selectedExposure.causalChain
     : anchor.causalChain;
-  const rootEventKey = crypto.createHash("sha256").update(`${classification.family}|${canonicalEventIdentity(anchor.receipt)}`).digest("hex").slice(0, 20);
+  const rootEventKey = crypto.createHash("sha256")
+    .update(`${classification.family}|${canonicalRootEventIdentity(cluster, eventMagnitude)}`)
+    .digest("hex")
+    .slice(0, 20);
   const historicalAnalog = analyzeHistoricalAnalogs({
     eventKey: rootEventKey,
     rootEventKey,

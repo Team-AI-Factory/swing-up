@@ -155,11 +155,46 @@ export type HistoricalAnalogAnalysis = {
   diagnostics: HistoricalAnalogDiagnostics;
 };
 
+export type EarlyOneDayOutcomeGroup = {
+  observableEffectCount: number;
+  independentRootEventCount: number;
+  usefulRootEventCount: number;
+  usefulRootEventRatePercent: number | null;
+};
+
+export type EarlyOneDayOutcomeTelemetry = {
+  reportingOnly: true;
+  changesSeriousSignalPermission: false;
+  changesMatureHorizonForecast: false;
+  horizon: "1D";
+  asOf: string;
+  minimumDirectionalMovePercent: number;
+  requiresBenchmarkOutperformance: true;
+  realRecordCount: number;
+  observableEffectCount: number;
+  independentRootEventCount: number;
+  duplicateEffectsCollapsed: number;
+  usefulRootEventCount: number;
+  usefulRootEventRatePercent: number | null;
+  excludedNonReal: number;
+  excludedUnavailableInvalidOrFutureOutcome: number;
+  excludedMissingBenchmark: number;
+  byLearningUse: Record<HistoricalLearningUse, EarlyOneDayOutcomeGroup>;
+  byFindingDisposition: Record<"qualified" | "shadow_near_miss" | "unclassified", EarlyOneDayOutcomeGroup>;
+};
+
 type SafeRecord = HistoricalSignalRecord & { signalTime: number; featureTime: number };
 type MatchedRecord = { record: SafeRecord; similarity: ReturnType<typeof comparePreEventFeatures> };
 type GroupedRecord = { eventKey: string; records: MatchedRecord[] };
 type GroupOutcome = MatchedRecord & { checkpoint: HistoricalAnalogCheckpoint; observedAt: number };
 type WeightedValue = { value: number; weight: number };
+type EarlyOneDayEffect = {
+  rootEventKey: string;
+  effectKey: string;
+  record: HistoricalSignalRecord;
+  observedAt: number;
+  useful: boolean;
+};
 
 const HORIZON_PLANS: Record<HistoricalAnalogRelationship, HistoricalAnalogHorizon[]> = {
   direct: ["7D", "3D", "1D"],
@@ -280,6 +315,151 @@ function checkpointForGroup(group: GroupedRecord, horizon: HistoricalAnalogHoriz
 
 function directionAdjusted(value: number, direction: HistoricalAnalogDirection) {
   return direction === "downside" ? -value : value;
+}
+
+function normalizedLearningUse(record: HistoricalSignalRecord): HistoricalLearningUse {
+  if (record.learningUse === "forecast_eligible"
+    || record.learningUse === "diagnostics_only"
+    || record.learningUse === "quarantined") {
+    return record.learningUse;
+  }
+  return record.provenance?.origin === "public_historical_bootstrap"
+    ? "forecast_eligible"
+    : "diagnostics_only";
+}
+
+function normalizedFindingDisposition(record: HistoricalSignalRecord): "qualified" | "shadow_near_miss" | "unclassified" {
+  return record.findingDisposition === "qualified" || record.findingDisposition === "shadow_near_miss"
+    ? record.findingDisposition
+    : "unclassified";
+}
+
+function earlyOneDayGroup(effects: EarlyOneDayEffect[]): EarlyOneDayOutcomeGroup {
+  const roots = new Map<string, EarlyOneDayEffect[]>();
+  for (const effect of effects) roots.set(effect.rootEventKey, [...(roots.get(effect.rootEventKey) ?? []), effect]);
+  const usefulRootEventCount = [...roots.values()].filter((rootEffects) => (
+    rootEffects.filter((effect) => effect.useful).length > rootEffects.length / 2
+  )).length;
+  return {
+    observableEffectCount: effects.length,
+    independentRootEventCount: roots.size,
+    usefulRootEventCount,
+    usefulRootEventRatePercent: roots.size ? rounded((usefulRootEventCount / roots.size) * 100) : null,
+  };
+}
+
+/**
+ * Report-only early learning view. It counts a root event as soon as a valid 1D
+ * stock and benchmark outcome is observable, without changing the relationship-
+ * specific horizon selection used by analyzeHistoricalAnalogs.
+ */
+export function summarizeEarlyOneDayOutcomes(
+  records: HistoricalSignalRecord[],
+  options: { asOf?: string; hitThresholdPercent?: number } = {},
+): EarlyOneDayOutcomeTelemetry {
+  const asOf = options.asOf ?? new Date().toISOString();
+  const asOfTime = timestamp(asOf);
+  const threshold = Math.max(
+    DEFAULT_OPTIONS.hitThresholdPercent,
+    Number.isFinite(options.hitThresholdPercent) ? options.hitThresholdPercent! : DEFAULT_OPTIONS.hitThresholdPercent,
+  );
+  let realRecordCount = 0;
+  let excludedNonReal = 0;
+  let excludedUnavailableInvalidOrFutureOutcome = 0;
+  let excludedMissingBenchmark = 0;
+  const rawEffects: EarlyOneDayEffect[] = [];
+
+  for (const record of records) {
+    if (record.dataQuality !== "real") {
+      excludedNonReal += 1;
+      continue;
+    }
+    realRecordCount += 1;
+    const signalTime = timestamp(record.signalObservedAt);
+    const checkpoint = record.checkpoints["1D"];
+    const observedAt = checkpoint ? timestamp(checkpoint.observedAt) : null;
+    if (asOfTime === null
+      || signalTime === null
+      || !checkpoint
+      || !Number.isFinite(checkpoint.returnPercent)
+      || observedAt === null
+      || observedAt < signalTime
+      || observedAt > asOfTime) {
+      excludedUnavailableInvalidOrFutureOutcome += 1;
+      continue;
+    }
+    if (checkpoint.benchmarkReturnPercent == null || !Number.isFinite(checkpoint.benchmarkReturnPercent)) {
+      excludedMissingBenchmark += 1;
+      continue;
+    }
+    const rootEventKey = (record.rootEventKey || record.eventKey).trim();
+    const ticker = record.ticker.trim().toUpperCase();
+    if (!rootEventKey || !ticker) {
+      excludedUnavailableInvalidOrFutureOutcome += 1;
+      continue;
+    }
+    const adjustedReturn = directionAdjusted(checkpoint.returnPercent, record.direction);
+    const adjustedMarketRelativeReturn = directionAdjusted(
+      checkpoint.returnPercent - checkpoint.benchmarkReturnPercent,
+      record.direction,
+    );
+    rawEffects.push({
+      rootEventKey,
+      effectKey: `${rootEventKey}|${ticker}`,
+      record,
+      observedAt,
+      useful: adjustedReturn >= threshold && adjustedMarketRelativeReturn > 0,
+    });
+  }
+
+  // A single root/ticker effect may have been persisted more than once as its
+  // record matured. Prefer the more trusted observation, then the earliest valid
+  // 1D measurement, so repeated scans cannot inflate learning statistics.
+  const trustRank: Record<HistoricalLearningUse, number> = {
+    quarantined: 0,
+    diagnostics_only: 1,
+    forecast_eligible: 2,
+  };
+  const effects = [...rawEffects.reduce((deduplicated, effect) => {
+    const existing = deduplicated.get(effect.effectKey);
+    if (!existing
+      || trustRank[normalizedLearningUse(effect.record)] > trustRank[normalizedLearningUse(existing.record)]
+      || (trustRank[normalizedLearningUse(effect.record)] === trustRank[normalizedLearningUse(existing.record)]
+        && effect.observedAt < existing.observedAt)) {
+      deduplicated.set(effect.effectKey, effect);
+    }
+    return deduplicated;
+  }, new Map<string, EarlyOneDayEffect>()).values()];
+  const overall = earlyOneDayGroup(effects);
+  const byLearningUse = Object.fromEntries(
+    (["forecast_eligible", "diagnostics_only", "quarantined"] as const)
+      .map((learningUse) => [learningUse, earlyOneDayGroup(effects.filter((effect) => normalizedLearningUse(effect.record) === learningUse))]),
+  ) as EarlyOneDayOutcomeTelemetry["byLearningUse"];
+  const byFindingDisposition = Object.fromEntries(
+    (["qualified", "shadow_near_miss", "unclassified"] as const)
+      .map((disposition) => [disposition, earlyOneDayGroup(effects.filter((effect) => normalizedFindingDisposition(effect.record) === disposition))]),
+  ) as EarlyOneDayOutcomeTelemetry["byFindingDisposition"];
+
+  return {
+    reportingOnly: true,
+    changesSeriousSignalPermission: false,
+    changesMatureHorizonForecast: false,
+    horizon: "1D",
+    asOf,
+    minimumDirectionalMovePercent: threshold,
+    requiresBenchmarkOutperformance: true,
+    realRecordCount,
+    observableEffectCount: overall.observableEffectCount,
+    independentRootEventCount: overall.independentRootEventCount,
+    duplicateEffectsCollapsed: rawEffects.length - effects.length,
+    usefulRootEventCount: overall.usefulRootEventCount,
+    usefulRootEventRatePercent: overall.usefulRootEventRatePercent,
+    excludedNonReal,
+    excludedUnavailableInvalidOrFutureOutcome,
+    excludedMissingBenchmark,
+    byLearningUse,
+    byFindingDisposition,
+  };
 }
 
 function weightedQuantile(values: WeightedValue[], quantile: number) {

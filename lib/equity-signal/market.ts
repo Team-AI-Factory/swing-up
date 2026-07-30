@@ -40,23 +40,49 @@ function delayedMinutes(now: Date, observedAt: string) {
   return Math.max(0, Math.round((now.getTime() - Date.parse(observedAt)) / 60_000));
 }
 
+function quoteSession(meta: Record<string, unknown>, observedEpoch: number) {
+  const periods = meta.currentTradingPeriod && typeof meta.currentTradingPeriod === "object"
+    ? meta.currentTradingPeriod as Record<string, unknown>
+    : {};
+  for (const [key, label] of [["pre", "pre_market"], ["regular", "regular"], ["post", "post_market"]] as const) {
+    const period = periods[key] && typeof periods[key] === "object" ? periods[key] as Record<string, unknown> : {};
+    const start = number(period.start);
+    const end = number(period.end);
+    if (start !== null && end !== null && observedEpoch >= start && observedEpoch <= end) return label;
+  }
+  return "unknown" as const;
+}
+
 async function yahooQuote(ticker: string, fetchImpl: typeof fetch, now: Date): Promise<MarketQuote> {
   const url = new URL(`${YAHOO_CHART_URL}/${encodeURIComponent(ticker)}`);
   url.searchParams.set("interval", "5m");
   url.searchParams.set("range", "1d");
   url.searchParams.set("events", "div,splits");
+  url.searchParams.set("includePrePost", "true");
   const response = await fetchImpl(url, { headers: { Accept: "application/json", "user-agent": "SwingUp/1.0 support@swingup.app" }, cache: "no-store", signal: AbortSignal.timeout(15_000) });
   if (!response.ok) throw new Error(`yahoo_http_${response.status}`);
   const body = await response.json() as { chart?: { result?: Array<Record<string, unknown>>; error?: unknown } };
   const chart = body.chart?.result?.[0];
   if (!chart) throw new Error("yahoo_empty_or_malformed");
   const meta = chart.meta && typeof chart.meta === "object" ? chart.meta as Record<string, unknown> : {};
-  const timestamps = Array.isArray(chart.timestamp) ? chart.timestamp.map(number).filter((value): value is number => value !== null) : [];
-  const observedEpoch = timestamps.at(-1) ?? number(meta.regularMarketTime);
+  const timestamps = Array.isArray(chart.timestamp) ? chart.timestamp.map(number) : [];
+  const quoteRows = chart.indicators && typeof chart.indicators === "object"
+    ? (chart.indicators as Record<string, unknown>).quote
+    : null;
+  const firstQuoteRow = Array.isArray(quoteRows) && quoteRows[0] && typeof quoteRows[0] === "object"
+    ? quoteRows[0] as Record<string, unknown>
+    : {};
+  const closes = Array.isArray(firstQuoteRow.close) ? firstQuoteRow.close.map(number) : [];
+  let lastBarIndex = Math.min(timestamps.length, closes.length) - 1;
+  while (lastBarIndex >= 0 && (timestamps[lastBarIndex] === null || closes[lastBarIndex] === null || (closes[lastBarIndex] ?? 0) <= 0)) lastBarIndex -= 1;
+  const barEpoch = lastBarIndex >= 0 ? timestamps[lastBarIndex] : null;
+  const regularEpoch = number(meta.regularMarketTime);
+  const useExtendedBar = barEpoch !== null && (regularEpoch === null || barEpoch > regularEpoch);
+  const observedEpoch = useExtendedBar ? barEpoch : regularEpoch ?? barEpoch;
   const observedAt = observedEpoch ? new Date(observedEpoch * 1000).toISOString() : null;
-  const price = number(meta.regularMarketPrice);
+  const price = useExtendedBar ? closes[lastBarIndex] : number(meta.regularMarketPrice) ?? (lastBarIndex >= 0 ? closes[lastBarIndex] : null);
   const previousClose = number(meta.chartPreviousClose ?? meta.previousClose);
-  if (!price || !observedAt || Number.isNaN(Date.parse(observedAt))) throw new Error("yahoo_price_or_timestamp_missing");
+  if (!price || !observedAt || observedEpoch === null || Number.isNaN(Date.parse(observedAt))) throw new Error("yahoo_price_or_timestamp_missing");
   return {
     ticker,
     price,
@@ -66,8 +92,9 @@ async function yahooQuote(ticker: string, fetchImpl: typeof fetch, now: Date): P
     averageVolume: null,
     marketCap: null,
     observedAt,
-    source: "Yahoo Finance public chart snapshot",
+    source: useExtendedBar ? "Yahoo Finance public chart extended-hours snapshot" : "Yahoo Finance public chart snapshot",
     delayedMinutes: delayedMinutes(now, observedAt),
+    marketSession: quoteSession(meta, observedEpoch),
   };
 }
 
@@ -100,6 +127,7 @@ async function alphaQuote(ticker: string, fetchImpl: typeof fetch, now: Date): P
     observedAt,
     source: "Alpha Vantage GLOBAL_QUOTE latest trading day",
     delayedMinutes: delayedMinutes(now, observedAt),
+    marketSession: "latest_close",
   };
 }
 
@@ -135,6 +163,7 @@ async function fmpQuote(ticker: string, fetchImpl: typeof fetch, now: Date): Pro
     observedAt,
     source: "Financial Modeling Prep free end-of-day history",
     delayedMinutes: delayedMinutes(now, observedAt),
+    marketSession: "latest_close",
   };
 }
 
@@ -144,6 +173,15 @@ function failureStatus(errors: string[]): ProviderStatus {
   if (errors.some((error) => /not_entitled|http_(?:401|402|403)/.test(error))) return "not_entitled";
   if (errors.every((error) => /not_configured/.test(error))) return "not_configured";
   return "temporarily_unavailable";
+}
+
+function recordDirectionalRepricing(candidate: ImpactCandidate) {
+  const change = candidate.quote?.changePercent;
+  if (change === null || change === undefined || !Number.isFinite(change)) return;
+  const directionalMove = candidate.direction === "downside" ? -change : change;
+  // Market reaction is never required to qualify the current event. It only
+  // prevents an already-large move from being presented as a fresh Buy/Sell.
+  candidate.pricedInPenalty = directionalMove >= 8 ? 70 : directionalMove >= 5 ? 35 : 0;
 }
 
 async function fetchOne(ticker: string, fetchImpl: typeof fetch, now: Date): Promise<CachedQuote> {
@@ -194,7 +232,10 @@ export async function enrichCandidateQuotes(
   const requestedTickers = eventTickers.length ? [...new Set([...eventTickers, BROAD_MARKET_BENCHMARK])] : [];
   const settled = await Promise.all(requestedTickers.map(async (ticker) => ({ ticker, outcome: await fetchOne(ticker, fetchImpl, now) })));
   const byTicker = new Map(settled.map((item) => [item.ticker, item.outcome]));
-  for (const candidate of shortlisted) candidate.quote = byTicker.get(candidate.ticker)?.quote ?? null;
+  for (const candidate of shortlisted) {
+    candidate.quote = byTicker.get(candidate.ticker)?.quote ?? null;
+    recordDirectionalRepricing(candidate);
+  }
   const statuses = settled.map((item) => item.outcome.status);
   const connected = settled.filter((item) => item.outcome.quote && item.outcome.status === "connected");
   const provider: ProviderResult = {

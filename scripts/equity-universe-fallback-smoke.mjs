@@ -9,10 +9,14 @@ const output = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
 }).outputText;
 const cjsModule = { exports: {} };
+let r2Configured = false;
+let cachedUniverseObject = null;
 const stubs = {
   "@/lib/r2-warehouse": {
-    getR2Config: () => ({ configured: false }),
-    readVersionedTextFromR2: async () => ({ found: false, text: null, etag: null }),
+    getR2Config: () => ({ configured: r2Configured }),
+    readVersionedTextFromR2: async () => cachedUniverseObject
+      ? { found: true, text: JSON.stringify(cachedUniverseObject), etag: "cached-etag" }
+      : { found: false, text: null, etag: null },
     writeVersionedJsonToR2: async () => ({ written: false, conflict: false, etag: null }),
   },
   "@/lib/branch-signal-lab-policy": {
@@ -76,12 +80,75 @@ assert.equal(malformedSec.snapshot.constructionMode, "partial_nasdaq_plus_sec");
 assert.deepEqual(malformedSec.snapshot.entries.map((item) => item.ticker), ["NVDA"]);
 assert.equal(malformedSec.snapshot.sources.find((item) => item.name === "SEC company_tickers_exchange")?.error, "invalid_json_payload");
 
+const cachedEntry = (ticker) => ({
+  ticker,
+  name: `${ticker} Corporation`,
+  exchange: "NASDAQ",
+  cik: String(ticker.charCodeAt(0)).padStart(10, "0"),
+  aliases: [`${ticker} Corporation`],
+  securityType: "common_stock",
+  sourceNames: ["Nasdaq Trader nasdaqlisted", "SEC company_tickers_exchange"],
+});
+cachedUniverseObject = {
+  version: 1,
+  scope: "active_us_exchange_listed_common_equities_and_adrs",
+  constructionMode: "nasdaq_plus_sec",
+  refreshedAt: "2026-07-20T13:00:00.000Z",
+  entries: ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF", "GGG", "HHH", "III", "JJJ"].map(cachedEntry),
+  coverage: {
+    nasdaqRows: 6,
+    otherExchangeRows: 4,
+    eligibleEquities: 10,
+    cikMapped: 10,
+    cikMappedPercent: 100,
+    adrCount: 0,
+    excludedByReason: {},
+  },
+  sources: [],
+};
+r2Configured = true;
+
+const truncatedOtherText = [
+  "ACT Symbol|Security Name|Exchange|CQS Symbol|ETF|Round Lot Size|Test Issue|NASDAQ Symbol",
+  "ZZZ|ZZZ Corporation|N|ZZZ|N|100|N|ZZZ",
+  "File Creation Time: 0730202606:00|||||||",
+].join("\n");
+const truncatedWithSecFailureFetch = async (input) => {
+  const url = String(input);
+  if (url.includes("nasdaqlisted.txt")) return new Response(nasdaqText, { status: 200 });
+  if (url.includes("otherlisted.txt")) return new Response(truncatedOtherText, { status: 200 });
+  return new Response("temporary SEC failure", { status: 503 });
+};
+const truncatedWithSecFailure = await loadEquityUniverse(truncatedWithSecFailureFetch, new Date("2026-07-30T13:00:00.000Z"));
+assert.equal(truncatedWithSecFailure.cache, "cloudflare_r2_larger_fallback");
+assert.equal(truncatedWithSecFailure.snapshot.entries.length, 10);
+assert.equal(truncatedWithSecFailure.refreshed, false);
+assert.equal(truncatedWithSecFailure.r2Write, false);
+
+const nonCommonSecPayload = JSON.stringify({
+  fields: ["cik", "name", "ticker", "exchange"],
+  data: [
+    [123456, "Example Preferred Stock", "PREF", "NYSE"],
+    [987654, "Example S&P 500 ETF Fund", "FUND", "NYSE Arca"],
+  ],
+});
+const truncatedWithNonCommonSecFetch = async (input) => {
+  const url = String(input);
+  if (url.includes("nasdaqlisted.txt")) return new Response(nasdaqText, { status: 200 });
+  if (url.includes("otherlisted.txt")) return new Response(truncatedOtherText, { status: 200 });
+  return new Response(nonCommonSecPayload, { status: 200 });
+};
+const truncatedWithNonCommonSec = await loadEquityUniverse(truncatedWithNonCommonSecFetch, new Date("2026-07-30T13:05:00.000Z"));
+assert.equal(truncatedWithNonCommonSec.cache, "cloudflare_r2_larger_fallback");
+assert.equal(truncatedWithNonCommonSec.snapshot.entries.length, 10);
+
 assert.match(quotaSource, /quotaKey: "nasdaq_trader_equity_universe"[\s\S]{0,180}maximumCallsInWindow: 4, minimumIntervalMs: 4\.5 \* minute/);
 assert.match(quotaSource, /quotaKey: "sec_equity_universe"[\s\S]{0,180}maximumCallsInWindow: 2, minimumIntervalMs: 4\.5 \* minute/);
 assert.match(runnerSource, /const universeResult = await loadEquityUniverse\(fetchImpl, now\);[\s\S]{0,180}const \[eventResult, macroResult, historicalBootstrap\] = await Promise\.all/);
 assert.doesNotMatch(runnerSource, /const \[universeResult,[\s\S]{0,120}Promise\.all/);
 assert.match(source, /cached\.snapshot\.constructionMode === "nasdaq_plus_sec"/);
 assert.match(source, /cached\.snapshot\.entries\.length > entries\.length/);
+assert.match(source, /entries\.length < cached\.snapshot\.entries\.length \* MATERIAL_UNIVERSE_SHRINK_RATIO/);
 assert.match(source, /cache: "cloudflare_r2_larger_fallback"/);
 
 console.log(JSON.stringify({
@@ -89,6 +156,8 @@ console.log(JSON.stringify({
   secOfficialFallbackPreventsZeroUniverse: true,
   partialNasdaqDataPreserved: true,
   partialRefreshCannotReplaceLargerCache: true,
+  truncatedNonemptyDirectoriesCannotReplaceMateriallyLargerCache: true,
+  secFailureAndNonCommonRowsCannotMaskTruncation: true,
   fundAndPreferredRowsRejected: true,
   malformedSecResponseIsolated: true,
   boundedRetryCanUseRemainingDailyAllowance: true,

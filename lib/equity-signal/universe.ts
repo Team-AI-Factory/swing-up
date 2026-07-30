@@ -31,6 +31,7 @@ export type EquityUniverseSnapshot = {
 
 const CACHE_KEY = "branch-labs/pr-261/equity-universe/v1.json";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const MATERIAL_UNIVERSE_SHRINK_RATIO = 0.9;
 const NASDAQ_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/symdir/nasdaqlisted.txt";
 const OTHER_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/symdir/otherlisted.txt";
 const SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers_exchange.json";
@@ -218,7 +219,14 @@ export async function loadEquityUniverse(fetchImpl: typeof fetch, now = new Date
     throw new Error("official_equity_universe_empty_after_security_filter");
   }
   const completeNasdaqDirectories = nasdaq.entries.length > 0 && other.entries.length > 0;
-  if (cached.snapshot && !completeNasdaqDirectories && cached.snapshot.entries.length > entries.length) {
+  const materiallySmallerThanFullCache = Boolean(
+    cached.snapshot
+    && cached.snapshot.constructionMode === "nasdaq_plus_sec"
+    && entries.length < cached.snapshot.entries.length * MATERIAL_UNIVERSE_SHRINK_RATIO,
+  );
+  if (cached.snapshot
+    && cached.snapshot.entries.length > entries.length
+    && (!completeNasdaqDirectories || materiallySmallerThanFullCache)) {
     return { snapshot: cached.snapshot, cache: "cloudflare_r2_larger_fallback" as const, refreshed: false, r2Write: false };
   }
 

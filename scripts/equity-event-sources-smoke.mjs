@@ -43,7 +43,7 @@ new Function("require", "module", "exports", output)((name) => {
   throw new Error(`Unexpected event-source import: ${name}`);
 }, loaded, loaded.exports);
 
-const { fetchCommerceNews, fetchGdeltDiscovery, fetchMarketauxDiscovery } = loaded.exports;
+const { fetchCommerceNews, fetchGdeltDiscovery, fetchGoogleDiscovery, fetchMarketauxDiscovery, fetchNasdaqTradeHalts } = loaded.exports;
 const now = new Date("2026-07-22T14:00:00.000Z");
 
 let gdeltUrl;
@@ -64,6 +64,30 @@ assert.equal(gdeltUrl.searchParams.get("maxrecords"), "75");
 assert.equal(gdeltUrl.searchParams.get("timespan"), "2h");
 assert.ok(gdeltUrl.searchParams.get("query").length < 220);
 assert.doesNotMatch(gdeltUrl.searchParams.get("query"), /\bwar\b/i);
+
+let googleUrl;
+await fetchGoogleDiscovery(async (value) => {
+  googleUrl = new URL(String(value));
+  return new Response(`<?xml version="1.0"?><rss><channel></channel></rss>`, { status: 200 });
+}, now);
+assert.match(googleUrl.searchParams.get("q"), /FDA panel vote/);
+assert.match(googleUrl.searchParams.get("q"), /public offering pricing/);
+assert.match(googleUrl.searchParams.get("q"), /trading halt/);
+
+const tradeHalts = await fetchNasdaqTradeHalts(async () => new Response(`<?xml version="1.0"?>
+  <rss xmlns:ndaq="http://www.nasdaqtrader.com/"><channel><item>
+    <title>CAPR</title>
+    <pubDate>Wed, 22 Jul 2026 13:55:00 GMT</pubDate>
+    <ndaq:IssueSymbol>CAPR</ndaq:IssueSymbol>
+    <ndaq:IssueName>Capricor Therapeutics Inc.</ndaq:IssueName>
+    <ndaq:ReasonCode>T1</ndaq:ReasonCode>
+    <ndaq:ResumptionDate></ndaq:ResumptionDate>
+  </item></channel></rss>`, { status: 200, headers: { "content-type": "text/xml" } }), now);
+assert.equal(tradeHalts.status, "connected");
+assert.equal(tradeHalts.receipts.length, 1);
+assert.equal(tradeHalts.receipts[0].symbolHints[0], "CAPR");
+assert.equal(tradeHalts.receipts[0].channel, "nasdaq_trade_halts");
+assert.equal(tradeHalts.receipts[0].rawEventType, "halt:T1:active");
 
 const previousMarketauxKey = process.env.MARKETAUX_API_KEY;
 process.env.MARKETAUX_API_KEY = "test-token-not-a-secret";
@@ -164,6 +188,36 @@ assert.equal(sameTickerCandidates[0].quote?.price, 100);
 assert.equal(sameTickerCandidates[1].quote?.price, 100);
 assert.equal(quoteFetches.filter((ticker) => ticker === "ZZZ").length, 1);
 
+const extendedCandidate = [{ ticker: "EXT", direction: "downside", pricedInPenalty: 0, gatePassed: true, trackingDisposition: "qualified", quote: null, rootEventKey: "extended-event" }];
+let extendedUrl;
+await marketLoaded.exports.enrichCandidateQuotes(extendedCandidate, async (value) => {
+  extendedUrl = new URL(String(value));
+  const ticker = extendedUrl.pathname.split("/").at(-1);
+  const regularAt = Date.parse("2026-07-22T20:00:00.000Z") / 1000;
+  const postAt = Date.parse("2026-07-22T20:30:00.000Z") / 1000;
+  const price = ticker === "SPY" ? 600 : 82;
+  return new Response(JSON.stringify({
+    chart: {
+      result: [{
+        meta: {
+          regularMarketPrice: ticker === "SPY" ? 600 : 100,
+          chartPreviousClose: ticker === "SPY" ? 600 : 104,
+          regularMarketTime: regularAt,
+          currentTradingPeriod: { post: { start: regularAt, end: Date.parse("2026-07-23T00:00:00.000Z") / 1000 } },
+        },
+        timestamp: [regularAt, postAt],
+        indicators: { quote: [{ close: [ticker === "SPY" ? 600 : 100, price] }] },
+      }],
+      error: null,
+    },
+  }), { status: 200, headers: { "content-type": "application/json" } });
+}, new Date("2026-07-22T21:00:00.000Z"));
+assert.equal(extendedUrl.searchParams.get("includePrePost"), "true");
+assert.equal(extendedCandidate[0].quote?.price, 82);
+assert.equal(extendedCandidate[0].quote?.marketSession, "post_market");
+assert.match(extendedCandidate[0].quote?.source, /extended-hours/);
+assert.equal(extendedCandidate[0].pricedInPenalty, 70);
+
 console.log(JSON.stringify({
   ok: true,
   gdeltQueryIsBoundedAndRotating: true,
@@ -174,4 +228,5 @@ console.log(JSON.stringify({
   successfulHttpWithoutRecordsIsNotCountedAsConnected: true,
   unusedQuoteChainIsNotMisreportedAsUnconfigured: true,
   oneQuoteServesEveryDistinctSameTickerEvent: true,
+  extendedHoursQuoteAnchorsAreUsed: true,
 }, null, 2));

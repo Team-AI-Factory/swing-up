@@ -13,6 +13,8 @@ export type EventFamily =
   | "regulatory_approval"
   | "regulatory_enforcement"
   | "financing_dilution"
+  | "financing_proposal"
+  | "regulatory_advisory"
   | "insider_ownership"
   | "leadership_change"
   | "cyber_incident"
@@ -56,6 +58,9 @@ export type ProviderResult = {
   error: string | null;
   entitlementVerified: boolean;
   cached: boolean;
+  responseTimeMs?: number | null;
+  cacheAgeMs?: number | null;
+  consecutiveFailures?: number;
 };
 
 export type MarketQuote = {
@@ -69,6 +74,7 @@ export type MarketQuote = {
   observedAt: string;
   source: string;
   delayedMinutes: number | null;
+  marketSession?: "pre_market" | "regular" | "post_market" | "latest_close" | "halted" | "unknown";
 };
 
 export type MacroSeriesSnapshot = {

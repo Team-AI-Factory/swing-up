@@ -8,7 +8,7 @@ const output = ts.transpileModule(source, {
 }).outputText;
 const cjsModule = { exports: {} };
 new Function("module", "exports", output)(cjsModule, cjsModule.exports);
-const { analyzeHistoricalAnalogs, comparePreEventFeatures, horizonPlanForRelationship } = cjsModule.exports;
+const { analyzeHistoricalAnalogs, comparePreEventFeatures, horizonPlanForRelationship, summarizeEarlyOneDayOutcomes } = cjsModule.exports;
 
 const AS_OF = "2026-07-22T12:00:00.000Z";
 const query = {
@@ -39,6 +39,7 @@ function record(overrides = {}) {
     featuresAsOf: overrides.featuresAsOf ?? "2025-01-02T14:29:00.000Z",
     dataQuality: overrides.dataQuality ?? "real",
     learningUse: has("learningUse") ? overrides.learningUse : "forecast_eligible",
+    ...(has("findingDisposition") ? { findingDisposition: overrides.findingDisposition } : {}),
     ...(has("provenance") ? { provenance: overrides.provenance } : {}),
     checkpoints: overrides.checkpoints ?? {
       "1D": {
@@ -225,6 +226,33 @@ assert.equal(mixedHorizon.usedFallbackHorizon, false);
 assert.equal(mixedHorizon.sampleSize, 3);
 assert.equal(mixedHorizon.items.every((item) => item.horizon === "7D"), true);
 assert.equal(mixedHorizon.items.some((item) => item.recordId === "fresh-one-day"), false);
+const mixedHorizonEarlyOneDay = summarizeEarlyOneDayOutcomes([
+  record({ id: "old-seven-a", ticker: "MH1", checkpoints: oneAndSevenDayCheckpoints(1, 4) }),
+  record({ id: "old-seven-b", ticker: "MH2", checkpoints: oneAndSevenDayCheckpoints(1.2, 5) }),
+  record({ id: "old-seven-c", ticker: "MH3", checkpoints: oneAndSevenDayCheckpoints(1.4, 6) }),
+  record({ id: "fresh-one-day", ticker: "MH4", returnPercent: 0.8, benchmarkReturnPercent: 0.1 }),
+], { asOf: AS_OF });
+assert.equal(mixedHorizonEarlyOneDay.reportingOnly, true);
+assert.equal(mixedHorizonEarlyOneDay.changesSeriousSignalPermission, false);
+assert.equal(mixedHorizonEarlyOneDay.changesMatureHorizonForecast, false);
+assert.equal(mixedHorizonEarlyOneDay.independentRootEventCount, 4);
+assert.equal(mixedHorizonEarlyOneDay.observableEffectCount, 4);
+assert.equal(mixedHorizonEarlyOneDay.usefulRootEventCount, 4);
+assert.equal(mixedHorizon.selectedHorizon, "7D");
+assert.equal(mixedHorizon.sampleSize, 3);
+
+const dispositionTelemetry = summarizeEarlyOneDayOutcomes([
+  record({ id: "qualified-root", rootEventKey: "shared-qualified-root", ticker: "QT", findingDisposition: "qualified" }),
+  record({ id: "duplicate-shadow-copy", rootEventKey: "shared-qualified-root", ticker: "QT", learningUse: "diagnostics_only", findingDisposition: "shadow_near_miss" }),
+  record({ id: "shadow-root", rootEventKey: "shadow-root", ticker: "SH", learningUse: "diagnostics_only", findingDisposition: "shadow_near_miss", returnPercent: -1 }),
+], { asOf: AS_OF });
+assert.equal(dispositionTelemetry.observableEffectCount, 2);
+assert.equal(dispositionTelemetry.independentRootEventCount, 2);
+assert.equal(dispositionTelemetry.duplicateEffectsCollapsed, 1);
+assert.equal(dispositionTelemetry.byLearningUse.forecast_eligible.independentRootEventCount, 1);
+assert.equal(dispositionTelemetry.byLearningUse.diagnostics_only.independentRootEventCount, 1);
+assert.equal(dispositionTelemetry.byFindingDisposition.qualified.independentRootEventCount, 1);
+assert.equal(dispositionTelemetry.byFindingDisposition.shadow_near_miss.independentRootEventCount, 1);
 
 console.log(JSON.stringify({
   ok: true,
@@ -245,6 +273,8 @@ console.log(JSON.stringify({
   retainedOneDayCoverage: mixedHorizon.diagnostics.horizonCoverage["1D"],
   preferredForecastHorizon: mixedHorizon.selectedHorizon,
   preferredForecastSampleSize: mixedHorizon.sampleSize,
+  earlyOneDayIndependentRootEvents: mixedHorizonEarlyOneDay.independentRootEventCount,
+  earlyOneDayIncludesFreshRootBeforeMatureForecast: true,
   sampleSize: mixed.sampleSize,
   selectedHorizon: mixed.selectedHorizon,
   posteriorHitProbabilityPercent: mixed.posteriorHitProbabilityPercent,

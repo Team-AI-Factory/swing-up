@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 
 const port = (process.env.PORT || "3000").trim();
@@ -99,6 +100,7 @@ async function main() {
   tellSupervisor({ type: "ready", sequence });
 
   while (!stopping) {
+    const runStartedAt = performance.now();
     let next;
     try {
       next = await triggerRun();
@@ -112,7 +114,18 @@ async function main() {
       tellSupervisor({ type: "stopped_by_lab", sequence });
       break;
     }
-    if (!stopping) await delay(next.delayMs, undefined, { signal: shutdown.signal }).catch(() => {});
+    if (!stopping) {
+      const runElapsedMs = Math.max(0, performance.now() - runStartedAt);
+      const waitMs = Math.max(0, next.delayMs - runElapsedMs);
+      tellSupervisor({
+        type: "next_run_scheduled",
+        sequence,
+        cadenceMs: next.delayMs,
+        runElapsedMs: Math.round(runElapsedMs),
+        waitMs: Math.round(waitMs),
+      });
+      await delay(waitMs, undefined, { signal: shutdown.signal }).catch(() => {});
+    }
   }
 }
 

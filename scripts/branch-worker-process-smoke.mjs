@@ -1,13 +1,20 @@
 import { fork } from "node:child_process";
 import { createServer } from "node:http";
 import { once } from "node:events";
+import { performance } from "node:perf_hooks";
 
 const token = "scheduler-process-smoke-token";
 let runCount = 0;
+let completedRunCount = 0;
+let activeRequests = 0;
+let maxConcurrentRequests = 0;
 let workerStartedAt = null;
 const sequences = [];
+const runStartedAt = [];
+const processingDurationsMs = [180, 550, 180, 180];
+const schedulePlans = [];
 
-const server = createServer((request, response) => {
+const server = createServer(async (request, response) => {
   if (request.url === "/api/health") {
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({ ok: true }));
@@ -20,9 +27,16 @@ const server = createServer((request, response) => {
     workerStartedAt ??= request.headers["x-swing-up-branch-lab-worker-started-at"];
     if (request.headers["x-swing-up-branch-lab-worker-started-at"] !== workerStartedAt) throw new Error("Worker identity changed during one process run.");
     sequences.push(Number(request.headers["x-swing-up-branch-lab-worker-sequence"]));
+    runStartedAt.push(performance.now());
+    activeRequests += 1;
+    maxConcurrentRequests = Math.max(maxConcurrentRequests, activeRequests);
+    const processingDurationMs = processingDurationsMs[runCount] ?? processingDurationsMs.at(-1);
     runCount += 1;
+    await new Promise((resolve) => setTimeout(resolve, processingDurationMs));
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({ ok: true, status: "no_qualified_signal", stopped: false, repairEligible: false }));
+    activeRequests -= 1;
+    completedRunCount += 1;
     return;
   }
   response.writeHead(404, { "content-type": "application/json" });
@@ -39,15 +53,18 @@ const worker = fork(new URL("./railway-branch-worker.mjs", import.meta.url), [],
     ...process.env,
     PORT: String(address.port),
     SWING_UP_BRANCH_LAB_RUNTIME_TOKEN: token,
-    SWING_UP_BRANCH_LAB_EFFECTIVE_INTERVAL_SECONDS: "0.1",
+    SWING_UP_BRANCH_LAB_EFFECTIVE_INTERVAL_SECONDS: "0.4",
     SWING_UP_BRANCH_LAB_EFFECTIVE_TECHNICAL_RETRY_SECONDS: "0.05",
     SWING_UP_BRANCH_LAB_WORKER_SMOKE: "true",
   },
   stdio: ["ignore", "ignore", "inherit", "ipc"],
 });
+worker.on("message", (message) => {
+  if (message?.type === "next_run_scheduled") schedulePlans.push(message);
+});
 
 const deadline = Date.now() + 8_000;
-while (runCount < 3 && Date.now() < deadline) {
+while ((completedRunCount < 4 || schedulePlans.length < 3) && Date.now() < deadline) {
   await new Promise((resolve) => setTimeout(resolve, 50));
 }
 worker.kill("SIGTERM");
@@ -55,7 +72,37 @@ await Promise.race([once(worker, "exit"), new Promise((_, reject) => setTimeout(
 server.close();
 await once(server, "close");
 
-if (runCount < 3) throw new Error(`Dedicated worker produced only ${runCount} scheduled requests.`);
+if (completedRunCount < 4) throw new Error(`Dedicated worker completed only ${completedRunCount} scheduled requests.`);
 if (sequences.some((value, index) => value !== index + 1)) throw new Error(`Dedicated worker sequences were not monotonic: ${sequences.join(",")}`);
+if (maxConcurrentRequests !== 1) throw new Error(`Dedicated worker overlapped ${maxConcurrentRequests} scan requests.`);
 
-console.log(JSON.stringify({ ok: true, schedulerMechanicsOnly: true, simulatedMarketPerformance: false, supervisedWorkerRequests: runCount, sequences }, null, 2));
+const startToStartIntervalsMs = runStartedAt.slice(1).map((startedAt, index) => Math.round(startedAt - runStartedAt[index]));
+if (startToStartIntervalsMs[0] >= 540 || startToStartIntervalsMs[2] >= 540) {
+  throw new Error(`Short scans waited a full interval after completion instead of holding the fixed cadence: ${startToStartIntervalsMs.join(",")}`);
+}
+if (startToStartIntervalsMs[0] < 340 || startToStartIntervalsMs[2] < 340) {
+  throw new Error(`Dedicated worker started a scan before the fixed cadence boundary: ${startToStartIntervalsMs.join(",")}`);
+}
+if (startToStartIntervalsMs[1] < 500 || startToStartIntervalsMs[1] >= 700) {
+  throw new Error(`Long scan did not restart promptly and serially after overrunning its cadence: ${startToStartIntervalsMs.join(",")}`);
+}
+
+const shortRunPlans = schedulePlans.filter((plan) => plan.sequence === 1 || plan.sequence === 3);
+if (shortRunPlans.length !== 2 || shortRunPlans.some((plan) => plan.cadenceMs !== 400 || plan.waitMs <= 0 || Math.abs(plan.runElapsedMs + plan.waitMs - plan.cadenceMs) > 3)) {
+  throw new Error(`Short-run fixed-boundary plans are invalid: ${JSON.stringify(shortRunPlans)}`);
+}
+const longRunPlan = schedulePlans.find((plan) => plan.sequence === 2);
+if (!longRunPlan || longRunPlan.cadenceMs !== 400 || longRunPlan.runElapsedMs < 500 || longRunPlan.waitMs !== 0) {
+  throw new Error(`Long-run no-overlap plan is invalid: ${JSON.stringify(longRunPlan)}`);
+}
+
+console.log(JSON.stringify({
+  ok: true,
+  schedulerMechanicsOnly: true,
+  simulatedMarketPerformance: false,
+  supervisedWorkerRequests: runCount,
+  sequences,
+  startToStartIntervalsMs,
+  maxConcurrentRequests,
+  fixedCadencePlans: schedulePlans.slice(0, 3).map(({ sequence, cadenceMs, runElapsedMs, waitMs }) => ({ sequence, cadenceMs, runElapsedMs, waitMs })),
+}, null, 2));

@@ -42,6 +42,12 @@ const universe = {
     entry("AWX", "Avalon Holdings Corp.", ["Avalon"]),
     entry("GOOGL", "Alphabet Inc.", ["Alphabet"]),
     entry("AAPL", "Apple Inc.", ["Apple"]),
+    entry("JYNT", "JOINT Corp", ["The Joint"]),
+    entry("MAA", "MID AMERICA APARTMENT COMMUNITIES INC.", ["Mid-America Apartment Communities"]),
+    entry("MAA-PI", "MID AMERICA APARTMENT COMMUNITIES INC.", ["Mid-America Apartment Communities"]),
+    entry("MAAI", "MID AMERICA APARTMENT COMMUNITIES INC.", ["Mid-America Apartment Communities"]),
+    entry("CNMD", "CONMED Corp", ["Conmed"]),
+    entry("CAPR", "Capricor Therapeutics Inc.", ["Capricor Therapeutics", "Capricor"]),
   ],
   coverage: { nasdaqRows: 11, otherExchangeRows: 0, eligibleEquities: 11, cikMapped: 0, cikMappedPercent: 0, adrCount: 0, excludedByReason: {} },
   sources: [],
@@ -95,6 +101,45 @@ const declassifiedIntel = build([receipt({
   summary: "The government says people should review a deep-state coverup and intelligence-community findings.",
 })]);
 assert.equal(declassifiedIntel.candidates.some((item) => item.ticker === "INTC" || item.ticker === "PPLI"), false);
+
+const genericJointGuidance = build([receipt({
+  title: "CISA publishes joint guidance for corporate software users",
+  summary: "The agencies jointly report minimum software bill of materials elements.",
+  channel: "federal_register",
+})]);
+assert.equal(genericJointGuidance.candidates.some((item) => item.ticker === "JYNT"), false);
+
+const explicitMaaTicker = build([receipt({
+  title: "Mid-America Apartment Communities (NYSE:MAA) beats expectations",
+  summary: "The company reports quarterly earnings.",
+  channel: "google_news_rss",
+  official: false,
+  primarySource: false,
+  symbolHints: ["MAA"],
+  companyHints: ["MID AMERICA APARTMENT COMMUNITIES INC."],
+})]);
+assert.deepEqual([...new Set(explicitMaaTicker.candidates.map((item) => item.ticker))], ["MAA"]);
+
+const neutralConmedForecast = build([receipt({
+  title: "Conmed forecasts 2026 adjusted EPS of $4.48 to $4.60 while targeting 5% to 6% organic growth",
+  summary: "Management also discussed tariff exposure during the call.",
+  channel: "google_news_rss",
+  official: false,
+  primarySource: false,
+  symbolHints: ["CNMD"],
+  companyHints: ["CONMED Corp"],
+})]);
+assert.equal(neutralConmedForecast.candidates.some((item) => item.eventFamily === "sanctions_trade"), false);
+assert.equal(neutralConmedForecast.diagnostics.directionUnknown, 1);
+
+const realTariffPolicy = build([receipt({
+  title: "Government imposes new medical-device tariffs and trade restrictions on CONMED",
+  summary: "The tariff policy affects CONMED's imported devices.",
+  channel: "federal_register",
+  symbolHints: ["CNMD"],
+  companyHints: ["CONMED Corp"],
+})]);
+assert.equal(realTariffPolicy.candidates.some((item) => item.eventFamily === "sanctions_trade"), true);
 
 const unrelatedRelianceRecall = build([receipt({
   title: "Reliance Life Sciences Private Limited FDA recall: Lack of Sterility Assurance",
@@ -253,6 +298,84 @@ const exactIssuer = build([receipt({
 assert.equal(exactIssuer.candidates.some((item) => item.ticker === "FRHC" && item.relationship === "direct" && item.eventFamily === "financing_dilution"), true);
 assert.equal(exactIssuer.candidates.find((item) => item.ticker === "FRHC")?.gatePassed, false);
 
+const syndicatedOfferingReceipts = [
+  receipt({
+    title: "Apple priced a public offering of 10 million new shares",
+    summary: "The issuer priced 10 million new shares.",
+    publisher: "Apple Inc.",
+    url: "https://issuer.example/apple-offering",
+    publishedAt: "2026-07-22T05:15:00.000Z",
+    symbolHints: ["AAPL"],
+    companyHints: ["Apple Inc."],
+  }),
+  receipt({
+    title: "AAPL completes sale of 10m new shares",
+    summary: "Apple completed its public offering of 10 million new shares.",
+    publisher: "Independent Capital News",
+    url: "https://capital-news.example/aapl-sale",
+    publishedAt: "2026-07-22T12:15:00.000Z",
+    channel: "google_news_rss",
+    official: false,
+    primarySource: false,
+    symbolHints: ["AAPL"],
+    companyHints: ["Apple Inc."],
+  }),
+];
+const syndicatedOffering = build(syndicatedOfferingReceipts);
+const reversedSyndicatedOffering = build([...syndicatedOfferingReceipts].reverse());
+const syndicatedCandidates = syndicatedOffering.candidates.filter((item) => item.ticker === "AAPL" && item.eventFamily === "financing_dilution");
+assert.equal(syndicatedCandidates.length, 1);
+assert.equal(syndicatedCandidates[0].independentPublishers, 2);
+assert.equal(syndicatedCandidates[0].rootEventKey, reversedSyndicatedOffering.candidates.find((item) => item.ticker === "AAPL" && item.eventFamily === "financing_dilution")?.rootEventKey);
+
+const distinctSameDayContracts = build([
+  receipt({
+    title: "Apple awarded a $100 million contract for cloud services",
+    summary: "The first committed contract covers cloud services.",
+    url: "https://issuer.example/apple-cloud-contract",
+    publishedAt: "2026-07-22T08:00:00.000Z",
+    symbolHints: ["AAPL"],
+    companyHints: ["Apple Inc."],
+    rawEventType: "8-K",
+  }),
+  receipt({
+    title: "Apple awarded a $100 million contract for device services",
+    summary: "The second committed contract covers device services.",
+    url: "https://issuer.example/apple-device-contract",
+    publishedAt: "2026-07-22T13:00:00.000Z",
+    symbolHints: ["AAPL"],
+    companyHints: ["Apple Inc."],
+    rawEventType: "8-K",
+  }),
+]);
+const distinctContractCandidates = distinctSameDayContracts.candidates.filter((item) => item.ticker === "AAPL" && item.eventFamily === "contract_award");
+assert.equal(distinctContractCandidates.length, 2);
+assert.equal(new Set(distinctContractCandidates.map((item) => item.rootEventKey)).size, 2);
+
+const distinctFiledContracts = build([
+  receipt({
+    title: "Apple awarded a $100 million contract for cloud services",
+    summary: "The committed contract has accession 0000320193-26-000101.",
+    url: "https://www.sec.gov/Archives/edgar/data/320193/000032019326000101/apple-a.htm",
+    publishedAt: "2026-07-22T08:00:00.000Z",
+    symbolHints: ["AAPL"],
+    companyHints: ["Apple Inc."],
+    rawEventType: "8-K",
+  }),
+  receipt({
+    title: "Apple awarded a $100 million contract for device services",
+    summary: "The committed contract has accession 0000320193-26-000102.",
+    url: "https://www.sec.gov/Archives/edgar/data/320193/000032019326000102/apple-b.htm",
+    publishedAt: "2026-07-22T13:00:00.000Z",
+    symbolHints: ["AAPL"],
+    companyHints: ["Apple Inc."],
+    rawEventType: "8-K",
+  }),
+]);
+const filedContractCandidates = distinctFiledContracts.candidates.filter((item) => item.ticker === "AAPL" && item.eventFamily === "contract_award");
+assert.equal(filedContractCandidates.length, 2);
+assert.equal(new Set(filedContractCandidates.map((item) => item.rootEventKey)).size, 2);
+
 const materialContractReceipt = receipt({
   title: "Apple wins contract, a five-year award valued at $500 million",
   summary: "The committed contract was awarded to Apple.",
@@ -332,6 +455,7 @@ const proposedPrimaryOffering = build([receipt({
   companyHints: ["Freedom Holding Corp."],
 })]).candidates.find((item) => item.ticker === "FRHC");
 assert.ok(proposedPrimaryOffering);
+assert.equal(proposedPrimaryOffering.eventFamily, "financing_proposal");
 const proposedSharesMetric = proposedPrimaryOffering.eventMagnitude.metrics.find((item) => item.kind === "offering_shares");
 assert.ok(proposedSharesMetric);
 assert.equal(proposedSharesMetric.eventStatus, "proposed");
@@ -345,8 +469,23 @@ proposedPrimaryOffering.eventMagnitude.relativeToCompany = {
 };
 proposedPrimaryOffering.eventMagnitude.status = "relative_to_company";
 analysis.reassessCandidateAfterFundamentals(proposedPrimaryOffering, new Date("2026-07-22T13:00:00.000Z"));
-assert.equal(proposedPrimaryOffering.gateChecks.eventMagnitudeActionable, false);
-assert.equal(proposedPrimaryOffering.gatePassed, false);
+assert.equal(proposedPrimaryOffering.gateChecks.eventMagnitudeActionable, true);
+assert.equal(proposedPrimaryOffering.gatePassed, true);
+
+const negativeFdaAdvisoryVote = build([receipt({
+  title: "FDA advisory panel votes 9-3 against evidence of effectiveness for Capricor therapy",
+  summary: "The advisory committee concluded that the available evidence does not support effectiveness. The FDA has not made its final decision.",
+  url: "https://www.sec.gov/Archives/edgar/data/example/capr-8k.htm",
+  publisher: "Capricor Therapeutics",
+  channel: "sec_current_filings",
+  symbolHints: ["CAPR"],
+  companyHints: ["Capricor Therapeutics Inc."],
+  rawEventType: "8-K",
+})]);
+const fdaWatch = negativeFdaAdvisoryVote.candidates.find((item) => item.ticker === "CAPR");
+assert.equal(fdaWatch?.eventFamily, "regulatory_advisory");
+assert.equal(fdaWatch?.direction, "downside");
+assert.equal(fdaWatch?.gatePassed, true);
 
 const unsupportedDilutionNumber = build([
   receipt({

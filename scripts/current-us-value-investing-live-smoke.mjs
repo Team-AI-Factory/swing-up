@@ -55,33 +55,40 @@ async function main() {
     while (Date.now() < deadline) {
       labAttempts += 1;
       try {
-        const result = await request("/api/internal/railway-branch-signal-lab", 180_000);
+        const result = await request("/api/internal/railway-branch-signal-lab", 240_000);
         const latest = result.json?.latest;
         const value = latest?.valueInvesting;
+        const diligence = latest?.catalystCompanyDiligence;
         const warehouse = value?.warehouse;
         const hardened = value?.methodology?.safetyOverlay === "us_value_alert_safety_v2";
+        const diligenceEnabled = value?.methodology?.catalystDiligenceOverlay === "sec_debt_earnings_quality_revenue_durability_reinvestment_v1"
+          && value?.methodology?.foundationSeriousAlertsRequireDiligenceConfirmation === true
+          && diligence?.policy?.seriousFoundationBuyRequiresBuyQualityConfirmed === true;
         if (
           result.status === 200
           && result.json?.ok === true
           && result.json?.branch === "agent/combined-opportunity-engine"
           && hardened
+          && diligenceEnabled
           && value?.coverage?.companiesAnalyzed >= 5_000
           && value?.coverage?.processingCoveragePercent >= 95
           && warehouse?.storage === "cloudflare_r2"
           && warehouse?.companyRecordsStored === value.coverage.companiesAnalyzed
+          && diligence?.warehouse?.persisted === true
         ) {
           lab = result.json;
           break;
         }
       } catch {
-        // The five-minute worker may still be completing its first hardened full valuation cycle.
+        // The five-minute worker may still be completing its first diligence-confirmed valuation cycle.
       }
       await sleep(15_000);
     }
 
-    assert.ok(lab, "Railway worker did not complete and persist the hardened live U.S. fair-value warehouse before the validation deadline.");
+    assert.ok(lab, "Railway worker did not complete and persist the diligence-confirmed live U.S. fair-value warehouse before the validation deadline.");
     const latest = lab.latest;
     const value = latest.valueInvesting;
+    const diligence = latest.catalystCompanyDiligence;
     const coverage = value.coverage;
     const warehouse = value.warehouse;
 
@@ -89,6 +96,8 @@ async function main() {
     assert.equal(value.methodology.style, "company_first_conservative_intrinsic_value");
     assert.equal(value.methodology.safetyOverlay, "us_value_alert_safety_v2");
     assert.equal(value.methodology.specialistSectorModelsRequired, true);
+    assert.equal(value.methodology.catalystDiligenceOverlay, "sec_debt_earnings_quality_revenue_durability_reinvestment_v1");
+    assert.equal(value.methodology.foundationSeriousAlertsRequireDiligenceConfirmation, true);
     assert.equal(value.methodology.analystTargetUsedAsFairValue, false);
     assert.equal(value.methodology.newsRequiredForFoundationAlert, false);
     assert.equal(value.methodology.fullFundamentalRefreshMinutes, 15);
@@ -107,6 +116,12 @@ async function main() {
     assert.ok(value.seriousAlerts.buy.every((item) => ["NASDAQ", "NYSE", "AMEX", "NYSEAMERICAN"].includes(item.exchange)));
     assert.ok(value.seriousAlerts.sell.every((item) => ["NASDAQ", "NYSE", "AMEX", "NYSEAMERICAN"].includes(item.exchange)));
     assert.ok(value.seriousAlerts.watchOut.every((item) => ["NASDAQ", "NYSE", "AMEX", "NYSEAMERICAN"].includes(item.exchange)));
+    assert.ok(value.seriousAlerts.buy.every((item) => diligence.companies[item.ticker]?.buyQualityConfirmed === true));
+    assert.ok(value.seriousAlerts.sell.every((item) => diligence.companies[item.ticker]?.valuationInputsReliable === true));
+    assert.ok(value.seriousAlerts.watchOut.every((item) => diligence.companies[item.ticker]?.fundamentalRiskConfirmed === true));
+    assert.ok(Array.isArray(value.provisionalAlertsSuppressed.buy));
+    assert.ok(Array.isArray(value.provisionalAlertsSuppressed.sell));
+    assert.ok(Array.isArray(value.provisionalAlertsSuppressed.watchOut));
     assert.ok(Array.isArray(value.watchlists.qualityWaitingForPrice));
     assert.ok(typeof value.watchlists.researchOnlyCount === "number");
 
@@ -118,9 +133,18 @@ async function main() {
     assert.equal(warehouse.companyRecordsStored, coverage.companiesAnalyzed);
     assert.deepEqual(warehouse.errors, []);
 
+    assert.equal(diligence.policy.primarySource, "SEC Company Facts");
+    assert.equal(diligence.policy.revenueDurabilityIsOnlyAProxy, true);
+    assert.equal(diligence.policy.noSyntheticData, true);
+    assert.ok(diligence.coverage.companiesCompleted > 0);
+    assert.equal(diligence.warehouse.persisted, true);
+    assert.ok(diligence.warehouse.latestKey.startsWith("branch-labs/pr-262/value-investing/catalyst-diligence/"));
+    assert.deepEqual(diligence.warehouse.errors, []);
+
     assert.equal(latest.liveSourcePolicy.foundationNewsRequired, false);
     assert.equal(latest.liveSourcePolicy.foundationFairValueCanTriggerImmediately, true);
     assert.equal(latest.liveSourcePolicy.foundationSpecialistSectorModelsRequired, true);
+    assert.equal(latest.liveSourcePolicy.foundationCatalystDiligenceRequired, true);
     assert.equal(latest.liveSourcePolicy.headlineAloneCanPromoteSeriousSignal, false);
     assert.ok(latest.liveSourcePolicy.maximumFullArticlesReadPerScan >= 12);
     assert.ok(latest.liveSourcePolicy.maximumFullArticlesReadPerScan <= 20);
@@ -151,10 +175,12 @@ async function main() {
         watchOut: value.seriousAlerts.watchOut.length,
       },
       seriousAlerts: value.seriousAlerts,
+      provisionalAlertsSuppressed: value.provisionalAlertsSuppressed,
       qualityPriceWatchlist: value.watchlists.qualityWaitingForPrice,
       qualityPriceWatchlistCount: value.watchlists.qualityWaitingForPrice.length,
       researchOnlyCount: value.watchlists.researchOnlyCount,
       warehouse,
+      catalystCompanyDiligence: diligence,
       articlePolicy: {
         minimum: latest.liveSourcePolicy.minimumFullArticlesReadPerScan,
         maximum: latest.liveSourcePolicy.maximumFullArticlesReadPerScan,
@@ -170,6 +196,8 @@ async function main() {
       companiesAnalyzed: coverage.companiesAnalyzed,
       companiesWithFairValue: coverage.companiesWithFairValue,
       seriousAlertCounts: report.seriousAlertCounts,
+      provisionalAlertsSuppressed: Object.values(value.provisionalAlertsSuppressed).reduce((total, items) => total + items.length, 0),
+      diligenceCompaniesCompleted: diligence.coverage.companiesCompleted,
       qualityPriceWatchlistCount: report.qualityPriceWatchlistCount,
       r2ShardCount: warehouse.shardKeys.length,
       reportPath: outputPath,

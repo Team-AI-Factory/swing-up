@@ -78,6 +78,7 @@ for (const marker of [
   `ephemeralDiagnosticsOnly: true`,
   `persistentSignalState: "cloudflare_r2"`,
   `technicalFailureFingerprint = \`branch_route_\${category}\``,
+  `equity_history|outcome_archive|run_archive`,
   `status: "scan_already_in_progress"`,
   `storage: "cloudflare_r2"`,
   `INVALIDATED_FALSE_MAPPING_EVENT_KEYS`,

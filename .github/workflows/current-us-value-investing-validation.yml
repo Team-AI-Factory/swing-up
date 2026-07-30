@@ -7,7 +7,9 @@ on:
     paths:
       - "lib/opportunity-engine/us-value-investing-engine.ts"
       - "lib/equity-signal/pilot-runner.ts"
+      - "lib/equity-signal/article-evidence.ts"
       - "app/api/internal/railway-branch-signal-lab/route.ts"
+      - "scripts/equity-article-evidence-smoke.mjs"
       - "scripts/current-us-value-investing-live-smoke.mjs"
       - "config/serious-signal-quality.json"
       - ".github/workflows/current-us-value-investing-validation.yml"
@@ -17,7 +19,9 @@ on:
     paths:
       - "lib/opportunity-engine/us-value-investing-engine.ts"
       - "lib/equity-signal/pilot-runner.ts"
+      - "lib/equity-signal/article-evidence.ts"
       - "app/api/internal/railway-branch-signal-lab/route.ts"
+      - "scripts/equity-article-evidence-smoke.mjs"
       - "scripts/current-us-value-investing-live-smoke.mjs"
       - "config/serious-signal-quality.json"
       - ".github/workflows/current-us-value-investing-validation.yml"

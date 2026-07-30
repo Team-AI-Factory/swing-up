@@ -32,6 +32,17 @@ const valueCycle = () => ({
   analyses: [],
   safety: { databaseWrites: false, publishing: false, notifications: false, trades: false },
 });
+const diligenceReport = () => ({
+  version: 1,
+  checkedAt: "2026-07-29T06:00:00.000Z",
+  marketScope: "US listed common stocks and ADRs only",
+  policy: { primarySource: "SEC Company Facts", seriousFoundationBuyRequiresBuyQualityConfirmed: true, seriousFoundationSellRequiresReliableValuationInputs: true, seriousFoundationWatchOutRequiresFundamentalRiskConfirmed: true, directCustomerRetentionDisclosureRequiredWhenAvailable: true, revenueDurabilityIsOnlyAProxy: true, maximumFreshSecCompaniesPerScan: 60, cacheHours: 12, noSyntheticData: true },
+  coverage: { catalystCompaniesDiscovered: 0, foundationAlertCompaniesAdded: 0, companiesSelectedThisScan: 0, companiesCompleted: 0, companiesFromCache: 0, companiesUnavailable: 0, catalystCompaniesQueuedForLaterScan: 0 },
+  companies: {},
+  alertConfirmation: { buy: [], sell: [], watchOut: [], suppressedBuy: [], suppressedSell: [], suppressedWatchOut: [] },
+  warehouse: { latestKey: "branch-labs/pr-262/value-investing/catalyst-diligence/latest.json", immutableRunKey: null, persisted: false, errors: [] },
+  safety: { publishing: false, notifications: false, trades: false, databaseWrites: false },
+});
 
 const wrapper = compile(new URL("../lib/equity-signal/pilot-runner.ts", import.meta.url), {
   "@/lib/equity-signal/article-evidence": {
@@ -52,6 +63,7 @@ const wrapper = compile(new URL("../lib/equity-signal/pilot-runner.ts", import.m
   },
   "@/lib/equity-signal/us-watch-out-engine": { buildApprovedUsWatchOutReview: async () => ({ findings: [], seriousSignals: [] }) },
   "@/lib/equity-signal/us-watch-out-serious-promotion": { promoteApprovedWatchOutRules: ({ watchOutReview }) => ({ ...watchOutReview, seriousSignals: [] }) },
+  "@/lib/opportunity-engine/catalyst-company-diligence": { buildCatalystCompanyDiligence: async () => diligenceReport() },
   "@/lib/opportunity-engine/us-value-investing-engine": { runUsValueInvestingCycle: async () => valueCycle() },
   "@/lib/opportunity-engine/us-value-investing-safety": { hardenAndPersistUsValueInvestingCycle: async (raw) => raw },
 });
@@ -79,6 +91,7 @@ assert.equal(fourCases.status, "candidate_needs_same_company_or_industry_pilot_h
 assert.equal(receivedHistory.length, 2);
 assert.deepEqual(fourCases.historicalLearning.publicHistoricalFamiliesBuilt, ["earnings_guidance", "regulatory_approval"]);
 assert.equal(fourCases.valueInvesting.methodology.newsRequiredForFoundationAlert, false);
+assert.equal(fourCases.liveSourcePolicy.foundationCatalystDiligenceRequired, true);
 
 pilotGate = { passed: true, blockers: [], independentRealEventCount: 5, observedDirectionalHitRatePercent: 80, statisticallyEquivalentToThirtySamples: false };
 const fourOfFive = await wrapper.runPilotEquitySignalLab({ historicalSignals: [] });
@@ -94,4 +107,4 @@ const headlineOnly = await wrapper.runPilotEquitySignalLab({ historicalSignals: 
 assert.equal(headlineOnly.seriousSignalFound, false);
 assert.equal(headlineOnly.status, "candidate_needs_full_article_confirmation");
 
-console.log(JSON.stringify({ ok: true, historicalPeerGateMandatory: true, publicFamiliesBuilt: ["earnings_guidance", "regulatory_approval"], fourOfFivePasses: true, ownForwardOutcomeNotRequiredBeforeAlert: true, analystExpectationsCannotVetoBuy: true, headlineOnlyBlocked: true, foundationFairValueCanTriggerWithoutNews: true }, null, 2));
+console.log(JSON.stringify({ ok: true, historicalPeerGateMandatory: true, publicFamiliesBuilt: ["earnings_guidance", "regulatory_approval"], fourOfFivePasses: true, ownForwardOutcomeNotRequiredBeforeAlert: true, analystExpectationsCannotVetoBuy: true, headlineOnlyBlocked: true, foundationFairValueCanTriggerWithoutNews: true, foundationCatalystDiligenceRequired: true }, null, 2));

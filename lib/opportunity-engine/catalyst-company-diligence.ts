@@ -74,6 +74,10 @@ export type CatalystCompanyDiligenceReport = {
     directCustomerRetentionDisclosureRequiredWhenAvailable: true;
     revenueDurabilityIsOnlyAProxy: true;
     maximumFreshSecCompaniesPerScan: number;
+    requestTimeoutSeconds: number;
+    maximumWorstCaseFreshSecStageSeconds: number;
+    reservedCatalystSlotsWhenBothQueuesNonEmpty: number;
+    rotatesFoundationAndCatalystQueues: true;
     cacheHours: number;
     noSyntheticData: true;
   };
@@ -84,6 +88,7 @@ export type CatalystCompanyDiligenceReport = {
     companiesCompleted: number;
     companiesFromCache: number;
     companiesUnavailable: number;
+    foundationCompaniesQueuedForLaterScan: number;
     catalystCompaniesQueuedForLaterScan: number;
   };
   companies: Record<string, CatalystCompanyDiligence>;
@@ -125,15 +130,31 @@ const R2_PREFIX = "branch-labs/pr-262/value-investing/catalyst-diligence";
 const LATEST_KEY = `${R2_PREFIX}/latest.json`;
 const CACHE_MS = 12 * 60 * 60 * 1000;
 const PERSIST_MS = 6 * 60 * 60 * 1000;
-const MAX_FRESH_SEC_COMPANIES_PER_SCAN = 60;
+const ROTATION_BUCKET_MS = 5 * 60 * 1000;
+const MAX_FRESH_SEC_COMPANIES_PER_SCAN = 12;
+const RESERVED_CATALYST_SLOTS = 4;
+const SEC_REQUEST_TIMEOUT_MS = 8_000;
+const SEC_REQUEST_PACING_MS = 400;
+const SEC_REQUEST_CONCURRENCY = 2;
 const ANNUAL_FORMS = new Set(["10-K", "20-F", "40-F"]);
 
 const state = globalThis as typeof globalThis & {
   __swingUpCatalystDiligenceCache?: Map<string, CachedDiligence>;
-  __swingUpCatalystDiligenceCursor?: number;
   __swingUpCatalystDiligencePersistedAt?: number;
 };
 const cache = state.__swingUpCatalystDiligenceCache ??= new Map<string, CachedDiligence>();
+
+export const CATALYST_DILIGENCE_EXECUTION_POLICY = Object.freeze({
+  maximumFreshSecCompaniesPerScan: MAX_FRESH_SEC_COMPANIES_PER_SCAN,
+  requestTimeoutSeconds: SEC_REQUEST_TIMEOUT_MS / 1_000,
+  maximumWorstCaseFreshSecStageSeconds: Math.ceil(
+    (MAX_FRESH_SEC_COMPANIES_PER_SCAN / SEC_REQUEST_CONCURRENCY)
+    * (SEC_REQUEST_TIMEOUT_MS + SEC_REQUEST_PACING_MS)
+    / 1_000,
+  ),
+  reservedCatalystSlotsWhenBothQueuesNonEmpty: RESERVED_CATALYST_SLOTS,
+  rotatesFoundationAndCatalystQueues: true as const,
+});
 
 const CONCEPTS = {
   revenue: {
@@ -472,7 +493,7 @@ async function fetchDiligence(input: {
         "user-agent": process.env.SEC_USER_AGENT?.trim() || "Swing Up research automation support@swingup.app",
       },
       cache: "no-store",
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(SEC_REQUEST_TIMEOUT_MS),
     });
     if (!response.ok) throw new Error(`sec_companyfacts_http_${response.status}`);
     const payload = object(await response.json());
@@ -545,7 +566,7 @@ async function mapWithConcurrency<T, R>(items: T[], concurrency: number, worker:
       const index = cursor;
       cursor += 1;
       output[index] = await worker(items[index]);
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      await new Promise((resolve) => setTimeout(resolve, SEC_REQUEST_PACING_MS));
     }
   }));
   return output;
@@ -563,6 +584,43 @@ function companyFromCandidate(value: unknown) {
 
 function dateKey(value: string) {
   return value.replace(/[^0-9]/g, "").slice(0, 14);
+}
+
+function rotated<T>(items: T[], offset: number) {
+  if (!items.length) return [];
+  const normalized = ((offset % items.length) + items.length) % items.length;
+  return [...items.slice(normalized), ...items.slice(0, normalized)];
+}
+
+function selectDiligenceTickers(priorityTickers: string[], catalystTickers: string[], now: Date) {
+  const cycle = Math.floor(now.getTime() / ROTATION_BUCKET_MS);
+  const bothQueuesHaveWork = priorityTickers.length > 0 && catalystTickers.length > 0;
+  const initialPriorityLimit = bothQueuesHaveWork
+    ? MAX_FRESH_SEC_COMPANIES_PER_SCAN - RESERVED_CATALYST_SLOTS
+    : MAX_FRESH_SEC_COMPANIES_PER_SCAN;
+  const initialCatalystLimit = bothQueuesHaveWork
+    ? RESERVED_CATALYST_SLOTS
+    : MAX_FRESH_SEC_COMPANIES_PER_SCAN;
+  const rotatedPriority = rotated(priorityTickers, cycle * Math.max(1, initialPriorityLimit));
+  const rotatedCatalysts = rotated(catalystTickers, cycle * Math.max(1, initialCatalystLimit));
+  const priority = rotatedPriority.slice(0, initialPriorityLimit);
+  const catalysts = rotatedCatalysts.slice(0, initialCatalystLimit);
+  const selected = [...priority, ...catalysts];
+  if (selected.length < MAX_FRESH_SEC_COMPANIES_PER_SCAN) {
+    selected.push(
+      ...rotatedPriority.slice(priority.length),
+      ...rotatedCatalysts.slice(catalysts.length),
+    );
+  }
+  return [...new Set(selected)].slice(0, MAX_FRESH_SEC_COMPANIES_PER_SCAN);
+}
+
+export function selectCatalystDiligenceTickersForTest(input: {
+  priorityTickers: string[];
+  catalystTickers: string[];
+  now: Date;
+}) {
+  return selectDiligenceTickers(input.priorityTickers, input.catalystTickers, input.now);
 }
 
 async function persistReport(report: CatalystCompanyDiligenceReport) {
@@ -609,16 +667,12 @@ export async function buildCatalystCompanyDiligence(input: {
   }
   const priorityTickers = [...foundationCompanies.keys()];
   const remainingCatalysts = [...catalystCompanies.keys()].filter((ticker) => !foundationCompanies.has(ticker));
-  const cursor = Math.max(0, state.__swingUpCatalystDiligenceCursor ?? 0) % Math.max(1, remainingCatalysts.length);
-  const rotated = remainingCatalysts.length ? [...remainingCatalysts.slice(cursor), ...remainingCatalysts.slice(0, cursor)] : [];
-  const selected = [...new Set([...priorityTickers, ...rotated])].slice(0, MAX_FRESH_SEC_COMPANIES_PER_SCAN);
-  state.__swingUpCatalystDiligenceCursor = remainingCatalysts.length
-    ? (cursor + Math.max(0, selected.length - priorityTickers.length)) % remainingCatalysts.length
-    : 0;
+  const selected = selectDiligenceTickers(priorityTickers, remainingCatalysts, now);
+  const selectedSet = new Set(selected);
 
   const universe = await loadEquityUniverse(fetchImpl, now);
   const profiles = new Map(universe.snapshot.entries.map((entry) => [entry.ticker.toUpperCase(), entry]));
-  const completed = await mapWithConcurrency(selected, 2, async (ticker) => {
+  const completed = await mapWithConcurrency(selected, SEC_REQUEST_CONCURRENCY, async (ticker) => {
     const profile = profiles.get(ticker);
     const company = foundationCompanies.get(ticker) ?? catalystCompanies.get(ticker) ?? profile?.name ?? ticker;
     return fetchDiligence({ ticker, company, cik: profile?.cik ?? null, fetchImpl, now });
@@ -639,6 +693,10 @@ export async function buildCatalystCompanyDiligence(input: {
       directCustomerRetentionDisclosureRequiredWhenAvailable: true,
       revenueDurabilityIsOnlyAProxy: true,
       maximumFreshSecCompaniesPerScan: MAX_FRESH_SEC_COMPANIES_PER_SCAN,
+      requestTimeoutSeconds: CATALYST_DILIGENCE_EXECUTION_POLICY.requestTimeoutSeconds,
+      maximumWorstCaseFreshSecStageSeconds: CATALYST_DILIGENCE_EXECUTION_POLICY.maximumWorstCaseFreshSecStageSeconds,
+      reservedCatalystSlotsWhenBothQueuesNonEmpty: RESERVED_CATALYST_SLOTS,
+      rotatesFoundationAndCatalystQueues: true,
       cacheHours: CACHE_MS / 3_600_000,
       noSyntheticData: true,
     },
@@ -649,7 +707,8 @@ export async function buildCatalystCompanyDiligence(input: {
       companiesCompleted: completed.length,
       companiesFromCache: completed.filter((item) => item.fromCache).length,
       companiesUnavailable: completed.filter((item) => item.value.status === "insufficient").length,
-      catalystCompaniesQueuedForLaterScan: Math.max(0, remainingCatalysts.length - Math.max(0, selected.length - priorityTickers.length)),
+      foundationCompaniesQueuedForLaterScan: priorityTickers.filter((ticker) => !selectedSet.has(ticker)).length,
+      catalystCompaniesQueuedForLaterScan: remainingCatalysts.filter((ticker) => !selectedSet.has(ticker)).length,
     },
     companies,
     alertConfirmation: {

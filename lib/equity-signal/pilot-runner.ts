@@ -17,7 +17,10 @@ import { buildApprovedUsWatchOutReview } from "@/lib/equity-signal/us-watch-out-
 import { promoteApprovedWatchOutRules } from "@/lib/equity-signal/us-watch-out-serious-promotion";
 import { buildCatalystCompanyDiligence } from "@/lib/opportunity-engine/catalyst-company-diligence";
 import { runUsValueInvestingCycle } from "@/lib/opportunity-engine/us-value-investing-engine";
-import { hardenAndPersistUsValueInvestingCycle } from "@/lib/opportunity-engine/us-value-investing-safety";
+import {
+  hardenAndPersistUsValueInvestingCycle,
+  persistHardenedUsValueInvestingCycle,
+} from "@/lib/opportunity-engine/us-value-investing-safety";
 
 export type PilotEquityProviderCallDecision = EquityProviderCallDecision;
 export type PilotEquityProviderCallRequest = EquityProviderCallRequest;
@@ -73,7 +76,7 @@ export async function runPilotEquitySignalLab(input: PilotEquitySignalLabInput =
   ]);
   const hardenedForDiligence = await hardenAndPersistUsValueInvestingCycle(rawValueInvesting, { persist: false });
   const [hardenedValueInvesting, catalystCompanyDiligence] = await Promise.all([
-    hardenAndPersistUsValueInvestingCycle(rawValueInvesting, { persist: true }),
+    persistHardenedUsValueInvestingCycle(hardenedForDiligence),
     buildCatalystCompanyDiligence({
       candidates: rankedCandidates,
       valueInvesting: hardenedForDiligence,

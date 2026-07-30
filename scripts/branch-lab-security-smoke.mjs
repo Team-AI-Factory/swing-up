@@ -100,7 +100,7 @@ for (const marker of [
 const committeeRouteSource = await readFile(new URL("../app/api/ai-committee/run/route.ts", import.meta.url), "utf8");
 if (!committeeRouteSource.includes("dryRun: payload.dryRun ?? true")) throw new Error("Public committee route no longer defaults to dry-run.");
 const r2Source = await readFile(new URL("../lib/r2-warehouse.ts", import.meta.url), "utf8");
-for (const marker of [`"if-match"`, `"if-none-match"`, `res.status === 412`, `normalizeR2Etag`, `readVersionedTextFromR2`, `writeVersionedJsonToR2`, `assertR2MutationKeyAllowed(method, key)`, `r2_mutation_outside_write_prefix`]) {
+for (const marker of [`"if-match"`, `"if-none-match"`, `res.status === 412`, `normalizeR2Etag`, `readVersionedTextFromR2`, `writeVersionedJsonToR2`, `assertR2MutationKeyAllowed(method, key)`, `r2_mutation_outside_write_prefix`, `R2_REQUEST_TIMEOUT_MS = 20_000`, `signal: AbortSignal.timeout(R2_REQUEST_TIMEOUT_MS)`]) {
   if (!r2Source.includes(marker)) throw new Error(`Cloudflare R2 conditional-write guard is missing: ${marker}`);
 }
 const universeSource = await readFile(new URL("../lib/equity-signal/universe.ts", import.meta.url), "utf8");

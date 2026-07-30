@@ -65,7 +65,10 @@ const wrapper = compile(new URL("../lib/equity-signal/pilot-runner.ts", import.m
   "@/lib/equity-signal/us-watch-out-serious-promotion": { promoteApprovedWatchOutRules: ({ watchOutReview }) => ({ ...watchOutReview, seriousSignals: [] }) },
   "@/lib/opportunity-engine/catalyst-company-diligence": { buildCatalystCompanyDiligence: async () => diligenceReport() },
   "@/lib/opportunity-engine/us-value-investing-engine": { runUsValueInvestingCycle: async () => valueCycle() },
-  "@/lib/opportunity-engine/us-value-investing-safety": { hardenAndPersistUsValueInvestingCycle: async (raw) => raw },
+  "@/lib/opportunity-engine/us-value-investing-safety": {
+    hardenAndPersistUsValueInvestingCycle: async (raw) => raw,
+    persistHardenedUsValueInvestingCycle: async (hardened) => hardened,
+  },
 });
 
 function approved(action = "buy") {

@@ -71,14 +71,17 @@ export async function runPilotEquitySignalLab(input: PilotEquitySignalLabInput =
     buildArticleEvidenceReport({ candidates: rankedCandidates, selectedCandidate, fetchImpl, maximumArticles: articleBudget }),
     runUsValueInvestingCycle({ fetchImpl, now, persist: false }),
   ]);
-  const hardenedValueInvesting = await hardenAndPersistUsValueInvestingCycle(rawValueInvesting, { persist: true });
-  const catalystCompanyDiligence = await buildCatalystCompanyDiligence({
-    candidates: rankedCandidates,
-    valueInvesting: hardenedValueInvesting,
-    fetchImpl,
-    now,
-    persist: true,
-  });
+  const hardenedForDiligence = await hardenAndPersistUsValueInvestingCycle(rawValueInvesting, { persist: false });
+  const [hardenedValueInvesting, catalystCompanyDiligence] = await Promise.all([
+    hardenAndPersistUsValueInvestingCycle(rawValueInvesting, { persist: true }),
+    buildCatalystCompanyDiligence({
+      candidates: rankedCandidates,
+      valueInvesting: hardenedForDiligence,
+      fetchImpl,
+      now,
+      persist: true,
+    }),
+  ]);
   const confirmedBuyTickers = new Set(catalystCompanyDiligence.alertConfirmation.buy);
   const confirmedSellTickers = new Set(catalystCompanyDiligence.alertConfirmation.sell);
   const confirmedWatchOutTickers = new Set(catalystCompanyDiligence.alertConfirmation.watchOut);

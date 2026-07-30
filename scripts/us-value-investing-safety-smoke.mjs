@@ -7,14 +7,24 @@ const output = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
 }).outputText;
 const cjsModule = { exports: {} };
+let activeWrites = 0;
+let maximumConcurrentWrites = 0;
+let writeCount = 0;
 new Function("require", "module", "exports", output)((name) => {
   if (name === "@/lib/r2-warehouse") return {
-    getR2Config: () => ({ configured: false }),
-    writeVersionedJsonToR2: async () => ({ written: true, conflict: false, etag: "test" }),
+    getR2Config: () => ({ configured: true }),
+    writeVersionedJsonToR2: async () => {
+      writeCount += 1;
+      activeWrites += 1;
+      maximumConcurrentWrites = Math.max(maximumConcurrentWrites, activeWrites);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      activeWrites -= 1;
+      return { written: true, conflict: false, etag: "test" };
+    },
   };
   throw new Error(`Unexpected import in value safety smoke: ${name}`);
 }, cjsModule, cjsModule.exports);
-const { hardenUsValueInvestingCycleForTest } = cjsModule.exports;
+const { hardenAndPersistUsValueInvestingCycle, hardenUsValueInvestingCycleForTest } = cjsModule.exports;
 
 function item(overrides = {}) {
   return {
@@ -168,6 +178,37 @@ assert.ok(hardened.analyses.find((entry) => entry.ticker === "WIDE").decision.bl
 assert.equal(hardened.analyses.some((entry) => entry.ticker === "OTCX"), false);
 assert.equal(hardened.methodology.safetyOverlay, "us_value_alert_safety_v2");
 
+const largeRaw = {
+  ...raw,
+  coverage: {
+    ...raw.coverage,
+    totalProviderRows: 1_200,
+    usPrimaryListings: 1_200,
+    companiesAnalyzed: 1_200,
+    companiesWithFairValue: 1_200,
+  },
+  analyses: Array.from({ length: 1_200 }, (_, index) => item({
+    ticker: `SAFE${String(index).padStart(4, "0")}`,
+    tradingViewSymbol: `NASDAQ:SAFE${String(index).padStart(4, "0")}`,
+  })),
+};
+const firstPersist = await hardenAndPersistUsValueInvestingCycle(largeRaw, { persist: true });
+assert.equal(firstPersist.warehouse.storage, "cloudflare_r2");
+assert.equal(firstPersist.warehouse.persistedThisCycle, true);
+assert.equal(firstPersist.warehouse.companyRecordsStored, 1_200);
+assert.equal(firstPersist.warehouse.shardKeys.length, 3);
+assert.ok(maximumConcurrentWrites > 1);
+assert.ok(maximumConcurrentWrites <= 4);
+const writesAfterFirstPersist = writeCount;
+
+const reusedPersist = await hardenAndPersistUsValueInvestingCycle(largeRaw, { persist: true });
+assert.equal(reusedPersist.warehouse.storage, "cloudflare_r2");
+assert.equal(reusedPersist.warehouse.persistedThisCycle, false);
+assert.equal(reusedPersist.warehouse.companyRecordsStored, 1_200);
+assert.deepEqual(reusedPersist.warehouse.shardKeys, firstPersist.warehouse.shardKeys);
+assert.equal(reusedPersist.warehouse.immutableRunKey, firstPersist.warehouse.immutableRunKey);
+assert.equal(writeCount, writesAfterFirstPersist);
+
 console.log(JSON.stringify({
   ok: true,
   seriousBuy: hardened.seriousAlerts.buy.map((entry) => entry.ticker),
@@ -175,4 +216,6 @@ console.log(JSON.stringify({
   specialistSectorsBlocked: true,
   valuationAgreementRequired: true,
   eligibleCoveragePercent: hardened.coverage.processingCoveragePercent,
+  boundedShardWriteConcurrency: maximumConcurrentWrites,
+  sixHourWarehouseMetadataReused: true,
 }, null, 2));

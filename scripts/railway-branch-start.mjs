@@ -39,11 +39,40 @@ let workerRestartTimer = null;
 let workerLastHeartbeatAt = 0;
 let workerStoppedByLab = false;
 let statusWrite = Promise.resolve();
+let workerRuntimeSnapshot = {
+  stage: "supervisor_initializing",
+  at: new Date().toISOString(),
+  heartbeatAt: null,
+  workerStartedAt: null,
+  workerId: null,
+  sequence: 0,
+  httpStatus: null,
+  reportStatus: null,
+  failureScope: null,
+  technicalFailureFingerprint: null,
+  errorCategory: null,
+  errorMessage: null,
+  durationMs: null,
+  seriousSignalCount: null,
+};
 
 function recordWorkerStatus(stage, details = {}) {
-  const status = { stage, at: new Date().toISOString(), ...details };
+  const at = new Date().toISOString();
+  workerRuntimeSnapshot = {
+    ...workerRuntimeSnapshot,
+    ...details,
+    stage,
+    at,
+    ...(stage === "heartbeat" ? { heartbeatAt: at } : {}),
+    ...(stage === "run_started" ? { lastRunStartedAt: at } : {}),
+    ...(stage === "run_finished" ? { lastRunFinishedAt: at } : {}),
+    ...(stage === "run_error" ? { lastRunErrorAt: at } : {}),
+    ...(stage === "watch_out_scan_started" ? { lastWatchOutStartedAt: at } : {}),
+    ...(stage === "watch_out_scan_finished" ? { lastWatchOutFinishedAt: at } : {}),
+    ...(stage === "watch_out_scan_error" ? { lastWatchOutErrorAt: at } : {}),
+  };
   statusWrite = statusWrite
-    .then(() => writeFile(WORKER_RUNTIME_STATUS_PATH, JSON.stringify(status), "utf8"))
+    .then(() => writeFile(WORKER_RUNTIME_STATUS_PATH, JSON.stringify(workerRuntimeSnapshot), "utf8"))
     .catch((error) => console.error(`[swing-up-branch-lab] worker_status_${error instanceof Error ? error.message : "write_failed"}`));
 }
 
@@ -110,17 +139,26 @@ function startWorker() {
     workerLastHeartbeatAt = Date.now();
     if (message?.type === "stopped_by_lab") workerStoppedByLab = true;
     recordWorkerStatus(typeof message?.type === "string" ? message.type : "worker_message", {
-      workerStartedAt: typeof message?.workerStartedAt === "string" ? message.workerStartedAt : null,
-      workerId: typeof message?.workerId === "string" ? message.workerId : null,
-      sequence: Number.isFinite(message?.sequence) ? message.sequence : 0,
-      httpStatus: Number.isFinite(message?.status) ? message.status : null,
-      reportStatus: typeof message?.reportStatus === "string" ? message.reportStatus : null,
-      failureScope: typeof message?.failureScope === "string" ? message.failureScope : null,
-      technicalFailureFingerprint: typeof message?.technicalFailureFingerprint === "string" ? message.technicalFailureFingerprint : null,
+      workerStartedAt: typeof message?.workerStartedAt === "string" ? message.workerStartedAt : workerRuntimeSnapshot.workerStartedAt,
+      workerId: typeof message?.workerId === "string" ? message.workerId : workerRuntimeSnapshot.workerId,
+      sequence: Number.isFinite(message?.sequence) ? message.sequence : workerRuntimeSnapshot.sequence,
+      httpStatus: Number.isFinite(message?.status) ? message.status : workerRuntimeSnapshot.httpStatus,
+      reportStatus: typeof message?.reportStatus === "string" ? message.reportStatus : workerRuntimeSnapshot.reportStatus,
+      failureScope: typeof message?.failureScope === "string" ? message.failureScope : workerRuntimeSnapshot.failureScope,
+      technicalFailureFingerprint: typeof message?.technicalFailureFingerprint === "string" ? message.technicalFailureFingerprint : workerRuntimeSnapshot.technicalFailureFingerprint,
+      errorCategory: typeof message?.errorCategory === "string" ? message.errorCategory : workerRuntimeSnapshot.errorCategory,
+      errorMessage: typeof message?.errorMessage === "string" ? message.errorMessage : workerRuntimeSnapshot.errorMessage,
+      durationMs: Number.isFinite(message?.durationMs) ? message.durationMs : workerRuntimeSnapshot.durationMs,
+      seriousSignalCount: Number.isFinite(message?.seriousSignalCount) ? message.seriousSignalCount : workerRuntimeSnapshot.seriousSignalCount,
+      runTimeoutSeconds: Number.isFinite(message?.runTimeoutSeconds) ? message.runTimeoutSeconds : workerRuntimeSnapshot.runTimeoutSeconds,
+      watchOutTimeoutSeconds: Number.isFinite(message?.watchOutTimeoutSeconds) ? message.watchOutTimeoutSeconds : workerRuntimeSnapshot.watchOutTimeoutSeconds,
     });
   });
   worker.on("error", (error) => {
-    recordWorkerStatus("worker_spawn_error", { errorCategory: error instanceof Error ? error.name : "spawn_error" });
+    recordWorkerStatus("worker_spawn_error", {
+      errorCategory: error instanceof Error ? error.name : "spawn_error",
+      errorMessage: error instanceof Error ? error.message.replace(/\s+/g, " ").slice(0, 300) : "spawn_error",
+    });
   });
   worker.on("exit", (code, signal) => {
     console.warn(`[swing-up-branch-lab] dedicated worker exited code=${code ?? "null"} signal=${signal ?? "none"}.`);

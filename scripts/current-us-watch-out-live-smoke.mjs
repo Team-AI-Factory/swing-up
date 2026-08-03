@@ -52,6 +52,8 @@ async function main() {
           checkedAt: report.checkedAt ?? null,
           runtimeCommit: report.runtime?.commitSha ?? null,
           seriousSignalCount: report.seriousSignalCount ?? null,
+          newSeriousSignalCount: report.newSeriousSignalCount ?? null,
+          seriousScope: report.seriousScope ?? null,
           marketStructureScan: report.marketStructureScan ?? null,
           warehouse: report.warehouse ?? null,
           safety: report.safety ?? null,
@@ -63,6 +65,12 @@ async function main() {
           && commitMatches(report.runtime?.commitSha)
           && ageMs >= 0
           && ageMs <= 15 * 60 * 1000
+          && report.marketScope === "NASDAQ, NYSE, and NYSE American common stocks and ADRs only for serious alerts"
+          && Array.isArray(report.seriousScope?.eligibleExchanges)
+          && report.seriousScope.eligibleExchanges.join(",") === "NASDAQ,NYSE,NYSE American"
+          && Number(report.seriousScope?.eligibleListings) >= 4_500
+          && Number.isInteger(report.seriousScope?.researchOnlyExcludedCount)
+          && report.seriousScope.researchOnlyExcludedCount >= 0
           && report.marketStructureScan?.pagesFailed === 0
           && report.marketStructureScan?.usPrimaryListingsChecked >= 4_500
           && report.warehouse?.persisted === true
@@ -72,6 +80,15 @@ async function main() {
           && Number(report.seriousSignalCount) > 0
           && Array.isArray(report.seriousSignals)
           && report.seriousSignals.length === report.seriousSignalCount
+          && report.counts?.seriousEligible === report.seriousSignalCount
+          && Number(report.counts?.researchOnlyExcluded) === Number(report.seriousScope?.researchOnlyExcludedCount)
+          && Number.isInteger(report.newSeriousSignalCount)
+          && report.newSeriousSignalCount >= 0
+          && report.newSeriousSignalCount <= report.seriousSignalCount
+          && Array.isArray(report.newSeriousSignals)
+          && report.newSeriousSignals.length === report.newSeriousSignalCount
+          && report.newSeriousSignals.every((item) => typeof item.outboxKey === "string" && item.outboxKey.startsWith("branch-labs/pr-262/serious-signal/outbox/watch-out/"))
+          && report.notificationOutbox?.deliveryEnabled === false
           && report.safety?.databaseWrites === false
           && report.safety?.publishing === false
           && report.safety?.notifications === false
@@ -92,7 +109,10 @@ async function main() {
             checkedAt: report.checkedAt,
             runtimeCommit: report.runtime?.commitSha ?? null,
             listingsChecked: report.marketStructureScan.usPrimaryListingsChecked,
+            seriousEligibleListings: report.seriousScope.eligibleListings,
+            researchOnlyExcludedCount: report.seriousScope.researchOnlyExcludedCount,
             seriousSignalCount: report.seriousSignalCount,
+            newSeriousSignalCount: report.newSeriousSignalCount,
             topSignals: report.seriousSignals.slice(0, 10).map((item) => ({
               ticker: item.ticker,
               company: item.company,
@@ -109,7 +129,7 @@ async function main() {
       }
       await sleep(10_000);
     }
-    throw new Error("The independent U.S. Watch Out worker did not produce and persist a fresh serious signal before the validation deadline.");
+    throw new Error("The independent U.S. Watch Out worker did not produce and persist a fresh major-exchange serious signal before the validation deadline.");
   } catch (error) {
     const failure = {
       validationOk: false,

@@ -19,11 +19,17 @@ const OPENFDA_URL = "https://api.fda.gov/drug/enforcement.json";
 const NASDAQ_TRADE_HALTS_URLS = [
   "https://m.nasdaqtrader.com/rss.aspx?feed=tradehalts",
   "https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts",
+  "https://nasdaqtrader.com/rss.aspx?feed=tradehalts",
 ] as const;
 const NASDAQ_TRADE_HALTS_CANONICAL_URL = NASDAQ_TRADE_HALTS_URLS[1];
 const NASDAQ_TRADE_HALTS_TIMEOUT_MS = 12_000;
 const NASDAQ_ACTIVE_HALT_MAX_AGE_MS = 10 * 365 * 24 * 60 * 60 * 1000;
 const SEC_FORMS = ["8-K", "6-K", "424B5", "424B3", "10-Q", "10-K", "S-1", "S-3", "SC 13D", "SC 13G", "4"] as const;
+const SEC_FORM_SET = new Set<string>(SEC_FORMS);
+// One broad current-filings feed runs every scan. A second rotating feed gives
+// burst protection to the forms most likely to contain an urgent market event
+// without exhausting the daily SEC allowance on eleven separate requests.
+const SEC_PRIORITY_FORM_ROTATION = ["8-K", "6-K", "424B5", "8-K", "6-K", "424B3"] as const;
 
 type OfficialFeed = { provider: string; channel: BranchNewsChannel; url: string; publisher: string };
 
@@ -354,13 +360,22 @@ async function fetchText(fetchImpl: typeof fetch, url: URL | string, accept: str
   return { response, body };
 }
 
-function secFeedReceipt(block: string, form: string, now: Date) {
+function secEntryForm(block: string, fallback: string | null) {
+  const category = decodeXml(block.match(/<category\b[^>]*\bterm=["']([^"']+)["'][^>]*>/i)?.[1] ?? "").toUpperCase();
+  const form = (category || fallback || "").replace(/\s+/g, " ").trim();
+  if (SEC_FORM_SET.has(form)) return form;
+  const amendedBase = form.replace(/\/A$/, "");
+  return SEC_FORM_SET.has(amendedBase) ? amendedBase : null;
+}
+
+function secFeedReceipt(block: string, fallbackForm: string | null, now: Date) {
+  const form = secEntryForm(block, fallbackForm);
   const title = xmlTag(block, "title").slice(0, 280);
   const url = safeUrl(xmlLink(block));
   const publishedAt = validDate(xmlTag(block, "updated") || xmlTag(block, "filing-date"), now, 48 * 60 * 60 * 1000);
   const cik = (xmlTag(block, "cik-number") || title.match(/\((\d{7,10})\)/)?.[1] || "").replace(/\D/g, "").padStart(10, "0");
   const company = xmlTag(block, "company-name") || title.replace(/^.*? - /, "").replace(/\s*\(\d{7,10}\).*$/, "").trim();
-  if (!title || !url || !publishedAt) return null;
+  if (!form || !title || !url || !publishedAt) return null;
   return makeReceipt({
     title,
     summary: `Official SEC ${form} filing${company ? ` by ${company}` : ""}.`,
@@ -378,32 +393,32 @@ function secFeedReceipt(block: string, form: string, now: Date) {
 }
 
 export async function fetchSecCurrentFilings(fetchImpl: typeof fetch, now: Date): Promise<ProviderResult> {
-  const fetchForm = async (form: typeof SEC_FORMS[number]) => {
+  const fetchFeed = async (form: typeof SEC_PRIORITY_FORM_ROTATION[number] | null) => {
     const url = new URL("https://www.sec.gov/cgi-bin/browse-edgar");
     url.searchParams.set("action", "getcurrent");
     url.searchParams.set("output", "atom");
     url.searchParams.set("owner", "include");
     url.searchParams.set("count", "100");
-    url.searchParams.set("type", form);
+    if (form) url.searchParams.set("type", form);
     const { body } = await fetchText(fetchImpl, url, "application/atom+xml,text/xml");
     const receipts = [...body.matchAll(/<entry\b[\s\S]*?<\/entry>/gi)].flatMap((match) => secFeedReceipt(match[0], form, now) ?? []);
     return { url: url.toString(), receipts };
   };
-  const settled: PromiseSettledResult<{ url: string; receipts: EventReceipt[] }>[] = [];
-  for (let index = 0; index < SEC_FORMS.length; index += 5) {
-    settled.push(...await Promise.allSettled(SEC_FORMS.slice(index, index + 5).map(fetchForm)));
-  }
+  const bucket = Math.floor(now.getTime() / (5 * 60_000));
+  const priorityForm = SEC_PRIORITY_FORM_ROTATION[bucket % SEC_PRIORITY_FORM_ROTATION.length];
+  const settled = await Promise.allSettled([fetchFeed(null), fetchFeed(priorityForm)]);
   const successes = settled.filter((item): item is PromiseFulfilledResult<{ url: string; receipts: EventReceipt[] }> => item.status === "fulfilled");
   const errors = settled.filter((item): item is PromiseRejectedResult => item.status === "rejected").map((item) => errorCategory(item.reason));
   const onlyNotDue = !successes.length && errors.length > 0 && errors.every((item) => item.status === "not_due");
+  const partial = successes.length > 0 && successes.length < settled.length;
   return result({
     provider: "sec_edgar_current_filings",
-    status: successes.length ? "connected" : onlyNotDue ? "not_due" : errors[0]?.status ?? "temporarily_unavailable",
+    status: partial ? "partial" : successes.length ? "connected" : onlyNotDue ? "not_due" : errors[0]?.status ?? "temporarily_unavailable",
     checkedAt: successes.length ? now.toISOString() : null,
     sourceUrls: successes.map((item) => item.value.url),
     receipts: selectBalancedReceipts(successes.flatMap((item) => item.value.receipts), 300),
     recordsRead: successes.reduce((sum, item) => sum + item.value.receipts.length, 0),
-    error: successes.length ? null : errors[0]?.error ?? null,
+    error: partial ? errors[0]?.error ?? "some_sec_current_feeds_unavailable" : successes.length ? null : errors[0]?.error ?? null,
     entitlementVerified: successes.length > 0,
   });
 }

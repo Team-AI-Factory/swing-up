@@ -558,7 +558,7 @@ assert.match(routeSource, /shadowOutcomeTrackingCandidates/);
 const branchSignalLabSource = readFileSync(new URL("../lib/branch-signal-lab.ts", import.meta.url), "utf8");
 assert.match(
   branchSignalLabSource,
-  /\["m\.nasdaqtrader\.com", "www\.nasdaqtrader\.com"\]\.includes\(host\)[\s\S]{0,300}quotaKey: "nasdaq_trader_trade_halts"[\s\S]{0,120}cadenceKey: "nasdaq_trader_trade_halts"/,
+  /\["m\.nasdaqtrader\.com", "www\.nasdaqtrader\.com", "nasdaqtrader\.com"\]\.includes\(host\)[\s\S]{0,300}quotaKey: "nasdaq_trader_trade_halts"[\s\S]{0,120}cadenceKey: "nasdaq_trader_trade_halts"/,
 );
 assert.match(
   branchSignalLabSource,

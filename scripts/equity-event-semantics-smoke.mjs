@@ -24,7 +24,7 @@ const analysis = compile(new URL("../lib/equity-signal/analysis.ts", import.meta
   "@/lib/equity-signal/historical-analogs": historical,
 });
 
-const entry = (ticker, name, aliases = []) => ({ ticker, name, exchange: "NASDAQ", cik: null, aliases, securityType: "common_stock", sourceNames: ["test official universe"] });
+const entry = (ticker, name, aliases = [], cik = null) => ({ ticker, name, exchange: "NASDAQ", cik, aliases, securityType: "common_stock", sourceNames: ["test official universe"] });
 const universe = {
   version: 1,
   scope: "active_us_exchange_listed_common_equities_and_adrs",
@@ -48,6 +48,11 @@ const universe = {
     entry("MAAI", "MID AMERICA APARTMENT COMMUNITIES INC.", ["Mid-America Apartment Communities"]),
     entry("CNMD", "CONMED Corp", ["Conmed"]),
     entry("CAPR", "Capricor Therapeutics Inc.", ["Capricor Therapeutics", "Capricor"]),
+    entry("TWST", "TWIST BIOSCIENCE CORP", ["Twist Bioscience"], "0001581280"),
+    entry("DTST", "DATA STORAGE CORP", ["Data Storage"], "0001419951"),
+    entry("ATKR", "ATKORE INC", ["Atkore"], "0001666138"),
+    entry("PRYMF", "PRYSMIAN S.P.A.", ["Prysmian"], "0001992536"),
+    entry("INDV", "INDIVIOR PLC", ["Indivior"], "0001625297"),
   ],
   coverage: { nasdaqRows: 11, otherExchangeRows: 0, eligibleEquities: 11, cikMapped: 0, cikMappedPercent: 0, adrCount: 0, excludedByReason: {} },
   sources: [],
@@ -131,6 +136,76 @@ const neutralConmedForecast = build([receipt({
 })]);
 assert.equal(neutralConmedForecast.candidates.some((item) => item.eventFamily === "sanctions_trade"), false);
 assert.equal(neutralConmedForecast.diagnostics.directionUnknown, 1);
+
+const twistSecResults = build([receipt({
+  title: "8-K - TWIST BIOSCIENCE CORP (0001581280) (Filer)",
+  summary: "Official SEC 8-K filing by TWIST BIOSCIENCE CORP. Official filing content: Exhibit 99.1 Twist Bioscience Reports Fiscal Third Quarter 2026 Financial Results. Record revenue was $118.4 million and full-year 2026 guidance was raised. The release later describes the Atlas Data Storage solution and excludes litigation settlement costs from a non-GAAP measure.",
+  url: "https://www.sec.gov/Archives/edgar/data/1581280/000158128026000101/twist-20260803x8k-index.htm",
+  publisher: "U.S. Securities and Exchange Commission",
+  channel: "sec_current_filings",
+  official: true,
+  primarySource: true,
+  companyHints: ["TWIST BIOSCIENCE CORP", "CIK0001581280"],
+  rawEventType: "8-K",
+})]);
+assert.deepEqual([...new Set(twistSecResults.candidates.map((item) => item.ticker))], ["TWST"]);
+assert.equal(twistSecResults.candidates[0]?.eventFamily, "earnings_guidance");
+assert.equal(twistSecResults.candidates[0]?.direction, "upside");
+
+const atkoreSecTransaction = build([receipt({
+  title: "8-K - ATKORE INC (0001666138) (Filer)",
+  summary: "Official SEC 8-K filing by ATKORE INC. Official filing content: Exhibit 99.1 Atkore Announces Third Quarter 2026 Results. Atkore entered into a definitive agreement to be acquired by Prysmian for $95.00 per share, representing an enterprise value of $3.8 billion. The release later reports a $50 million litigation settlement charge.",
+  url: "https://www.sec.gov/Archives/edgar/data/1666138/000166613826000101/atkore-20260803x8k-index.htm",
+  publisher: "U.S. Securities and Exchange Commission",
+  channel: "sec_current_filings",
+  official: true,
+  primarySource: true,
+  companyHints: ["ATKORE INC", "CIK0001666138"],
+  rawEventType: "8-K",
+})]);
+assert.deepEqual([...new Set(atkoreSecTransaction.candidates.map((item) => item.ticker))], ["ATKR"]);
+assert.equal(atkoreSecTransaction.candidates[0]?.eventFamily, "merger_acquisition");
+assert.equal(atkoreSecTransaction.candidates[0]?.direction, "upside");
+
+const indiviorSecResults = build([receipt({
+  title: "8-K - INDIVIOR PLC (0001625297) (Filer)",
+  summary: "Official SEC 8-K filing by INDIVIOR PLC. Official filing content: Indivior Reports Second Quarter 2026 Financial Results. The risk discussion later refers to possible tariffs, sanctions, and trade restrictions.",
+  url: "https://www.sec.gov/Archives/edgar/data/1625297/000162529726000101/indivior-20260803x8k-index.htm",
+  publisher: "U.S. Securities and Exchange Commission",
+  channel: "sec_current_filings",
+  official: true,
+  primarySource: true,
+  companyHints: ["INDIVIOR PLC", "CIK0001625297"],
+  rawEventType: "8-K",
+})]);
+assert.equal(indiviorSecResults.candidates.some((item) => item.eventFamily === "sanctions_trade"), false);
+assert.equal(indiviorSecResults.diagnostics.directionUnknown, 1);
+
+const unknownSecIssuer = build([receipt({
+  title: "8-K - UNKNOWN ISSUER (0009999999) (Filer)",
+  summary: "Official SEC 8-K filing. Official filing content: Apple Inc. raises guidance and reports record revenue.",
+  url: "https://www.sec.gov/Archives/edgar/data/9999999/000999999926000101/unknown-20260803x8k-index.htm",
+  publisher: "U.S. Securities and Exchange Commission",
+  channel: "sec_current_filings",
+  official: true,
+  primarySource: true,
+  companyHints: ["UNKNOWN ISSUER", "CIK0009999999"],
+  rawEventType: "8-K",
+})]);
+assert.equal(unknownSecIssuer.candidates.some((item) => item.ticker === "AAPL"), false);
+
+const missingSecCik = build([receipt({
+  title: "8-K - UNMAPPED ISSUER (Filer)",
+  summary: "Official SEC 8-K filing. Official filing content: Apple Inc. raises guidance and reports record revenue.",
+  url: "https://www.sec.gov/Archives/edgar/data/9999998/000999999826000101/unmapped-20260803x8k-index.htm",
+  publisher: "U.S. Securities and Exchange Commission",
+  channel: "sec_current_filings",
+  official: true,
+  primarySource: true,
+  companyHints: ["UNMAPPED ISSUER"],
+  rawEventType: "8-K",
+})]);
+assert.equal(missingSecCik.candidates.some((item) => item.ticker === "AAPL"), false);
 
 const realTariffPolicy = build([receipt({
   title: "Government imposes new medical-device tariffs and trade restrictions on CONMED",
@@ -1297,6 +1372,9 @@ console.log(JSON.stringify({
   genericSectorBasketCannotQualify: true,
   companySpecificKnockOnCanQualifyWithoutHistory: true,
   exactTickerAndCompanyStillMapped: true,
+  secCikPreventsMentionedCompanyFanout: true,
+  secLeadEventOutranksIncidentalLegalAndTradeLanguage: true,
+  unknownSecCikFailsClosed: true,
   companyRelativeContractScaleRequired: true,
   materialContractCanQualifyBeforePriceMove: true,
   immaterialContractRejected: true,

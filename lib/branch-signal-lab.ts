@@ -48,7 +48,7 @@ function providerCallRequest(value: RequestInfo | URL, now: Date): BranchProvide
   const path = url.pathname.toLowerCase();
   const secArchiveHost = host === "sec.gov" || host === "www.sec.gov";
 
-  if (["m.nasdaqtrader.com", "www.nasdaqtrader.com"].includes(host)
+  if (["m.nasdaqtrader.com", "www.nasdaqtrader.com", "nasdaqtrader.com"].includes(host)
     && path === "/rss.aspx"
     && url.searchParams.get("feed")?.toLowerCase() === "tradehalts") {
     return { ...base, provider: "nasdaq_trader", quotaKey: "nasdaq_trader_trade_halts", cadenceKey: "nasdaq_trader_trade_halts", rollingWindowMs: day, maximumCallsInWindow: 300, minimumIntervalMs: 4.5 * minute };
@@ -60,8 +60,8 @@ function providerCallRequest(value: RequestInfo | URL, now: Date): BranchProvide
     return { ...base, provider: "sec_edgar", quotaKey: "sec_equity_universe", cadenceKey: "sec_equity_universe", rollingWindowMs: day, maximumCallsInWindow: 2, minimumIntervalMs: 4.5 * minute };
   }
   if (secArchiveHost && path === "/cgi-bin/browse-edgar") {
-    const form = (url.searchParams.get("type") ?? "unknown").toUpperCase();
-    const minimumIntervalMs = ["8-K", "6-K"].includes(form) ? 4.5 * minute : form === "4" ? 14 * minute : 59 * minute;
+    const form = (url.searchParams.get("type") ?? "ALL").toUpperCase();
+    const minimumIntervalMs = ["ALL", "8-K", "6-K", "424B5", "424B3"].includes(form) ? 4.5 * minute : form === "4" ? 14 * minute : 59 * minute;
     return { ...base, provider: "sec_edgar", quotaKey: "sec_current_filings", cadenceKey: `sec_current_filings:${form}`, rollingWindowMs: day, maximumCallsInWindow: 900, minimumIntervalMs };
   }
   if (secArchiveHost && path.startsWith("/archives/edgar/data/")) {

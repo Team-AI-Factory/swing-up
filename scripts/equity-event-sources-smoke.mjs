@@ -45,8 +45,35 @@ new Function("require", "module", "exports", output)((name) => {
   throw new Error(`Unexpected event-source import: ${name}`);
 }, loaded, loaded.exports);
 
-const { collectEventSources, fetchCommerceNews, fetchGdeltDiscovery, fetchGoogleDiscovery, fetchMarketauxDiscovery, fetchNasdaqTradeHalts, mergeSecFilingDetails } = loaded.exports;
+const { collectEventSources, fetchCommerceNews, fetchGdeltDiscovery, fetchGoogleDiscovery, fetchMarketauxDiscovery, fetchNasdaqTradeHalts, fetchSecCurrentFilings, mergeSecFilingDetails } = loaded.exports;
 const now = new Date("2026-07-22T14:00:00.000Z");
+
+const secEntry = ({ form, title, cik, company, accession }) => `<entry>
+  <title>${title}</title>
+  <link href="https://www.sec.gov/Archives/edgar/data/${Number(cik)}/${accession.replaceAll("-", "")}/${accession}-index.html" />
+  <updated>2026-07-22T13:59:00-04:00</updated>
+  <category term="${form}" />
+  <cik-number>${cik}</cik-number>
+  <company-name>${company}</company-name>
+</entry>`;
+const secFeedUrls = [];
+const broadSecFeed = `<feed>
+  ${secEntry({ form: "8-K", title: "8-K - TWIST BIOSCIENCE CORP (0001581280) (Filer)", cik: "0001581280", company: "TWIST BIOSCIENCE CORP", accession: "0001581280-26-000101" })}
+  ${secEntry({ form: "424B5", title: "424B5 - EXAMPLE ISSUER (0001000001) (Filer)", cik: "0001000001", company: "EXAMPLE ISSUER", accession: "0001000001-26-000102" })}
+  ${secEntry({ form: "N-CEN", title: "N-CEN - ROUTINE FUND (0001000002) (Filer)", cik: "0001000002", company: "ROUTINE FUND", accession: "0001000002-26-000103" })}
+</feed>`;
+const secCurrent = await fetchSecCurrentFilings(async (value) => {
+  const url = new URL(String(value));
+  secFeedUrls.push(url);
+  return new Response(url.searchParams.has("type") ? "<feed></feed>" : broadSecFeed, { status: 200, headers: { "content-type": "application/atom+xml" } });
+}, now);
+assert.equal(secFeedUrls.length, 2);
+assert.equal(secFeedUrls.filter((url) => !url.searchParams.has("type")).length, 1);
+assert.equal(secFeedUrls.find((url) => url.searchParams.has("type"))?.searchParams.get("type"), "8-K");
+assert.equal(secCurrent.status, "connected");
+assert.equal(secCurrent.recordsRead, 2);
+assert.deepEqual(secCurrent.receipts.map((item) => item.rawEventType), ["8-K", "424B5"]);
+assert.deepEqual(secCurrent.receipts[0].companyHints, ["TWIST BIOSCIENCE CORP", "CIK0001581280"]);
 
 const coRegistrantReceipt = (id, cik) => ({
   id,
@@ -162,7 +189,7 @@ let haltMode = "active";
 const haltUrls = [];
 const collectionFetch = async (value) => {
   const url = new URL(String(value));
-  if (["m.nasdaqtrader.com", "www.nasdaqtrader.com"].includes(url.hostname) && url.pathname.toLowerCase() === "/rss.aspx") {
+  if (["m.nasdaqtrader.com", "www.nasdaqtrader.com", "nasdaqtrader.com"].includes(url.hostname) && url.pathname.toLowerCase() === "/rss.aspx") {
     haltUrls.push(url.toString());
     if (haltMode === "failure") throw new Error("The operation was aborted due to timeout");
     if (haltMode === "not_due") throw new Error("nasdaq_trader_cadence_guard");
@@ -230,7 +257,7 @@ assert.equal(cachedEmptyHaltProvider?.receipts.length, 0);
 const expiredSnapshot = await collectEventSources(collectionFetch, new Date("2026-07-22T14:31:00.001Z"));
 const expiredHaltProvider = expiredSnapshot.providers.find((provider) => provider.provider === "nasdaq_trade_halts");
 assert.equal(haltUrls.length, 6);
-assert.equal(new URL(haltUrls[5]).hostname, "m.nasdaqtrader.com");
+assert.equal(new URL(haltUrls[5]).hostname, "nasdaqtrader.com");
 assert.equal(expiredHaltProvider?.status, "temporarily_unavailable");
 assert.equal(expiredHaltProvider?.cached, false);
 assert.equal(expiredHaltProvider?.receipts.length, 0);
@@ -322,11 +349,14 @@ assert.match(quotaSource, /host === "api\.commerce\.gov"[\s\S]{0,240}quotaKey: "
 assert.match(source, /const NASDAQ_TRADE_HALTS_TIMEOUT_MS = 12_000/);
 assert.match(source, /https:\/\/m\.nasdaqtrader\.com\/rss\.aspx\?feed=tradehalts/);
 assert.match(source, /https:\/\/www\.nasdaqtrader\.com\/rss\.aspx\?feed=tradehalts/);
+assert.match(source, /https:\/\/nasdaqtrader\.com\/rss\.aspx\?feed=tradehalts/);
 assert.doesNotMatch(source, /Trader\.aspx\?id=TradeHalts/);
 assert.match(
   quotaSource,
-  /\["m\.nasdaqtrader\.com", "www\.nasdaqtrader\.com"\]\.includes\(host\)[\s\S]{0,300}quotaKey: "nasdaq_trader_trade_halts"[\s\S]{0,120}cadenceKey: "nasdaq_trader_trade_halts"/,
+  /\["m\.nasdaqtrader\.com", "www\.nasdaqtrader\.com", "nasdaqtrader\.com"\]\.includes\(host\)[\s\S]{0,300}quotaKey: "nasdaq_trader_trade_halts"[\s\S]{0,120}cadenceKey: "nasdaq_trader_trade_halts"/,
 );
+assert.match(source, /const SEC_PRIORITY_FORM_ROTATION = \["8-K", "6-K", "424B5", "8-K", "6-K", "424B3"\]/);
+assert.match(quotaSource, /\["ALL", "8-K", "6-K", "424B5", "424B3"\]\.includes\(form\)[\s\S]{0,220}maximumCallsInWindow: 900/);
 assert.match(quotaSource, /secArchiveHost && path\.startsWith\("\/archives\/edgar\/data\/"\)[\s\S]{0,620}cadenceKey: `sec_filing_detail:\$\{path\}`[\s\S]{0,180}maximumCallsInWindow: 1_800, minimumIntervalMs: 59 \* minute/);
 assert.match(
   source,
@@ -399,6 +429,8 @@ assert.equal(extendedCandidate[0].pricedInPenalty, 70);
 
 console.log(JSON.stringify({
   ok: true,
+  broadSecFeedPlusRotatingUrgentFeed: true,
+  secFeedFormReadFromOfficialEntry: true,
   gdeltQueryIsBoundedAndRotating: true,
   marketauxTimestampMatchesDocumentedFormat: true,
   marketauxFailureCategoryIsActionableAndSecretSafe: true,

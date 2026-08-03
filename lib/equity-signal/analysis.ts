@@ -494,7 +494,17 @@ function directExposure(receipt: EventReceipt, classification: ClassifiedEvent, 
 
 function classify(receipt: EventReceipt): ClassifiedEvent {
   const titleValue = `${receipt.title} ${receipt.rawEventType ?? ""}`.toLowerCase();
-  const value = `${titleValue} ${receipt.summary ?? ""}`.toLowerCase();
+  const summary = (receipt.summary ?? "").toLowerCase();
+  const filingMarker = "official filing content:";
+  const filingContentIndex = summary.indexOf(filingMarker);
+  // Detailed SEC receipts can contain thousands of characters of footnotes,
+  // risk factors, and historical disclosures after the current event. Keep
+  // classification anchored to the filing introduction and the beginning of
+  // the event exhibit. Magnitude extraction still receives the full receipt.
+  const classificationSummary = receipt.channel === "sec_current_filings" && filingContentIndex >= 0
+    ? `${summary.slice(0, filingContentIndex)} ${summary.slice(filingContentIndex + filingMarker.length, filingContentIndex + filingMarker.length + 6_000)}`
+    : summary;
+  const value = `${titleValue} ${classificationSummary}`;
   const rumour = RUMOUR.test(value) && !receipt.primarySource;
   const hit = (pattern: RegExp) => pattern.test(value);
   const titleHit = (pattern: RegExp) => pattern.test(titleValue);
@@ -518,19 +528,22 @@ function classify(receipt: EventReceipt): ClassifiedEvent {
   }
   if (hit(/\b(fda|food and drug administration).{0,45}\b(approv(?:e|ed|al)|clearance|authoriz(?:e|ed|ation))\b|\b(phase (?:2|3|ii|iii)).{0,40}\b(met|positive|success)\b/)) return { family: "regulatory_approval", direction: "upside", materiality: 92, transmission: 94, rumour, terms: ["official approval or positive pivotal result"] };
   if (hit(/\b(recall|clinical hold|complete response letter|approval denied|rejected application)\b/)) return { family: "regulatory_enforcement", direction: "downside", materiality: 90, transmission: 93, rumour, terms: ["regulatory setback or recall"] };
-  if (hit(/\b(sec (?:charges?|charged)|doj (?:charges?|charged)|ftc sues|investigation|subpoena|enforcement action|final (?:enforcement )?order|antitrust suit|fine[ds]?|penalt(?:y|ies)|settlement|sanctioned)\b/)) return { family: "regulatory_enforcement", direction: "downside", materiality: 82, transmission: 85, rumour, terms: ["enforcement or legal burden"] };
+  // A signed transaction is the primary event even when an attached earnings
+  // release also discusses litigation or other historical expenses.
+  if (hit(/\b(acquisition completed|merger approved|definitive (?:merger|acquisition) agreement|to be acquired|acquire[sd]? for \$)\b/)) return { family: "merger_acquisition", direction: "upside", materiality: 89, transmission: 86, rumour, terms: ["transaction value crystallisation"] };
   if (hit(/\b(beat(?:s|ing)? expectations|raises? guidance|guidance raised|record revenue|profit surge|better than expected|upgrades? outlook)\b/)) return { family: "earnings_guidance", direction: "upside", materiality: 82, transmission: 88, rumour, terms: ["earnings or guidance positive surprise"] };
   if (hit(/\b(miss(?:es|ed)? expectations|cuts? guidance|guidance cut|profit warning|revenue warning|worse than expected|downgrades? outlook)\b/)) return { family: "earnings_guidance", direction: "downside", materiality: 84, transmission: 89, rumour, terms: ["earnings or guidance negative surprise"] };
   // A headline that is plainly about issuer earnings or guidance must not be
   // reclassified by an incidental tariff, sanctions, or macro sentence in the
   // article summary. A range without a verified raise/cut remains directionless.
-  if (titleHit(/\b(?:forecasts?|guides?|provides?|updates?|reaffirms?|reports?)\b.{0,90}\b(?:adjusted\s+)?(?:eps|earnings|revenue|sales|organic growth|guidance|outlook)\b|\b(?:eps|earnings|revenue|sales|guidance|outlook)\b.{0,70}\b(?:forecast|range|guidance|outlook)\b/)) {
+  if (titleHit(/\b(?:forecasts?|guides?|provides?|updates?|reaffirms?|reports?)\b.{0,90}\b(?:adjusted\s+)?(?:eps|earnings|revenue|sales|organic growth|guidance|outlook)\b|\b(?:eps|earnings|revenue|sales|guidance|outlook)\b.{0,70}\b(?:forecast|range|guidance|outlook)\b/)
+    || hit(/\b(?:reports?|announces?)\b.{0,100}\b(?:(?:first|second|third|fourth)\s+quarter|quarterly|fiscal|financial|operating)\b.{0,70}\bresults\b/)) {
     return { family: "earnings_guidance", direction: "unknown", materiality: 72, transmission: 78, rumour, terms: ["issuer earnings or guidance range without a verified directional change"] };
   }
+  if (hit(/\b(sec (?:charges?|charged)|doj (?:charges?|charged)|ftc sues|investigation|subpoena|enforcement action|final (?:enforcement )?order|antitrust suit|fine[ds]?|penalt(?:y|ies)|settlement|sanctioned)\b/)) return { family: "regulatory_enforcement", direction: "downside", materiality: 82, transmission: 85, rumour, terms: ["enforcement or legal burden"] };
   if (hit(/\b(contract award|awarded (?:a |the )?contract|wins? contract|selected by|purchase order|multi-year deal)\b|\b(?:wins?|awarded)\s+(?:a\s+|the\s+)?(?:US\$|\$|USD\s*)\s?\d[\d,]*(?:\.\d+)?\s*(?:billion|million|thousand|bn|mm|[bmk])?\s+(?:contract|award|purchase order)\b/)) return { family: "contract_award", direction: "upside", materiality: 77, transmission: 84, rumour, terms: ["incremental contracted revenue"] };
   if (hit(/\b(product launch|launches|unveils|announces? (?:a )?new (?:product|platform|model|chip)|keynote|developer conference|investor day)\b/)) return { family: hit(/conference|keynote|investor day/) ? "live_conference" : "product_launch", direction: "upside", materiality: 68, transmission: 72, rumour, terms: ["new product or commercial catalyst"] };
   if (hit(/\b(ai breakthrough|artificial intelligence breakthrough|new ai model|foundation model|quantum breakthrough|technology breakthrough|scientific breakthrough)\b/)) return { family: hit(/\bai\b|artificial intelligence/) ? "ai_breakthrough" : "technology_breakthrough", direction: "upside", materiality: 76, transmission: 78, rumour, terms: ["technical capability improvement", "potential demand or cost advantage"] };
-  if (hit(/\b(acquisition completed|merger approved|definitive merger agreement|to be acquired|acquire[sd]? for \$)\b/)) return { family: "merger_acquisition", direction: "upside", materiality: 89, transmission: 86, rumour, terms: ["transaction value crystallisation"] };
   if (hit(/\b(ceo resigns?|chief executive resigns?|cfo resigns?|removes? (?:its )?ceo|leadership shakeup)\b/)) return { family: "leadership_change", direction: "downside", materiality: 67, transmission: 72, rumour, terms: ["leadership uncertainty"] };
   if (hit(/\b(federal reserve|fomc|interest rate|rate hike|rate cut|treasury yields?)\b/)) {
     const direction = hit(/\b(rate hike|raises? rates?|higher for longer|hawkish|yield(?:s)? (?:jump|surge|rise))\b/) ? "downside" : hit(/\b(rate cut|cuts? rates?|dovish|yield(?:s)? (?:fall|drop))\b/) ? "upside" : "unknown";
@@ -565,10 +578,11 @@ function companyKeys(value: string) {
 
 function buildIndex(entries: EquityUniverseEntry[]) {
   const ticker = new Map(entries.map((entry) => [entry.ticker, entry]));
-  const cik = new Map(entries.flatMap((entry) => entry.cik ? [[entry.cik, entry] as const] : []));
+  const cik = new Map<string, EquityUniverseEntry[]>();
   const aliases = new Map<string, EquityUniverseEntry[]>();
   const tokens = new Map<string, EquityUniverseEntry[]>();
   for (const entry of entries) {
+    if (entry.cik) cik.set(entry.cik, [...(cik.get(entry.cik) ?? []), entry]);
     for (const alias of [entry.name, ...entry.aliases]) {
       for (const key of companyKeys(alias)) aliases.set(key, [...(aliases.get(key) ?? []), entry]);
       const first = normalizedExact(alias).split(" ").find((token) => token.length >= 4 && !GENERIC_COMPANY_TOKENS.has(token));
@@ -589,12 +603,26 @@ function mapDirect(receipt: EventReceipt, index: ReturnType<typeof buildIndex>) 
   // known ticker is present, do not fan the receipt out to preferred shares,
   // notes, or similarly named securities through the looser alias scan.
   if (mapped.size > 0) return [...mapped.values()];
+  const structuredCikHints = receipt.companyHints.flatMap((hint) => hint.match(/^CIK(\d{10})$/i)?.[1] ?? []);
+  for (const cik of structuredCikHints) {
+    for (const equity of index.cik.get(cik) ?? []) mapped.set(equity.ticker, { equity, confidence: 100 });
+  }
+  // The SEC CIK identifies the filer authoritatively. Text inside the filing
+  // can name customers, targets, vendors, products, and competitors; none of
+  // those mentions makes another listed company a direct issuer.
+  if (receipt.channel === "sec_current_filings" && receipt.official && receipt.primarySource && structuredCikHints.length > 0) {
+    return [...mapped.values()];
+  }
   for (const hint of receipt.companyHints) {
     const cikMatch = hint.match(/^CIK(\d{10})$/i)?.[1];
-    const byCik = cikMatch ? index.cik.get(cikMatch) : null;
-    if (byCik) mapped.set(byCik.ticker, { equity: byCik, confidence: 100 });
+    if (cikMatch) continue;
     for (const key of companyKeys(hint)) for (const equity of index.aliases.get(key) ?? []) mapped.set(equity.ticker, { equity, confidence: 98 });
   }
+  // Structured company identities are stronger than free-text mentions. Stop
+  // before scanning the article or filing body once any exact identity maps.
+  // An official SEC filing with an unrecognized filer also fails closed: its
+  // body can never donate direct-issuer status to a merely mentioned company.
+  if (mapped.size > 0 || (receipt.channel === "sec_current_filings" && receipt.official && receipt.primarySource)) return [...mapped.values()];
   const sourceText = `${receipt.title} ${receipt.summary ?? ""}`;
   const sourceTokens = new Set(normalized(sourceText).split(" ").filter((token) => token.length >= 4));
   const possible = new Map<string, EquityUniverseEntry>();

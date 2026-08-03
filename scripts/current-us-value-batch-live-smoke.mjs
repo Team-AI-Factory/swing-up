@@ -35,6 +35,10 @@ function commitMatches(value) {
   return !expectedCommit || runtimeCommit === expectedCommit || runtimeCommit.startsWith(expectedCommit.slice(0, 12));
 }
 
+function signalCount(groups) {
+  return ["buy", "sell", "watchOut"].reduce((total, key) => total + (Array.isArray(groups?.[key]) ? groups[key].length : 0), 0);
+}
+
 async function main() {
   let attempts = 0;
   let runtime = null;
@@ -58,8 +62,11 @@ async function main() {
       try {
         const result = await request(endpoint);
         const latest = result.json?.latest;
+        const latestReport = result.json?.latestReport;
         const updatedAtMs = Date.parse(String(latest?.updatedAt || ""));
+        const reportCheckedAtMs = Date.parse(String(latestReport?.checkedAt || ""));
         const ageMs = Number.isFinite(updatedAtMs) ? Date.now() - updatedAtMs : Infinity;
+        const reportAgeMs = Number.isFinite(reportCheckedAtMs) ? Date.now() - reportCheckedAtMs : Infinity;
         lastObserved = {
           status: result.status,
           ready: result.json?.ready ?? null,
@@ -71,11 +78,46 @@ async function main() {
           nextIndex: latest?.nextIndex ?? null,
           completedBatchCount: Array.isArray(latest?.completedBatchKeys) ? latest.completedBatchKeys.length : null,
           lastError: latest?.lastError ?? null,
+          latestReport: latestReport ? {
+            checkedAt: latestReport.checkedAt ?? null,
+            status: latestReport.status ?? null,
+            seriousSignalCount: latestReport.seriousSignalCount ?? null,
+            newSeriousSignalCount: latestReport.newSeriousSignalCount ?? null,
+            reportWarehouse: latestReport.reportWarehouse ?? null,
+          } : null,
         };
+        const reportReady = latestReport
+          && latestReport.version === 1
+          && latestReport.mode === "pr262_us_value_resumable_batches"
+          && latestReport.branch === "agent/combined-opportunity-engine"
+          && reportAgeMs >= 0
+          && reportAgeMs <= 20 * 60 * 1000
+          && Array.isArray(latestReport.confirmedFoundationSignals?.buy)
+          && Array.isArray(latestReport.confirmedFoundationSignals?.sell)
+          && Array.isArray(latestReport.confirmedFoundationSignals?.watchOut)
+          && Number.isInteger(latestReport.seriousSignalCount)
+          && latestReport.seriousSignalCount === signalCount(latestReport.confirmedFoundationSignals)
+          && Number.isInteger(latestReport.newSeriousSignalCount)
+          && latestReport.newSeriousSignalCount >= 0
+          && latestReport.newSeriousSignalCount <= latestReport.seriousSignalCount
+          && Array.isArray(latestReport.newSeriousSignals)
+          && latestReport.newSeriousSignals.length === latestReport.newSeriousSignalCount
+          && latestReport.newSeriousSignals.every((item) => typeof item.outboxKey === "string" && item.outboxKey.startsWith("branch-labs/pr-262/serious-signal/outbox/foundation/"))
+          && latestReport.reportWarehouse?.backend === "cloudflare_r2"
+          && latestReport.reportWarehouse?.persisted === true
+          && typeof latestReport.reportWarehouse?.latestKey === "string"
+          && latestReport.reportWarehouse.latestKey.startsWith("branch-labs/pr-262/value-investing/resumable/reports/")
+          && typeof latestReport.reportWarehouse?.immutableKey === "string"
+          && latestReport.reportWarehouse.immutableKey.startsWith("branch-labs/pr-262/value-investing/resumable/reports/runs/")
+          && latestReport.safety?.databaseWrites === false
+          && latestReport.safety?.publishing === false
+          && latestReport.safety?.notifications === false
+          && latestReport.safety?.trades === false;
         const ready = result.status === 200
           && result.json?.ok === true
           && result.json?.ready === true
           && result.json?.branch === "agent/combined-opportunity-engine"
+          && result.json?.latestReportKey === "branch-labs/pr-262/value-investing/resumable/reports/latest.json"
           && latest?.version === 1
           && ["running", "complete"].includes(latest?.status)
           && ageMs >= 0
@@ -87,6 +129,7 @@ async function main() {
           && latest.completedBatchKeys.length >= 1
           && latest.completedBatchKeys.every((key) => typeof key === "string" && key.startsWith("branch-labs/pr-262/value-investing/resumable/cycles/"))
           && latest?.lastError === null
+          && reportReady
           && result.json?.safety?.databaseWrites === false
           && result.json?.safety?.publishing === false
           && result.json?.safety?.notifications === false
@@ -112,6 +155,15 @@ async function main() {
             companiesStored: latest.companiesStored,
             completedBatches: latest.completedBatchKeys.length,
             totalBatches: latest.totalBatches,
+            seriousSignalCount: latestReport.seriousSignalCount,
+            newSeriousSignalCount: latestReport.newSeriousSignalCount,
+            confirmedSignals: Object.fromEntries(["buy", "sell", "watchOut"].map((key) => [key, latestReport.confirmedFoundationSignals[key].map((item) => ({
+              ticker: item.ticker,
+              company: item.company,
+              currentPrice: item.currentPrice,
+              baseFairValue: item.fairValue?.baseValue ?? null,
+              potentialPercent: item.fairValue?.upsideToBasePercent ?? null,
+            }))])),
             reportPath: outputPath,
           }, null, 2));
           return;
@@ -121,7 +173,7 @@ async function main() {
       }
       await sleep(10_000);
     }
-    throw new Error("The resumable U.S. valuation worker did not persist a fresh company batch before the validation deadline.");
+    throw new Error("The resumable U.S. valuation worker did not persist a fresh company batch and complete foundation-signal report before the validation deadline.");
   } catch (error) {
     const failure = {
       validationOk: false,

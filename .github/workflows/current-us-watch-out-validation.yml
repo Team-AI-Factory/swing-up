@@ -1,0 +1,84 @@
+name: Current US Serious Watch Out Validation
+
+on:
+  push:
+    branches:
+      - "agent/combined-opportunity-engine"
+    paths:
+      - "app/api/internal/combined-opportunity-engine/us-watch-out-scan/route.ts"
+      - "lib/equity-signal/us-watch-out-engine.ts"
+      - "lib/equity-signal/us-watch-out-serious-promotion.ts"
+      - "lib/equity-signal/article-evidence.ts"
+      - "lib/r2-warehouse.ts"
+      - "scripts/railway-branch-worker.mjs"
+      - "scripts/railway-branch-start.mjs"
+      - "scripts/current-us-watch-out-live-smoke.mjs"
+      - ".github/workflows/current-us-watch-out-validation.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "app/api/internal/combined-opportunity-engine/us-watch-out-scan/route.ts"
+      - "lib/equity-signal/us-watch-out-engine.ts"
+      - "lib/equity-signal/us-watch-out-serious-promotion.ts"
+      - "lib/equity-signal/article-evidence.ts"
+      - "lib/r2-warehouse.ts"
+      - "scripts/railway-branch-worker.mjs"
+      - "scripts/railway-branch-start.mjs"
+      - "scripts/current-us-watch-out-live-smoke.mjs"
+      - ".github/workflows/current-us-watch-out-validation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: current-us-watch-out-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-current-us-watch-out:
+    name: Validate current independent US serious Watch Out scan
+    if: github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out isolated branch
+        uses: actions/checkout@v4
+
+      - name: Refuse main branch execution
+        shell: bash
+        run: |
+          branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          test "${branch}" != "main"
+          echo "Validating current U.S. Watch Out scan on ${branch}"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit --fund=false
+
+      - name: Typecheck and build
+        run: |
+          npm run typecheck
+          npm run build
+
+      - name: Wait for exact Railway deployment and a fresh serious Watch Out
+        env:
+          COMBINED_ENGINE_RAILWAY_URL: https://swing-up-swing-up-pr-262.up.railway.app
+          EXPECTED_BRANCH_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+          CURRENT_US_WATCH_OUT_REPORT_PATH: artifacts/current-us-watch-out-report.json
+        run: node scripts/current-us-watch-out-live-smoke.mjs
+
+      - name: Upload current U.S. serious Watch Out report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: current-us-watch-out-report
+          path: artifacts/current-us-watch-out-report.json
+          if-no-files-found: warn
+          retention-days: 30

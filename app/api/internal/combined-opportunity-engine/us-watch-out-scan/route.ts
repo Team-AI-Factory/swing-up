@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import type { ArticleEvidenceReport } from "@/lib/equity-signal/article-evidence";
+import { loadEquityUniverse } from "@/lib/equity-signal/universe";
 import { buildApprovedUsWatchOutReview } from "@/lib/equity-signal/us-watch-out-engine";
 import { promoteApprovedWatchOutRules } from "@/lib/equity-signal/us-watch-out-serious-promotion";
 import {
@@ -18,6 +19,13 @@ const OUTBOX_PREFIX = "branch-labs/pr-262/serious-signal/outbox/watch-out";
 const DAILY_MARKET_RULES = new Set([
   "liquidity_collapse_or_gap_risk",
   "volatility_regime_spike",
+]);
+const SERIOUS_EXCHANGE_NAMES = new Set([
+  "NASDAQ",
+  "NYSE",
+  "NYSE AMERICAN",
+  "AMEX",
+  "NYSEAMERICAN",
 ]);
 
 const state = globalThis as typeof globalThis & {
@@ -71,6 +79,10 @@ function dateKey(value: string) {
   return value.replace(/[^0-9]/g, "").slice(0, 17);
 }
 
+function normalizedExchange(value: string | null) {
+  return (value ?? "").toUpperCase().replace(/[^A-Z ]+/g, "").replace(/\s+/g, " ").trim();
+}
+
 function signalFingerprint(signal: Record<string, unknown>, checkedAt: string) {
   const ruleId = typeof signal.ruleId === "string" ? signal.ruleId : "unknown";
   const ticker = typeof signal.ticker === "string" ? signal.ticker.toUpperCase() : "UNKNOWN";
@@ -120,16 +132,30 @@ async function persistNewSignalOutbox(signals: Array<Record<string, unknown>>, c
 
 async function runScan(identity: NonNullable<ReturnType<typeof schedulerIdentity>>) {
   const checkedAt = new Date().toISOString();
-  const review = await buildApprovedUsWatchOutReview({ rankedCandidates: [], now: new Date(checkedAt), fetchImpl: fetch });
+  const now = new Date(checkedAt);
+  const [review, universe] = await Promise.all([
+    buildApprovedUsWatchOutReview({ rankedCandidates: [], now, fetchImpl: fetch }),
+    loadEquityUniverse(fetch, now),
+  ]);
   const promoted = promoteApprovedWatchOutRules({
     watchOutReview: review,
     articleEvidence: emptyArticleEvidence(),
   });
-  const seriousSignals = promoted.seriousSignals as unknown as Array<Record<string, unknown>>;
+  const eligibleEntries = universe.snapshot.entries.filter((entry) => SERIOUS_EXCHANGE_NAMES.has(normalizedExchange(entry.exchange)));
+  const eligibleTickers = new Set(eligibleEntries.map((entry) => entry.ticker.toUpperCase()));
+  const allPromoted = promoted.seriousSignals as unknown as Array<Record<string, unknown>>;
+  const seriousSignals = allPromoted.filter((signal) => {
+    const ticker = typeof signal.ticker === "string" ? signal.ticker.toUpperCase() : "";
+    return eligibleTickers.has(ticker);
+  });
+  const researchOnlyExcludedSignals = allPromoted.filter((signal) => {
+    const ticker = typeof signal.ticker === "string" ? signal.ticker.toUpperCase() : "";
+    return !eligibleTickers.has(ticker);
+  });
   const immutableRunKey = `${R2_PREFIX}/runs/${checkedAt.slice(0, 10)}/${dateKey(checkedAt)}-${identity.workerId.slice(0, 8)}-${identity.sequence}.json`;
   const report = {
-    version: 2,
-    ok: review.marketStructureScan.pagesFailed === 0,
+    version: 3,
+    ok: review.marketStructureScan.pagesFailed === 0 && eligibleEntries.length >= 4_500,
     mode: "pr262_us_watch_out_live",
     branch: BRANCH,
     checkedAt,
@@ -138,12 +164,25 @@ async function runScan(identity: NonNullable<ReturnType<typeof schedulerIdentity
       deploymentId: process.env.RAILWAY_DEPLOYMENT_ID?.trim() || null,
     },
     schedulerInvocation: identity,
-    marketScope: "US listed common equities and ADRs only",
+    marketScope: "NASDAQ, NYSE, and NYSE American common stocks and ADRs only for serious alerts",
+    seriousScope: {
+      eligibleExchanges: ["NASDAQ", "NYSE", "NYSE American"],
+      eligibleListings: eligibleEntries.length,
+      source: universe.snapshot.sources,
+      constructionMode: universe.snapshot.constructionMode,
+      researchOnlyExcludedCount: researchOnlyExcludedSignals.length,
+      researchOnlyExclusionReason: "OTC and unsupported exchange listings are retained outside the serious notification lane because thin liquidity creates excessive noise.",
+    },
     marketStructureScan: review.marketStructureScan,
-    counts: review.counts,
+    counts: {
+      ...review.counts,
+      seriousEligible: seriousSignals.length,
+      researchOnlyExcluded: researchOnlyExcludedSignals.length,
+    },
     seriousSignalFound: seriousSignals.length > 0,
     seriousSignalCount: seriousSignals.length,
     seriousSignals,
+    researchOnlyExcludedSignals: researchOnlyExcludedSignals.slice(0, 250),
     newSeriousSignalCount: 0,
     newSeriousSignals: [] as Array<Record<string, unknown>>,
     blockedPromotionCandidates: promoted.blockedPromotionCandidates,

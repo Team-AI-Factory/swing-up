@@ -4,7 +4,7 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "node scripts/railway-branch-start.mjs",
+    "startCommand": "node scripts/railway-branch-start-resumable.mjs",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 3
   }

@@ -20,14 +20,18 @@ const technicalRetryMs = Math.min(
   normalPollMs,
   configuredDelayMs("SWING_UP_BRANCH_LAB_EFFECTIVE_TECHNICAL_RETRY_SECONDS", 60, normalPollMs),
 );
-// The company-first scan now includes the full U.S. valuation warehouse, R2 shards,
+// The company-first scan includes the full U.S. valuation warehouse, R2 shards,
 // article confirmation, and bounded SEC diligence. Four minutes was shorter than a
 // valid worst-case cycle. Keep the request below the route's seven-minute R2 lease,
 // but long enough for one complete isolated scan to finish and release that lease.
 const liveRunTimeoutMs = fastSmoke
   ? 2_000
   : configuredDelayMs("SWING_UP_BRANCH_LAB_EFFECTIVE_RUN_TIMEOUT_SECONDS", 390, 390_000);
+const watchOutTimeoutMs = fastSmoke
+  ? 2_000
+  : configuredDelayMs("SWING_UP_BRANCH_LAB_WATCH_OUT_TIMEOUT_SECONDS", 120, 180_000);
 const routeUrl = `http://127.0.0.1:${port}/api/internal/railway-branch-signal-lab`;
+const watchOutRouteUrl = `http://127.0.0.1:${port}/api/internal/combined-opportunity-engine/us-watch-out-scan`;
 let sequence = 0;
 let stopping = false;
 const shutdown = new AbortController();
@@ -62,20 +66,71 @@ async function waitForHealth() {
   return false;
 }
 
+function schedulerHeaders() {
+  return {
+    "content-type": "application/json",
+    "x-swing-up-branch-lab-token": runtimeToken,
+    "x-swing-up-branch-lab-scheduler": "dedicated_worker",
+    "x-swing-up-branch-lab-worker-started-at": workerStartedAt,
+    "x-swing-up-branch-lab-worker-id": workerId,
+    "x-swing-up-branch-lab-worker-sequence": String(sequence),
+  };
+}
+
+async function triggerWatchOutScan() {
+  const startedAt = Date.now();
+  tellSupervisor({ type: "watch_out_scan_started", sequence });
+  const response = await fetch(watchOutRouteUrl, {
+    method: "POST",
+    headers: schedulerHeaders(),
+    body: "{}",
+    signal: AbortSignal.any([shutdown.signal, AbortSignal.timeout(watchOutTimeoutMs)]),
+  });
+  const responseText = await response.text();
+  let report = null;
+  try { report = JSON.parse(responseText); } catch {}
+  const durationMs = Date.now() - startedAt;
+  const seriousSignalCount = Number.isFinite(report?.seriousSignalCount) ? report.seriousSignalCount : 0;
+  console.log(`[swing-up-watch-out-worker] status=${response.status} sequence=${sequence} durationMs=${durationMs} seriousSignals=${seriousSignalCount} ${responseText.slice(0, 8000)}`);
+  tellSupervisor({
+    type: "watch_out_scan_finished",
+    sequence,
+    status: response.status,
+    durationMs,
+    seriousSignalCount,
+    reportStatus: report?.seriousSignalFound === true ? "serious_watch_out_found" : "no_serious_watch_out",
+    failureScope: response.ok ? null : "watch_out_scan",
+    technicalFailureFingerprint: response.ok ? null : `watch_out_scan_http_${response.status}`,
+  });
+  return response.ok;
+}
+
 async function triggerRun() {
   sequence += 1;
+  // Market-structure danger scanning is intentionally independent from the heavy
+  // company valuation/event cycle. It completes first, stores current serious
+  // Watch Out findings in R2, and cannot be lost merely because deep research is slow.
+  try {
+    await triggerWatchOutScan();
+  } catch (error) {
+    const errorCategory = error instanceof Error ? error.name : "watch_out_scan_failed";
+    const errorMessage = error instanceof Error ? error.message.replace(/\s+/g, " ").slice(0, 300) : "watch_out_scan_failed";
+    console.error(`[swing-up-watch-out-worker] ${errorMessage}`);
+    tellSupervisor({
+      type: "watch_out_scan_error",
+      sequence,
+      errorCategory,
+      errorMessage,
+      failureScope: "watch_out_scan",
+      technicalFailureFingerprint: `watch_out_scan_${errorCategory.toLowerCase()}`,
+    });
+  }
+
   const startedAt = Date.now();
   tellSupervisor({ type: "run_started", sequence, runTimeoutSeconds: Math.round(liveRunTimeoutMs / 1000) });
   const response = await fetch(routeUrl, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-swing-up-branch-lab-token": runtimeToken,
-      "x-swing-up-branch-lab-scheduler": "dedicated_worker",
-      "x-swing-up-branch-lab-worker-started-at": workerStartedAt,
-      "x-swing-up-branch-lab-worker-id": workerId,
-      "x-swing-up-branch-lab-worker-sequence": String(sequence),
-    },
+    headers: schedulerHeaders(),
     body: "{}",
     signal: AbortSignal.any([shutdown.signal, AbortSignal.timeout(liveRunTimeoutMs)]),
   });
@@ -105,8 +160,13 @@ async function triggerRun() {
 async function main() {
   if (!runtimeToken) throw new Error("branch_lab_runtime_token_missing");
   if (!(await waitForHealth())) throw new Error("branch_lab_health_timeout");
-  console.log(`[swing-up-branch-worker] dedicated worker active; live polling=${Math.round(normalPollMs / 1000)}s, technical retry=${Math.round(technicalRetryMs / 1000)}s, run timeout=${Math.round(liveRunTimeoutMs / 1000)}s, transport=loopback, state=Cloudflare R2.`);
-  tellSupervisor({ type: "ready", sequence, runTimeoutSeconds: Math.round(liveRunTimeoutMs / 1000) });
+  console.log(`[swing-up-branch-worker] dedicated worker active; live polling=${Math.round(normalPollMs / 1000)}s, technical retry=${Math.round(technicalRetryMs / 1000)}s, watch-out timeout=${Math.round(watchOutTimeoutMs / 1000)}s, deep-run timeout=${Math.round(liveRunTimeoutMs / 1000)}s, transport=loopback, state=Cloudflare R2.`);
+  tellSupervisor({
+    type: "ready",
+    sequence,
+    watchOutTimeoutSeconds: Math.round(watchOutTimeoutMs / 1000),
+    runTimeoutSeconds: Math.round(liveRunTimeoutMs / 1000),
+  });
 
   while (!stopping) {
     let next;

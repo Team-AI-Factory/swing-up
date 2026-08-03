@@ -6,26 +6,40 @@ on:
       - "agent/combined-opportunity-engine"
     paths:
       - "lib/opportunity-engine/us-value-investing-engine.ts"
+      - "lib/opportunity-engine/us-value-investing-safety.ts"
+      - "lib/opportunity-engine/catalyst-company-diligence.ts"
       - "lib/equity-signal/pilot-runner.ts"
       - "lib/equity-signal/article-evidence.ts"
       - "lib/r2-warehouse.ts"
       - "app/api/internal/railway-branch-signal-lab/route.ts"
       - "scripts/equity-article-evidence-smoke.mjs"
+      - "scripts/us-value-investing-safety-smoke.mjs"
+      - "scripts/catalyst-company-diligence-smoke.mjs"
       - "scripts/current-us-value-investing-live-smoke.mjs"
+      - "scripts/railway-branch-worker.mjs"
+      - "scripts/railway-branch-start.mjs"
       - "config/serious-signal-quality.json"
+      - "package.json"
       - ".github/workflows/current-us-value-investing-validation.yml"
   pull_request:
     branches:
       - main
     paths:
       - "lib/opportunity-engine/us-value-investing-engine.ts"
+      - "lib/opportunity-engine/us-value-investing-safety.ts"
+      - "lib/opportunity-engine/catalyst-company-diligence.ts"
       - "lib/equity-signal/pilot-runner.ts"
       - "lib/equity-signal/article-evidence.ts"
       - "lib/r2-warehouse.ts"
       - "app/api/internal/railway-branch-signal-lab/route.ts"
       - "scripts/equity-article-evidence-smoke.mjs"
+      - "scripts/us-value-investing-safety-smoke.mjs"
+      - "scripts/catalyst-company-diligence-smoke.mjs"
       - "scripts/current-us-value-investing-live-smoke.mjs"
+      - "scripts/railway-branch-worker.mjs"
+      - "scripts/railway-branch-start.mjs"
       - "config/serious-signal-quality.json"
+      - "package.json"
       - ".github/workflows/current-us-value-investing-validation.yml"
   workflow_dispatch:
 

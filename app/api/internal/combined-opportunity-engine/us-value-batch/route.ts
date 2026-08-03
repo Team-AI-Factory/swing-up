@@ -3,10 +3,17 @@ import {
   readResumableUsValueState,
   runResumableUsValueBatch,
 } from "@/lib/opportunity-engine/us-value-investing-resumable";
+import {
+  getR2Config,
+  readVersionedTextFromR2,
+  writeVersionedJsonToR2,
+} from "@/lib/r2-warehouse";
 
 export const dynamic = "force-dynamic";
 
 const BRANCH = "agent/combined-opportunity-engine";
+const REPORT_PREFIX = "branch-labs/pr-262/value-investing/resumable/reports";
+const LATEST_REPORT_KEY = `${REPORT_PREFIX}/latest.json`;
 
 const state = globalThis as typeof globalThis & {
   __swingUpUsValueBatchRun?: Promise<Awaited<ReturnType<typeof runResumableUsValueBatch>>>;
@@ -36,15 +43,50 @@ function schedulerIdentity(request: NextRequest) {
   return { owner, workerId, workerStartedAt, sequence };
 }
 
+function dateKey(value: string) {
+  return value.replace(/[^0-9]/g, "").slice(0, 17);
+}
+
+async function readLatestReport() {
+  if (!getR2Config().configured) return null;
+  const current = await readVersionedTextFromR2(LATEST_REPORT_KEY);
+  if (!current.found || !current.text) return null;
+  return JSON.parse(current.text) as Record<string, unknown>;
+}
+
+async function persistReport(report: Record<string, unknown>, checkedAt: string, identity: NonNullable<ReturnType<typeof schedulerIdentity>>) {
+  if (!getR2Config().configured) throw new Error("cloudflare_r2_not_configured");
+  const immutableKey = `${REPORT_PREFIX}/runs/${checkedAt.slice(0, 10)}/${dateKey(checkedAt)}-${identity.workerId.slice(0, 8)}-${identity.sequence}.json`;
+  const payload = {
+    ...report,
+    schedulerInvocation: identity,
+    reportWarehouse: {
+      backend: "cloudflare_r2",
+      latestKey: LATEST_REPORT_KEY,
+      immutableKey,
+      persisted: true,
+    },
+  };
+  await writeVersionedJsonToR2(LATEST_REPORT_KEY, payload);
+  const immutable = await writeVersionedJsonToR2(immutableKey, payload, { createOnly: true });
+  if (!immutable.written && !immutable.conflict) throw new Error("us_value_batch_report_archive_failed");
+  return payload;
+}
+
 export async function GET() {
   if (!branchAllowed()) return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
   try {
-    const latest = await readResumableUsValueState();
+    const [latest, latestReport] = await Promise.all([
+      readResumableUsValueState(),
+      readLatestReport(),
+    ]);
     return NextResponse.json({
       ok: true,
       ready: Boolean(latest),
       branch: BRANCH,
       latest,
+      latestReport,
+      latestReportKey: LATEST_REPORT_KEY,
       safety: {
         databaseWrites: false,
         publishing: false,
@@ -85,10 +127,8 @@ export async function POST(request: NextRequest) {
 
   try {
     const report = await state.__swingUpUsValueBatchRun;
-    return NextResponse.json({
-      ...report,
-      schedulerInvocation: identity,
-    }, { status: report.ok ? 200 : 503 });
+    const payload = await persistReport(report as unknown as Record<string, unknown>, report.checkedAt, identity);
+    return NextResponse.json(payload, { status: report.ok ? 200 : 503 });
   } catch (error) {
     return NextResponse.json({
       ok: false,

@@ -87,7 +87,7 @@ async function runScan(identity: NonNullable<ReturnType<typeof schedulerIdentity
     schedulerInvocation: identity,
     marketScope: "US listed common equities and ADRs only",
     marketStructureScan: review.marketStructureScan,
-    counts: promoted.counts,
+    counts: review.counts,
     seriousSignalFound: seriousSignals.length > 0,
     seriousSignalCount: seriousSignals.length,
     seriousSignals,

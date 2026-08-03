@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import type { ArticleEvidenceReport } from "@/lib/equity-signal/article-evidence";
 import { buildApprovedUsWatchOutReview } from "@/lib/equity-signal/us-watch-out-engine";
@@ -13,6 +14,11 @@ export const dynamic = "force-dynamic";
 const BRANCH = "agent/combined-opportunity-engine";
 const R2_PREFIX = "branch-labs/pr-262/serious-signal/us-watch-out";
 const LATEST_KEY = `${R2_PREFIX}/latest.json`;
+const OUTBOX_PREFIX = "branch-labs/pr-262/serious-signal/outbox/watch-out";
+const DAILY_MARKET_RULES = new Set([
+  "liquidity_collapse_or_gap_risk",
+  "volatility_regime_spike",
+]);
 
 const state = globalThis as typeof globalThis & {
   __swingUpUsWatchOutScan?: Promise<Record<string, unknown>>;
@@ -65,6 +71,53 @@ function dateKey(value: string) {
   return value.replace(/[^0-9]/g, "").slice(0, 17);
 }
 
+function signalFingerprint(signal: Record<string, unknown>, checkedAt: string) {
+  const ruleId = typeof signal.ruleId === "string" ? signal.ruleId : "unknown";
+  const ticker = typeof signal.ticker === "string" ? signal.ticker.toUpperCase() : "UNKNOWN";
+  const identity = DAILY_MARKET_RULES.has(ruleId)
+    ? `${ruleId}|${ticker}|${checkedAt.slice(0, 10)}`
+    : `${ruleId}|${ticker}|${typeof signal.duplicateKey === "string" ? signal.duplicateKey : checkedAt.slice(0, 13)}`;
+  return crypto.createHash("sha256").update(identity).digest("hex").slice(0, 24);
+}
+
+async function persistNewSignalOutbox(signals: Array<Record<string, unknown>>, checkedAt: string) {
+  const output: Array<Record<string, unknown>> = [];
+  for (const signal of signals) {
+    const fingerprint = signalFingerprint(signal, checkedAt);
+    const ticker = typeof signal.ticker === "string" ? signal.ticker.toUpperCase() : "UNKNOWN";
+    const ruleId = typeof signal.ruleId === "string" ? signal.ruleId : "unknown";
+    const key = `${OUTBOX_PREFIX}/${checkedAt.slice(0, 10)}/${ruleId}/${ticker}/${fingerprint}.json`;
+    const payload = {
+      version: 1,
+      kind: "pr262_new_serious_watch_out",
+      branch: BRANCH,
+      fingerprint,
+      checkedAt,
+      signal,
+      deliveryStatus: "pending_internal_notification_channel",
+      safety: {
+        databaseWrites: false,
+        publishing: false,
+        userNotificationsSent: false,
+        trades: false,
+      },
+    };
+    const written = await writeVersionedJsonToR2(key, payload, { createOnly: true });
+    if (!written.written) continue;
+    output.push({
+      fingerprint,
+      outboxKey: key,
+      ticker: signal.ticker ?? null,
+      company: signal.company ?? null,
+      ruleId: signal.ruleId ?? null,
+      ruleName: signal.ruleName ?? null,
+      currentPrice: signal.currentPrice ?? null,
+      reasons: Array.isArray(signal.reasons) ? signal.reasons : [],
+    });
+  }
+  return output;
+}
+
 async function runScan(identity: NonNullable<ReturnType<typeof schedulerIdentity>>) {
   const checkedAt = new Date().toISOString();
   const review = await buildApprovedUsWatchOutReview({ rankedCandidates: [], now: new Date(checkedAt), fetchImpl: fetch });
@@ -72,10 +125,10 @@ async function runScan(identity: NonNullable<ReturnType<typeof schedulerIdentity
     watchOutReview: review,
     articleEvidence: emptyArticleEvidence(),
   });
-  const seriousSignals = promoted.seriousSignals;
+  const seriousSignals = promoted.seriousSignals as unknown as Array<Record<string, unknown>>;
   const immutableRunKey = `${R2_PREFIX}/runs/${checkedAt.slice(0, 10)}/${dateKey(checkedAt)}-${identity.workerId.slice(0, 8)}-${identity.sequence}.json`;
   const report = {
-    version: 1,
+    version: 2,
     ok: review.marketStructureScan.pagesFailed === 0,
     mode: "pr262_us_watch_out_live",
     branch: BRANCH,
@@ -91,8 +144,15 @@ async function runScan(identity: NonNullable<ReturnType<typeof schedulerIdentity
     seriousSignalFound: seriousSignals.length > 0,
     seriousSignalCount: seriousSignals.length,
     seriousSignals,
+    newSeriousSignalCount: 0,
+    newSeriousSignals: [] as Array<Record<string, unknown>>,
     blockedPromotionCandidates: promoted.blockedPromotionCandidates,
     certificationDisclosure: promoted.certificationDisclosure,
+    notificationOutbox: {
+      prefix: OUTBOX_PREFIX,
+      deliveryEnabled: false,
+      deduplication: "market-structure rules alert once per ticker/rule/day; event rules use their stable evidence key",
+    },
     warehouse: {
       backend: "cloudflare_r2",
       latestKey: LATEST_KEY,
@@ -112,6 +172,8 @@ async function runScan(identity: NonNullable<ReturnType<typeof schedulerIdentity
 
   try {
     if (!getR2Config().configured) throw new Error("cloudflare_r2_not_configured");
+    report.newSeriousSignals = await persistNewSignalOutbox(seriousSignals, checkedAt);
+    report.newSeriousSignalCount = report.newSeriousSignals.length;
     await writeVersionedJsonToR2(LATEST_KEY, report);
     const immutable = await writeVersionedJsonToR2(immutableRunKey, report, { createOnly: true });
     if (!immutable.written && !immutable.conflict) throw new Error("watch_out_immutable_r2_write_failed");
@@ -121,8 +183,6 @@ async function runScan(identity: NonNullable<ReturnType<typeof schedulerIdentity
     report.warehouse.errors.push(error instanceof Error ? error.message.replace(/\s+/g, " ").slice(0, 300) : "unknown_watch_out_r2_error");
   }
 
-  // Refresh latest after the persistence flag is known. If this write fails, the
-  // immutable object from above still preserves the exact scan and its signals.
   if (report.warehouse.persisted) {
     await writeVersionedJsonToR2(LATEST_KEY, report).catch(() => {});
   }

@@ -35,6 +35,7 @@ type SignalSource =
   | "foundation_value"
   | "price_threshold"
   | "earnings_value_bridge"
+  | "fundamental_acceleration"
   | "event_pilot"
   | "market_watch_out";
 
@@ -108,6 +109,7 @@ type SpecialistValuation = {
     | "bank_or_insurer_book_value"
     | "reit_requires_ffo_affo"
     | "utility_earnings_power"
+    | "mega_cap_cloud_platform"
     | "semiconductor_mid_cycle"
     | "cyclical_mid_cycle"
     | "biotech_pipeline_required";
@@ -913,6 +915,41 @@ function specialistModel(item: UsValueCompanyAnalysis, normalization: LongTermNo
       blockers: seriousEligible ? [] : ["Debt burden or missing positive EPS blocks serious utility promotion."],
     };
   }
+  if (
+    /\b(cloud|software|internet retail|e-commerce|interactive media|digital platform|computer services)\b/.test(words)
+    && (item.marketCap ?? 0) >= 100_000_000_000
+    && item.scores.businessQuality >= 75
+  ) {
+    const normalizedFcf = normalization?.normalizedFreeCashFlow ?? null;
+    const normalizedFcfPerShare = normalizedFcf !== null && shares && shares > 0 ? normalizedFcf / shares : null;
+    const growth = median([
+      item.fundamentals.revenueGrowthTtmPercent,
+      item.fundamentals.revenueGrowthFyPercent,
+      item.fundamentals.epsGrowthTtmPercent,
+    ].filter((value): value is number => value !== null)) ?? 0;
+    const requiredFcfYield = clamp(0.06 - Math.max(0, growth) * 0.0006 - item.scores.businessQuality * 0.00008, 0.035, 0.06);
+    const justifiedPe = clamp(20 + Math.max(0, growth) * 0.25 + (item.scores.businessQuality - 75) * 0.15, 20, 32);
+    const values = [
+      normalizedFcfPerShare && normalizedFcfPerShare > 0 ? normalizedFcfPerShare / requiredFcfYield : null,
+      eps && eps > 0 ? eps * justifiedPe : null,
+    ].filter((value): value is number => value !== null);
+    const fairValue = median(values);
+    const seriousEligible = values.length >= 2 && normalization?.buyQualityConfirmed === true;
+    return {
+      ticker: item.ticker,
+      model: "mega_cap_cloud_platform",
+      fairValue: rounded(fairValue),
+      seriousEligible,
+      confidence: fairValue === null ? 25 : seriousEligible ? 85 : 60,
+      reasons: fairValue === null ? [] : [
+        "Five-year owner earnings and current earnings power are combined for a high-quality cloud or digital-platform company.",
+        `The model uses a conservative ${(requiredFcfYield * 100).toFixed(1)}% owner-earnings yield and caps the earnings multiple at ${justifiedPe.toFixed(1)}x.`,
+      ],
+      blockers: seriousEligible ? [] : [
+        "Five-year SEC cash-flow durability and balance-sheet confirmation are required before serious promotion.",
+      ],
+    };
+  }
   if (/\b(semiconductor|memory|integrated circuits|chip)\b/.test(words)) {
     const normalizedFcf = normalization?.normalizedFreeCashFlow ?? null;
     const normalizedFcfPerShare = normalizedFcf !== null && shares && shares > 0 ? normalizedFcf / shares : null;
@@ -1428,6 +1465,53 @@ export async function runUsSignalOperations(input: {
       }));
     }
 
+    const revenueAcceleration = Math.max(
+      item.fundamentals.revenueGrowthTtmPercent ?? -Infinity,
+      item.fundamentals.revenueGrowthFyPercent ?? -Infinity,
+    );
+    const earningsAcceleration = Math.max(
+      item.fundamentals.netIncomeGrowthTtmPercent ?? -Infinity,
+      item.fundamentals.epsGrowthTtmPercent ?? -Infinity,
+    );
+    const accelerationUpside = baseFairValue ? (baseFairValue / currentPrice - 1) * 100 : null;
+    const actualFundamentalAcceleration = commonBuyQuality
+      && secBuyConfirmed
+      && priceConfirmed
+      && normalization?.buyQualityConfirmed === true
+      && revenueAcceleration >= 12
+      && earningsAcceleration >= 15
+      && item.scores.businessQuality >= 80
+      && item.scores.risk <= 40
+      && (accelerationUpside ?? -Infinity) >= 10;
+    if (actualFundamentalAcceleration) {
+      currentSignals.push(makeSignal({
+        source: "fundamental_acceleration",
+        action: "buy",
+        item,
+        currentPrice,
+        confidence: Math.min(96, Math.round(
+          item.scores.fairValueConfidence * 0.55
+          + Math.min(100, revenueAcceleration * 2) * 0.2
+          + Math.min(100, earningsAcceleration * 1.5) * 0.15
+          + item.scores.businessQuality * 0.1
+        )),
+        regime,
+        reasons: [
+          `Revenue growth is running at ${revenueAcceleration.toFixed(1)}% and earnings growth at ${earningsAcceleration.toFixed(1)}%.`,
+          "Five-year SEC cash-flow, profit durability, cash, debt, and asset checks passed without relying on an analyst estimate.",
+          `The independently checked price remains ${(accelerationUpside ?? 0).toFixed(1)}% below normalized base fair value.`,
+          "This lane exists so a missed news headline cannot hide a real improvement in the business.",
+        ],
+        officialSourceConfirmed: true,
+        secDiligenceConfirmed: true,
+        priceCrossChecked: true,
+        historicalPilotPassed: null,
+        normalization,
+        specialist,
+        checkedAt,
+      }));
+    }
+
     if (item.decision.tier === "serious_foundation_sell" && diligence.sell.has(ticker) && priceConfirmed) {
       currentSignals.push(makeSignal({
         source: "foundation_value",
@@ -1729,7 +1813,9 @@ export const US_SIGNAL_OPERATIONS_POLICY = Object.freeze({
   notificationDigestConsumer: true,
   priceOnlyThresholdScanner: true,
   thesisChangeEngine: true,
+  fundamentalAccelerationBridge: true,
   specialistValuationModels: true,
+  megaCapCloudPlatformModel: true,
   fiveToTenYearNormalization: true,
   independentPriceCrossCheck: true,
   sectorAndMarketRegimeCalibration: true,

@@ -22,7 +22,7 @@ const SPECIALIST_PREFIX = `${R2_PREFIX}/specialist-valuations`;
 const BRANCH_LAB_STATE_KEY = "branch-labs/pr-262/serious-signal/state.json";
 const DILIGENCE_KEY = "branch-labs/pr-262/value-investing/catalyst-diligence/latest.json";
 const WATCH_OUT_KEY = "branch-labs/pr-262/serious-signal/us-watch-out/latest.json";
-const MAX_PRICE_CANDIDATES = 400;
+const MAX_PRICE_CANDIDATES = 5_000;
 const MAX_YAHOO_CROSS_CHECKS = 40;
 const MAX_FRESH_SEC_NORMALIZATIONS = 12;
 const ACTIVE_SIGNAL_LIMIT = 500;
@@ -84,6 +84,12 @@ type LongTermNormalization = {
   operatingCashFlowMedian: number | null;
   capitalExpenditureMedian: number | null;
   normalizedFreeCashFlow: number | null;
+  cash: number | null;
+  totalDebt: number | null;
+  assets: number | null;
+  debtToCash: number | null;
+  debtToAssets: number | null;
+  buyQualityConfirmed: boolean;
   positiveNetIncomeYears: number;
   positiveFreeCashFlowYears: number;
   earningsStabilityPercent: number;
@@ -400,62 +406,71 @@ function quotePriority(
 
 async function fetchTradingViewQuotes(items: UsValueCompanyAnalysis[], fetchImpl: typeof fetch, observedAt: string) {
   if (!items.length) return new Map<string, Quote>();
-  const response = await fetchImpl("https://scanner.tradingview.com/america/scan", {
-    method: "POST",
-    cache: "no-store",
-    headers: {
-      accept: "application/json",
-      "content-type": "application/json",
-      origin: "https://www.tradingview.com",
-      referer: "https://www.tradingview.com/",
-      "user-agent": "Mozilla/5.0 (compatible; SwingUpPriceOnly/1.0)",
-    },
-    body: JSON.stringify({
-      symbols: {
-        tickers: items.map((item) => item.tradingViewSymbol),
-        query: { types: [] },
+  const chunks = Array.from(
+    { length: Math.ceil(items.length / 500) },
+    (_, index) => items.slice(index * 500, (index + 1) * 500),
+  );
+  const maps = await mapWithConcurrency(chunks, 5, async (chunk) => {
+    const response = await fetchImpl("https://scanner.tradingview.com/america/scan", {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json",
+        origin: "https://www.tradingview.com",
+        referer: "https://www.tradingview.com/",
+        "user-agent": "Mozilla/5.0 (compatible; SwingUpPriceOnly/2.0)",
       },
-      columns: [
-        "name",
-        "description",
-        "exchange",
-        "close",
-        "change",
-        "volume",
-        "relative_volume_10d_calc",
-        "market_cap_basic",
-      ],
-      range: [0, items.length],
-    }),
-    signal: AbortSignal.timeout(45_000),
-  });
-  const payload = object(await response.json().catch(() => null));
-  if (!response.ok) throw new Error(`tradingview_price_only_http_${response.status}`);
-  const output = new Map<string, Quote>();
-  for (const raw of array(payload.data).map(object)) {
-    const symbol = text(raw.s)?.toUpperCase();
-    const data = array(raw.d);
-    if (!symbol || data.length < 8) continue;
-    const ticker = symbol.includes(":") ? symbol.split(":").at(-1)! : symbol;
-    const price = finite(data[3]);
-    if (price === null || price <= 0) continue;
-    output.set(ticker, {
-      ticker,
-      tradingViewSymbol: symbol,
-      exchange: text(data[2]),
-      price,
-      changePercent: finite(data[4]),
-      volume: finite(data[5]),
-      relativeVolume: finite(data[6]),
-      marketCap: finite(data[7]),
-      observedAt,
-      source: "TradingView public scanner",
+      body: JSON.stringify({
+        symbols: {
+          tickers: chunk.map((item) => item.tradingViewSymbol),
+          query: { types: [] },
+        },
+        columns: [
+          "name",
+          "description",
+          "exchange",
+          "close",
+          "change",
+          "volume",
+          "relative_volume_10d_calc",
+          "market_cap_basic",
+        ],
+        range: [0, chunk.length],
+      }),
+      signal: AbortSignal.timeout(45_000),
     });
-  }
-  return output;
+    const payload = object(await response.json().catch(() => null));
+    if (!response.ok) throw new Error(`tradingview_price_only_http_${response.status}`);
+    const output = new Map<string, Quote>();
+    for (const raw of array(payload.data).map(object)) {
+      const symbol = text(raw.s)?.toUpperCase();
+      const data = array(raw.d);
+      if (!symbol || data.length < 8) continue;
+      const ticker = symbol.includes(":") ? symbol.split(":").at(-1)! : symbol;
+      const price = finite(data[3]);
+      if (price === null || price <= 0) continue;
+      output.set(ticker, {
+        ticker,
+        tradingViewSymbol: symbol,
+        exchange: text(data[2]),
+        price,
+        changePercent: finite(data[4]),
+        volume: finite(data[5]),
+        relativeVolume: finite(data[6]),
+        marketCap: finite(data[7]),
+        observedAt,
+        source: "TradingView public scanner",
+      });
+    }
+    return output;
+  });
+  const combined = new Map<string, Quote>();
+  for (const map of maps) for (const [ticker, quote] of map) combined.set(ticker, quote);
+  return combined;
 }
 
-async function fetchYahooSeries(ticker: string, range: "5d" | "3mo", fetchImpl: typeof fetch) {
+async function fetchYahooSeries(async function fetchYahooSeries(ticker: string, range: "5d" | "3mo", fetchImpl: typeof fetch) {
   const response = await fetchImpl(
     `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&range=${range}&events=div%2Csplits`,
     {
@@ -672,6 +687,13 @@ function alignedValue(rows: SecFactRow[], end: string) {
   return rows.find((row) => row.end === end)?.value ?? null;
 }
 
+function latestInstantValue(payload: Json, concepts: string[]) {
+  const rows = secRows(payload, concepts, ["USD"])
+    .filter((row) => SEC_ANNUAL_FORMS.has(row.form ?? ""))
+    .sort((left, right) => `${right.end}:${right.filed ?? ""}`.localeCompare(`${left.end}:${left.filed ?? ""}`));
+  return rows[0]?.value ?? null;
+}
+
 function growthSeries(rows: SecFactRow[]) {
   const ordered = [...rows].sort((left, right) => left.end.localeCompare(right.end));
   const output: number[] = [];
@@ -725,6 +747,29 @@ function buildNormalization(ticker: string, cik: string, payload: Json, observed
   const operatingCashFlowMedian = median(cashFlowValues.slice(-5));
   const capitalExpenditureMedian = median(capexValues.slice(-5));
   const normalizedFreeCashFlow = median(freeCashFlows.slice(-5));
+  const cash = latestInstantValue(payload, [
+    "CashAndCashEquivalentsAtCarryingValue",
+    "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+    "CashAndCashEquivalents",
+  ]);
+  const currentDebt = latestInstantValue(payload, [
+    "DebtCurrent",
+    "LongTermDebtCurrent",
+    "ShortTermBorrowings",
+    "CommercialPaper",
+    "CurrentBorrowings",
+  ]) ?? 0;
+  const noncurrentDebt = latestInstantValue(payload, [
+    "LongTermDebtNoncurrent",
+    "LongTermDebtAndFinanceLeaseObligationsNoncurrent",
+    "LongTermDebtAndCapitalLeaseObligations",
+    "NoncurrentBorrowings",
+  ]) ?? 0;
+  const assets = latestInstantValue(payload, ["Assets"]);
+  const totalDebt = currentDebt + noncurrentDebt;
+  const debtToCash = cash && cash > 0 ? totalDebt / cash : totalDebt > 0 ? Infinity : 0;
+  const debtToAssets = assets && assets > 0 ? totalDebt / assets : null;
+  const balanceSheetRisk = debtToCash > 4 || (debtToAssets ?? 0) > 0.55;
   const latestNetIncome = netIncomeValues.at(-1) ?? null;
   const latestCfo = cashFlowValues.at(-1) ?? null;
   const latestNetIncomeToMedianRatio = latestNetIncome !== null && netIncomeMedian && netIncomeMedian !== 0
@@ -742,12 +787,19 @@ function buildNormalization(ticker: string, cik: string, payload: Json, observed
     || (latestCashConversion ?? 1) < 0.5
     || earningsStability < 60
     || freeCashFlowStability < 60;
+  const buyQualityConfirmed = yearsAvailable >= 5
+    && !oneTimeOrPeakRisk
+    && !balanceSheetRisk
+    && normalizedFreeCashFlow !== null
+    && normalizedFreeCashFlow > 0;
   const blockers = [
     ...(yearsAvailable < 5 ? ["Fewer than five annual SEC periods are available."] : []),
     ...(earningsStability < 60 ? ["Profits were positive in fewer than 60% of available years."] : []),
     ...(freeCashFlowStability < 60 ? ["Free cash flow was positive in fewer than 60% of available years."] : []),
     ...((latestNetIncomeToMedianRatio ?? 1) > 2 ? ["Latest profit is more than twice the five-year median and may be peak-cycle or one-time."] : []),
     ...((latestCashConversion ?? 1) < 0.5 ? ["Latest operating cash flow is less than half of reported net income."] : []),
+    ...(debtToCash > 4 ? ["Total debt is more than four times available cash."] : []),
+    ...((debtToAssets ?? 0) > 0.55 ? ["Debt exceeds 55% of reported assets."] : []),
   ];
   return {
     ticker,
@@ -761,6 +813,12 @@ function buildNormalization(ticker: string, cik: string, payload: Json, observed
     operatingCashFlowMedian: rounded(operatingCashFlowMedian, 0),
     capitalExpenditureMedian: rounded(capitalExpenditureMedian, 0),
     normalizedFreeCashFlow: rounded(normalizedFreeCashFlow, 0),
+    cash: rounded(cash, 0),
+    totalDebt: rounded(totalDebt, 0),
+    assets: rounded(assets, 0),
+    debtToCash: Number.isFinite(debtToCash) ? rounded(debtToCash) : null,
+    debtToAssets: rounded(debtToAssets),
+    buyQualityConfirmed,
     positiveNetIncomeYears,
     positiveFreeCashFlowYears,
     earningsStabilityPercent: rounded(earningsStability) ?? 0,
@@ -768,7 +826,7 @@ function buildNormalization(ticker: string, cik: string, payload: Json, observed
     latestNetIncomeToMedianRatio: rounded(latestNetIncomeToMedianRatio),
     latestCashConversion: rounded(latestCashConversion),
     oneTimeOrPeakRisk,
-    durableEnoughForSeriousBuy: yearsAvailable >= 5 && !oneTimeOrPeakRisk,
+    durableEnoughForSeriousBuy: buyQualityConfirmed,
     blockers,
   };
 }
@@ -1172,7 +1230,7 @@ export async function runUsSignalOperations(input: {
   const analyses = await loadCompletedAnalyses(resumableState);
   const analysisByTicker = new Map(analyses.map((item) => [item.ticker.toUpperCase(), item]));
   const recentEvents = parseEventCandidates(branchHistory)
-    .filter((candidate) => recentCandidate(candidate, now, 7));
+    .filter((candidate) => recentCandidate(candidate, now, 14));
   const diligence = diligenceConfirmation(diligenceValue);
 
   const priorityAnalyses = quotePriority(analyses, priorRegistry, recentEvents);
@@ -1319,7 +1377,7 @@ export async function runUsSignalOperations(input: {
       && (item.fundamentals.freeCashFlow ?? 0) > 0
       && generalModelOkay
       && !seriousWatchTickers.has(ticker);
-    const secBuyConfirmed = diligence.buy.has(ticker);
+    const secBuyConfirmed = diligence.buy.has(ticker) || normalization?.buyQualityConfirmed === true;
     const priceConfirmed = crossCheck?.passed === true;
     const strongBuyBelow = item.fairValue.strongBuyBelowPrice ?? (baseFairValue ? baseFairValue * 0.7 : null);
     const priceThresholdBuy = commonBuyQuality
@@ -1455,7 +1513,7 @@ export async function runUsSignalOperations(input: {
     const upside = baseFairValue ? (baseFairValue / currentPrice - 1) * 100 : null;
     const official = officialReceiptConfirmed(candidate);
     const eventPassed = eventGatePassed(candidate);
-    const secBuyConfirmed = diligence.buy.has(ticker);
+    const secBuyConfirmed = diligence.buy.has(ticker) || normalization?.buyQualityConfirmed === true;
     const normalizedOkay = specialist.model === "general"
       ? normalization === null || normalization.durableEnoughForSeriousBuy
       : specialist.seriousEligible && normalization?.durableEnoughForSeriousBuy === true;

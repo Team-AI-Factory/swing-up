@@ -1,0 +1,85 @@
+name: Current US Signal Operations Validation
+
+on:
+  pull_request:
+    paths:
+      - "app/api/internal/combined-opportunity-engine/us-signal-operations/**"
+      - "lib/opportunity-engine/us-signal-operations.ts"
+      - "lib/opportunity-engine/us-value-investing-resumable.ts"
+      - "lib/opportunity-engine/us-value-investing-safety.ts"
+      - "lib/opportunity-engine/catalyst-company-diligence.ts"
+      - "lib/equity-signal/pilot-serious-signal-policy.ts"
+      - "lib/equity-signal/runner.ts"
+      - "scripts/railway-branch-worker-resumable.mjs"
+      - "scripts/current-us-signal-operations-live-smoke.mjs"
+      - ".github/workflows/current-us-signal-operations-validation.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: current-us-signal-operations-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate buy-first US signal operations and R2 registry
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out isolated branch
+        uses: actions/checkout@v4
+
+      - name: Refuse main branch execution
+        shell: bash
+        run: |
+          branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          test "${branch}" != "main"
+          test "${branch}" = "agent/combined-opportunity-engine"
+          echo "Validating PR #262 signal operations on ${branch}"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit --fund=false
+
+      - name: Typecheck and build
+        run: |
+          npm run typecheck
+          npm run build
+
+      - name: Verify binding policy in source
+        shell: bash
+        run: |
+          grep -q 'activeSignalRegistry: true' lib/opportunity-engine/us-signal-operations.ts
+          grep -q 'notificationDigestConsumer: true' lib/opportunity-engine/us-signal-operations.ts
+          grep -q 'priceOnlyThresholdScanner: true' lib/opportunity-engine/us-signal-operations.ts
+          grep -q 'thesisChangeEngine: true' lib/opportunity-engine/us-signal-operations.ts
+          grep -q 'specialistValuationModels: true' lib/opportunity-engine/us-signal-operations.ts
+          grep -q 'fiveToTenYearNormalization: true' lib/opportunity-engine/us-signal-operations.ts
+          grep -q 'independentPriceCrossCheck: true' lib/opportunity-engine/us-signal-operations.ts
+          grep -q 'sectorAndMarketRegimeCalibration: true' lib/opportunity-engine/us-signal-operations.ts
+          grep -q 'eventPilotRequiresFourOfFive: true' lib/opportunity-engine/us-signal-operations.ts
+          grep -q 'analystExpectationsCanVetoBuy: false' lib/opportunity-engine/us-signal-operations.ts
+          grep -q 'publishing: false' lib/opportunity-engine/us-signal-operations.ts
+          grep -q 'directUserNotifications: false' lib/opportunity-engine/us-signal-operations.ts
+          grep -q 'trades: false' lib/opportunity-engine/us-signal-operations.ts
+
+      - name: Wait for exact Railway deployment and fresh operations report
+        env:
+          COMBINED_ENGINE_RAILWAY_URL: https://swing-up-swing-up-pr-262.up.railway.app
+          EXPECTED_BRANCH_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+          CURRENT_US_SIGNAL_OPERATIONS_REPORT_PATH: artifacts/current-us-signal-operations-report.json
+        run: node scripts/current-us-signal-operations-live-smoke.mjs
+
+      - name: Upload current US signal operations report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: current-us-signal-operations-report
+          path: artifacts/current-us-signal-operations-report.json
+          if-no-files-found: warn
+          retention-days: 30

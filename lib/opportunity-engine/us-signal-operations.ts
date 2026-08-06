@@ -470,7 +470,7 @@ async function fetchTradingViewQuotes(items: UsValueCompanyAnalysis[], fetchImpl
   return combined;
 }
 
-async function fetchYahooSeries(async function fetchYahooSeries(ticker: string, range: "5d" | "3mo", fetchImpl: typeof fetch) {
+async function fetchYahooSeries(ticker: string, range: "5d" | "3mo", fetchImpl: typeof fetch) {
   const response = await fetchImpl(
     `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&range=${range}&events=div%2Csplits`,
     {

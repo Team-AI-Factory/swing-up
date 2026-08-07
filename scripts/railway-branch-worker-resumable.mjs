@@ -20,9 +20,13 @@ const technicalRetryMs = Math.min(
   normalPollMs,
   configuredDelayMs("SWING_UP_BRANCH_LAB_EFFECTIVE_TECHNICAL_RETRY_SECONDS", 60, normalPollMs),
 );
+const fastSecPollMs = configuredDelayMs("SWING_UP_BRANCH_LAB_FAST_SEC_INTERVAL_SECONDS", 60, 300_000);
 const deepRunTimeoutMs = fastSmoke
   ? 2_000
   : configuredDelayMs("SWING_UP_BRANCH_LAB_EFFECTIVE_RUN_TIMEOUT_SECONDS", 390, 390_000);
+const fastSecBuyTimeoutMs = fastSmoke
+  ? 2_000
+  : configuredDelayMs("SWING_UP_BRANCH_LAB_FAST_SEC_BUY_TIMEOUT_SECONDS", 45, 60_000);
 const prePriceBuyTimeoutMs = fastSmoke
   ? 2_000
   : configuredDelayMs("SWING_UP_BRANCH_LAB_PREPRICE_BUY_TIMEOUT_SECONDS", 180, 240_000);
@@ -40,6 +44,7 @@ const signalOperationsTimeoutMs = fastSmoke
   : configuredDelayMs("SWING_UP_BRANCH_LAB_SIGNAL_OPERATIONS_TIMEOUT_SECONDS", 240, 300_000);
 
 const deepRouteUrl = `http://127.0.0.1:${port}/api/internal/railway-branch-signal-lab`;
+const fastSecBuyRouteUrl = `http://127.0.0.1:${port}/api/internal/combined-opportunity-engine/us-fast-sec-buy-radar`;
 const prePriceBuyRouteUrl = `http://127.0.0.1:${port}/api/internal/combined-opportunity-engine/us-preprice-buy-radar`;
 const watchOutRouteUrl = `http://127.0.0.1:${port}/api/internal/combined-opportunity-engine/us-watch-out-scan`;
 const valueBatchRouteUrl = `http://127.0.0.1:${port}/api/internal/combined-opportunity-engine/us-value-batch`;
@@ -105,6 +110,26 @@ async function callLane(input) {
   const durationMs = Date.now() - startedAt;
   console.log(`[swing-up-${input.lane}] status=${response.status} sequence=${sequence} durationMs=${durationMs} ${responseText.slice(0, input.logLimit)}`);
   return { response, report, responseText, durationMs };
+}
+
+async function triggerFastSecBuyRadar() {
+  const result = await callLane({ lane: "fast_sec_buy_radar", url: fastSecBuyRouteUrl, timeoutMs: fastSecBuyTimeoutMs, logLimit: 12_000 });
+  const seriousBuyCount = Array.isArray(result.report?.seriousBuys) ? result.report.seriousBuys.length : 0;
+  const buyCandidateCount = Array.isArray(result.report?.buyCandidates) ? result.report.buyCandidates.length : 0;
+  const newSeriousBuyCount = Array.isArray(result.report?.newSeriousBuys) ? result.report.newSeriousBuys.length : 0;
+  tellSupervisor({
+    type: "fast_sec_buy_radar_finished",
+    sequence,
+    status: result.response.status,
+    durationMs: result.durationMs,
+    seriousSignalCount: seriousBuyCount,
+    seriousBuyCount,
+    buyCandidateCount,
+    newSeriousSignalCount: newSeriousBuyCount,
+    reportStatus: seriousBuyCount > 0 ? "fast_sec_serious_buy_found" : buyCandidateCount > 0 ? "fast_sec_buy_candidates_found" : "no_fast_sec_buy",
+    failureScope: result.response.ok ? null : "fast_sec_buy_radar",
+    technicalFailureFingerprint: result.response.ok ? null : `fast_sec_buy_radar_http_${result.response.status}`,
+  });
 }
 
 async function triggerPrePriceBuyRadar() {
@@ -279,11 +304,8 @@ async function runNonBlockingLane(name, work) {
 
 async function triggerRun() {
   sequence += 1;
-  // Leading-indicator lane starts first and discovers from SEC filings, issuer/news
-  // sources and stored strategic relationships. It does not use price movement to
-  // discover a company. The current price is requested only after source content
-  // has been read and mapped to the pre-analysed value thesis. Watch Out scanning
-  // starts at the same time so Buy priority never removes danger coverage.
+  // The broad source-first lane starts before reaction-based Buy lanes. Watch Out
+  // scanning runs at the same time so Buy priority never removes danger coverage.
   await Promise.all([
     runNonBlockingLane("preprice_buy_radar", triggerPrePriceBuyRadar),
     runNonBlockingLane("watch_out_scan", triggerWatchOutScan),
@@ -295,13 +317,25 @@ async function triggerRun() {
   return triggerDeepRun();
 }
 
+async function fastSecLoop() {
+  while (!stopping) {
+    // This lane uses only official SEC 8-K/6-K feeds, so it can run every minute
+    // without consuming paid-news API allowance. It reads the filing/exhibit
+    // before requesting the stock price.
+    await runNonBlockingLane("fast_sec_buy_radar", triggerFastSecBuyRadar);
+    if (!stopping) await delay(fastSecPollMs, undefined, { signal: shutdown.signal }).catch(() => {});
+  }
+}
+
 async function main() {
   if (!runtimeToken) throw new Error("branch_lab_runtime_token_missing");
   if (!(await waitForHealth())) throw new Error("branch_lab_health_timeout");
-  console.log(`[swing-up-branch-worker] dedicated worker active; live polling=${Math.round(normalPollMs / 1000)}s, technical retry=${Math.round(technicalRetryMs / 1000)}s, preprice-buy timeout=${Math.round(prePriceBuyTimeoutMs / 1000)}s, watch-out timeout=${Math.round(watchOutTimeoutMs / 1000)}s, value-batch timeout=${Math.round(valueBatchTimeoutMs / 1000)}s, earnings-buy fallback timeout=${Math.round(earningsBuyTimeoutMs / 1000)}s, signal-operations timeout=${Math.round(signalOperationsTimeoutMs / 1000)}s, deep-run timeout=${Math.round(deepRunTimeoutMs / 1000)}s, transport=loopback, state=Cloudflare R2.`);
+  console.log(`[swing-up-branch-worker] dedicated worker active; official SEC Buy polling=${Math.round(fastSecPollMs / 1000)}s, broad live polling=${Math.round(normalPollMs / 1000)}s, technical retry=${Math.round(technicalRetryMs / 1000)}s, fast-sec timeout=${Math.round(fastSecBuyTimeoutMs / 1000)}s, preprice-buy timeout=${Math.round(prePriceBuyTimeoutMs / 1000)}s, watch-out timeout=${Math.round(watchOutTimeoutMs / 1000)}s, value-batch timeout=${Math.round(valueBatchTimeoutMs / 1000)}s, earnings-buy fallback timeout=${Math.round(earningsBuyTimeoutMs / 1000)}s, signal-operations timeout=${Math.round(signalOperationsTimeoutMs / 1000)}s, deep-run timeout=${Math.round(deepRunTimeoutMs / 1000)}s, transport=loopback, state=Cloudflare R2.`);
   tellSupervisor({
     type: "ready",
     sequence,
+    fastSecBuyIntervalSeconds: Math.round(fastSecPollMs / 1000),
+    fastSecBuyTimeoutSeconds: Math.round(fastSecBuyTimeoutMs / 1000),
     prePriceBuyTimeoutSeconds: Math.round(prePriceBuyTimeoutMs / 1000),
     watchOutTimeoutSeconds: Math.round(watchOutTimeoutMs / 1000),
     valueBatchTimeoutSeconds: Math.round(valueBatchTimeoutMs / 1000),
@@ -310,6 +344,7 @@ async function main() {
     runTimeoutSeconds: Math.round(deepRunTimeoutMs / 1000),
   });
 
+  const fastLane = fastSecLoop();
   while (!stopping) {
     let next;
     try {
@@ -335,6 +370,8 @@ async function main() {
     }
     if (!stopping) await delay(next.delayMs, undefined, { signal: shutdown.signal }).catch(() => {});
   }
+  stop();
+  await fastLane.catch(() => {});
 }
 
 try {
@@ -343,6 +380,7 @@ try {
   process.exit(0);
 } catch (error) {
   clearInterval(heartbeat);
+  stop();
   console.error(`[swing-up-branch-worker] fatal_${error instanceof Error ? error.message : "worker_failed"}`);
   process.exit(1);
 }

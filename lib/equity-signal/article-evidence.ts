@@ -58,8 +58,10 @@ const MATERIAL_TERMS: Record<string, string[]> = {
 };
 
 const BLOCKED_HOSTS = new Set(["news.google.com", "www.alphavantage.co"]);
+const SEC_HOSTS = new Set(["sec.gov", "www.sec.gov"]);
 const MAX_ARTICLES = 12;
 const MAX_BYTES = 300_000;
+const MAX_SEC_DOCUMENT_BYTES = 800_000;
 const MIN_ARTICLE_CHARS = 450;
 const MAX_EXCERPT_CHARS = 1_200;
 let scanCache = new Map<string, { fetchedAt: number; text: string; contentType: string }>();
@@ -191,24 +193,111 @@ function bodySupport(candidateValue: unknown, body: string) {
   return { issuerMatched, eventMatched, contradicted: correction && eventMatched };
 }
 
-async function fetchArticle(url: URL, fetchImpl: typeof fetch) {
-  const cacheKey = url.toString();
-  const cached = scanCache.get(cacheKey);
-  if (cached && Date.now() - cached.fetchedAt < 6 * 60 * 60 * 1000) return cached;
-  const response = await fetchImpl(url, {
+function isSecFilingIndex(url: URL) {
+  return SEC_HOSTS.has(url.hostname.toLowerCase())
+    && /^\/Archives\/edgar\/data\//i.test(url.pathname)
+    && /-index\.html?$/i.test(url.pathname);
+}
+
+function safeSecDocumentUrl(value: string, base: string) {
+  try {
+    const url = new URL(decodeEntities(value), base);
+    if (url.protocol !== "https:" || !SEC_HOSTS.has(url.hostname.toLowerCase())) return null;
+    if (!/^\/Archives\/edgar\/data\//i.test(url.pathname)) return null;
+    if (!/\.(?:html?|txt)$/i.test(url.pathname) || /-index\.html?$/i.test(url.pathname)) return null;
+    url.hash = "";
+    return url;
+  } catch {
+    return null;
+  }
+}
+
+function secDocumentLinks(indexHtml: string, indexUrl: URL) {
+  const rows = [...indexHtml.matchAll(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi)].map((match) => match[0]);
+  const candidates = rows.flatMap((row) => {
+    const href = row.match(/<a\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>/i)?.[1];
+    if (!href) return [];
+    const cells = [...row.matchAll(/<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]>/gi)].map((match) => stripHtml(match[1]));
+    const sequence = cells[0] ?? "";
+    const description = cells[1] ?? "";
+    const type = (cells[3] ?? cells.at(-1) ?? "").toUpperCase();
+    const url = safeSecDocumentUrl(href, indexUrl.toString());
+    if (!url) return [];
+    const earningsExhibit = /(?:EX[-_.]?99|99[-_.]?1|EXHIBIT\s+99|EARNINGS|PRESS RELEASE|FINANCIAL RESULTS)/i.test(`${type} ${description} ${url.pathname}`);
+    const primary = sequence === "1" || /\b(?:8-K|6-K|10-Q|10-K)\b/i.test(type);
+    if (!earningsExhibit && !primary) return [];
+    return [{ url, score: (earningsExhibit ? 200 : 0) + (primary ? 100 : 0) + (sequence === "1" ? 20 : 0) }];
+  });
+  return [...new Map(candidates.sort((left, right) => right.score - left.score).map((item) => [item.url.toString(), item])).values()]
+    .slice(0, 3)
+    .map((item) => item.url);
+}
+
+async function fetchRawPage(url: URL, maximumBytes: number) {
+  const response = await fetch(url, {
     redirect: "follow",
     cache: "no-store",
     headers: {
       accept: "text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.1",
-      range: `bytes=0-${MAX_BYTES - 1}`,
+      range: `bytes=0-${maximumBytes - 1}`,
       "user-agent": "Mozilla/5.0 (compatible; SwingUpEvidenceReader/1.0)",
     },
     signal: AbortSignal.timeout(10_000),
   });
   if (!response.ok) throw new Error(`article_http_${response.status}`);
   const contentType = response.headers.get("content-type") ?? "";
-  const raw = (await response.text()).slice(0, MAX_BYTES);
-  const articleText = extractArticleText(raw, contentType);
+  const raw = (await response.text()).slice(0, maximumBytes);
+  return { raw, contentType };
+}
+
+async function fetchArticle(url: URL, fetchImpl: typeof fetch) {
+  const cacheKey = url.toString();
+  const cached = scanCache.get(cacheKey);
+  if (cached && Date.now() - cached.fetchedAt < 6 * 60 * 60 * 1000) return cached;
+
+  const response = await fetchImpl(url, {
+    redirect: "follow",
+    cache: "no-store",
+    headers: {
+      accept: "text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.1",
+      range: `bytes=0-${(isSecFilingIndex(url) ? MAX_SEC_DOCUMENT_BYTES : MAX_BYTES) - 1}`,
+      "user-agent": "Mozilla/5.0 (compatible; SwingUpEvidenceReader/1.0)",
+    },
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!response.ok) throw new Error(`article_http_${response.status}`);
+  const contentType = response.headers.get("content-type") ?? "";
+  const raw = (await response.text()).slice(0, isSecFilingIndex(url) ? MAX_SEC_DOCUMENT_BYTES : MAX_BYTES);
+
+  let articleText = "";
+  if (isSecFilingIndex(url)) {
+    const documents = secDocumentLinks(raw, url);
+    const contents = await mapWithConcurrency(documents, 3, async (documentUrl) => {
+      try {
+        const documentResponse = await fetchImpl(documentUrl, {
+          redirect: "follow",
+          cache: "no-store",
+          headers: {
+            accept: "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.1",
+            range: `bytes=0-${MAX_SEC_DOCUMENT_BYTES - 1}`,
+            "user-agent": "Mozilla/5.0 (compatible; SwingUpEvidenceReader/1.0)",
+          },
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (!documentResponse.ok) return "";
+        const documentType = documentResponse.headers.get("content-type") ?? "";
+        const documentRaw = (await documentResponse.text()).slice(0, MAX_SEC_DOCUMENT_BYTES);
+        return extractArticleText(documentRaw, documentType) || text(stripHtml(documentRaw), 25_000);
+      } catch {
+        return "";
+      }
+    });
+    articleText = text(contents.filter(Boolean).join(" "), 25_000);
+    if (articleText.length < MIN_ARTICLE_CHARS) articleText = extractArticleText(raw, contentType);
+  } else {
+    articleText = extractArticleText(raw, contentType);
+  }
+
   if (!articleText) throw new Error("article_text_unavailable");
   const result = { fetchedAt: Date.now(), text: articleText, contentType };
   scanCache.set(cacheKey, result);

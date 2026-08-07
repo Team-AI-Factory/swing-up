@@ -233,23 +233,6 @@ function secDocumentLinks(indexHtml: string, indexUrl: URL) {
     .map((item) => item.url);
 }
 
-async function fetchRawPage(url: URL, maximumBytes: number) {
-  const response = await fetch(url, {
-    redirect: "follow",
-    cache: "no-store",
-    headers: {
-      accept: "text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.1",
-      range: `bytes=0-${maximumBytes - 1}`,
-      "user-agent": "Mozilla/5.0 (compatible; SwingUpEvidenceReader/1.0)",
-    },
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!response.ok) throw new Error(`article_http_${response.status}`);
-  const contentType = response.headers.get("content-type") ?? "";
-  const raw = (await response.text()).slice(0, maximumBytes);
-  return { raw, contentType };
-}
-
 async function fetchArticle(url: URL, fetchImpl: typeof fetch) {
   const cacheKey = url.toString();
   const cached = scanCache.get(cacheKey);

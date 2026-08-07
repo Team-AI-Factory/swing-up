@@ -66,7 +66,20 @@ const stubs = {
   "@/lib/ai-committee/provider": { getAiCommitteeProviderStatus: () => ({ configured: true, enabled: true }) },
   "@/lib/equity-signal/analysis": { buildImpactCandidates: (_receipts, _universe, _macro, _now, historicalSignals = []) => {
     const value = structuredClone(candidate);
-    if (historicalSignals.length >= 20) value.historicalAnalog = { ...value.historicalAnalog, available: true, strength: "strong", sampleSize: 20, selectedHorizon: "7D", medianDirectionAdjustedReturnPercent: 2.5, p25DirectionAdjustedReturnPercent: 0.8, p75DirectionAdjustedReturnPercent: 4, conservativeHitProbabilityPercent: 70, marketRelative: { sampleSize: 20, posteriorHitProbabilityPercent: 65 }, summary: "Twenty independent point-in-time outcomes." };
+    if (historicalSignals.length >= 5) value.historicalAnalog = {
+      ...value.historicalAnalog,
+      available: true,
+      strength: "strong",
+      sampleSize: historicalSignals.length,
+      selectedHorizon: "7D",
+      medianDirectionAdjustedReturnPercent: 2.5,
+      p25DirectionAdjustedReturnPercent: 0.8,
+      p75DirectionAdjustedReturnPercent: 4,
+      weightedHitRatePercent: 80,
+      conservativeHitProbabilityPercent: 70,
+      marketRelative: { sampleSize: historicalSignals.length, posteriorHitProbabilityPercent: 65 },
+      summary: "Independent point-in-time outcomes.",
+    };
     return { candidates: [value], diagnostics: { mappedRelationships: 1, eventClusters: 1, directCandidates: 1, rippleCandidates: 0 } };
   }, fingerprintCandidate: () => "event-fingerprint" },
   "@/lib/equity-signal/event-sources": { collectEventSources: async () => ({ providers: [provider("official_events")], receipts: [receipt], secFilingDetails: { selected: 0, enriched: 0, failed: 0 } }) },
@@ -77,6 +90,15 @@ const stubs = {
   },
   "@/lib/equity-signal/macro": { fetchMacroContext: async () => ({ context: { checkedAt: "2026-07-22T10:00:00.000Z", status: "connected", series: [], regime: ["normal"], historicalComparisonAvailable: false, errors: [] }, provider: { provider: "fred", status: "connected" } }) },
   "@/lib/equity-signal/market": { enrichCandidateQuotes: async (values) => ({ candidates: values, provider: provider("market_quote"), marketSnapshot: values.map((value) => value.quote).concat({ ticker: "SPY", price: 600, observedAt: "2026-07-22T10:00:00.000Z", source: "test benchmark" }), benchmarkTicker: "SPY", benchmarkQuote: { ticker: "SPY", price: 600, previousClose: 600, changePercent: 0, volume: 1000, averageVolume: null, marketCap: null, observedAt: "2026-07-22T10:00:00.000Z", source: "test benchmark", delayedMinutes: 0 } }) },
+  "@/lib/equity-signal/pilot-serious-signal-policy": { evaluateFiveCasePilotGate: (value) => {
+    const analog = value?.historicalAnalog ?? {};
+    const sample = Number(analog.sampleSize || 0);
+    const hitRate = Number(analog.weightedHitRatePercent || analog.hitRatePercent || 0);
+    const p25 = typeof analog.p25DirectionAdjustedReturnPercent === "number" ? analog.p25DirectionAdjustedReturnPercent : null;
+    const horizon = typeof analog.selectedHorizon === "string" ? analog.selectedHorizon : null;
+    const passed = sample >= 5 && hitRate >= 80 && analog.leakageSafe === true && horizon && p25 !== null && p25 >= 0;
+    return { passed: Boolean(passed), independentRealEventCount: sample, observedDirectionalHitRatePercent: hitRate, lowerQuartileDirectionAdjustedReturnPercent: p25, selectedHorizon: horizon, blockers: passed ? [] : ["Pilot 5 historical evidence is incomplete."], warning: "Pilot 5 is not equivalent to a 30-plus-sample certificate." };
+  } },
   "@/lib/equity-signal/universe": { loadEquityUniverse: async () => ({ snapshot: { scope: "active_us_exchange_listed_common_equities_and_adrs", refreshedAt: "2026-07-22T10:00:00.000Z", entries: [{ ticker: "EXM" }], coverage: { eligibleEquities: 7000 }, sources: [] }, cache: "test", refreshed: false, r2Write: false }) },
 };
 const cjsModule = { exports: {} };
@@ -97,18 +119,19 @@ assert.equal(held.liveSourcePolicy.postEventOnePercentMoveRequired, false);
 assert.equal(held.selectedCandidate.quote.changePercent, 0);
 assert.equal(held.status, "qualified_signal_openai_not_requested");
 
-const approved = await runEquitySignalLab({ now: new Date("2026-07-22T10:00:00.000Z"), allowOpenAi: true, beforeOpenAiCall: async () => true });
-assert.equal(approved.seriousSignalFound, true);
-assert.equal(approved.alertType, "buy");
-assert.equal(approved.actionableSignalFound, true);
-assert.equal(approved.selectedCandidate.priceForecast.status, "insufficient_history");
-assert.equal(approved.historicalLearning.historicalComparisonRequiredForSeriousSignal, false);
-assert.equal(approved.historicalLearning.findingsAndLaterOutcomesStoredInR2, true);
-assert.equal(approved.openAiCalled, true);
-assert.equal(approved.committee.finalJudge.confidence, 85);
-assert.equal(approved.databaseWrites, false);
-assert.equal(approved.publishing, false);
-assert.equal(approved.notifications, false);
+const blockedByPilot = await runEquitySignalLab({ now: new Date("2026-07-22T10:00:00.000Z"), allowOpenAi: true, beforeOpenAiCall: async () => true });
+assert.equal(blockedByPilot.seriousSignalFound, false);
+assert.equal(blockedByPilot.actionableSignalFound, false);
+assert.equal(blockedByPilot.alertType, null);
+assert.equal(blockedByPilot.status, "candidate_needs_more_data");
+assert.equal(blockedByPilot.historicalPilot.passed, false);
+assert.equal(blockedByPilot.selectedCandidate.priceForecast.status, "insufficient_history");
+assert.equal(blockedByPilot.historicalLearning.findingsAndLaterOutcomesStoredInR2, true);
+assert.equal(blockedByPilot.openAiCalled, true);
+assert.equal(blockedByPilot.committee.finalJudge.confidence, 85);
+assert.equal(blockedByPilot.databaseWrites, false);
+assert.equal(blockedByPilot.publishing, false);
+assert.equal(blockedByPilot.notifications, false);
 
 const calibratedHistory = Array.from({ length: 20 }, (_, index) => ({
   id: `history-${index}`,
@@ -120,10 +143,11 @@ const calibrated = await runEquitySignalLab({ now: new Date("2026-07-22T10:00:00
 assert.equal(calibrated.seriousSignalFound, true);
 assert.equal(calibrated.actionableSignalFound, true);
 assert.equal(calibrated.alertType, "buy");
+assert.equal(calibrated.historicalPilot.passed, true);
 assert.equal(calibrated.selectedCandidate.priceForecast.status, "calibrated");
 assert.equal(calibrated.selectedCandidate.priceForecast.horizon, "7D");
 assert.equal(calibrated.historicalLearning.realPointInTimeSignalsAvailable, 20);
 assert.equal(calibrated.historicalLearning.swingUpForwardSignalsAvailable, 15);
 assert.equal(calibrated.historicalLearning.publicBootstrapSignalsAvailable, 5);
 
-console.log(JSON.stringify({ ok: true, eventQualifiedAtZeroPercentMove: true, cryptoDisabled: true, priorMoveNotRequired: true, strictCommitteeStillRequired: true, buyWithoutHistoricalComparison: true, historyStillStoredAndRefined: true, buyAfterCalibration: true, noWritesOrPublishing: true }, null, 2));
+console.log(JSON.stringify({ ok: true, eventQualifiedAtZeroPercentMove: true, cryptoDisabled: true, priorMoveNotRequired: true, strictCommitteeStillRequired: true, pilotFiveBlocksWithoutHistory: true, historyStillStoredAndRefined: true, buyAfterPilotHistory: true, noWritesOrPublishing: true }, null, 2));

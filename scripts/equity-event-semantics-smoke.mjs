@@ -48,6 +48,8 @@ const universe = {
     entry("MAAI", "MID AMERICA APARTMENT COMMUNITIES INC.", ["Mid-America Apartment Communities"]),
     entry("CNMD", "CONMED Corp", ["Conmed"]),
     entry("CAPR", "Capricor Therapeutics Inc.", ["Capricor Therapeutics", "Capricor"]),
+    entry("NRSN", "NeuroSense Therapeutics Ltd.", ["NeuroSense Therapeutics", "NeuroSense"], "0001875091"),
+    entry("NRSNW", "NeuroSense Therapeutics Ltd.", ["NeuroSense Therapeutics", "NeuroSense"], "0001875091"),
     entry("TWST", "TWIST BIOSCIENCE CORP", ["Twist Bioscience"], "0001581280"),
     entry("DTST", "DATA STORAGE CORP", ["Data Storage"], "0001419951"),
     entry("ATKR", "ATKORE INC", ["Atkore"], "0001666138"),
@@ -966,6 +968,45 @@ assert.equal(fdaWatch?.eventFamily, "regulatory_advisory");
 assert.equal(fdaWatch?.direction, "downside");
 assert.equal(fdaWatch?.gatePassed, true);
 
+const healthCanadaApproval = build([receipt({
+  title: "6-K - NEUROSENSE THERAPEUTICS LTD. (0001875091) (Filer)",
+  summary: "Official filing content: Health Canada approves NeuroSense's treatment for marketing in Canada.",
+  url: "https://www.sec.gov/Archives/edgar/data/1875091/approval-6k-index.htm",
+  publisher: "U.S. Securities and Exchange Commission",
+  channel: "sec_current_filings",
+  companyHints: ["NEUROSENSE THERAPEUTICS LTD.", "CIK0001875091"],
+  rawEventType: "6-K",
+})]);
+assert.equal(healthCanadaApproval.candidates.some((item) => item.ticker === "NRSN" && item.eventFamily === "regulatory_approval"), true);
+assert.equal(healthCanadaApproval.candidates.some((item) => item.ticker === "NRSNW"), false);
+
+const preNdsFiling = build([receipt({
+  title: "6-K - NEUROSENSE THERAPEUTICS LTD. (0001875091) (Filer)",
+  summary: `Official filing content: NeuroSense completed the Pre-NDS process and targets a December 2026 filing with Health Canada. Health Canada will first screen the future application and, if accepted, conduct a scientific review. ${"The filing remains in preparation and no marketing decision has been made. ".repeat(28)} Background: the Phase 2b study met its prespecified primary endpoint. Health Canada-approved treatments already exist, and NeuroSense previously received FDA clearance to initiate a Phase 3 trial.`,
+  url: "https://www.sec.gov/Archives/edgar/data/1875091/pre-nds-6k-index.htm",
+  publisher: "U.S. Securities and Exchange Commission",
+  channel: "sec_current_filings",
+  companyHints: ["NEUROSENSE THERAPEUTICS LTD.", "CIK0001875091"],
+  rawEventType: "6-K",
+})]);
+assert.equal(preNdsFiling.candidates.some((item) => item.eventFamily === "regulatory_approval"), false);
+
+const trialClearance = build([receipt({
+  title: "NeuroSense receives FDA clearance to initiate a Phase 3 trial",
+  summary: "The clearance allows the clinical study to begin; the product is not approved for marketing.",
+  symbolHints: ["NRSN"],
+  companyHints: ["NeuroSense Therapeutics Ltd."],
+})]);
+assert.equal(trialClearance.candidates.some((item) => item.eventFamily === "regulatory_approval"), false);
+
+const deniedApproval = build([receipt({
+  title: "NeuroSense did not receive FDA approval for its treatment",
+  summary: "The application remains under review.",
+  symbolHints: ["NRSN"],
+  companyHints: ["NeuroSense Therapeutics Ltd."],
+})]);
+assert.equal(deniedApproval.candidates.some((item) => item.eventFamily === "regulatory_approval"), false);
+
 const unsupportedDilutionNumber = build([
   receipt({
     title: "Freedom Holding Corp. prices a primary offering",
@@ -1410,4 +1451,9 @@ console.log(JSON.stringify({
   investigationNotTreatedAsFinalEnforcement: true,
   exactIntelIssuerStillMapped: true,
   exactSingleTokenBrandStillMapped: true,
+  finalProductApprovalStillRecognized: true,
+  preSubmissionIsNotApproval: true,
+  trialClearanceIsNotProductApproval: true,
+  negatedApprovalIsNotProductApproval: true,
+  sameCikWarrantDoesNotReceiveIssuerEvent: true,
 }, null, 2));

@@ -51,6 +51,10 @@ const CURRENT_OFFERING_PRICE_LABEL = /\b(?:combined\s+)?(?:public offering price
 const FDA_ADVISORY_VOTE = /\b(?:fda|food and drug administration)\b.{0,180}\b(?:advisory (?:committee|panel)|panel)\b.{0,120}\b(?:votes?|voted|recommends?|recommended)\b|\b(?:fda\s+)?(?:advisory (?:committee|panel)|panel)\b.{0,120}\b(?:votes?|voted|recommends?|recommended)\b/i;
 const FDA_ADVISORY_DOWNSIDE = /\b(?:votes?|voted|recommends?|recommended)\s+(?:overwhelmingly\s+)?against\b|\b(?:insufficient|inadequate)\s+evidence\b|\b(?:does|do|did)\s+not\s+(?:support|demonstrate|show)\b|\bnot\s+(?:effective|efficacious)\b/i;
 const FDA_ADVISORY_UPSIDE = /\b(?:votes?|voted)\s+(?:overwhelmingly\s+)?in\s+favou?r\b|\brecommends?\s+approval\b|\bevidence\s+(?:supports?|demonstrates?|shows?)\s+(?:effectiveness|efficacy)\b/i;
+const FINAL_PRODUCT_REGULATORY_ACTION = /\b(?:fda|food and drug administration|health canada|european commission|ema|mhra)\b(?:\s+(?:has|today|formally|fully|conditionally|grants?\s+accelerated))*\s+(?:approves?|approved|authoriz(?:e|es|ed)|clears?|cleared|grants?\s+(?:accelerated\s+|full\s+|conditional\s+)?approval)\b|\b(?:receives?|received|wins?|won|secures?|secured|granted)\s+(?:(?:accelerated|full|conditional|marketing|emergency)\s+)?(?:approval|authorization|clearance)\s+(?:from|by)\s+(?:the\s+)?(?:fda|food and drug administration|health canada|european commission|ema|mhra)\b|\b(?:receives?|received|wins?|won|secures?|secured)\s+(?:fda|food and drug administration|health canada|ema|mhra)\s+(?:(?:accelerated|full|conditional|marketing|emergency)\s+)?(?:approval|authorization|clearance)\b/i;
+const TRIAL_OR_FILING_CLEARANCE_ONLY = /\b(?:clearance|authorization|agreement|alignment)\b.{0,80}\b(?:to\s+)?(?:initiate|begin|start|conduct|proceed with|file|submit|prepare)\b.{0,100}\b(?:trial|study|phase\s+(?:1|2|3|i|ii|iii)|application|submission|nda|nds|bla)\b|\b(?:pre[- ]?(?:nda|nds|bla|submission)|pre-submission)\b|\b(?:targets?|plans?|expects?|intends?)\b.{0,80}\b(?:filing|submission)\b/i;
+const NEGATED_FINAL_PRODUCT_ACTION = /\b(?:did|does|has|have|was|were|is|are)\s+not\b.{0,60}\b(?:approv|authoriz|clear|receiv)|\b(?:without|denied|declined|failed to secure|fails? to receive)\b.{0,60}\b(?:approval|authorization|clearance)\b/i;
+const POSITIVE_PIVOTAL_RESULT = /\bphase\s+(?:2b?|3|ii|iii)\b.{0,180}\b(?:met\s+(?:(?:its|the)\s+)?(?:(?:pre[- ]?specified|key)\s+)?primary\s+endpoint|positive\s+(?:top[- ]?line|pivotal)\s+results?|statistically\s+significant\s+(?:improvement|benefit).{0,50}\bprimary\s+endpoint)\b/i;
 const NON_FINAL_REGULATORY = /\b(investigation|investigating|subpoena|inquiry|proposed (?:fine|penalty|rule|order)|may fine|could fine)\b/i;
 const UNCERTAIN_REGULATORY = /\b(?:possible|potential|may|might|could|faces?|seeks?|seeking|considering|discussion|negotiation|under consideration|reportedly|expected to)\b.{0,60}\b(?:charges?|penalt(?:y|ies)|fines?|settlement|lawsuit|class i recall|recall|clinical hold|complete response letter|approval denial|approval denied|rejected application|final (?:enforcement )?order)\b|\b(?:charges?|penalt(?:y|ies)|fines?|settlement|lawsuit|class i recall|recall|clinical hold|complete response letter|approval denial|approval denied|rejected application|final (?:enforcement )?order)\b.{0,40}\b(?:possible|potential|proposed|expected|considered|under discussion|under negotiation|under consideration)\b/i;
 const FINAL_REGULATORY = /\b(final (?:enforcement )?(?:order|penalty|fine)|(?:sec|doj|ftc|regulator|government)\s+(?:charged|charges|sues)|lawsuit filed|settlement|agreed to pay|fined|class i recall|recall|clinical hold|complete response letter|approval denied|rejected application)\b/i;
@@ -505,6 +509,16 @@ function classify(receipt: EventReceipt): ClassifiedEvent {
     ? `${summary.slice(0, filingContentIndex)} ${summary.slice(filingContentIndex + filingMarker.length, filingContentIndex + filingMarker.length + 6_000)}`
     : summary;
   const value = `${titleValue} ${classificationSummary}`;
+  // Regulatory decisions are especially vulnerable to boilerplate. A filing
+  // about preparing an application can later mention already-approved drugs or
+  // an old clearance to start a trial. Only the current lead section may prove
+  // a final product decision or a genuinely positive pivotal readout.
+  const regulatoryLead = `${titleValue} ${classificationSummary.slice(0, 3_500)}`;
+  const pivotalResultLead = `${titleValue} ${classificationSummary.slice(0, 1_500)}`;
+  const finalProductAction = regulatoryLead.match(FINAL_PRODUCT_REGULATORY_ACTION);
+  const finalActionContext = finalProductAction?.index === undefined
+    ? ""
+    : regulatoryLead.slice(Math.max(0, finalProductAction.index - 100), finalProductAction.index + finalProductAction[0].length + 260);
   const rumour = RUMOUR.test(value) && !receipt.primarySource;
   const hit = (pattern: RegExp) => pattern.test(value);
   const titleHit = (pattern: RegExp) => pattern.test(titleValue);
@@ -526,7 +540,10 @@ function classify(receipt: EventReceipt): ClassifiedEvent {
     const direction = hit(FDA_ADVISORY_DOWNSIDE) ? "downside" : hit(FDA_ADVISORY_UPSIDE) ? "upside" : "unknown";
     return { family: "regulatory_advisory", direction, materiality: 90, transmission: 90, rumour, terms: ["material FDA advisory vote before a final agency decision"] };
   }
-  if (hit(/\b(fda|food and drug administration).{0,45}\b(approv(?:e|ed|al)|clearance|authoriz(?:e|ed|ation))\b|\b(phase (?:2|3|ii|iii)).{0,40}\b(met|positive|success)\b/)) return { family: "regulatory_approval", direction: "upside", materiality: 92, transmission: 94, rumour, terms: ["official approval or positive pivotal result"] };
+  if ((finalProductAction && !TRIAL_OR_FILING_CLEARANCE_ONLY.test(finalActionContext) && !NEGATED_FINAL_PRODUCT_ACTION.test(finalActionContext))
+    || POSITIVE_PIVOTAL_RESULT.test(pivotalResultLead)) {
+    return { family: "regulatory_approval", direction: "upside", materiality: 92, transmission: 94, rumour, terms: ["official product approval or positive pivotal result"] };
+  }
   if (hit(/\b(recall|clinical hold|complete response letter|approval denied|rejected application)\b/)) return { family: "regulatory_enforcement", direction: "downside", materiality: 90, transmission: 93, rumour, terms: ["regulatory setback or recall"] };
   // A signed transaction is the primary event even when an attached earnings
   // release also discusses litigation or other historical expenses.
@@ -605,7 +622,11 @@ function mapDirect(receipt: EventReceipt, index: ReturnType<typeof buildIndex>) 
   if (mapped.size > 0) return [...mapped.values()];
   const structuredCikHints = receipt.companyHints.flatMap((hint) => hint.match(/^CIK(\d{10})$/i)?.[1] ?? []);
   for (const cik of structuredCikHints) {
-    for (const equity of index.cik.get(cik) ?? []) mapped.set(equity.ticker, { equity, confidence: 100 });
+    const cikEntries = index.cik.get(cik) ?? [];
+    const primaryEntries = cikEntries.filter((candidate) => !cikEntries.some((other) =>
+      other.ticker !== candidate.ticker
+      && ["W", "WS", "WT", "R", "U"].some((suffix) => candidate.ticker === `${other.ticker}${suffix}`)));
+    for (const equity of primaryEntries) mapped.set(equity.ticker, { equity, confidence: 100 });
   }
   // The SEC CIK identifies the filer authoritatively. Text inside the filing
   // can name customers, targets, vendors, products, and competitors; none of

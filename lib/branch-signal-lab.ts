@@ -53,6 +53,9 @@ function providerCallRequest(value: RequestInfo | URL, now: Date): BranchProvide
     && url.searchParams.get("feed")?.toLowerCase() === "tradehalts") {
     return { ...base, provider: "nasdaq_trader", quotaKey: "nasdaq_trader_trade_halts", cadenceKey: "nasdaq_trader_trade_halts", rollingWindowMs: day, maximumCallsInWindow: 300, minimumIntervalMs: 4.5 * minute };
   }
+  if (host === "www.nyse.com" && path === "/api/trade-halts/current") {
+    return { ...base, provider: "nyse", quotaKey: "nyse_consolidated_trade_halts", cadenceKey: "nyse_consolidated_trade_halts", rollingWindowMs: day, maximumCallsInWindow: 300, minimumIntervalMs: 4.5 * minute };
+  }
   if (host === "www.nasdaqtrader.com") {
     return { ...base, provider: "nasdaq_trader", quotaKey: "nasdaq_trader_equity_universe", cadenceKey: `nasdaq_trader:${path}`, rollingWindowMs: day, maximumCallsInWindow: 4, minimumIntervalMs: 4.5 * minute };
   }
@@ -110,9 +113,9 @@ function providerCallRequest(value: RequestInfo | URL, now: Date): BranchProvide
   if (host === "api.fda.gov") {
     return { ...base, provider: "openfda", quotaKey: "openfda_public", cadenceKey: `openfda:${path}`, rollingWindowMs: day, maximumCallsInWindow: 4, minimumIntervalMs: 6 * 60 * minute };
   }
-  if (host === "query1.finance.yahoo.com") {
+  if (["query1.finance.yahoo.com", "query2.finance.yahoo.com"].includes(host)) {
     const ticker = decodeURIComponent(path.split("/").filter(Boolean).at(-1) ?? "unknown").toUpperCase();
-    return { ...base, provider: "yahoo_finance", quotaKey: "yahoo_public_chart_shortlist", cadenceKey: `yahoo_chart:${ticker}`, rollingWindowMs: day, maximumCallsInWindow: 1_000, minimumIntervalMs: 4.5 * minute };
+    return { ...base, provider: "yahoo_finance", quotaKey: "yahoo_public_chart_shortlist", cadenceKey: `yahoo_chart:${host}:${ticker}`, rollingWindowMs: day, maximumCallsInWindow: 1_000, minimumIntervalMs: 4.5 * minute };
   }
   if (["www.federalreserve.gov", "www.bls.gov", "apps.bea.gov", "home.treasury.gov", "www.whitehouse.gov", "www.commerce.gov", "ofac.treasury.gov", "www.bis.gov", "www.cisa.gov", "www.state.gov", "www.defense.gov"].includes(host)) {
     return { ...base, provider: "official_government_feed", quotaKey: "official_public_event_feeds", cadenceKey: `official_feed:${host}${path}`, rollingWindowMs: day, maximumCallsInWindow: 4_000, minimumIntervalMs: 4.5 * minute };

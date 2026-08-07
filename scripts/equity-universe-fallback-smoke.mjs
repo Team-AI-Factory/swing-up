@@ -37,6 +37,8 @@ const secPayload = JSON.stringify({
   data: [
     [320193, "Apple Inc.", "AAPL", "Nasdaq"],
     [789019, "Microsoft Corporation", "MSFT", "Nasdaq"],
+    [1875091, "NeuroSense Therapeutics Ltd.", "NRSN", "Nasdaq"],
+    [1875091, "NeuroSense Therapeutics Ltd.", "NRSNW", "Nasdaq"],
     [123456, "Example Preferred Stock", "PREF", "NYSE"],
     [987654, "Example S&P 500 ETF Fund", "FUND", "NYSE Arca"],
   ],
@@ -49,7 +51,7 @@ const secOnlyFetch = async (input) => {
 };
 const secOnly = await loadEquityUniverse(secOnlyFetch, new Date("2026-07-22T13:10:00.000Z"));
 assert.equal(secOnly.snapshot.constructionMode, "sec_official_fallback");
-assert.deepEqual(secOnly.snapshot.entries.map((item) => item.ticker), ["AAPL", "MSFT"]);
+assert.deepEqual(secOnly.snapshot.entries.map((item) => item.ticker), ["AAPL", "MSFT", "NRSN"]);
 assert.ok(secOnly.snapshot.entries.every((item) => item.cik));
 assert.equal(secOnly.snapshot.sources.filter((item) => item.status === "temporarily_unavailable").length, 2);
 
@@ -108,6 +110,44 @@ cachedUniverseObject = {
 };
 r2Configured = true;
 
+cachedUniverseObject = {
+  ...cachedUniverseObject,
+  refreshedAt: "2026-07-30T12:30:00.000Z",
+  entries: [
+    { ...cachedEntry("NRSN"), cik: "0001875091", sourceNames: ["SEC company_tickers_exchange"] },
+    { ...cachedEntry("NRSNW"), cik: "0001875091", sourceNames: ["SEC company_tickers_exchange"] },
+  ],
+  coverage: {
+    ...cachedUniverseObject.coverage,
+    nasdaqRows: 0,
+    otherExchangeRows: 0,
+    eligibleEquities: 2,
+    cikMapped: 2,
+  },
+};
+const sanitizedCache = await loadEquityUniverse(async () => new Response("should not fetch a fresh cache", { status: 500 }), new Date("2026-07-30T13:00:00.000Z"));
+assert.equal(sanitizedCache.cache, "cloudflare_r2");
+assert.deepEqual(sanitizedCache.snapshot.entries.map((item) => item.ticker), ["NRSN"]);
+assert.equal(sanitizedCache.snapshot.coverage.excludedByReason.ambiguous_sec_derivative_sibling, 1);
+
+cachedUniverseObject = {
+  version: 1,
+  scope: "active_us_exchange_listed_common_equities_and_adrs",
+  constructionMode: "nasdaq_plus_sec",
+  refreshedAt: "2026-07-20T13:00:00.000Z",
+  entries: ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF", "GGG", "HHH", "III", "JJJ"].map(cachedEntry),
+  coverage: {
+    nasdaqRows: 6,
+    otherExchangeRows: 4,
+    eligibleEquities: 10,
+    cikMapped: 10,
+    cikMappedPercent: 100,
+    adrCount: 0,
+    excludedByReason: {},
+  },
+  sources: [],
+};
+
 const truncatedOtherText = [
   "ACT Symbol|Security Name|Exchange|CQS Symbol|ETF|Round Lot Size|Test Issue|NASDAQ Symbol",
   "ZZZ|ZZZ Corporation|N|ZZZ|N|100|N|ZZZ",
@@ -163,4 +203,6 @@ console.log(JSON.stringify({
   boundedRetryCanUseRemainingDailyAllowance: true,
   downstreamCallsWaitForRequiredUniverse: true,
   sourceFailuresRemainVisible: true,
+  secOnlyDerivativeSiblingRejected: true,
+  cachedDerivativeSiblingSanitized: true,
 }, null, 2));

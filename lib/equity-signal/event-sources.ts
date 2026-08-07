@@ -16,6 +16,7 @@ const COMMERCE_NEWS_API_URL = "https://api.commerce.gov/api/news";
 const ALPHA_VANTAGE_URL = "https://www.alphavantage.co/query";
 const FEDERAL_REGISTER_URL = "https://www.federalregister.gov/api/v1/documents.json";
 const OPENFDA_URL = "https://api.fda.gov/drug/enforcement.json";
+const NYSE_TRADE_HALTS_URL = "https://www.nyse.com/api/trade-halts/current";
 const NASDAQ_TRADE_HALTS_URLS = [
   "https://m.nasdaqtrader.com/rss.aspx?feed=tradehalts",
   "https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts",
@@ -711,7 +712,74 @@ export async function fetchOpenFdaRecalls(fetchImpl: typeof fetch, now: Date): P
   }
 }
 
+function latestTradeHaltReceipts(receipts: EventReceipt[]) {
+  const latestBySymbol = new Map<string, EventReceipt>();
+  for (const receipt of receipts) {
+    const symbol = receipt.symbolHints[0];
+    if (!symbol) continue;
+    const existing = latestBySymbol.get(symbol);
+    const receiptResumed = receipt.rawEventType?.endsWith(":resumed") === true;
+    const existingResumed = existing?.rawEventType?.endsWith(":resumed") === true;
+    if (!existing
+      || Date.parse(receipt.publishedAt) > Date.parse(existing.publishedAt)
+      || (receipt.publishedAt === existing.publishedAt && receiptResumed && !existingResumed)) {
+      latestBySymbol.set(symbol, receipt);
+    }
+  }
+  return [...latestBySymbol.values()];
+}
+
 export async function fetchNasdaqTradeHalts(fetchImpl: typeof fetch, now: Date): Promise<ProviderResult> {
+  let nyseFailure: ReturnType<typeof publicFeedErrorCategory> | null = null;
+  try {
+    const { body } = await fetchText(fetchImpl, NYSE_TRADE_HALTS_URL, "application/json", NASDAQ_TRADE_HALTS_TIMEOUT_MS);
+    const json = JSON.parse(body) as { totalCount?: unknown; results?: { tradeHalts?: Array<Record<string, unknown>> } };
+    if (!json.results || !Array.isArray(json.results.tradeHalts)) throw new Error("invalid_trade_halt_payload");
+    const haltRows = json.results.tradeHalts;
+    const declaredCount = typeof json.totalCount === "number" && Number.isFinite(json.totalCount) ? json.totalCount : null;
+    if (declaredCount !== null && declaredCount > 0 && haltRows.length === 0) throw new Error("incomplete_trade_halt_payload");
+    const parsedReceipts = haltRows.flatMap((row): EventReceipt[] => {
+      const symbol = normalizeEquitySymbol(text(row.symbol, 20));
+      const company = text(row.issuerName, 180);
+      const exchange = text(row.sourceExchange, 80);
+      const reason = text(row.reason, 80);
+      const reasonCode = reason.toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 40);
+      const haltDate = text(row.formatedHaltDate, 10);
+      const haltTime = text(row.formatedHaltTime, 8) || "00:00:00";
+      const resumed = Boolean(text(row.formatedResumptionDate, 10) || text(row.formatedResumptionTime, 8));
+      const publishedAt = validDate(
+        haltDate ? `${haltDate}T${haltTime}Z` : "",
+        now,
+        resumed ? 3 * 24 * 60 * 60 * 1000 : NASDAQ_ACTIVE_HALT_MAX_AGE_MS,
+      );
+      if (!symbol || !publishedAt) return [];
+      return [makeReceipt({
+        title: `${symbol} ${resumed ? "trading halt resumed" : "official trading halt"}${reason ? ` (${reason})` : ""}`,
+        summary: `${company || symbol} is listed in the NYSE's official consolidated U.S. trade-halt service${exchange ? ` for ${exchange}` : ""}${reason ? ` with reason ${reason}` : ""}.${resumed ? " A resumption time is present." : " No resumption time is present."}`,
+        url: NYSE_TRADE_HALTS_URL,
+        publisher: "NYSE Trade Halt Service",
+        publishedAt,
+        channel: "nasdaq_trade_halts",
+        official: true,
+        primarySource: true,
+        scheduled: false,
+        symbolHints: [symbol],
+        companyHints: company ? [company] : [],
+        rawEventType: `halt:${reasonCode || "UNKNOWN"}:${resumed ? "resumed" : "active"}`,
+      })];
+    });
+    if (parsedReceipts.length !== haltRows.length) throw new Error("invalid_trade_halt_rows");
+    const receipts = latestTradeHaltReceipts(parsedReceipts);
+    return result({ provider: "nasdaq_trade_halts", status: "connected", checkedAt: now.toISOString(), sourceUrls: [NYSE_TRADE_HALTS_URL], receipts, recordsRead: receipts.length, entitlementVerified: true });
+  } catch (error) {
+    nyseFailure = publicFeedErrorCategory(error);
+    // A durable cadence decision is not a transport failure. Reuse the last
+    // authoritative snapshot rather than spend a second provider allowance.
+    if (nyseFailure.status === "not_due") {
+      return result({ provider: "nasdaq_trade_halts", status: nyseFailure.status, sourceUrls: [NYSE_TRADE_HALTS_URL], error: nyseFailure.error });
+    }
+  }
+
   const sourceUrl = NASDAQ_TRADE_HALTS_URLS[nasdaqTradeHaltEndpointIndex];
   try {
     const { body } = await fetchText(fetchImpl, sourceUrl, "application/rss+xml,text/xml", NASDAQ_TRADE_HALTS_TIMEOUT_MS);
@@ -747,21 +815,8 @@ export async function fetchNasdaqTradeHalts(fetchImpl: typeof fetch, now: Date):
         rawEventType: `halt:${reasonCode || "unknown"}:${resumed ? "resumed" : "active"}`,
       })];
     });
-    const latestBySymbol = new Map<string, EventReceipt>();
-    for (const receipt of parsedReceipts) {
-      const symbol = receipt.symbolHints[0];
-      if (!symbol) continue;
-      const existing = latestBySymbol.get(symbol);
-      const receiptResumed = receipt.rawEventType?.endsWith(":resumed") === true;
-      const existingResumed = existing?.rawEventType?.endsWith(":resumed") === true;
-      if (!existing
-        || Date.parse(receipt.publishedAt) > Date.parse(existing.publishedAt)
-        || (receipt.publishedAt === existing.publishedAt && receiptResumed && !existingResumed)) {
-        latestBySymbol.set(symbol, receipt);
-      }
-    }
-    const receipts = [...latestBySymbol.values()];
-    return result({ provider: "nasdaq_trade_halts", status: "connected", checkedAt: now.toISOString(), sourceUrls: [sourceUrl], receipts, recordsRead: receipts.length, entitlementVerified: true });
+    const receipts = latestTradeHaltReceipts(parsedReceipts);
+    return result({ provider: "nasdaq_trade_halts", status: "connected", checkedAt: now.toISOString(), sourceUrls: [NYSE_TRADE_HALTS_URL, sourceUrl], receipts, recordsRead: receipts.length, entitlementVerified: true });
   } catch (error) {
     const failure = publicFeedErrorCategory(error);
     // Do not issue a second request in this scan. Rotate the official hostname
@@ -770,7 +825,12 @@ export async function fetchNasdaqTradeHalts(fetchImpl: typeof fetch, now: Date):
     if (["temporarily_unavailable", "failed"].includes(failure.status)) {
       nasdaqTradeHaltEndpointIndex = (nasdaqTradeHaltEndpointIndex + 1) % NASDAQ_TRADE_HALTS_URLS.length;
     }
-    return result({ provider: "nasdaq_trade_halts", status: failure.status, sourceUrls: [sourceUrl], error: failure.error });
+    return result({
+      provider: "nasdaq_trade_halts",
+      status: failure.status,
+      sourceUrls: [NYSE_TRADE_HALTS_URL, sourceUrl],
+      error: [nyseFailure?.error, failure.error].filter(Boolean).join(" | ").slice(0, 320) || null,
+    });
   }
 }
 
@@ -789,7 +849,7 @@ export async function collectEventSources(
     { provider: "alpha_vantage_earnings_calendar", sourceUrls: [ALPHA_VANTAGE_URL], run: () => fetchAlphaEarningsCalendar(fetchImpl, now) },
     { provider: "federal_register", sourceUrls: [FEDERAL_REGISTER_URL], run: () => fetchFederalRegister(fetchImpl, now) },
     { provider: "openfda", sourceUrls: [OPENFDA_URL], run: () => fetchOpenFdaRecalls(fetchImpl, now) },
-    { provider: "nasdaq_trade_halts", sourceUrls: [...NASDAQ_TRADE_HALTS_URLS], run: () => fetchNasdaqTradeHalts(fetchImpl, now) },
+    { provider: "nasdaq_trade_halts", sourceUrls: [NYSE_TRADE_HALTS_URL, ...NASDAQ_TRADE_HALTS_URLS], run: () => fetchNasdaqTradeHalts(fetchImpl, now) },
   ];
   const timedTask = async (task: typeof tasks[number]) => {
     const startedAt = Date.now();

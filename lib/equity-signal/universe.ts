@@ -69,6 +69,38 @@ function securityClassification(name: string, etf: string, testIssue: string) {
   return { eligible: true as const, securityType: adr ? "adr" as const : "common_stock" as const };
 }
 
+function removeProbableSecDerivativeSiblings(entries: EquityUniverseEntry[]) {
+  return entries.filter((candidate) => {
+    if (!candidate.cik || candidate.sourceNames.some((source) => source.startsWith("Nasdaq Trader"))) return true;
+    return !entries.some((other) =>
+      other.cik === candidate.cik
+      && other.ticker !== candidate.ticker
+      && ["W", "WS", "WT", "R", "U"].some((suffix) => candidate.ticker === `${other.ticker}${suffix}`));
+  });
+}
+
+function sanitizeCachedSnapshot(snapshot: EquityUniverseSnapshot) {
+  const entries = removeProbableSecDerivativeSiblings(snapshot.entries);
+  if (entries.length === snapshot.entries.length) return snapshot;
+  const removed = snapshot.entries.length - entries.length;
+  const cikMapped = entries.filter((entry) => entry.cik).length;
+  return {
+    ...snapshot,
+    entries,
+    coverage: {
+      ...snapshot.coverage,
+      eligibleEquities: entries.length,
+      cikMapped,
+      cikMappedPercent: entries.length ? Math.round((cikMapped / entries.length) * 10_000) / 100 : 0,
+      adrCount: entries.filter((entry) => entry.securityType === "adr").length,
+      excludedByReason: {
+        ...snapshot.coverage.excludedByReason,
+        ambiguous_sec_derivative_sibling: (snapshot.coverage.excludedByReason.ambiguous_sec_derivative_sibling ?? 0) + removed,
+      },
+    },
+  };
+}
+
 function parsePipeDirectory(text: string, kind: "nasdaq" | "other"): ParsedDirectory {
   const lines = text.split(/\r?\n/).filter(Boolean);
   const headers = (lines.shift() ?? "").split("|").map((value) => value.trim());
@@ -151,7 +183,7 @@ function mergeEntries(nasdaq: ParsedDirectory, other: ParsedDirectory, secRows: 
       sourceNames: ["SEC company_tickers_exchange"],
     });
   }
-  return [...merged.values()].sort((left, right) => left.ticker.localeCompare(right.ticker));
+  return removeProbableSecDerivativeSiblings([...merged.values()]).sort((left, right) => left.ticker.localeCompare(right.ticker));
 }
 
 function emptyDirectory(): ParsedDirectory {
@@ -172,7 +204,7 @@ async function cachedSnapshot() {
     const snapshot = JSON.parse(object.text) as EquityUniverseSnapshot;
     if (!snapshot || snapshot.version !== 1 || !Array.isArray(snapshot.entries)) return { snapshot: null, etag: object.etag };
     if (!snapshot.constructionMode) snapshot.constructionMode = "nasdaq_plus_sec";
-    return { snapshot, etag: object.etag };
+    return { snapshot: sanitizeCachedSnapshot(snapshot), etag: object.etag };
   } catch {
     return { snapshot: null, etag: null };
   }

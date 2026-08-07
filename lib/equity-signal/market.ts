@@ -1,6 +1,9 @@
 import type { ImpactCandidate, MarketQuote, ProviderResult, ProviderStatus } from "@/lib/equity-signal/types";
 
-const YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart";
+const YAHOO_CHART_URLS = [
+  "https://query1.finance.yahoo.com/v8/finance/chart",
+  "https://query2.finance.yahoo.com/v8/finance/chart",
+] as const;
 const ALPHA_VANTAGE_URL = "https://www.alphavantage.co/query";
 const FMP_URL = "https://financialmodelingprep.com/stable/historical-price-eod/light";
 const CACHE_MS = 5 * 60 * 1000;
@@ -15,7 +18,11 @@ type CachedQuote = {
   attempted: string[];
 };
 
-const globalCache = globalThis as typeof globalThis & { __swingUpEquityQuotes?: Map<string, CachedQuote> };
+const globalCache = globalThis as typeof globalThis & {
+  __swingUpEquityQuotes?: Map<string, CachedQuote>;
+  __swingUpFmpNotEntitledUntil?: number;
+  __swingUpYahooPreferredChartHost?: number;
+};
 
 function number(value: unknown) {
   return typeof value === "number" && Number.isFinite(value)
@@ -53,8 +60,8 @@ function quoteSession(meta: Record<string, unknown>, observedEpoch: number) {
   return "unknown" as const;
 }
 
-async function yahooQuote(ticker: string, fetchImpl: typeof fetch, now: Date): Promise<MarketQuote> {
-  const url = new URL(`${YAHOO_CHART_URL}/${encodeURIComponent(ticker)}`);
+async function yahooQuoteFromHost(ticker: string, fetchImpl: typeof fetch, now: Date, baseUrl: string): Promise<MarketQuote> {
+  const url = new URL(`${baseUrl}/${encodeURIComponent(ticker)}`);
   url.searchParams.set("interval", "5m");
   url.searchParams.set("range", "1d");
   url.searchParams.set("events", "div,splits");
@@ -98,6 +105,22 @@ async function yahooQuote(ticker: string, fetchImpl: typeof fetch, now: Date): P
   };
 }
 
+async function yahooQuote(ticker: string, fetchImpl: typeof fetch, now: Date): Promise<MarketQuote> {
+  const errors: string[] = [];
+  const preferred = globalCache.__swingUpYahooPreferredChartHost === 1 ? 1 : 0;
+  const hostIndexes = [preferred, ...YAHOO_CHART_URLS.map((_, index) => index).filter((index) => index !== preferred)];
+  for (const hostIndex of hostIndexes) {
+    try {
+      const quote = await yahooQuoteFromHost(ticker, fetchImpl, now, YAHOO_CHART_URLS[hostIndex]);
+      globalCache.__swingUpYahooPreferredChartHost = hostIndex;
+      return quote;
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : "yahoo_request_failed");
+    }
+  }
+  throw new Error(errors.join(" | ").slice(0, 260));
+}
+
 async function alphaQuote(ticker: string, fetchImpl: typeof fetch, now: Date): Promise<MarketQuote> {
   const key = process.env.ALPHA_VANTAGE_API_KEY?.trim();
   if (!key) throw new Error("alpha_vantage_not_configured");
@@ -134,6 +157,7 @@ async function alphaQuote(ticker: string, fetchImpl: typeof fetch, now: Date): P
 async function fmpQuote(ticker: string, fetchImpl: typeof fetch, now: Date): Promise<MarketQuote> {
   const key = process.env.FMP_API_KEY?.trim();
   if (!key) throw new Error("fmp_not_configured");
+  if ((globalCache.__swingUpFmpNotEntitledUntil ?? 0) > now.getTime()) throw new Error("fmp_not_entitled_cached");
   const url = new URL(FMP_URL);
   url.searchParams.set("symbol", ticker);
   url.searchParams.set("from", new Date(now.getTime() - 15 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10));
@@ -141,7 +165,10 @@ async function fmpQuote(ticker: string, fetchImpl: typeof fetch, now: Date): Pro
   url.searchParams.set("apikey", key);
   const response = await fetchImpl(url, { headers: { Accept: "application/json" }, cache: "no-store", signal: AbortSignal.timeout(20_000) });
   const bodyText = await response.text();
-  if ([401, 402, 403].includes(response.status)) throw new Error(`fmp_not_entitled_http_${response.status}`);
+  if ([401, 402, 403].includes(response.status)) {
+    globalCache.__swingUpFmpNotEntitledUntil = now.getTime() + 24 * 60 * 60 * 1000;
+    throw new Error(`fmp_not_entitled_http_${response.status}`);
+  }
   if (!response.ok) throw new Error(`fmp_http_${response.status}`);
   const body = JSON.parse(bodyText) as unknown;
   const rows = Array.isArray(body) ? body.filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === "object" && !Array.isArray(row)) : [];
@@ -168,8 +195,9 @@ async function fmpQuote(ticker: string, fetchImpl: typeof fetch, now: Date): Pro
 }
 
 function failureStatus(errors: string[]): ProviderStatus {
-  if (errors.some((error) => /cadence_guard|rolling_quota_guard/.test(error))) return "not_due";
   if (errors.some((error) => /rate|429/.test(error))) return "rate_limited";
+  const deferred = errors.filter((error) => /cadence_guard|rolling_quota_guard/.test(error));
+  if (deferred.length === errors.length) return "not_due";
   if (errors.some((error) => /not_entitled|http_(?:401|402|403)/.test(error))) return "not_entitled";
   if (errors.every((error) => /not_configured/.test(error))) return "not_configured";
   return "temporarily_unavailable";
@@ -211,6 +239,19 @@ async function fetchOne(ticker: string, fetchImpl: typeof fetch, now: Date): Pro
   return result;
 }
 
+async function fetchBounded(tickers: string[], fetchImpl: typeof fetch, now: Date, concurrency = 2) {
+  const settled: Array<{ ticker: string; outcome: CachedQuote }> = [];
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(concurrency, tickers.length) }, async () => {
+    while (cursor < tickers.length) {
+      const ticker = tickers[cursor++];
+      settled.push({ ticker, outcome: await fetchOne(ticker, fetchImpl, now) });
+    }
+  });
+  await Promise.all(workers);
+  return settled;
+}
+
 export async function enrichCandidateQuotes(
   candidates: ImpactCandidate[],
   fetchImpl: typeof fetch,
@@ -225,12 +266,19 @@ export async function enrichCandidateQuotes(
   // A single fetched quote can serve several distinct current events for the
   // same ticker. Keep every candidate object and deduplicate only network calls.
   const shortlisted = [...qualified, ...shadow];
-  const eventTickers = [...new Set([
-    ...shortlisted.map((candidate) => candidate.ticker),
-    ...outcomeTickers.slice(0, MAX_OUTCOME_TICKERS).map(validTicker).filter((value): value is string => Boolean(value)),
-  ])];
-  const requestedTickers = eventTickers.length ? [...new Set([...eventTickers, BROAD_MARKET_BENCHMARK])] : [];
-  const settled = await Promise.all(requestedTickers.map(async (ticker) => ({ ticker, outcome: await fetchOne(ticker, fetchImpl, now) })));
+  const candidateTickers = [...new Set(shortlisted.map((candidate) => candidate.ticker))];
+  const outcomeOnlyTickers = [...new Set(outcomeTickers
+    .slice(0, MAX_OUTCOME_TICKERS)
+    .map(validTicker)
+    .filter((value): value is string => Boolean(value)))]
+    .filter((ticker) => !candidateTickers.includes(ticker));
+  const priorityTickers = candidateTickers.length || outcomeOnlyTickers.length
+    ? [...candidateTickers, BROAD_MARKET_BENCHMARK]
+    : [];
+  // Current candidates are safety-critical. Resolve them and the benchmark
+  // first, with bounded concurrency, before lower-priority outcome tracking.
+  const prioritySettled = await fetchBounded(priorityTickers, fetchImpl, now);
+  const settled = [...prioritySettled, ...await fetchBounded(outcomeOnlyTickers, fetchImpl, now)];
   const byTicker = new Map(settled.map((item) => [item.ticker, item.outcome]));
   for (const candidate of shortlisted) {
     candidate.quote = byTicker.get(candidate.ticker)?.quote ?? null;
@@ -243,7 +291,7 @@ export async function enrichCandidateQuotes(
     status: !settled.length ? "not_due" : connected.length ? "connected" : statuses.includes("not_entitled") ? "not_entitled" : statuses.includes("not_due") ? "not_due" : statuses[0] ?? "temporarily_unavailable",
     checkedAt: settled.length ? now.toISOString() : null,
     nextRetryAt: null,
-    sourceUrls: [YAHOO_CHART_URL, `${ALPHA_VANTAGE_URL}?function=GLOBAL_QUOTE`, FMP_URL],
+    sourceUrls: [...YAHOO_CHART_URLS, `${ALPHA_VANTAGE_URL}?function=GLOBAL_QUOTE`, FMP_URL],
     receipts: [],
     recordsRead: connected.length,
     error: settled.find((item) => item.outcome.error)?.outcome.error ?? null,

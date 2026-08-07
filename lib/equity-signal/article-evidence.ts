@@ -247,7 +247,9 @@ export async function buildArticleEvidenceReport(input: {
   maximumArticles?: number;
 }) {
   const fetchImpl = input.fetchImpl ?? fetch;
-  const maximumArticles = Math.max(1, Math.min(input.maximumArticles ?? MAX_ARTICLES, 20));
+  // General scans still default to 12. A dedicated high-priority lane may request
+  // up to 40 decision-relevant pages after cheap broad discovery has ranked them.
+  const maximumArticles = Math.max(1, Math.min(input.maximumArticles ?? MAX_ARTICLES, 40));
   const orderedCandidates = [input.selectedCandidate, ...input.candidates].filter(Boolean);
   const uniqueCandidates = [...new Map(orderedCandidates.map((candidate) => [candidateKey(candidate), candidate])).values()].filter((candidate) => candidateKey(candidate).split("|")[0]);
   const reports = new Map<string, CandidateArticleEvidence>();

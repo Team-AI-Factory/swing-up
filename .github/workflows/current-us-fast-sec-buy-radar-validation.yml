@@ -1,0 +1,55 @@
+name: Current US Fast SEC Buy Radar Validation
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  validate:
+    name: Validate fast official SEC Buy lane
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.head_ref == 'agent/combined-opportunity-engine'
+    steps:
+      - name: Check out isolated branch
+        uses: actions/checkout@v4
+      - name: Refuse main branch execution
+        shell: bash
+        run: |
+          branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          test "${branch}" != "main"
+          test "${branch}" = "agent/combined-opportunity-engine"
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit --fund=false
+      - name: Typecheck and build
+        run: |
+          npm run typecheck
+          npm run build
+      - name: Verify fast SEC first-mover policy in source
+        shell: bash
+        run: |
+          grep -q 'officialSecOnly: true' lib/opportunity-engine/us-fast-sec-buy-radar.ts
+          grep -q 'noPaidNewsApi: true' lib/opportunity-engine/us-fast-sec-buy-radar.ts
+          grep -q 'discoveryBeforePrice: true' lib/opportunity-engine/us-fast-sec-buy-radar.ts
+          grep -q 'priceMoveRequiredForDiscovery: false' lib/opportunity-engine/us-fast-sec-buy-radar.ts
+          grep -q 'actualFilingAndExhibitsRequired: true' lib/opportunity-engine/us-fast-sec-buy-radar.ts
+          grep -q 'FAST_FORMS = \["8-K", "6-K"\]' lib/opportunity-engine/us-fast-sec-buy-radar.ts
+          grep -q 'SWING_UP_BRANCH_LAB_FAST_SEC_INTERVAL_SECONDS", 60' scripts/railway-branch-worker-resumable.mjs
+      - name: Wait for exact Railway deployment and fresh fast SEC Buy radar
+        env:
+          COMBINED_ENGINE_RAILWAY_URL: https://swing-up-swing-up-pr-262.up.railway.app
+          EXPECTED_BRANCH_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+          CURRENT_US_FAST_SEC_BUY_REPORT_PATH: artifacts/current-us-fast-sec-buy-report.json
+        run: node scripts/current-us-fast-sec-buy-radar-live-smoke.mjs
+      - name: Upload current fast SEC Buy radar report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: current-us-fast-sec-buy-radar-report
+          path: artifacts/current-us-fast-sec-buy-report.json
+          if-no-files-found: warn
+          retention-days: 30

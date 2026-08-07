@@ -518,6 +518,18 @@ await marketLoaded.exports.enrichCandidateQuotes(preferredHostCandidate, async (
 assert.equal(preferredHostCandidate[0].quote?.price, 12);
 assert.deepEqual(preferredHostCalls.filter((value) => value.endsWith(":NXTT")), ["query2.finance.yahoo.com:NXTT"]);
 
+const boundedFailureCalls = [];
+const boundedFailureCandidates = ["FLA", "FLB", "FLC"].map((ticker) => ({ ticker, direction: "upside", pricedInPenalty: 0, gatePassed: true, trackingDisposition: "qualified", quote: null, rootEventKey: `bounded-failure-${ticker}` }));
+await marketLoaded.exports.enrichCandidateQuotes(boundedFailureCandidates, async (value) => {
+  const url = new URL(String(value));
+  const ticker = url.pathname.split("/").at(-1);
+  boundedFailureCalls.push(`${url.hostname}:${ticker}`);
+  throw new Error("bounded Yahoo transport timeout");
+}, new Date(now.getTime() + 2 * 60_000));
+assert.equal(boundedFailureCandidates.every((candidate) => candidate.quote === null), true);
+assert.deepEqual(boundedFailureCalls.filter((value) => value.endsWith(":FLC")), []);
+assert.ok(boundedFailureCalls.length <= 4);
+
 console.log(JSON.stringify({
   ok: true,
   broadSecFeedPlusRotatingUrgentFeed: true,
@@ -544,4 +556,5 @@ console.log(JSON.stringify({
   extendedHoursQuoteAnchorsAreUsed: true,
   yahooSecondHostQuoteFallbackWorks: true,
   healthyYahooHostPreferenceIsReused: true,
+  failedYahooHostsAreTriedOncePerBoundedWorkerBatch: true,
 }, null, 2));

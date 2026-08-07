@@ -22,6 +22,7 @@ const globalCache = globalThis as typeof globalThis & {
   __swingUpEquityQuotes?: Map<string, CachedQuote>;
   __swingUpFmpNotEntitledUntil?: number;
   __swingUpYahooPreferredChartHost?: number;
+  __swingUpYahooChartHostRetryAfter?: [number, number];
 };
 
 function number(value: unknown) {
@@ -109,13 +110,24 @@ async function yahooQuote(ticker: string, fetchImpl: typeof fetch, now: Date): P
   const errors: string[] = [];
   const preferred = globalCache.__swingUpYahooPreferredChartHost === 1 ? 1 : 0;
   const hostIndexes = [preferred, ...YAHOO_CHART_URLS.map((_, index) => index).filter((index) => index !== preferred)];
+  const retryAfter = globalCache.__swingUpYahooChartHostRetryAfter ??= [0, 0];
   for (const hostIndex of hostIndexes) {
+    if (retryAfter[hostIndex] > now.getTime()) {
+      errors.push(`yahoo_host_${hostIndex + 1}_scan_backoff`);
+      continue;
+    }
     try {
       const quote = await yahooQuoteFromHost(ticker, fetchImpl, now, YAHOO_CHART_URLS[hostIndex]);
       globalCache.__swingUpYahooPreferredChartHost = hostIndex;
+      retryAfter[hostIndex] = 0;
       return quote;
     } catch (error) {
       errors.push(error instanceof Error ? error.message : "yahoo_request_failed");
+      // Every ticker in this invocation shares the same durable allowance and
+      // network path. After one bounded worker observes a failure, later
+      // outcome tickers skip that host for this scan. The next five-minute scan
+      // receives a fresh attempt; current candidate coverage is never disabled.
+      retryAfter[hostIndex] = now.getTime() + 60_000;
     }
   }
   throw new Error(errors.join(" | ").slice(0, 260));

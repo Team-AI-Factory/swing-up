@@ -820,7 +820,7 @@ export async function fetchNasdaqTradeHalts(fetchImpl: typeof fetch, now: Date):
     return result({ provider: "nasdaq_trade_halts", status: "connected", checkedAt: now.toISOString(), sourceUrls: [NYSE_TRADE_HALTS_URL, sourceUrl], receipts, recordsRead: receipts.length, entitlementVerified: true });
   } catch (error) {
     const failure = publicFeedErrorCategory(error);
-    const status = failure.status === "not_due" && nyseFailure && nyseFailure.status !== "not_due"
+    const status = failure.status === "not_due" && nyseFailure
       ? nyseFailure.status
       : failure.status;
     // Do not issue a second request in this scan. Rotate the official hostname

@@ -27,6 +27,9 @@ const deepRunTimeoutMs = fastSmoke
 const fastSecBuyTimeoutMs = fastSmoke
   ? 2_000
   : configuredDelayMs("SWING_UP_BRANCH_LAB_FAST_SEC_BUY_TIMEOUT_SECONDS", 45, 60_000);
+const relationshipBackfillTimeoutMs = fastSmoke
+  ? 2_000
+  : configuredDelayMs("SWING_UP_BRANCH_LAB_RELATIONSHIP_BACKFILL_TIMEOUT_SECONDS", 90, 120_000);
 const prePriceBuyTimeoutMs = fastSmoke
   ? 2_000
   : configuredDelayMs("SWING_UP_BRANCH_LAB_PREPRICE_BUY_TIMEOUT_SECONDS", 180, 240_000);
@@ -45,6 +48,7 @@ const signalOperationsTimeoutMs = fastSmoke
 
 const deepRouteUrl = `http://127.0.0.1:${port}/api/internal/railway-branch-signal-lab`;
 const fastSecBuyRouteUrl = `http://127.0.0.1:${port}/api/internal/combined-opportunity-engine/us-fast-sec-buy-radar`;
+const relationshipBackfillRouteUrl = `http://127.0.0.1:${port}/api/internal/combined-opportunity-engine/strategic-relationship-backfill`;
 const prePriceBuyRouteUrl = `http://127.0.0.1:${port}/api/internal/combined-opportunity-engine/us-preprice-buy-radar`;
 const watchOutRouteUrl = `http://127.0.0.1:${port}/api/internal/combined-opportunity-engine/us-watch-out-scan`;
 const valueBatchRouteUrl = `http://127.0.0.1:${port}/api/internal/combined-opportunity-engine/us-value-batch`;
@@ -129,6 +133,29 @@ async function triggerFastSecBuyRadar() {
     reportStatus: seriousBuyCount > 0 ? "fast_sec_serious_buy_found" : buyCandidateCount > 0 ? "fast_sec_buy_candidates_found" : "no_fast_sec_buy",
     failureScope: result.response.ok ? null : "fast_sec_buy_radar",
     technicalFailureFingerprint: result.response.ok ? null : `fast_sec_buy_radar_http_${result.response.status}`,
+  });
+}
+
+async function triggerRelationshipBackfill() {
+  const result = await callLane({
+    lane: "relationship_backfill",
+    url: relationshipBackfillRouteUrl,
+    timeoutMs: relationshipBackfillTimeoutMs,
+    logLimit: 10_000,
+  });
+  const relationshipsFound = Array.isArray(result.report?.relationshipsFound) ? result.report.relationshipsFound.length : 0;
+  tellSupervisor({
+    type: "relationship_backfill_finished",
+    sequence,
+    status: result.response.status,
+    durationMs: result.durationMs,
+    companiesAttempted: result.report?.coverage?.companiesAttempted ?? 0,
+    companiesWithRelationships: result.report?.coverage?.companiesWithRelationships ?? 0,
+    relationshipsAddedOrUpdated: result.report?.coverage?.relationshipsAddedOrUpdated ?? 0,
+    nextIndex: result.report?.coverage?.nextIndex ?? null,
+    reportStatus: relationshipsFound > 0 ? "strategic_relationships_learned" : "no_new_strategic_relationships",
+    failureScope: result.response.ok ? null : "relationship_backfill",
+    technicalFailureFingerprint: result.response.ok ? null : `relationship_backfill_http_${result.response.status}`,
   });
 }
 
@@ -304,12 +331,15 @@ async function runNonBlockingLane(name, work) {
 
 async function triggerRun() {
   sequence += 1;
-  // The broad source-first lane starts before reaction-based Buy lanes. Watch Out
-  // scanning runs at the same time so Buy priority never removes danger coverage.
+  // Pre-learn strategic relationships before scanning the newest broad sources.
+  // This allows an Anthropic/OpenAI/private-company catalyst to map back to an
+  // already analysed public investor/customer before that public ticker appears
+  // in the new headline. Watch Out runs in parallel so safety coverage is not delayed.
   await Promise.all([
-    runNonBlockingLane("preprice_buy_radar", triggerPrePriceBuyRadar),
+    runNonBlockingLane("relationship_backfill", triggerRelationshipBackfill),
     runNonBlockingLane("watch_out_scan", triggerWatchOutScan),
   ]);
+  await runNonBlockingLane("preprice_buy_radar", triggerPrePriceBuyRadar);
   await runNonBlockingLane("value_batch", triggerValueBatch);
   // Reaction-based earnings detection remains only as a redundant fallback lane.
   await runNonBlockingLane("earnings_buy_radar", triggerEarningsBuyRadar);
@@ -330,12 +360,13 @@ async function fastSecLoop() {
 async function main() {
   if (!runtimeToken) throw new Error("branch_lab_runtime_token_missing");
   if (!(await waitForHealth())) throw new Error("branch_lab_health_timeout");
-  console.log(`[swing-up-branch-worker] dedicated worker active; official SEC Buy polling=${Math.round(fastSecPollMs / 1000)}s, broad live polling=${Math.round(normalPollMs / 1000)}s, technical retry=${Math.round(technicalRetryMs / 1000)}s, fast-sec timeout=${Math.round(fastSecBuyTimeoutMs / 1000)}s, preprice-buy timeout=${Math.round(prePriceBuyTimeoutMs / 1000)}s, watch-out timeout=${Math.round(watchOutTimeoutMs / 1000)}s, value-batch timeout=${Math.round(valueBatchTimeoutMs / 1000)}s, earnings-buy fallback timeout=${Math.round(earningsBuyTimeoutMs / 1000)}s, signal-operations timeout=${Math.round(signalOperationsTimeoutMs / 1000)}s, deep-run timeout=${Math.round(deepRunTimeoutMs / 1000)}s, transport=loopback, state=Cloudflare R2.`);
+  console.log(`[swing-up-branch-worker] dedicated worker active; official SEC Buy polling=${Math.round(fastSecPollMs / 1000)}s, broad live polling=${Math.round(normalPollMs / 1000)}s, technical retry=${Math.round(technicalRetryMs / 1000)}s, fast-sec timeout=${Math.round(fastSecBuyTimeoutMs / 1000)}s, relationship-backfill timeout=${Math.round(relationshipBackfillTimeoutMs / 1000)}s, preprice-buy timeout=${Math.round(prePriceBuyTimeoutMs / 1000)}s, watch-out timeout=${Math.round(watchOutTimeoutMs / 1000)}s, value-batch timeout=${Math.round(valueBatchTimeoutMs / 1000)}s, earnings-buy fallback timeout=${Math.round(earningsBuyTimeoutMs / 1000)}s, signal-operations timeout=${Math.round(signalOperationsTimeoutMs / 1000)}s, deep-run timeout=${Math.round(deepRunTimeoutMs / 1000)}s, transport=loopback, state=Cloudflare R2.`);
   tellSupervisor({
     type: "ready",
     sequence,
     fastSecBuyIntervalSeconds: Math.round(fastSecPollMs / 1000),
     fastSecBuyTimeoutSeconds: Math.round(fastSecBuyTimeoutMs / 1000),
+    relationshipBackfillTimeoutSeconds: Math.round(relationshipBackfillTimeoutMs / 1000),
     prePriceBuyTimeoutSeconds: Math.round(prePriceBuyTimeoutMs / 1000),
     watchOutTimeoutSeconds: Math.round(watchOutTimeoutMs / 1000),
     valueBatchTimeoutSeconds: Math.round(valueBatchTimeoutMs / 1000),

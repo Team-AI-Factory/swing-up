@@ -23,6 +23,7 @@ const NASDAQ_TRADE_HALTS_URLS = [
   "https://nasdaqtrader.com/rss.aspx?feed=tradehalts",
 ] as const;
 const NASDAQ_TRADE_HALTS_CANONICAL_URL = NASDAQ_TRADE_HALTS_URLS[1];
+const NYSE_TRADE_HALTS_TIMEOUT_MS = 20_000;
 const NASDAQ_TRADE_HALTS_TIMEOUT_MS = 12_000;
 const NASDAQ_ACTIVE_HALT_MAX_AGE_MS = 10 * 365 * 24 * 60 * 60 * 1000;
 const SEC_FORMS = ["8-K", "6-K", "424B5", "424B3", "10-Q", "10-K", "S-1", "S-3", "SC 13D", "SC 13G", "4"] as const;
@@ -732,7 +733,7 @@ function latestTradeHaltReceipts(receipts: EventReceipt[]) {
 export async function fetchNasdaqTradeHalts(fetchImpl: typeof fetch, now: Date): Promise<ProviderResult> {
   let nyseFailure: ReturnType<typeof publicFeedErrorCategory> | null = null;
   try {
-    const { body } = await fetchText(fetchImpl, NYSE_TRADE_HALTS_URL, "application/json", NASDAQ_TRADE_HALTS_TIMEOUT_MS);
+    const { body } = await fetchText(fetchImpl, NYSE_TRADE_HALTS_URL, "application/json", NYSE_TRADE_HALTS_TIMEOUT_MS);
     const json = JSON.parse(body) as { totalCount?: unknown; results?: { tradeHalts?: Array<Record<string, unknown>> } };
     if (!json.results || !Array.isArray(json.results.tradeHalts)) throw new Error("invalid_trade_halt_payload");
     const haltRows = json.results.tradeHalts;
@@ -819,6 +820,9 @@ export async function fetchNasdaqTradeHalts(fetchImpl: typeof fetch, now: Date):
     return result({ provider: "nasdaq_trade_halts", status: "connected", checkedAt: now.toISOString(), sourceUrls: [NYSE_TRADE_HALTS_URL, sourceUrl], receipts, recordsRead: receipts.length, entitlementVerified: true });
   } catch (error) {
     const failure = publicFeedErrorCategory(error);
+    const status = failure.status === "not_due" && nyseFailure && nyseFailure.status !== "not_due"
+      ? nyseFailure.status
+      : failure.status;
     // Do not issue a second request in this scan. Rotate the official hostname
     // only after an endpoint failure, for the next scheduled invocation. A
     // cadence or quota decision is not evidence that the hostname failed.
@@ -827,7 +831,7 @@ export async function fetchNasdaqTradeHalts(fetchImpl: typeof fetch, now: Date):
     }
     return result({
       provider: "nasdaq_trade_halts",
-      status: failure.status,
+      status,
       sourceUrls: [NYSE_TRADE_HALTS_URL, sourceUrl],
       error: [nyseFailure?.error, failure.error].filter(Boolean).join(" | ").slice(0, 320) || null,
     });

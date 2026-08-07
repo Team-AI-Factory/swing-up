@@ -221,6 +221,14 @@ assert.equal(incompleteHaltCalls, 2);
 assert.equal(incompleteTradeHalts.status, "connected");
 assert.equal(incompleteTradeHalts.receipts.length, 3);
 
+const maskedPrimaryFailure = await fetchNasdaqTradeHalts(async (value) => {
+  const url = new URL(String(value));
+  if (url.hostname === "www.nyse.com") throw new Error("NYSE transport timeout");
+  throw new Error("nasdaq_trader_cadence_guard");
+}, now);
+assert.equal(maskedPrimaryFailure.status, "temporarily_unavailable");
+assert.match(maskedPrimaryFailure.error, /NYSE transport timeout/);
+
 let haltMode = "active";
 const haltUrls = [];
 const collectionFetch = async (value) => {
@@ -389,6 +397,7 @@ assert.equal(commerceMalformed.error, "invalid_commerce_payload");
 assert.doesNotMatch(source, /www\.commerce\.gov\/feeds\/news/);
 assert.match(quotaSource, /host === "api\.commerce\.gov"[\s\S]{0,240}quotaKey: "commerce_demo_key_50_daily"[\s\S]{0,180}maximumCallsInWindow: 48, minimumIntervalMs: 29 \* minute/);
 assert.match(source, /const NASDAQ_TRADE_HALTS_TIMEOUT_MS = 12_000/);
+assert.match(source, /const NYSE_TRADE_HALTS_TIMEOUT_MS = 20_000/);
 assert.match(source, /https:\/\/www\.nyse\.com\/api\/trade-halts\/current/);
 assert.match(source, /https:\/\/m\.nasdaqtrader\.com\/rss\.aspx\?feed=tradehalts/);
 assert.match(source, /https:\/\/www\.nasdaqtrader\.com\/rss\.aspx\?feed=tradehalts/);
@@ -399,7 +408,7 @@ assert.match(
   /\["m\.nasdaqtrader\.com", "www\.nasdaqtrader\.com", "nasdaqtrader\.com"\]\.includes\(host\)[\s\S]{0,300}quotaKey: "nasdaq_trader_trade_halts"[\s\S]{0,120}cadenceKey: "nasdaq_trader_trade_halts"/,
 );
 assert.match(quotaSource, /host === "www\.nyse\.com" && path === "\/api\/trade-halts\/current"[\s\S]{0,280}quotaKey: "nyse_consolidated_trade_halts"/);
-assert.match(quotaSource, /\["query1\.finance\.yahoo\.com", "query2\.finance\.yahoo\.com"\]\.includes\(host\)[\s\S]{0,320}cadenceKey: `yahoo_chart:\$\{host\}:\$\{ticker\}`/);
+assert.match(quotaSource, /\["query1\.finance\.yahoo\.com", "query2\.finance\.yahoo\.com"\]\.includes\(host\)[\s\S]{0,420}quotaKey: secondaryHost \? "yahoo_public_chart_secondary" : "yahoo_public_chart_shortlist"[\s\S]{0,220}cadenceKey: `yahoo_chart:\$\{host\}:\$\{ticker\}`/);
 assert.match(source, /const SEC_PRIORITY_FORM_ROTATION = \["8-K", "6-K", "424B5", "8-K", "6-K", "424B3"\]/);
 assert.match(quotaSource, /\["ALL", "8-K", "6-K", "424B5", "424B3"\]\.includes\(form\)[\s\S]{0,220}maximumCallsInWindow: 900/);
 assert.match(quotaSource, /secArchiveHost && path\.startsWith\("\/archives\/edgar\/data\/"\)[\s\S]{0,620}cadenceKey: `sec_filing_detail:\$\{path\}`[\s\S]{0,180}maximumCallsInWindow: 1_800, minimumIntervalMs: 59 \* minute/);
@@ -521,6 +530,7 @@ console.log(JSON.stringify({
   nyseConsolidatedHaltSourceIsPrimary: true,
   nasdaqHaltFeedIsBoundedFallback: true,
   incompleteHaltSnapshotCannotClearSafetyState: true,
+  haltPrimaryFailureCannotBeMaskedAsNotDue: true,
   nasdaqHaltSnapshotCacheUsesCheckTime: true,
   nasdaqEmptySnapshotClearsActiveCache: true,
   olderActiveHaltsRemainSafetyState: true,

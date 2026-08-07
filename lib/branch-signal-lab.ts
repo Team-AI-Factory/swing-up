@@ -115,7 +115,8 @@ function providerCallRequest(value: RequestInfo | URL, now: Date): BranchProvide
   }
   if (["query1.finance.yahoo.com", "query2.finance.yahoo.com"].includes(host)) {
     const ticker = decodeURIComponent(path.split("/").filter(Boolean).at(-1) ?? "unknown").toUpperCase();
-    return { ...base, provider: "yahoo_finance", quotaKey: "yahoo_public_chart_shortlist", cadenceKey: `yahoo_chart:${host}:${ticker}`, rollingWindowMs: day, maximumCallsInWindow: 1_000, minimumIntervalMs: 4.5 * minute };
+    const secondaryHost = host === "query2.finance.yahoo.com";
+    return { ...base, provider: "yahoo_finance", quotaKey: secondaryHost ? "yahoo_public_chart_secondary" : "yahoo_public_chart_shortlist", cadenceKey: `yahoo_chart:${host}:${ticker}`, rollingWindowMs: day, maximumCallsInWindow: 1_000, minimumIntervalMs: 4.5 * minute };
   }
   if (["www.federalreserve.gov", "www.bls.gov", "apps.bea.gov", "home.treasury.gov", "www.whitehouse.gov", "www.commerce.gov", "ofac.treasury.gov", "www.bis.gov", "www.cisa.gov", "www.state.gov", "www.defense.gov"].includes(host)) {
     return { ...base, provider: "official_government_feed", quotaKey: "official_public_event_feeds", cadenceKey: `official_feed:${host}${path}`, rollingWindowMs: day, maximumCallsInWindow: 4_000, minimumIntervalMs: 4.5 * minute };

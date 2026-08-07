@@ -1,0 +1,57 @@
+name: Current US Pre-Price Buy Radar Validation
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  validate:
+    name: Validate source-first pre-price Buy radar
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.head_ref == 'agent/combined-opportunity-engine'
+    steps:
+      - name: Check out isolated branch
+        uses: actions/checkout@v4
+      - name: Refuse main branch execution
+        shell: bash
+        run: |
+          branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          test "${branch}" != "main"
+          test "${branch}" = "agent/combined-opportunity-engine"
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit --fund=false
+      - name: Typecheck and build
+        run: |
+          npm run typecheck
+          npm run build
+      - name: Verify leading-indicator Buy policy in source
+        shell: bash
+        run: |
+          grep -q 'sourceFirst: true' lib/opportunity-engine/us-preprice-buy-radar.ts
+          grep -q 'secFilingsFirst: true' lib/opportunity-engine/us-preprice-buy-radar.ts
+          grep -q 'issuerAndNewsBeforePrice: true' lib/opportunity-engine/us-preprice-buy-radar.ts
+          grep -q 'priceMovementRequiredForDiscovery: false' lib/opportunity-engine/us-preprice-buy-radar.ts
+          grep -q 'fullContentRequired: true' lib/opportunity-engine/us-preprice-buy-radar.ts
+          grep -q 'strategicOptionalityIncluded: true' lib/opportunity-engine/us-preprice-buy-radar.ts
+          grep -q 'unquantifiedStrategicRevenueAddedToBaseFairValue: false' lib/opportunity-engine/us-preprice-buy-radar.ts
+          grep -q 'recurringOperatingProfitSeparatedFromInvestmentGains: true' lib/opportunity-engine/strategic-optionality.ts
+          grep -q 'doubleCountingGuard: true' lib/opportunity-engine/strategic-optionality.ts
+      - name: Wait for exact Railway deployment and fresh source-first Buy radar
+        env:
+          COMBINED_ENGINE_RAILWAY_URL: https://swing-up-swing-up-pr-262.up.railway.app
+          EXPECTED_BRANCH_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+          CURRENT_US_PREPRICE_BUY_RADAR_REPORT_PATH: artifacts/current-us-preprice-buy-radar-report.json
+        run: node scripts/current-us-preprice-buy-radar-live-smoke.mjs
+      - name: Upload current source-first Buy radar report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: current-us-preprice-buy-radar-report
+          path: artifacts/current-us-preprice-buy-radar-report.json
+          if-no-files-found: warn
+          retention-days: 30

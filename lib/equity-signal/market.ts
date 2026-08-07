@@ -207,12 +207,28 @@ async function fmpQuote(ticker: string, fetchImpl: typeof fetch, now: Date): Pro
 }
 
 function failureStatus(errors: string[]): ProviderStatus {
-  if (errors.some((error) => /rate|429/.test(error))) return "rate_limited";
   const deferred = errors.filter((error) => /cadence_guard|rolling_quota_guard/.test(error));
   if (deferred.length === errors.length) return "not_due";
-  if (errors.some((error) => /not_entitled|http_(?:401|402|403)/.test(error))) return "not_entitled";
   if (errors.every((error) => /not_configured/.test(error))) return "not_configured";
+  // This is a fallback chain, so one adapter's entitlement failure must not
+  // mask a live transport failure from another adapter. The chain is only
+  // "not_entitled" when every active adapter failure is an entitlement or
+  // configuration limitation; otherwise it remains retryable.
+  const active = errors.filter((error) => !/cadence_guard|rolling_quota_guard/.test(error));
+  const entitlementOrConfiguration = active.every((error) => /not_entitled|http_(?:401|402|403)|not_configured/.test(error));
+  if (entitlementOrConfiguration && active.some((error) => /not_entitled|http_(?:401|402|403)/.test(error))) return "not_entitled";
+  if (active.length > 0 && active.every((error) => /rate|429/.test(error))) return "rate_limited";
   return "temporarily_unavailable";
+}
+
+function aggregateFailureStatus(statuses: ProviderStatus[]): ProviderStatus {
+  if (!statuses.length) return "not_due";
+  if (statuses.includes("temporarily_unavailable")) return "temporarily_unavailable";
+  if (statuses.includes("rate_limited")) return "rate_limited";
+  if (statuses.every((status) => status === "not_due")) return "not_due";
+  if (statuses.includes("not_entitled")) return "not_entitled";
+  if (statuses.every((status) => status === "not_configured")) return "not_configured";
+  return statuses[0] ?? "temporarily_unavailable";
 }
 
 function recordDirectionalRepricing(candidate: ImpactCandidate) {
@@ -300,7 +316,7 @@ export async function enrichCandidateQuotes(
   const connected = settled.filter((item) => item.outcome.quote && item.outcome.status === "connected");
   const provider: ProviderResult = {
     provider: "public_equity_quote_fallback_chain",
-    status: !settled.length ? "not_due" : connected.length ? "connected" : statuses.includes("not_entitled") ? "not_entitled" : statuses.includes("not_due") ? "not_due" : statuses[0] ?? "temporarily_unavailable",
+    status: connected.length ? "connected" : aggregateFailureStatus(statuses),
     checkedAt: settled.length ? now.toISOString() : null,
     nextRetryAt: null,
     sourceUrls: [...YAHOO_CHART_URLS, `${ALPHA_VANTAGE_URL}?function=GLOBAL_QUOTE`, FMP_URL],

@@ -418,7 +418,7 @@ assert.match(
 );
 assert.doesNotMatch(source, /detailRunDue/);
 assert.doesNotMatch(source, /detailResult\.provider\.status === "partial" \? "connected"/);
-assert.match(marketSource, /status: !settled\.length \? "not_due"/);
+assert.match(marketSource, /function aggregateFailureStatus[\s\S]{0,180}if \(!statuses\.length\) return "not_due"/);
 
 const marketLoaded = { exports: {} };
 new Function("require", "module", "exports", marketOutput)((name) => {
@@ -520,15 +520,17 @@ assert.deepEqual(preferredHostCalls.filter((value) => value.endsWith(":NXTT")), 
 
 const boundedFailureCalls = [];
 const boundedFailureCandidates = ["FLA", "FLB", "FLC"].map((ticker) => ({ ticker, direction: "upside", pricedInPenalty: 0, gatePassed: true, trackingDisposition: "qualified", quote: null, rootEventKey: `bounded-failure-${ticker}` }));
-await marketLoaded.exports.enrichCandidateQuotes(boundedFailureCandidates, async (value) => {
+const boundedFailureResult = await marketLoaded.exports.enrichCandidateQuotes(boundedFailureCandidates, async (value) => {
   const url = new URL(String(value));
   const ticker = url.pathname.split("/").at(-1);
   boundedFailureCalls.push(`${url.hostname}:${ticker}`);
-  throw new Error("bounded Yahoo transport timeout");
-}, new Date(now.getTime() + 2 * 60_000));
+  if (url.hostname === "financialmodelingprep.com") return new Response("payment required", { status: 402 });
+  throw new Error("bounded transport timeout");
+}, new Date("2026-07-22T21:06:00.000Z"));
 assert.equal(boundedFailureCandidates.every((candidate) => candidate.quote === null), true);
 assert.deepEqual(boundedFailureCalls.filter((value) => value.endsWith(":FLC")), []);
 assert.ok(boundedFailureCalls.length <= 4);
+assert.equal(boundedFailureResult.provider.status, "temporarily_unavailable");
 
 console.log(JSON.stringify({
   ok: true,
@@ -557,4 +559,5 @@ console.log(JSON.stringify({
   yahooSecondHostQuoteFallbackWorks: true,
   healthyYahooHostPreferenceIsReused: true,
   failedYahooHostsAreTriedOncePerBoundedWorkerBatch: true,
+  quoteTransportFailuresAreNotMaskedAsEntitlementFailures: true,
 }, null, 2));

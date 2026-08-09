@@ -1,0 +1,42 @@
+name: Current US Verified Serious Signal Validation
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-serious-signals:
+    if: github.event_name == 'workflow_dispatch' || github.head_ref == 'agent/combined-opportunity-engine'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - name: Check out isolated branch
+        uses: actions/checkout@v4
+      - name: Refuse main branch execution
+        shell: bash
+        run: |
+          branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          test "${branch}" != "main"
+          test "${branch}" = "agent/combined-opportunity-engine"
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit --fund=false
+      - name: Typecheck and build
+        run: |
+          npm run typecheck
+          npm run build
+      - name: Verify consistency policy fixtures
+        run: node scripts/us-serious-signal-consistency-smoke.mjs
+      - name: Wait for exact Railway deployment and fresh verified signals
+        env:
+          COMBINED_ENGINE_RAILWAY_URL: https://swing-up-swing-up-pr-262.up.railway.app
+          EXPECTED_BRANCH_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: node scripts/current-us-verified-signals-live-smoke.mjs

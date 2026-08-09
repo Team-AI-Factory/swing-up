@@ -36,7 +36,7 @@ export type VerifiedSeriousSignalReport = {
   };
 };
 
-const UNSUPPORTED_GENERAL_PHARMA = /\b(?:pharma|pharmaceutical|biotech|biotechnology|therapeutics|biosciences?|biopharma)\b/i;
+const UNSUPPORTED_GENERAL_PHARMA = /\b(?:pharma|pharmaceuticals?|biotech|biotechnology|therapeutics|biosciences?|biopharma)\b/i;
 
 function finite(value: number | null): value is number {
   return value !== null && Number.isFinite(value);
@@ -91,8 +91,6 @@ function verifyBuy(signal: ActiveSeriousSignal) {
     if (finite(price) && finite(base) && price > base * 0.70) {
       blockers.push("The price is not at least 30% below the authoritative specialist fair value.");
     }
-    // A specialist fair value replaces the old generic threshold. Generic range
-    // fields may remain for research context but cannot promote the alert.
     if (finite(conservative) && finite(base) && conservative > base * 1.25) {
       blockers.push("Generic conservative value materially conflicts with the specialist fair value; the specialist model must be the single valuation authority.");
     }

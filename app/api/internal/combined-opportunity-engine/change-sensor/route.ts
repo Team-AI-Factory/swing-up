@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { enrichPr262SensorCompanyMappings } from "@/lib/opportunity-engine/pr262-company-directory";
 import { readPr262ChangeSensorState, runPr262ChangeSensor } from "@/lib/opportunity-engine/pr262-change-sensor";
 import { runPr262TargetedSpecialist } from "@/lib/opportunity-engine/pr262-targeted-specialist";
 
@@ -42,6 +43,9 @@ export async function POST(request: NextRequest) {
   if (!authorized(request)) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   try {
     const sensor = await runPr262ChangeSensor();
+    const mapping = sensor.materialEventCount > 0
+      ? await enrichPr262SensorCompanyMappings().catch((error) => ({ mapped: 0, directoryCompanies: 0, directoryUpdatedAt: null, error: error instanceof Error ? error.message : "mapping_failed" }))
+      : { mapped: 0, directoryCompanies: 0, directoryUpdatedAt: null };
     const specialist = sensor.materialEventCount > 0
       ? await runPr262TargetedSpecialist(3)
       : {
@@ -57,6 +61,7 @@ export async function POST(request: NextRequest) {
       ok: true,
       mode: "pr262_sensor_first_cycle",
       sensor,
+      mapping,
       specialist,
       costControl: {
         oldFiveMinuteScannerEnabled: false,
@@ -64,6 +69,7 @@ export async function POST(request: NextRequest) {
         quietCycleAiCalls: 0,
         quietCycleFullCompanyRebuilds: 0,
         specialistRunsOnlyWhenMaterialChangeDetected: true,
+        companyDirectoryReusedInsteadOfFundamentalRebuild: true,
       },
     });
   } catch (error) {

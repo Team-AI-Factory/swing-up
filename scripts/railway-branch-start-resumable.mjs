@@ -12,6 +12,7 @@ const environment = (process.env.RAILWAY_ENVIRONMENT_NAME || "").trim().toLowerC
 const allowedLabBranch = LAB_BRANCHES.has(branch);
 const productionLabBranch = allowedLabBranch && environment === "production";
 const branchLab = Boolean(process.env.RAILWAY_PROJECT_ID && allowedLabBranch && environment && environment !== "production");
+const pr262CostControlPause = branch === "agent/combined-opportunity-engine";
 const r2WritePrefix =
   branch === "agent/combined-opportunity-engine"
     ? "branch-labs/pr-262/"
@@ -37,17 +38,17 @@ let child = null;
 let worker = null;
 let workerRestartTimer = null;
 let workerLastHeartbeatAt = 0;
-let workerStoppedByLab = false;
+let workerStoppedByLab = pr262CostControlPause;
 let statusWrite = Promise.resolve();
 let workerRuntimeSnapshot = {
-  stage: "supervisor_initializing",
+  stage: pr262CostControlPause ? "worker_paused_cost_control" : "supervisor_initializing",
   at: new Date().toISOString(),
   heartbeatAt: null,
   workerStartedAt: null,
   workerId: null,
   sequence: 0,
   httpStatus: null,
-  reportStatus: null,
+  reportStatus: pr262CostControlPause ? "continuous_scanning_disabled" : null,
   failureScope: null,
   technicalFailureFingerprint: null,
   errorCategory: null,
@@ -103,6 +104,7 @@ function isolatedBranchEnvironment() {
     SWING_UP_BRANCH_LAB_SCHEDULER_OWNER: "dedicated_worker",
     SWING_UP_BRANCH_LAB_EFFECTIVE_INTERVAL_SECONDS: `${Math.round(normalPollMs / 1000)}`,
     SWING_UP_BRANCH_LAB_EFFECTIVE_TECHNICAL_RETRY_SECONDS: `${Math.round(technicalRetryMs / 1000)}`,
+    SWING_UP_PR262_CONTINUOUS_SCANNING_ENABLED: pr262CostControlPause ? "false" : "true",
   };
   for (const key of [
     "DATABASE_URL", "DIRECT_URL", "TELEGRAM_BOT_TOKEN", "TELEGRAM_TEST_CHAT_ID",
@@ -136,6 +138,14 @@ function clearWorkerRestart() {
 }
 
 function startWorker() {
+  if (pr262CostControlPause) {
+    workerStoppedByLab = true;
+    recordWorkerStatus("worker_paused_cost_control", {
+      reportStatus: "continuous_scanning_disabled",
+      errorMessage: "PR #262 continuous Railway scanning is intentionally paused for cost control.",
+    });
+    return;
+  }
   if (!branchLab || worker || workerStoppedByLab || !child || child.killed) return;
   workerLastHeartbeatAt = Date.now();
   recordWorkerStatus("worker_starting");
@@ -181,7 +191,7 @@ function startWorker() {
   });
 }
 
-const workerWatchdog = branchLab ? setInterval(() => {
+const workerWatchdog = branchLab && !pr262CostControlPause ? setInterval(() => {
   if (worker && workerLastHeartbeatAt > 0 && Date.now() - workerLastHeartbeatAt > 90_000) {
     console.error("[swing-up-branch-lab] dedicated worker heartbeat overdue; restarting worker process.");
     recordWorkerStatus("worker_heartbeat_overdue");
@@ -201,7 +211,9 @@ function stop(signal) {
 process.on("SIGTERM", () => stop("SIGTERM"));
 process.on("SIGINT", () => stop("SIGINT"));
 
-if (branchLab) {
+if (branchLab && pr262CostControlPause) {
+  console.log(`[swing-up-branch-lab] PR #262 continuous scanner PAUSED for cost control. The preview web service remains available, but no dedicated 60-second or 5-minute worker is spawned.`);
+} else if (branchLab) {
   console.log(`[swing-up-branch-lab] enabled for ${branch} in ${environment}; independent Watch Out, resumable valuation, and deep research lanes run on the ${Math.round(normalPollMs / 1000)}s R2-backed scheduler.`);
 } else {
   console.log("[swing-up-branch-lab] disabled; normal application start.");

@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
-import { readLatestUsSignalOperationsReport } from "@/lib/opportunity-engine/us-signal-operations";
+import {
+  readLatestUsSignalOperationsReport,
+  type UsSignalOperationsReport,
+} from "@/lib/opportunity-engine/us-signal-operations";
 import { verifyUsSeriousSignals } from "@/lib/opportunity-engine/us-serious-signal-consistency";
 
 export const dynamic = "force-dynamic";
@@ -21,8 +24,8 @@ function branchAllowed() {
 export async function GET() {
   if (!branchAllowed()) return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
   try {
-    const rawReport = await readLatestUsSignalOperationsReport();
-    if (!rawReport) {
+    const rawValue = await readLatestUsSignalOperationsReport();
+    if (!rawValue) {
       return NextResponse.json({
         ok: true,
         ready: false,
@@ -30,6 +33,7 @@ export async function GET() {
         safety: { databaseWrites: false, publishing: false, directUserNotifications: false, trades: false },
       });
     }
+    const rawReport = rawValue as UsSignalOperationsReport;
     const verified = verifyUsSeriousSignals(rawReport);
     return NextResponse.json({
       ok: true,

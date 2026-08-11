@@ -61,20 +61,40 @@ for (const invalid of ["/branch-labs/pr-262/", "branch-labs/pr-262", "branch-lab
 const startScript = await readFile(new URL("./railway-branch-start.mjs", import.meta.url), "utf8");
 for (const marker of [
   `SWING_UP_R2_WRITE_PREFIX: r2WritePrefix`,
-  `"branch-labs/pr-262/"`,
   `"branch-labs/pr-261/"`,
+  `const PR262_BRANCH = "agent/combined-opportunity-engine"`,
   `const productionLabBranch = allowedLabBranch && environment === "production"`,
   `if (productionLabBranch)`,
   `migrations were not run`,
 ]) {
   if (!startScript.includes(marker)) throw new Error(`Branch startup preview guard is missing: ${marker}`);
 }
+if (startScript.includes(`"branch-labs/pr-262/"`)) throw new Error("The hard-paused PR #262 branch still has a legacy worker R2 namespace.");
+const pr262Guard = startScript.indexOf("if (branch === PR262_BRANCH)");
+const applicationLaunch = startScript.indexOf('child = launch("npm"');
+if (pr262Guard < 0 || (applicationLaunch >= 0 && pr262Guard > applicationLaunch)) throw new Error("PR #262 is not rejected before application startup.");
+
+const pausedAttempt = spawnSync(process.execPath, [fileURLToPath(new URL("./railway-branch-start.mjs", import.meta.url))], {
+  encoding: "utf8",
+  env: {
+    ...process.env,
+    RAILWAY_GIT_BRANCH: "agent/combined-opportunity-engine",
+    RAILWAY_ENVIRONMENT_NAME: "production",
+    RAILWAY_PROJECT_ID: "smoke-project",
+  },
+  timeout: 5_000,
+});
+if (pausedAttempt.status !== 0) throw new Error(`Hard-paused PR #262 did not exit successfully (exit ${pausedAttempt.status}).`);
+const pausedOutput = `${pausedAttempt.stdout ?? ""}${pausedAttempt.stderr ?? ""}`;
+if (!pausedOutput.includes("HARD PAUSED") || pausedOutput.includes("applying normal database migrations")) {
+  throw new Error("PR #262 was not stopped before migrations and application startup.");
+}
 
 const productionAttempt = spawnSync(process.execPath, [fileURLToPath(new URL("./railway-branch-start.mjs", import.meta.url))], {
   encoding: "utf8",
   env: {
     ...process.env,
-    RAILWAY_GIT_BRANCH: "agent/combined-opportunity-engine",
+    RAILWAY_GIT_BRANCH: "agent/live-signal-evaluation-automation",
     RAILWAY_ENVIRONMENT_NAME: "production",
     RAILWAY_PROJECT_ID: "smoke-project",
   },
@@ -94,5 +114,6 @@ console.log(JSON.stringify({
   previewPrefixes: ["branch-labs/pr-261/", "branch-labs/pr-262/"],
   outsidePrefixMutationsBlocked: true,
   readOutsidePrefixAllowed: true,
+  pr262HardPausedBeforeStartup: true,
   productionLabBranchRefusedBeforeMigrations: true,
 }, null, 2));

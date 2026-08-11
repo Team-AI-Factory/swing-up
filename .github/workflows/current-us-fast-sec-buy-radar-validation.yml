@@ -39,7 +39,8 @@ jobs:
           grep -q 'actualFilingAndExhibitsRequired: true' lib/opportunity-engine/us-fast-sec-buy-radar.ts
           grep -q 'FAST_FORMS = \["8-K", "6-K"\]' lib/opportunity-engine/us-fast-sec-buy-radar.ts
           grep -q 'SWING_UP_BRANCH_LAB_FAST_SEC_INTERVAL_SECONDS", 60' scripts/railway-branch-worker-resumable.mjs
-      - name: Wait for exact Railway deployment and fresh fast SEC Buy radar
+      - name: Manual live check of Railway deployment and fresh fast SEC Buy radar
+        if: github.event_name == 'workflow_dispatch'
         env:
           COMBINED_ENGINE_RAILWAY_URL: https://swing-up-swing-up-pr-262.up.railway.app
           EXPECTED_BRANCH_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}

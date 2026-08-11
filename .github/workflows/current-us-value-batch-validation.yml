@@ -63,7 +63,8 @@ jobs:
           npm run typecheck
           npm run build
 
-      - name: Wait for exact Railway deployment and persisted value batch
+      - name: Manual live check of Railway deployment and persisted value batch
+        if: github.event_name == 'workflow_dispatch'
         env:
           COMBINED_ENGINE_RAILWAY_URL: https://swing-up-swing-up-pr-262.up.railway.app
           EXPECTED_BRANCH_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}

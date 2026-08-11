@@ -20,6 +20,7 @@ const NOTIFICATION_DIGEST_KEY = `${R2_PREFIX}/notification-digest/latest.json`;
 const NORMALIZATION_PREFIX = `${R2_PREFIX}/long-term-normalization`;
 const SPECIALIST_PREFIX = `${R2_PREFIX}/specialist-valuations`;
 const BRANCH_LAB_STATE_KEY = "branch-labs/pr-262/serious-signal/state.json";
+const EVENT_JOB_STATE_KEY = "branch-labs/pr-262/event-job/state-v1.json";
 const DILIGENCE_KEY = "branch-labs/pr-262/value-investing/catalyst-diligence/latest.json";
 const WATCH_OUT_KEY = "branch-labs/pr-262/serious-signal/us-watch-out/latest.json";
 const MAX_PRICE_CANDIDATES = 5_000;
@@ -169,6 +170,11 @@ export type ActiveSeriousSignal = {
     historicalPilotPassed: boolean | null;
     longTermNormalizationPassed: boolean | null;
     specialistModel: SpecialistValuation["model"];
+    committeeApproved: boolean;
+    committeeAgentsCompleted: number;
+    committeeAgentsFailed: number;
+    finalJudgePositive: boolean;
+    finalJudgeConfidence: number | null;
   };
   thesisSnapshot: {
     baseFairValue: number | null;
@@ -345,9 +351,11 @@ function parseEventCandidates(historyValue: unknown) {
   const runs = array(history.runs).map(object).slice(-30);
   const candidates: Json[] = [];
   for (const run of runs) {
-    const selected = object(run.selectedCandidate);
-    if (Object.keys(selected).length) candidates.push(selected);
     for (const candidate of array(run.rankedCandidates).map(object).slice(0, 30)) candidates.push(candidate);
+    const selected = object(run.selectedCandidate);
+    if (Object.keys(selected).length) {
+      candidates.push({ ...selected, committeeApproval: committeeApprovalFromRun(run) });
+    }
   }
   const unique = new Map<string, Json>();
   for (const candidate of candidates) {
@@ -358,6 +366,56 @@ function parseEventCandidates(historyValue: unknown) {
     unique.set(`${ticker}|${eventFamily}|${eventObservedAt}`, candidate);
   }
   return [...unique.values()];
+}
+
+type CommitteeApproval = {
+  approved: boolean;
+  actionable: boolean;
+  historicalPilotPassed: boolean;
+  agentsCompleted: number;
+  agentsFailed: number;
+  finalJudgePositive: boolean;
+  finalJudgeConfidence: number | null;
+};
+
+function committeeApprovalFromRun(runValue: unknown): CommitteeApproval {
+  const run = object(runValue);
+  const committee = object(run.committee);
+  const finalJudge = object(committee.finalJudge);
+  const output = object(committee.output);
+  const historicalPilotPassed = object(run.historicalPilot).passed === true;
+  const agentsCompleted = Math.max(0, Math.floor(finite(committee.agentsCompleted) ?? 0));
+  const agentsFailed = Math.max(0, Math.floor(finite(committee.agentsFailed) ?? 0));
+  const confidence = finite(finalJudge.confidence);
+  const finalJudgePositive = finalJudge.verdict === "positive" && (confidence ?? 0) >= 80;
+  return {
+    approved: run.seriousSignalFound === true
+      && historicalPilotPassed
+      && committee.ok === true
+      && agentsCompleted === 14
+      && agentsFailed === 0
+      && finalJudgePositive
+      && output.overallRecommendation === "approve",
+    actionable: run.actionableSignalFound === true && (run.alertType === "buy" || run.alertType === "sell"),
+    historicalPilotPassed,
+    agentsCompleted,
+    agentsFailed,
+    finalJudgePositive,
+    finalJudgeConfidence: confidence,
+  };
+}
+
+function committeeApprovalFromCandidate(candidate: Json): CommitteeApproval {
+  const approval = object(candidate.committeeApproval);
+  return {
+    approved: approval.approved === true,
+    actionable: approval.actionable === true,
+    historicalPilotPassed: approval.historicalPilotPassed === true,
+    agentsCompleted: Math.max(0, Math.floor(finite(approval.agentsCompleted) ?? 0)),
+    agentsFailed: Math.max(0, Math.floor(finite(approval.agentsFailed) ?? 0)),
+    finalJudgePositive: approval.finalJudgePositive === true,
+    finalJudgeConfidence: finite(approval.finalJudgeConfidence),
+  };
 }
 
 function diligenceConfirmation(value: unknown) {
@@ -1028,14 +1086,21 @@ function recentCandidate(candidate: Json, now: Date, maximumDays = 7) {
 }
 
 function eventGatePassed(candidate: Json) {
-  return candidate.gatePassed === true
+  const committee = committeeApprovalFromCandidate(candidate);
+  return committee.approved
+    && committee.actionable
+    && committee.historicalPilotPassed
+    && candidate.gatePassed === true
     && (finite(candidate.eventTruth) ?? 0) >= 80
     && (finite(candidate.mappingConfidence) ?? 0) >= 95
     && (finite(candidate.materiality) ?? 0) >= 65
     && (finite(candidate.transmissionConfidence) ?? 0) >= 70
     && (finite(candidate.evidenceIndependence) ?? 0) >= 78
     && candidate.rumour !== true
-    && (finite(candidate.contradictionPenalty) ?? 0) < 50;
+    && (finite(candidate.contradictionPenalty) ?? 0) < 50
+    && (finite(candidate.pricedInPenalty) ?? 0) < 50
+    && object(candidate.quote).actionableForSeriousSignal === true
+    && !["halted", "unknown"].includes(text(object(candidate.quote).marketSession) ?? "unknown");
 }
 
 function methodSpreadPercent(item: UsValueCompanyAnalysis) {
@@ -1083,6 +1148,7 @@ function makeSignal(input: {
   specialist: SpecialistValuation;
   eventKey?: string | null;
   checkedAt: string;
+  committee?: CommitteeApproval;
 }): ActiveSeriousSignal {
   const baseFairValue = input.specialist.fairValue ?? input.item.fairValue.baseValue;
   return {
@@ -1119,6 +1185,11 @@ function makeSignal(input: {
       historicalPilotPassed: input.historicalPilotPassed,
       longTermNormalizationPassed: input.normalization?.durableEnoughForSeriousBuy ?? null,
       specialistModel: input.specialist.model,
+      committeeApproved: input.committee?.approved === true,
+      committeeAgentsCompleted: input.committee?.agentsCompleted ?? 0,
+      committeeAgentsFailed: input.committee?.agentsFailed ?? 0,
+      finalJudgePositive: input.committee?.finalJudgePositive === true,
+      finalJudgeConfidence: input.committee?.finalJudgeConfidence ?? null,
     },
     thesisSnapshot: {
       baseFairValue: rounded(baseFairValue),
@@ -1256,17 +1327,24 @@ export async function runUsSignalOperations(input: {
   const errors: string[] = [];
   if (!getR2Config().configured) throw new Error("cloudflare_r2_not_configured");
 
-  const [resumableState, priorRegistryValue, branchHistory, diligenceValue, watchOutValue] = await Promise.all([
+  const [resumableState, priorRegistryValue, branchHistory, eventJobHistory, diligenceValue, watchOutValue] = await Promise.all([
     readResumableUsValueState(),
     readJson(REGISTRY_KEY).catch(() => null),
     readJson(BRANCH_LAB_STATE_KEY).catch(() => null),
+    readJson(EVENT_JOB_STATE_KEY).catch(() => null),
     readJson(DILIGENCE_KEY).catch(() => null),
     readJson(WATCH_OUT_KEY).catch(() => null),
   ]);
   const priorRegistry = parsePriorRegistry(priorRegistryValue);
   const analyses = await loadCompletedAnalyses(resumableState);
   const analysisByTicker = new Map(analyses.map((item) => [item.ticker.toUpperCase(), item]));
-  const recentEvents = parseEventCandidates(branchHistory)
+  const combinedEventHistory = {
+    runs: [
+      ...array(object(branchHistory).runs),
+      ...array(object(eventJobHistory).runs),
+    ],
+  };
+  const recentEvents = parseEventCandidates(combinedEventHistory)
     .filter((candidate) => recentCandidate(candidate, now, 14));
   const diligence = diligenceConfirmation(diligenceValue);
 
@@ -1663,6 +1741,7 @@ export async function runUsSignalOperations(input: {
     if (crossCheck?.passed !== true) continue;
     const action: SignalAction = direction === "upside" ? "buy" : "sell";
     const specialist = specialistMap.get(ticker) ?? specialistModel(item, normalizationMap.get(ticker) ?? null);
+    const committee = committeeApprovalFromCandidate(candidate);
     currentSignals.push(makeSignal({
       source: "event_pilot",
       action,
@@ -1683,11 +1762,12 @@ export async function runUsSignalOperations(input: {
       officialSourceConfirmed: officialReceiptConfirmed(candidate),
       secDiligenceConfirmed: action === "buy" ? diligence.buy.has(ticker) : diligence.sell.has(ticker),
       priceCrossChecked: true,
-      historicalPilotPassed: true,
+      historicalPilotPassed: committee.historicalPilotPassed,
       normalization: normalizationMap.get(ticker) ?? null,
       specialist,
       eventKey: eventKey(candidate),
       checkedAt,
+      committee,
     }));
   }
 

@@ -6,6 +6,44 @@ PR #262 continuous Railway scanning is intentionally paused for cost control. Th
 
 The old pattern of running Watch Out, valuation batches, earnings analysis, relationship backfill, signal operations, and deep research on every broad poll is retired for PR #262.
 
+The replacement path is now implemented but remains dormant while the binding runtime pause is in place. Its only supported flow is:
+
+1. poll bounded central event feeds with durable cursors;
+2. map the affected issuer by official SEC CIK;
+3. load that issuer's exact stored PR #262 company-analysis row;
+4. read the full primary source, including SEC Exhibit 99.1/99.2 when applicable;
+5. refresh only that affected company's stored value analysis;
+6. check authoritative trading-halt and current-price evidence;
+7. run the five-real-case historical gate before any paid reasoning;
+8. run all 13 specialists plus the Final Judge only for a surviving finalist; and
+9. write an undelivered R2 outbox record only after unanimous process completion and a positive Final Judge score of at least 80.
+
+The event job processes at most one due material queue item per invocation. It refreshes one exact issuer, but does not rebuild the U.S. universe, poll broad feeds again, publish, notify, trade, or write to the application database. Repeated invocations use R2 leases, evidence cooldowns, immutable result keys, durable provider budgets, and a maximum of three committee reservations per rolling 24 hours.
+
+### Binding runtime pause
+
+The pause applies to all Railway runtime processes, not only the broad scanner:
+
+- `railway.json` enters through `scripts/railway-pr262-cost-pause-start.mjs`.
+- That PR-specific launcher always exits successfully without starting a web server, sensor, worker, or supervisor, even if Railway branch metadata is absent or incorrect.
+- Both legacy supervisors reject the PR #262 branch before migrations, application startup, worker startup, watchdogs, or restart timers can run.
+- The dedicated PR #262 sensor-worker executable is itself inert and exits successfully before polling anything.
+- PR #262 is not a member of either legacy lab-branch allowlist and has no legacy `branch-labs/pr-262/` worker namespace in those supervisors.
+- Branch middleware blocks every API route except read-only `GET /api/health`, so a stale web deployment, manual `npm start`, or Railway start-command override cannot invoke a scanner.
+- The PR #262 change-sensor route and inherited branch-lab route reject this branch before either local-development bypass is evaluated.
+- There is no environment-variable escape hatch that resumes PR #262 scanning. Re-enabling any runtime requires an intentional reviewed code change and corresponding safety-test update.
+- The unconditional branch middleware is a deliberate draft-PR shutdown device and is a merge blocker: it must be removed or replaced by the reviewed activation design before any merge to `main`.
+
+`npm run smoke:pr262-runtime-pause` executes all four possible start/worker entry points with the PR #262 branch identity and verifies that none launches `npm`. It also verifies the middleware and route barriers, checks the static ordering/allowlists, and ensures automatic GitHub workflow steps cannot contact the live PR #262 Railway preview.
+
+### CI and live-preview policy
+
+Push and pull-request workflows may run deterministic local typechecks, builds, and fixture tests. They must not poll live SEC/market providers, start a live-data route workflow, build a live calibration dataset, wait for the Railway preview, or POST to it. Those live diagnostics are restricted to an explicit `workflow_dispatch` run; this includes the Yahoo-backed external-volatility certification and the optional generic branch-preview smoke.
+
+### Serious Watch Out boundary
+
+The expanded deterministic Watch Out rules remain available for raw research/watchlist findings. They are deliberately prevented from becoming a committee-verified **Serious Watch Out** in the dormant event job until a same-run 14-member committee path, proof object, and dedicated tests are implemented. Buy/Sell cannot borrow a Watch Out result, and a raw Watch Out cannot be relabeled serious. This is a fail-closed capability boundary, not an implied approval.
+
 ## Goal
 
 Detect material changes across U.S.-listed common stocks and ADRs quickly while spending almost nothing when nothing meaningful changes.
@@ -85,6 +123,8 @@ If the answer is no, the run ends immediately with no deep content fetch, no com
 
 If a provider temporarily fails, resume from the last durable cursor when it returns. Do not compensate with a full-market deep rescan.
 
+Mapped, actionable retries and unresolved discovery items use separate queue partitions. Due mapped retries are ordered first and cannot be evicted by a burst of unmapped SEC filings; unresolved items have their own 500-item bound and expire after 24 hours. A fresh item is added to `seen` only after it is actually retained in a queue partition.
+
 ## Materiality gate before expensive analysis
 
 A new item reaches deep analysis only when at least one of these is true:
@@ -154,6 +194,8 @@ The following are mandatory:
 - no immutable full scan record for an empty sensor heartbeat; store compact sensor health/cursor state instead;
 - no deep article/page fetch for duplicate or immaterial events;
 - cache successfully read full content and primary filings;
+- retry unavailable full sources for up to seven days, then archive them explicitly as unread with no candidate, historical-finding, committee, or outbox authority;
+- resolve and validate every non-SEC source redirect, then pin the validated public IP address into the HTTPS connection to prevent DNS rebinding toward a private destination;
 - reuse stored company fundamentals, relationships, historical analogs, and valuation inputs;
 - provider-specific call budgets, retry backoff, and cadence guards;
 - daily and rolling cost counters for external APIs and AI calls;

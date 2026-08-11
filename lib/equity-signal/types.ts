@@ -1,7 +1,8 @@
 import type { BranchNewsChannel } from "@/lib/branch-signal-lab-policy";
 import type { HistoricalAnalogAnalysis } from "@/lib/equity-signal/historical-analogs";
 
-export type ProviderStatus = "connected" | "not_due" | "rate_limited" | "temporarily_unavailable" | "not_configured" | "not_entitled" | "failed";
+export type ProviderStatus = "connected" | "partial" | "not_due" | "rate_limited" | "temporarily_unavailable" | "not_configured" | "not_entitled" | "failed";
+export type EquityEventChannel = BranchNewsChannel | "nasdaq_trade_halts";
 export type EventDirection = "upside" | "downside" | "mixed" | "unknown";
 export type EventFamily =
   | "earnings_guidance"
@@ -13,6 +14,8 @@ export type EventFamily =
   | "regulatory_approval"
   | "regulatory_enforcement"
   | "financing_dilution"
+  | "financing_proposal"
+  | "regulatory_advisory"
   | "insider_ownership"
   | "leadership_change"
   | "cyber_incident"
@@ -36,7 +39,7 @@ export type EventReceipt = {
   url: string;
   publisher: string;
   publishedAt: string;
-  channel: BranchNewsChannel;
+  channel: EquityEventChannel;
   official: boolean;
   primarySource: boolean;
   scheduled: boolean;
@@ -56,6 +59,9 @@ export type ProviderResult = {
   error: string | null;
   entitlementVerified: boolean;
   cached: boolean;
+  responseTimeMs?: number | null;
+  cacheAgeMs?: number | null;
+  consecutiveFailures?: number;
 };
 
 export type MarketQuote = {
@@ -69,6 +75,13 @@ export type MarketQuote = {
   observedAt: string;
   source: string;
   delayedMinutes: number | null;
+  /** Time the quote provider last returned this snapshot successfully. */
+  providerFetchedAt?: string | null;
+  /** Age since the last successful provider response; failed retries cannot reset it. */
+  cacheAgeMs?: number | null;
+  /** False once a carried quote is too old to support Buy/Sell. */
+  actionableForSeriousSignal?: boolean;
+  marketSession?: "pre_market" | "regular" | "post_market" | "latest_close" | "halted" | "unknown";
 };
 
 export type MacroSeriesSnapshot = {
@@ -93,10 +106,63 @@ export type MacroContext = {
   errors: string[];
 };
 
+export type EventMagnitudeMetric = {
+  kind: "contract_value" | "offering_value" | "offering_shares" | "dilution_percent" | "guidance_change_percent" | "fine_value" | "transaction_value";
+  value: number;
+  unit: "USD" | "shares" | "percent";
+  sourceReceiptId: string;
+  sourceUrl: string;
+  sourcePublisher?: string;
+  primarySource?: boolean;
+  corroboratingPublishers?: number;
+  promotionEvidenceVerified?: boolean;
+  evidenceText: string;
+  /** Present when the event text explicitly states a multi-year term. */
+  termYears?: number | null;
+  /** Status words captured from the same evidence construction. */
+  eventStatus?: "committed" | "priced" | "completed" | "proposed" | "ceiling" | "secondary" | "final" | null;
+};
+
+export type EventMagnitudeEvidence = {
+  status:
+    | "not_required"
+    | "unquantified"
+    | "absolute_only"
+    | "relative_to_company"
+    | "verified_material"
+    | "verified_below_threshold"
+    | "non_actionable_status";
+  metrics: EventMagnitudeMetric[];
+  relativeToCompany: {
+    metric: "annual_revenue" | "shares_outstanding";
+    eventValue: number;
+    eventMetricSourceReceiptId?: string;
+    companyValue: number;
+    ratioPercent: number;
+    sourceUrl: string;
+  } | null;
+  materialityBasis: string;
+};
+
+export type CausalExposureEvidence = {
+  status: "direct_issuer" | "event_specific" | "generic_sector_proxy";
+  exposureType: "direct" | "customer" | "supplier" | "geography" | "commodity" | "policy" | "sector_proxy";
+  confidence: number;
+  evidenceText: string;
+  sourceUrl: string;
+  eligibleForSeriousSignal: boolean;
+  sourceReceiptId?: string;
+  publisher?: string;
+  publishedAt?: string;
+  expiresAt?: string | null;
+  sensitivityDirection?: "upside" | "downside" | null;
+};
+
 export type ImpactCandidate = {
   ticker: string;
   company: string;
   cik: string | null;
+  rootEventKey: string;
   eventFamily: EventFamily;
   direction: Exclude<EventDirection, "mixed" | "unknown">;
   relationship: "direct" | "second_order" | "third_order";
@@ -116,11 +182,15 @@ export type ImpactCandidate = {
   pricedInPenalty: number;
   rumour: boolean;
   causalChain: string[];
+  causalExposure: CausalExposureEvidence;
+  eventMagnitude: EventMagnitudeEvidence;
   falsifiers: string[];
   timeHorizon: string;
   score: number;
   gateChecks: Record<string, boolean>;
   gatePassed: boolean;
+  trackingDisposition: "qualified" | "shadow_near_miss" | "rejected";
+  failedGateChecks: string[];
   quote: MarketQuote | null;
   fundamentals: {
     available: boolean;

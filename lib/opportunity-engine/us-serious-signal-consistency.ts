@@ -33,6 +33,7 @@ export type VerifiedSeriousSignalReport = {
     specialistBuyRequiresThirtyPercentMarginToSpecialistFairValue: true;
     unsupportedPharmaGeneralModelCannotPromoteSeriousBuy: true;
     eventPilotRequiresHistoricalPilot: true;
+    fullCommitteeAndFinalJudgeRequired: true;
   };
 };
 
@@ -105,6 +106,13 @@ function basicSignalChecks(signal: ActiveSeriousSignal) {
   if (!signal.fingerprint) blockers.push("Stable signal fingerprint is missing.");
   if (!signal.evidence.officialSourceConfirmed) blockers.push("Official or primary evidence is not confirmed.");
   if (signal.action !== "watch_out" && !signal.evidence.priceCrossChecked) blockers.push("Actionable Buy/Sell price is not independently cross-checked.");
+  if (signal.evidence.committeeApproved !== true) blockers.push("The full AI committee did not approve this signal.");
+  if (signal.evidence.committeeAgentsCompleted !== 14 || signal.evidence.committeeAgentsFailed !== 0) {
+    blockers.push("All 13 specialists plus the Final Judge did not complete successfully.");
+  }
+  if (signal.evidence.finalJudgePositive !== true || (signal.evidence.finalJudgeConfidence ?? 0) < 80) {
+    blockers.push("The Final Judge did not return a positive verdict at 80% confidence or higher.");
+  }
   return blockers;
 }
 
@@ -185,6 +193,7 @@ export function verifyUsSeriousSignals(
       specialistBuyRequiresThirtyPercentMarginToSpecialistFairValue: true,
       unsupportedPharmaGeneralModelCannotPromoteSeriousBuy: true,
       eventPilotRequiresHistoricalPilot: true,
+      fullCommitteeAndFinalJudgeRequired: true,
     },
   };
 }

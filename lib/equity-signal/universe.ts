@@ -32,6 +32,7 @@ export type EquityUniverseSnapshot = {
 const PR_261_BRANCH = "agent/live-signal-evaluation-automation";
 const PR_262_BRANCH = "agent/combined-opportunity-engine";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const MATERIAL_UNIVERSE_SHRINK_RATIO = 0.9;
 const NASDAQ_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/symdir/nasdaqlisted.txt";
 const OTHER_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/symdir/otherlisted.txt";
 const SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers_exchange.json";
@@ -40,7 +41,7 @@ export function resolveEquityUniverseCacheKey(branch = process.env.RAILWAY_GIT_B
   const normalizedBranch = typeof branch === "string" ? branch.trim() : "";
   if (normalizedBranch === PR_261_BRANCH) return "branch-labs/pr-261/equity-universe/v1.json";
   if (normalizedBranch === PR_262_BRANCH) return "branch-labs/pr-262/equity-universe/v1.json";
-  // Unknown and local branches must not borrow another branch's universe.
+  // Unknown and local branches must never borrow another branch's universe.
   // They can still build a fresh in-memory snapshot from the official sources.
   return null;
 }
@@ -76,6 +77,38 @@ function securityClassification(name: string, etf: string, testIssue: string) {
   if (/\b(?:etf|exchange traded fund|index fund|portfolio|fund shares?)\b/i.test(lower)) return { eligible: false as const, reason: "fund" };
   const adr = /\b(?:american depositary|depositary shares?|ads|adr)\b/i.test(name);
   return { eligible: true as const, securityType: adr ? "adr" as const : "common_stock" as const };
+}
+
+function removeProbableSecDerivativeSiblings(entries: EquityUniverseEntry[]) {
+  return entries.filter((candidate) => {
+    if (!candidate.cik || candidate.sourceNames.some((source) => source.startsWith("Nasdaq Trader"))) return true;
+    return !entries.some((other) =>
+      other.cik === candidate.cik
+      && other.ticker !== candidate.ticker
+      && ["W", "WS", "WT", "R", "U"].some((suffix) => candidate.ticker === `${other.ticker}${suffix}`));
+  });
+}
+
+function sanitizeCachedSnapshot(snapshot: EquityUniverseSnapshot) {
+  const entries = removeProbableSecDerivativeSiblings(snapshot.entries);
+  if (entries.length === snapshot.entries.length) return snapshot;
+  const removed = snapshot.entries.length - entries.length;
+  const cikMapped = entries.filter((entry) => entry.cik).length;
+  return {
+    ...snapshot,
+    entries,
+    coverage: {
+      ...snapshot.coverage,
+      eligibleEquities: entries.length,
+      cikMapped,
+      cikMappedPercent: entries.length ? Math.round((cikMapped / entries.length) * 10_000) / 100 : 0,
+      adrCount: entries.filter((entry) => entry.securityType === "adr").length,
+      excludedByReason: {
+        ...snapshot.coverage.excludedByReason,
+        ambiguous_sec_derivative_sibling: (snapshot.coverage.excludedByReason.ambiguous_sec_derivative_sibling ?? 0) + removed,
+      },
+    },
+  };
 }
 
 function parsePipeDirectory(text: string, kind: "nasdaq" | "other"): ParsedDirectory {
@@ -160,7 +193,7 @@ function mergeEntries(nasdaq: ParsedDirectory, other: ParsedDirectory, secRows: 
       sourceNames: ["SEC company_tickers_exchange"],
     });
   }
-  return [...merged.values()].sort((left, right) => left.ticker.localeCompare(right.ticker));
+  return removeProbableSecDerivativeSiblings([...merged.values()]).sort((left, right) => left.ticker.localeCompare(right.ticker));
 }
 
 function emptyDirectory(): ParsedDirectory {
@@ -181,7 +214,7 @@ async function cachedSnapshot(cacheKey: string | null) {
     const snapshot = JSON.parse(object.text) as EquityUniverseSnapshot;
     if (!snapshot || snapshot.version !== 1 || !Array.isArray(snapshot.entries)) return { snapshot: null, etag: object.etag };
     if (!snapshot.constructionMode) snapshot.constructionMode = "nasdaq_plus_sec";
-    return { snapshot, etag: object.etag };
+    return { snapshot: sanitizeCachedSnapshot(snapshot), etag: object.etag };
   } catch {
     return { snapshot: null, etag: null };
   }
@@ -229,7 +262,14 @@ export async function loadEquityUniverse(fetchImpl: typeof fetch, now = new Date
     throw new Error("official_equity_universe_empty_after_security_filter");
   }
   const completeNasdaqDirectories = nasdaq.entries.length > 0 && other.entries.length > 0;
-  if (cached.snapshot && !completeNasdaqDirectories && cached.snapshot.entries.length > entries.length) {
+  const materiallySmallerThanFullCache = Boolean(
+    cached.snapshot
+    && cached.snapshot.constructionMode === "nasdaq_plus_sec"
+    && entries.length < cached.snapshot.entries.length * MATERIAL_UNIVERSE_SHRINK_RATIO,
+  );
+  if (cached.snapshot
+    && cached.snapshot.entries.length > entries.length
+    && (!completeNasdaqDirectories || materiallySmallerThanFullCache)) {
     return { snapshot: cached.snapshot, cache: "cloudflare_r2_larger_fallback" as const, refreshed: false, r2Write: false };
   }
 

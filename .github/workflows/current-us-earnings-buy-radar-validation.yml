@@ -37,7 +37,8 @@ jobs:
           grep -q 'fiveYearNormalizationRequiredForSeriousBuy: true' lib/opportunity-engine/us-earnings-buy-radar.ts
           grep -q 'currentPriceMustRemainBelowConservativeValue: true' lib/opportunity-engine/us-earnings-buy-radar.ts
           grep -q 'earningsHeadlineAloneCanTriggerBuy: false' lib/opportunity-engine/us-earnings-buy-radar.ts
-      - name: Wait for exact Railway deployment and fresh direct earnings radar
+      - name: Manual live check of Railway deployment and fresh direct earnings radar
+        if: github.event_name == 'workflow_dispatch'
         env:
           COMBINED_ENGINE_RAILWAY_URL: https://swing-up-swing-up-pr-262.up.railway.app
           EXPECTED_BRANCH_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}

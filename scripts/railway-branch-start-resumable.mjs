@@ -3,22 +3,25 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { writeFile } from "node:fs/promises";
 
+const PR262_BRANCH = "agent/combined-opportunity-engine";
 const LAB_BRANCHES = new Set([
   "agent/live-signal-evaluation-automation",
-  "agent/combined-opportunity-engine",
 ]);
 const branch = (process.env.RAILWAY_GIT_BRANCH || "").trim();
 const environment = (process.env.RAILWAY_ENVIRONMENT_NAME || "").trim().toLowerCase();
+
+if (branch === PR262_BRANCH) {
+  console.log("[swing-up-cost-control] PR #262 is HARD PAUSED and cannot enter the resumable legacy supervisor. Exiting without starting a web server or worker.");
+  process.exit(0);
+}
+
 const allowedLabBranch = LAB_BRANCHES.has(branch);
 const productionLabBranch = allowedLabBranch && environment === "production";
 const branchLab = Boolean(process.env.RAILWAY_PROJECT_ID && allowedLabBranch && environment && environment !== "production");
-const pr262CostControlPause = branch === "agent/combined-opportunity-engine";
 const r2WritePrefix =
-  branch === "agent/combined-opportunity-engine"
-    ? "branch-labs/pr-262/"
-    : branch === "agent/live-signal-evaluation-automation"
-      ? "branch-labs/pr-261/"
-      : null;
+  branch === "agent/live-signal-evaluation-automation"
+    ? "branch-labs/pr-261/"
+    : null;
 
 if (productionLabBranch) {
   console.error(`[swing-up-start] refusing to start isolated branch ${branch} in the production environment; migrations were not run.`);
@@ -38,17 +41,17 @@ let child = null;
 let worker = null;
 let workerRestartTimer = null;
 let workerLastHeartbeatAt = 0;
-let workerStoppedByLab = pr262CostControlPause;
+let workerStoppedByLab = false;
 let statusWrite = Promise.resolve();
 let workerRuntimeSnapshot = {
-  stage: pr262CostControlPause ? "worker_paused_cost_control" : "supervisor_initializing",
+  stage: "supervisor_initializing",
   at: new Date().toISOString(),
   heartbeatAt: null,
   workerStartedAt: null,
   workerId: null,
   sequence: 0,
   httpStatus: null,
-  reportStatus: pr262CostControlPause ? "continuous_scanning_disabled" : null,
+  reportStatus: null,
   failureScope: null,
   technicalFailureFingerprint: null,
   errorCategory: null,
@@ -104,7 +107,6 @@ function isolatedBranchEnvironment() {
     SWING_UP_BRANCH_LAB_SCHEDULER_OWNER: "dedicated_worker",
     SWING_UP_BRANCH_LAB_EFFECTIVE_INTERVAL_SECONDS: `${Math.round(normalPollMs / 1000)}`,
     SWING_UP_BRANCH_LAB_EFFECTIVE_TECHNICAL_RETRY_SECONDS: `${Math.round(technicalRetryMs / 1000)}`,
-    SWING_UP_PR262_CONTINUOUS_SCANNING_ENABLED: pr262CostControlPause ? "false" : "true",
   };
   for (const key of [
     "DATABASE_URL", "DIRECT_URL", "TELEGRAM_BOT_TOKEN", "TELEGRAM_TEST_CHAT_ID",
@@ -138,14 +140,6 @@ function clearWorkerRestart() {
 }
 
 function startWorker() {
-  if (pr262CostControlPause) {
-    workerStoppedByLab = true;
-    recordWorkerStatus("worker_paused_cost_control", {
-      reportStatus: "continuous_scanning_disabled",
-      errorMessage: "PR #262 continuous Railway scanning is intentionally paused for cost control.",
-    });
-    return;
-  }
   if (!branchLab || worker || workerStoppedByLab || !child || child.killed) return;
   workerLastHeartbeatAt = Date.now();
   recordWorkerStatus("worker_starting");
@@ -191,7 +185,7 @@ function startWorker() {
   });
 }
 
-const workerWatchdog = branchLab && !pr262CostControlPause ? setInterval(() => {
+const workerWatchdog = branchLab ? setInterval(() => {
   if (worker && workerLastHeartbeatAt > 0 && Date.now() - workerLastHeartbeatAt > 90_000) {
     console.error("[swing-up-branch-lab] dedicated worker heartbeat overdue; restarting worker process.");
     recordWorkerStatus("worker_heartbeat_overdue");
@@ -211,9 +205,7 @@ function stop(signal) {
 process.on("SIGTERM", () => stop("SIGTERM"));
 process.on("SIGINT", () => stop("SIGINT"));
 
-if (branchLab && pr262CostControlPause) {
-  console.log(`[swing-up-branch-lab] PR #262 continuous scanner PAUSED for cost control. The preview web service remains available, but no dedicated 60-second or 5-minute worker is spawned.`);
-} else if (branchLab) {
+if (branchLab) {
   console.log(`[swing-up-branch-lab] enabled for ${branch} in ${environment}; independent Watch Out, resumable valuation, and deep research lanes run on the ${Math.round(normalPollMs / 1000)}s R2-backed scheduler.`);
 } else {
   console.log("[swing-up-branch-lab] disabled; normal application start.");

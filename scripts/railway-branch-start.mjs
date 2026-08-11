@@ -3,21 +3,25 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { writeFile } from "node:fs/promises";
 
+const PR262_BRANCH = "agent/combined-opportunity-engine";
 const LAB_BRANCHES = new Set([
   "agent/live-signal-evaluation-automation",
-  "agent/combined-opportunity-engine",
 ]);
 const branch = (process.env.RAILWAY_GIT_BRANCH || "").trim();
 const environment = (process.env.RAILWAY_ENVIRONMENT_NAME || "").trim().toLowerCase();
+
+if (branch === PR262_BRANCH) {
+  console.log("[swing-up-cost-control] PR #262 is HARD PAUSED and cannot enter the legacy five-minute supervisor. Exiting without starting a web server or worker.");
+  process.exit(0);
+}
+
 const allowedLabBranch = LAB_BRANCHES.has(branch);
 const productionLabBranch = allowedLabBranch && environment === "production";
 const branchLab = Boolean(process.env.RAILWAY_PROJECT_ID && allowedLabBranch && environment && environment !== "production");
 const r2WritePrefix =
-  branch === "agent/combined-opportunity-engine"
-    ? "branch-labs/pr-262/"
-    : branch === "agent/live-signal-evaluation-automation"
-      ? "branch-labs/pr-261/"
-      : null;
+  branch === "agent/live-signal-evaluation-automation"
+    ? "branch-labs/pr-261/"
+    : null;
 
 if (productionLabBranch) {
   console.error(`[swing-up-start] refusing to start isolated branch ${branch} in the production environment; migrations were not run.`);

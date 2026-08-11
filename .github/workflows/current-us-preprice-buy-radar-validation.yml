@@ -41,7 +41,8 @@ jobs:
           grep -q 'unquantifiedStrategicRevenueAddedToBaseFairValue: false' lib/opportunity-engine/us-preprice-buy-radar.ts
           grep -q 'recurringOperatingProfitSeparatedFromInvestmentGains: true' lib/opportunity-engine/strategic-optionality.ts
           grep -q 'doubleCountingGuard: true' lib/opportunity-engine/strategic-optionality.ts
-      - name: Wait for exact Railway deployment and fresh source-first Buy radar
+      - name: Manual live check of Railway deployment and fresh source-first Buy radar
+        if: github.event_name == 'workflow_dispatch'
         env:
           COMBINED_ENGINE_RAILWAY_URL: https://swing-up-swing-up-pr-262.up.railway.app
           EXPECTED_BRANCH_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}

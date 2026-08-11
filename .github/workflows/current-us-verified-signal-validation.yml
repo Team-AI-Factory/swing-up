@@ -35,7 +35,8 @@ jobs:
           npm run build
       - name: Verify consistency policy fixtures
         run: node scripts/us-serious-signal-consistency-smoke.mjs
-      - name: Wait for exact Railway deployment and fresh verified signals
+      - name: Manual live check of Railway deployment and fresh verified signals
+        if: github.event_name == 'workflow_dispatch'
         env:
           COMBINED_ENGINE_RAILWAY_URL: https://swing-up-swing-up-pr-262.up.railway.app
           EXPECTED_BRANCH_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}

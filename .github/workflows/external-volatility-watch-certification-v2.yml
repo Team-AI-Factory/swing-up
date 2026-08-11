@@ -1,13 +1,6 @@
 name: External Volatility Watch Certification V2
 
 on:
-  push:
-    branches:
-      - "agent/combined-opportunity-engine"
-    paths:
-      - "scripts/build-technical-risk-dataset.ts"
-      - "scripts/certify_external_volatility_watch_v2.py"
-      - ".github/workflows/external-volatility-watch-certification-v2.yml"
   workflow_dispatch:
 
 permissions:

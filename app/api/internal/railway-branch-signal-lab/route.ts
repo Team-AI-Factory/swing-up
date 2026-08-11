@@ -13,7 +13,7 @@ const REPORT_FILENAME = "swing-up-railway-branch-signal-lab.json";
 const WORKER_RUNTIME_STATUS_PATH = "/tmp/swing-up-branch-worker-runtime.json";
 const LAB_BRANCH = "agent/live-signal-evaluation-automation";
 const COMBINED_BRANCH = "agent/combined-opportunity-engine";
-const LAB_BRANCHES = new Set([LAB_BRANCH, COMBINED_BRANCH]);
+const LAB_BRANCHES = new Set([LAB_BRANCH]);
 const ACTIVE_BRANCH = process.env.RAILWAY_GIT_BRANCH?.trim() || LAB_BRANCH;
 const R2_BRANCH_NAMESPACE = ACTIVE_BRANCH === COMBINED_BRANCH ? "pr-262" : "pr-261";
 const R2_STATE_KEY = `branch-labs/${R2_BRANCH_NAMESPACE}/serious-signal/state.json`;
@@ -78,8 +78,9 @@ type StateStorage = {
 };
 
 function branchAllowed() {
-  if (process.env.SWING_UP_BRANCH_LAB_ALLOW_LOCAL === "true") return true;
   const branch = process.env.RAILWAY_GIT_BRANCH?.trim();
+  if (branch === COMBINED_BRANCH) return false;
+  if (process.env.SWING_UP_BRANCH_LAB_ALLOW_LOCAL === "true") return true;
   const environment = process.env.RAILWAY_ENVIRONMENT_NAME?.trim().toLowerCase();
   return Boolean(process.env.RAILWAY_PROJECT_ID && LAB_BRANCHES.has(branch ?? "") && environment && environment !== "production");
 }
@@ -475,13 +476,20 @@ function reviewedFingerprintsInWindow(history: History, now: number, windowMs: n
   ])];
 }
 
+function providerReservationUnits(reservation: { reservationUnits?: number }) {
+  return Number.isInteger(reservation.reservationUnits) && Number(reservation.reservationUnits) > 0
+    ? Number(reservation.reservationUnits)
+    : 1;
+}
+
 function providerQuotaUsage(history: History, now: number) {
   const latestPolicy = new Map<string, ProviderCallReservation>();
   for (const reservation of history.providerCallReservations) latestPolicy.set(reservation.quotaKey, reservation);
   return [...latestPolicy.values()].map((policy) => {
-    const callsInWindow = history.providerCallReservations.filter((reservation) => reservation.quotaKey === policy.quotaKey && now - Date.parse(reservation.reservedAt) >= 0 && now - Date.parse(reservation.reservedAt) < policy.rollingWindowMs).length;
+    const reservationsInWindow = history.providerCallReservations.filter((reservation) => reservation.quotaKey === policy.quotaKey && now - Date.parse(reservation.reservedAt) >= 0 && now - Date.parse(reservation.reservedAt) < policy.rollingWindowMs);
+    const callsInWindow = reservationsInWindow.reduce((total, reservation) => total + providerReservationUnits(reservation), 0);
     const latestCall = [...history.providerCallReservations].reverse().find((reservation) => reservation.quotaKey === policy.quotaKey);
-    return { provider: policy.provider, quotaKey: policy.quotaKey, rollingWindowHours: policy.rollingWindowMs / (60 * 60 * 1000), maximumCallsInWindow: policy.maximumCallsInWindow, callsInWindow, remainingCallsInWindow: Math.max(0, policy.maximumCallsInWindow - callsInWindow), latestReservedAt: latestCall?.reservedAt ?? null };
+    return { provider: policy.provider, quotaKey: policy.quotaKey, rollingWindowHours: policy.rollingWindowMs / (60 * 60 * 1000), maximumCallsInWindow: policy.maximumCallsInWindow, callsInWindow, reservationObjectsInWindow: reservationsInWindow.length, remainingCallsInWindow: Math.max(0, policy.maximumCallsInWindow - callsInWindow), latestReservedAt: latestCall?.reservedAt ?? null };
   }).sort((left, right) => left.provider.localeCompare(right.provider));
 }
 
@@ -988,7 +996,7 @@ async function executePost(request: NextRequest) {
         const decision = providerCallBudgetDecision(history.providerCallReservations, item.request, effectiveNow);
         decisions.push(decision);
         if (!decision.allowed) continue;
-        history.providerCallReservations.push({ provider: item.request.provider, quotaKey: item.request.quotaKey, cadenceKey: item.request.cadenceKey, reservedAt: new Date(effectiveNow).toISOString(), rollingWindowMs: item.request.rollingWindowMs, maximumCallsInWindow: item.request.maximumCallsInWindow, minimumIntervalMs: item.request.minimumIntervalMs });
+        history.providerCallReservations.push({ provider: item.request.provider, quotaKey: item.request.quotaKey, cadenceKey: item.request.cadenceKey, reservedAt: new Date(effectiveNow).toISOString(), rollingWindowMs: item.request.rollingWindowMs, maximumCallsInWindow: item.request.maximumCallsInWindow, minimumIntervalMs: item.request.minimumIntervalMs, reservationUnits: item.request.reservationUnits });
         addedReservation = true;
       }
       if (addedReservation) storage = await saveHistory(history, storage);

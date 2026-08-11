@@ -68,7 +68,8 @@ jobs:
           grep -q 'directUserNotifications: false' lib/opportunity-engine/us-signal-operations.ts
           grep -q 'trades: false' lib/opportunity-engine/us-signal-operations.ts
 
-      - name: Wait for exact Railway deployment and fresh operations report
+      - name: Manual live check of Railway deployment and fresh operations report
+        if: github.event_name == 'workflow_dispatch'
         env:
           COMBINED_ENGINE_RAILWAY_URL: https://swing-up-swing-up-pr-262.up.railway.app
           EXPECTED_BRANCH_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}

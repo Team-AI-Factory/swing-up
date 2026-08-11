@@ -406,6 +406,41 @@ async function fetchPage(fetchImpl: typeof fetch, start: number): Promise<PageRe
   }
 }
 
+async function fetchTargetedCompany(fetchImpl: typeof fetch, tradingViewSymbol: string, ticker: string) {
+  const expectedSymbol = tradingViewSymbol.trim().toUpperCase();
+  const expectedTicker = ticker.trim().toUpperCase();
+  if (!expectedSymbol || !expectedTicker) throw new Error("targeted_value_company_identity_required");
+  const response = await fetchImpl("https://scanner.tradingview.com/america/scan", {
+    method: "POST",
+    cache: "no-store",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+      origin: "https://www.tradingview.com",
+      referer: "https://www.tradingview.com/",
+      "user-agent": "Mozilla/5.0 (compatible; SwingUpValueInvesting/1.0)",
+    },
+    body: JSON.stringify({
+      filter: [
+        { left: "type", operation: "equal", right: "stock" },
+        { left: "is_primary", operation: "equal", right: true },
+      ],
+      options: { lang: "en" },
+      markets: ["america"],
+      symbols: { query: { types: [] }, tickers: [expectedSymbol] },
+      columns: [...COLUMNS],
+      range: [0, 10],
+    }),
+    signal: AbortSignal.timeout(20_000),
+  });
+  const payload = await response.json().catch(async () => await response.text().catch(() => null));
+  if (!response.ok) throw new Error(`tradingview_targeted_value_http_${response.status}`);
+  const rows = array(object(payload).data).flatMap((item) => parseRow(item) ?? []);
+  const exact = rows.filter((row) => row.tradingViewSymbol === expectedSymbol && row.ticker === expectedTicker);
+  if (exact.length !== 1) throw new Error(exact.length ? "targeted_value_company_ambiguous" : "targeted_value_company_unavailable");
+  return exact[0];
+}
+
 async function mapWithConcurrency<T, R>(items: T[], concurrency: number, worker: (item: T) => Promise<R>) {
   const output = new Array<R>(items.length);
   let cursor = 0;
@@ -790,6 +825,17 @@ export async function runUsValueInvestingCycle(input: { fetchImpl?: typeof fetch
   }
   state.__swingUpValueCycle = { expiresAt: now.getTime() + REFRESH_MS, result };
   return result;
+}
+
+export async function refreshUsValueCompany(input: {
+  tradingViewSymbol: string;
+  ticker: string;
+  fetchImpl?: typeof fetch;
+  now?: Date;
+}) {
+  const now = input.now ?? new Date();
+  const row = await fetchTargetedCompany(input.fetchImpl ?? fetch, input.tradingViewSymbol, input.ticker);
+  return analyzeRow(row, now.toISOString());
 }
 
 export function analyzeValueCompanyForTest(input: Partial<RawRow> & Pick<RawRow, "ticker" | "tradingViewSymbol" | "company" | "exchange" | "currentPrice">, observedAt = "2026-07-29T08:00:00.000Z") {

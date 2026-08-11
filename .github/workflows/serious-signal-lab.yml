@@ -54,6 +54,12 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Verify PR #262 runtime remains fully paused
+        run: npm run smoke:pr262-runtime-pause
+
+      - name: Verify PR #262 sensor-to-committee authority path
+        run: npm run smoke:pr262-sensor-foundation && npm run smoke:pr262-event-job && npm run smoke:pr262-committee-authority
+
       - name: Verify live-lab evidence and provider policies
         run: npm run smoke:branch-lab-policy && npm run smoke:r2-preview-write-guard && npm run smoke:branch-learning-ledger && npm run smoke:equity-universe-fallback && npm run smoke:equity-event-semantics && npm run smoke:equity-event-sources && npm run smoke:equity-historical-analogs && npm run smoke:equity-historical-bootstrap && npm run smoke:equity-event-first-runner && npm run smoke:equity-five-case-pilot && npm run smoke:equity-history-optional-pilot && npm run smoke:equity-industry-peer-pilot && npm run smoke:equity-article-evidence && npm run smoke:us-watch-out-engine && npm run smoke:watch-out-serious-promotion && npm run smoke:us-value-investing-engine && npm run smoke:us-value-investing-safety && npm run smoke:catalyst-company-diligence && npm run smoke:equity-sec-filing-details && npm run smoke:ai-committee-crypto-policy && npm run smoke:ai-committee-provider-guardrails
 
@@ -78,7 +84,7 @@ jobs:
         run: npm run smoke:branch-worker-process
 
       - name: Optional branch preview smoke
-        if: ${{ vars.SWING_UP_BRANCH_TEST_URL != '' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && vars.SWING_UP_BRANCH_TEST_URL != '' }}
         env:
           SWING_UP_BRANCH_TEST_URL: ${{ vars.SWING_UP_BRANCH_TEST_URL }}
           SWING_UP_AUTOMATION_TOKEN: ${{ secrets.SWING_UP_AUTOMATION_TOKEN }}

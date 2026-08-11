@@ -21,14 +21,14 @@ async function waitForHealth() {
 await waitForHealth();
 
 const isolatedGet = await json("/api/internal/railway-branch-signal-lab");
-if (isolatedGet.response.status !== 404 || isolatedGet.body?.error !== "not_found") throw new Error(`Branch lab was exposed outside an authenticated Railway branch preview (${isolatedGet.response.status}).`);
+if (isolatedGet.response.status !== 404 || isolatedGet.body?.error !== "pr262_runtime_hard_paused") throw new Error(`Branch lab bypassed the PR #262 API shutdown barrier (${isolatedGet.response.status}).`);
 
 const isolatedPost = await json("/api/internal/railway-branch-signal-lab", {
   method: "POST",
   headers: { "content-type": "application/json" },
   body: "{}",
 });
-if (isolatedPost.response.status !== 404 || isolatedPost.body?.error !== "not_found") throw new Error(`Branch lab accepted a trigger outside Railway preview (${isolatedPost.response.status}).`);
+if (isolatedPost.response.status !== 404 || isolatedPost.body?.error !== "pr262_runtime_hard_paused") throw new Error(`Branch lab trigger bypassed the PR #262 API shutdown barrier (${isolatedPost.response.status}).`);
 
 const untrusted = await json("/api/ai-committee/run", {
   method: "POST",
@@ -36,20 +36,27 @@ const untrusted = await json("/api/ai-committee/run", {
   body: JSON.stringify({ candidateAlertId: "untrusted-evidence-test", evidencePack: { candidateAlertId: "untrusted-evidence-test", missingEvidence: [] }, persistResult: false, dryRun: false, confirmRun: true }),
 });
 
-if (untrusted.response.ok || untrusted.body?.status !== "evidence_pack_unavailable") throw new Error(`Public committee route accepted untrusted in-memory evidence (${untrusted.response.status}, ${untrusted.body?.status}).`);
+if (untrusted.response.status !== 404 || untrusted.body?.error !== "pr262_runtime_hard_paused") throw new Error(`Public committee route bypassed the PR #262 API shutdown barrier (${untrusted.response.status}).`);
 if (Array.isArray(untrusted.body?.agentResults) || untrusted.body?.compatibility?.callsOpenAi === true) throw new Error("Untrusted evidence reached the OpenAI execution path.");
 
 const startScript = await readFile(new URL("./railway-branch-start.mjs", import.meta.url), "utf8");
-if (!startScript.includes(`"agent/combined-opportunity-engine"`)) throw new Error("Combined opportunity branch is not enabled for the isolated R2 worker.");
+if (!startScript.includes(`const PR262_BRANCH = "agent/combined-opportunity-engine"`)) throw new Error("Combined opportunity branch does not have an explicit hard-pause identity.");
 for (const marker of [
   `SWING_UP_R2_WRITE_PREFIX: r2WritePrefix`,
-  `"branch-labs/pr-262/"`,
   `"branch-labs/pr-261/"`,
+  `if (branch === PR262_BRANCH)`,
   `if (productionLabBranch)`,
   `migrations were not run`,
 ]) {
   if (!startScript.includes(marker)) throw new Error(`Preview startup write isolation is missing: ${marker}`);
 }
+const labBranches = startScript.match(/const LAB_BRANCHES = new Set\(\[([\s\S]*?)\]\);/)?.[1] ?? "";
+if (labBranches.includes("agent/combined-opportunity-engine") || startScript.includes(`"branch-labs/pr-262/"`)) {
+  throw new Error("PR #262 is still exposed through the legacy branch worker or its R2 namespace.");
+}
+const pr262PauseIndex = startScript.indexOf("if (branch === PR262_BRANCH)");
+const applicationLaunchIndex = startScript.indexOf('child = launch("npm"');
+if (pr262PauseIndex < 0 || (applicationLaunchIndex >= 0 && pr262PauseIndex > applicationLaunchIndex)) throw new Error("PR #262 pause does not precede application startup.");
 const strippedVariables = startScript.match(/for \(const key of \[([\s\S]*?)\]\) delete env\[key\];/)?.[1] ?? "";
 if (!strippedVariables.includes("DATABASE_URL") || !strippedVariables.includes("TELEGRAM_BOT_TOKEN")) throw new Error("Branch startup no longer strips database or notification credentials.");
 if (strippedVariables.includes("R2_ACCESS_KEY_ID") || strippedVariables.includes("R2_SECRET_ACCESS_KEY") || strippedVariables.includes("CLOUDFLARE_R2_ACCESS_KEY_ID") || strippedVariables.includes("CLOUDFLARE_R2_SECRET_ACCESS_KEY")) throw new Error("Branch startup strips the Cloudflare R2 state credentials.");
@@ -108,4 +115,4 @@ for (const marker of ["branch-labs/pr-261/equity-universe/v1.json", "branch-labs
   if (!universeSource.includes(marker)) throw new Error(`Branch-specific universe cache is missing: ${marker}`);
 }
 
-console.log(JSON.stringify({ ok: true, performanceSimulationUsed: false, branchLabUnavailableOutsidePreview: true, untrustedEvidenceBlocked: true, cloudflareR2PrimaryState: true, railwayVolumePrimaryState: false, dedicatedWorkerSupervised: true, overdueScanWatchdog: true, openAiCalled: false, databaseWrites: false, publishing: false, notifications: false }, null, 2));
+console.log(JSON.stringify({ ok: true, performanceSimulationUsed: false, allApiExecutionBlockedExceptHealth: true, untrustedEvidenceBlocked: true, pr262RuntimeHardPaused: true, cloudflareR2PrimaryState: true, railwayVolumePrimaryState: false, pr261DedicatedWorkerPolicyStillSupervised: true, overdueScanWatchdog: true, openAiCalled: false, databaseWrites: false, publishing: false, notifications: false }, null, 2));

@@ -38,6 +38,11 @@ function signal(overrides = {}) {
       historicalPilotPassed: null,
       longTermNormalizationPassed: true,
       specialistModel: "general",
+      committeeApproved: true,
+      committeeAgentsCompleted: 14,
+      committeeAgentsFailed: 0,
+      finalJudgePositive: true,
+      finalJudgeConfidence: 85,
     },
     thesisSnapshot: { baseFairValue: 100, qualityScore: 90, riskScore: 20 },
     ...overrides,
@@ -89,11 +94,19 @@ const badPilot = signal({
     historicalPilotPassed: false,
   },
 });
+const incompleteCommittee = signal({
+  ticker: "PARTIAL",
+  company: "Partial Committee Example",
+  evidence: {
+    ...signal().evidence,
+    committeeAgentsCompleted: 13,
+  },
+});
 
 const verified = verifyUsSeriousSignals({
   checkedAt: "2026-08-09T00:00:00Z",
   seriousSignals: {
-    buy: [validGeneral, inconsistentSpecialist, unsupportedPharma, validSpecialist, badPilot],
+    buy: [validGeneral, inconsistentSpecialist, unsupportedPharma, validSpecialist, badPilot, incompleteCommittee],
     sell: [],
     watchOut: [],
   },
@@ -101,10 +114,11 @@ const verified = verifyUsSeriousSignals({
 
 assert.deepEqual(verified.seriousSignals.buy.map((item) => item.ticker), ["SAFE", "CYCLE"]);
 assert.equal(verified.verifiedCounts.buy, 2);
-assert.equal(verified.rawCounts.buy, 5);
+assert.equal(verified.rawCounts.buy, 6);
 assert.ok(verified.rejected.some((item) => item.ticker === "GSL" && item.reasons.some((reason) => reason.includes("specialist"))));
 assert.ok(verified.rejected.some((item) => item.ticker === "IRWD" && item.reasons.some((reason) => reason.includes("pharmaceutical"))));
 assert.ok(verified.rejected.some((item) => item.ticker === "EVENT" && item.reasons.some((reason) => reason.includes("Pilot 5"))));
+assert.ok(verified.rejected.some((item) => item.ticker === "PARTIAL" && item.reasons.some((reason) => reason.includes("13 specialists plus the Final Judge"))));
 
 console.log(JSON.stringify({
   ok: true,
@@ -113,4 +127,5 @@ console.log(JSON.stringify({
   unsupportedPharmaGeneralBuyRejected: true,
   potentialReconciliationRequired: true,
   pilotFivePreserved: true,
+  fullCommitteeProofRequired: true,
 }, null, 2));

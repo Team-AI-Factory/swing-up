@@ -6,6 +6,12 @@ import { writeFile } from "node:fs/promises";
 const LAB_BRANCH = "agent/live-signal-evaluation-automation";
 const branch = (process.env.RAILWAY_GIT_BRANCH || "").trim();
 const environment = (process.env.RAILWAY_ENVIRONMENT_NAME || "").trim().toLowerCase();
+
+if (branch === LAB_BRANCH) {
+  console.log("[swing-up-retired] PR #261 is permanently retired. Exiting successfully without starting the website, scanner, retries, or watchdog.");
+  process.exit(0);
+}
+
 const branchLab = Boolean(process.env.RAILWAY_PROJECT_ID && branch === LAB_BRANCH && environment && environment !== "production");
 const runtimeToken = crypto.randomBytes(32).toString("hex");
 const port = process.env.PORT || "3000";

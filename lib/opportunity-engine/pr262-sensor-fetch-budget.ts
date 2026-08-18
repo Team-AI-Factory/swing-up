@@ -2,14 +2,20 @@ import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-wareho
 
 const STATE_KEY = "branch-labs/pr-262/sensor/provider-budgets-v1.json";
 const DAY_MS = 24 * 60 * 60_000;
+const HOUR_MS = 60 * 60_000;
 const MINUTE_MS = 60_000;
 
-type Reservation = { provider: string; quotaKey: string; cadenceKey: string; at: string };
-type BudgetState = { version: 1; updatedAt: string; reservations: Reservation[] };
+type LegacyReservation = { provider?: unknown; quotaKey?: unknown; cadenceKey?: unknown; at?: unknown };
+type BudgetState = {
+  version: 2;
+  updatedAt: string;
+  hourlyCounts: Record<string, Record<string, number>>;
+  lastCadenceAt: Record<string, string>;
+};
 type Policy = { provider: string; quotaKey: string; cadenceKey: string; maximumPer24Hours: number; minimumIntervalMs: number };
 
 function emptyState(): BudgetState {
-  return { version: 1, updatedAt: new Date(0).toISOString(), reservations: [] };
+  return { version: 2, updatedAt: new Date(0).toISOString(), hourlyCounts: {}, lastCadenceAt: {} };
 }
 
 function policyFor(request: RequestInfo | URL): Policy | null {
@@ -50,23 +56,70 @@ function policyFor(request: RequestInfo | URL): Policy | null {
   return null;
 }
 
+function hourKey(ms: number) {
+  return new Date(Math.floor(ms / HOUR_MS) * HOUR_MS).toISOString().slice(0, 13);
+}
+
+function addCount(state: BudgetState, quotaKey: string, atMs: number, amount = 1) {
+  const key = hourKey(atMs);
+  const buckets = state.hourlyCounts[quotaKey] ??= {};
+  buckets[key] = Math.max(0, Number(buckets[key]) || 0) + amount;
+}
+
+function prune(state: BudgetState, nowMs: number) {
+  // Keep the current hour plus the previous 24 complete hour buckets. This is
+  // slightly conservative versus an exact 24-hour window, which is intentional:
+  // a crash or clock edge can reduce available calls, never increase them.
+  const oldestHour = Math.floor((nowMs - DAY_MS) / HOUR_MS) * HOUR_MS;
+  for (const [quotaKey, buckets] of Object.entries(state.hourlyCounts)) {
+    for (const key of Object.keys(buckets)) {
+      const parsed = Date.parse(`${key}:00:00.000Z`);
+      if (!Number.isFinite(parsed) || parsed < oldestHour) delete buckets[key];
+    }
+    if (!Object.keys(buckets).length) delete state.hourlyCounts[quotaKey];
+  }
+  for (const [cadenceKey, value] of Object.entries(state.lastCadenceAt)) {
+    const parsed = Date.parse(value);
+    if (!Number.isFinite(parsed) || nowMs - parsed > 2 * DAY_MS) delete state.lastCadenceAt[cadenceKey];
+  }
+}
+
+function quotaCount(state: BudgetState, quotaKey: string) {
+  return Object.values(state.hourlyCounts[quotaKey] ?? {}).reduce((sum, value) => sum + Math.max(0, Number(value) || 0), 0);
+}
+
+function migrate(raw: unknown, nowMs: number): BudgetState {
+  const value = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  if (value.version === 2) {
+    const state: BudgetState = {
+      version: 2,
+      updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : new Date(0).toISOString(),
+      hourlyCounts: value.hourlyCounts && typeof value.hourlyCounts === "object" && !Array.isArray(value.hourlyCounts) ? value.hourlyCounts as Record<string, Record<string, number>> : {},
+      lastCadenceAt: value.lastCadenceAt && typeof value.lastCadenceAt === "object" && !Array.isArray(value.lastCadenceAt) ? value.lastCadenceAt as Record<string, string> : {},
+    };
+    prune(state, nowMs);
+    return state;
+  }
+
+  const state = emptyState();
+  const reservations = Array.isArray(value.reservations) ? value.reservations as LegacyReservation[] : [];
+  for (const reservation of reservations) {
+    if (typeof reservation.quotaKey !== "string" || typeof reservation.cadenceKey !== "string" || typeof reservation.at !== "string") continue;
+    const at = Date.parse(reservation.at);
+    if (!Number.isFinite(at) || nowMs - at < 0 || nowMs - at > DAY_MS) continue;
+    addCount(state, reservation.quotaKey, at);
+    const previous = Date.parse(state.lastCadenceAt[reservation.cadenceKey] ?? "");
+    if (!Number.isFinite(previous) || at > previous) state.lastCadenceAt[reservation.cadenceKey] = new Date(at).toISOString();
+  }
+  prune(state, nowMs);
+  return state;
+}
+
 async function load(now: Date) {
   const current = await readVersionedTextFromR2(STATE_KEY);
   if (!current.found || !current.text) return { state: emptyState(), etag: current.etag };
-  let parsed = emptyState();
-  try {
-    const raw = JSON.parse(current.text) as Partial<BudgetState>;
-    parsed = {
-      version: 1,
-      updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : new Date(0).toISOString(),
-      reservations: Array.isArray(raw.reservations) ? raw.reservations.filter((item): item is Reservation => Boolean(item && typeof item.at === "string" && typeof item.quotaKey === "string" && typeof item.cadenceKey === "string" && typeof item.provider === "string")) : [],
-    };
-  } catch {}
-  parsed.reservations = parsed.reservations.filter((item) => {
-    const at = Date.parse(item.at);
-    return Number.isFinite(at) && now.getTime() - at >= 0 && now.getTime() - at < DAY_MS;
-  });
-  return { state: parsed, etag: current.etag };
+  try { return { state: migrate(JSON.parse(current.text), now.getTime()), etag: current.etag }; }
+  catch { return { state: emptyState(), etag: current.etag }; }
 }
 
 export async function createPr262SensorBudgetedFetch(input: { now?: Date; fetchImpl?: typeof fetch } = {}) {
@@ -80,46 +133,44 @@ export async function createPr262SensorBudgetedFetch(input: { now?: Date; fetchI
   const fetchImpl: typeof fetch = async (request, init) => {
     const policy = policyFor(request);
     if (!policy) return rawFetch(request, init);
-    const current = new Date();
-    const window = state.reservations.filter((item) => item.quotaKey === policy.quotaKey && current.getTime() - Date.parse(item.at) < DAY_MS);
-    if (window.length >= policy.maximumPer24Hours) {
-      const oldest = window.map((item) => Date.parse(item.at)).filter(Number.isFinite).sort((a, b) => a - b)[0];
-      const nextEligibleAt = Number.isFinite(oldest) ? new Date(oldest + DAY_MS).toISOString() : null;
-      blocked.push({ provider: policy.provider, reason: "rolling_24h_budget", nextEligibleAt });
+    const currentMs = Date.now();
+    prune(state, currentMs);
+    const used = quotaCount(state, policy.quotaKey);
+    if (used >= policy.maximumPer24Hours) {
+      blocked.push({ provider: policy.provider, reason: "rolling_24h_budget", nextEligibleAt: null });
       throw new Error(`pr262_sensor_budget_guard:${policy.provider}:rolling_24h_budget`);
     }
-    const latest = state.reservations
-      .filter((item) => item.cadenceKey === policy.cadenceKey)
-      .map((item) => Date.parse(item.at))
-      .filter(Number.isFinite)
-      .sort((a, b) => b - a)[0];
-    if (Number.isFinite(latest) && current.getTime() - latest < policy.minimumIntervalMs) {
-      const nextEligibleAt = new Date(latest + policy.minimumIntervalMs).toISOString();
+    const last = Date.parse(state.lastCadenceAt[policy.cadenceKey] ?? "");
+    if (Number.isFinite(last) && currentMs - last < policy.minimumIntervalMs) {
+      const nextEligibleAt = new Date(last + policy.minimumIntervalMs).toISOString();
       blocked.push({ provider: policy.provider, reason: "minimum_interval", nextEligibleAt });
       throw new Error(`pr262_sensor_budget_guard:${policy.provider}:minimum_interval`);
     }
-    state.reservations.push({ provider: policy.provider, quotaKey: policy.quotaKey, cadenceKey: policy.cadenceKey, at: current.toISOString() });
+    addCount(state, policy.quotaKey, currentMs);
+    state.lastCadenceAt[policy.cadenceKey] = new Date(currentMs).toISOString();
     dirty = true;
     return rawFetch(request, init);
   };
 
   const flush = async () => {
-    if (!dirty) return { persisted: false, key: STATE_KEY, reservationCount: state.reservations.length };
-    state.updatedAt = new Date().toISOString();
-    state.reservations = state.reservations.filter((item) => Date.now() - Date.parse(item.at) < DAY_MS).slice(-4_000);
+    if (!dirty) return { persisted: false, key: STATE_KEY, hourlyBucketCount: Object.values(state.hourlyCounts).reduce((sum, buckets) => sum + Object.keys(buckets).length, 0) };
+    const nowMs = Date.now();
+    prune(state, nowMs);
+    state.updatedAt = new Date(nowMs).toISOString();
     const written = await writeVersionedJsonToR2(STATE_KEY, state, loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true });
     if (written.conflict) throw new Error("pr262_sensor_provider_budget_state_conflict");
-    return { persisted: true, key: STATE_KEY, reservationCount: state.reservations.length };
+    return { persisted: true, key: STATE_KEY, hourlyBucketCount: Object.values(state.hourlyCounts).reduce((sum, buckets) => sum + Object.keys(buckets).length, 0) };
   };
 
   return {
     fetchImpl,
     flush,
     summary: () => ({
-      reservationsThisWindow: state.reservations.length,
+      hourlyBucketCount: Object.values(state.hourlyCounts).reduce((sum, buckets) => sum + Object.keys(buckets).length, 0),
       blocked: blocked.slice(-50),
       policiesAreHardNetworkGuards: true,
       freeTierHeadroomReserved: true,
+      compactR2Ledger: true,
     }),
   };
 }

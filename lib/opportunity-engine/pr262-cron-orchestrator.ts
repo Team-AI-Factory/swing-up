@@ -63,22 +63,33 @@ export async function runPr262CronCycle() {
   let seriousSells = 0;
   let seriousWatchOuts = 0;
 
-  for (let index = 0; index < capacity && Date.now() - startedAt < MAX_CYCLE_MS; index += 1) {
-    try {
-      const raw = await runPr262EventJob({ allowOpenAi: true });
-      const result = asJson(raw);
-      eventResults.push(result);
-      const status = String(result.status ?? "");
-      if (status === "idle" || status === "busy") break;
-      if (result.openAiCalled === true) aiCalls += 1;
-      if (result.seriousSignalFound === true && result.alertType === "buy") seriousBuys += 1;
-      if (result.seriousSignalFound === true && result.alertType === "sell") seriousSells += 1;
-      const watchOut = await promotePr262SeriousWatchOut(typeof result.resultKey === "string" ? result.resultKey : null).catch(() => ({ promoted: false }));
-      if (watchOut.promoted) seriousWatchOuts += 1;
-    } catch (error) {
-      eventFailures += 1;
-      eventResults.push({ status: "event_job_error", error: error instanceof Error ? error.message.slice(0, 260) : "event_job_failed" });
+  // Alpha Vantage's free allowance is shared by the whole app. The sensor owns
+  // a small, hard-budgeted share for news/earnings discovery. During the
+  // specialist phase we remove the key from this short-lived process so quote
+  // fallback uses Yahoo first and FMP second rather than spending a second,
+  // independently-accounted Alpha allowance.
+  const alphaVantageKey = process.env.ALPHA_VANTAGE_API_KEY;
+  delete process.env.ALPHA_VANTAGE_API_KEY;
+  try {
+    for (let index = 0; index < capacity && Date.now() - startedAt < MAX_CYCLE_MS; index += 1) {
+      try {
+        const raw = await runPr262EventJob({ allowOpenAi: true });
+        const result = asJson(raw);
+        eventResults.push(result);
+        const status = String(result.status ?? "");
+        if (status === "idle" || status === "busy") break;
+        if (result.openAiCalled === true) aiCalls += 1;
+        if (result.seriousSignalFound === true && result.alertType === "buy") seriousBuys += 1;
+        if (result.seriousSignalFound === true && result.alertType === "sell") seriousSells += 1;
+        const watchOut = await promotePr262SeriousWatchOut(typeof result.resultKey === "string" ? result.resultKey : null).catch(() => ({ promoted: false }));
+        if (watchOut.promoted) seriousWatchOuts += 1;
+      } catch (error) {
+        eventFailures += 1;
+        eventResults.push({ status: "event_job_error", error: error instanceof Error ? error.message.slice(0, 260) : "event_job_failed" });
+      }
     }
+  } finally {
+    if (alphaVantageKey) process.env.ALPHA_VANTAGE_API_KEY = alphaVantageKey;
   }
 
   state = await readPr262ChangeSensorState();
@@ -136,6 +147,10 @@ export async function runPr262CronCycle() {
     historicalPolicy: {
       historicalCasesRequiredForSeriousSignal: false,
       historicalCasesRemainLearningContext: true,
+    },
+    providerPolicy: {
+      alphaVantageReservedForSensorOnly: true,
+      eventQuoteFallbackOrder: ["Yahoo Finance", "Financial Modeling Prep"],
     },
     cost,
     safety: { publishing: false, notifications: false, trades: false, databaseWrites: false },

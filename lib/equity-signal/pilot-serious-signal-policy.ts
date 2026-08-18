@@ -32,7 +32,7 @@ export function evaluateFiveCasePilotGate(candidateValue: unknown) {
   const analog = object(candidate.historicalAnalog);
   const items = historicalItems(analog.items);
   const reportedSampleSize = Math.max(0, Math.floor(finite(analog.sampleSize) ?? 0));
-  const hitRate = finite(analog.weightedHitRatePercent) ?? finite(analog.hitRatePercent);
+  const hitRate = finite(analog.weightedHitRatePercent) ?? finite(analog.hitRatePercent) ?? 0;
   const lowerQuartile = finite(analog.p25DirectionAdjustedReturnPercent);
   const selectedHorizon = typeof analog.selectedHorizon === "string" && analog.selectedHorizon.trim() ? analog.selectedHorizon : null;
   return {

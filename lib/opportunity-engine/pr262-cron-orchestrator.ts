@@ -1,0 +1,129 @@
+import { enrichPr262SensorCompanyMappings } from "@/lib/opportunity-engine/pr262-company-directory";
+import { readPr262ChangeSensorState } from "@/lib/opportunity-engine/pr262-change-sensor";
+import { runPr262EventJob } from "@/lib/opportunity-engine/pr262-event-job";
+import { runPr262LightweightSensorV3 } from "@/lib/opportunity-engine/pr262-lightweight-sensor-v3";
+import { promotePr262SeriousWatchOut } from "@/lib/opportunity-engine/pr262-serious-watch-out-authority";
+import { recordPr262CostEffectiveness } from "@/lib/opportunity-engine/pr262-cost-effectiveness";
+
+const MAX_CYCLE_MS = 210_000;
+
+type Json = Record<string, unknown>;
+
+function dueReadyCount(state: Awaited<ReturnType<typeof readPr262ChangeSensorState>>) {
+  const now = Date.now();
+  return state.pending.filter((event) => {
+    const retryAt = event.queueNextAttemptAt ? Date.parse(event.queueNextAttemptAt) : Number.NaN;
+    return event.priority >= 80
+      && Boolean(event.ticker)
+      && (event.source !== "sec" || event.mappingStatus === "mapped")
+      && (!Number.isFinite(retryAt) || retryAt <= now);
+  }).length;
+}
+
+function capacityForQueue(ready: number) {
+  if (ready >= 100) return 12;
+  if (ready >= 30) return 8;
+  return 4;
+}
+
+function asJson(value: unknown): Json {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Json : {};
+}
+
+export async function runPr262CronCycle() {
+  const startedAt = Date.now();
+  const checkedAt = new Date().toISOString();
+  const sensor = await runPr262LightweightSensorV3();
+  const mapping = await enrichPr262SensorCompanyMappings().catch((error) => ({
+    mapped: 0,
+    directoryCompanies: 0,
+    directoryUpdatedAt: null,
+    error: error instanceof Error ? error.message : "mapping_failed",
+  }));
+
+  let state = await readPr262ChangeSensorState();
+  const readyAtStart = dueReadyCount(state);
+  const capacity = capacityForQueue(readyAtStart);
+  const eventResults: Json[] = [];
+  let eventFailures = 0;
+  let aiCalls = 0;
+  let seriousBuys = 0;
+  let seriousSells = 0;
+  let seriousWatchOuts = 0;
+
+  for (let index = 0; index < capacity && Date.now() - startedAt < MAX_CYCLE_MS; index += 1) {
+    try {
+      const raw = await runPr262EventJob({ allowOpenAi: true });
+      const result = asJson(raw);
+      eventResults.push(result);
+      const status = String(result.status ?? "");
+      if (status === "idle" || status === "busy") break;
+      if (result.openAiCalled === true) aiCalls += 1;
+      if (result.seriousSignalFound === true && result.alertType === "buy") seriousBuys += 1;
+      if (result.seriousSignalFound === true && result.alertType === "sell") seriousSells += 1;
+      const watchOut = await promotePr262SeriousWatchOut(typeof result.resultKey === "string" ? result.resultKey : null).catch(() => ({ promoted: false }));
+      if (watchOut.promoted) seriousWatchOuts += 1;
+    } catch (error) {
+      eventFailures += 1;
+      eventResults.push({ status: "event_job_error", error: error instanceof Error ? error.message.slice(0, 260) : "event_job_failed" });
+    }
+  }
+
+  state = await readPr262ChangeSensorState();
+  const sourceAttempts = sensor.sourceSummary.filter((item) => item.attempted).length;
+  const sourceFailures = sensor.sourceSummary.filter((item) => item.attempted && !["connected", "partial", "not_due", "not_configured"].includes(item.status)).length;
+  const eventsProcessed = eventResults.filter((item) => Number(item.eventsProcessed) > 0).length;
+  const durationMs = Date.now() - startedAt;
+  const directIssuer = sensor.sourceSummary.find((item) => item.provider === "direct_issuer_feeds");
+
+  const cost = await recordPr262CostEffectiveness({
+    checkedAt,
+    durationMs,
+    sourceAttempts,
+    sourceFailures,
+    newEvents: sensor.newEvents,
+    sectorFanoutEvents: sensor.sectorFanoutEvents,
+    pendingEvents: state.pending.length,
+    eventsProcessed,
+    eventFailures,
+    aiCalls,
+    seriousBuys,
+    seriousSells,
+    seriousWatchOuts,
+    directIssuerFeedsPolled: directIssuer?.recordsRead ?? 0,
+  }).catch((error) => ({ error: error instanceof Error ? error.message : "cost_metrics_failed" }));
+
+  return {
+    ok: sensor.ok,
+    mode: "pr262_five_minute_cron_v3",
+    checkedAt,
+    durationMs,
+    sensor: {
+      newEvents: sensor.newEvents,
+      sectorFanoutEvents: sensor.sectorFanoutEvents,
+      pendingEvents: state.pending.length,
+      exposureCompanies: sensor.exposureCompanies,
+      sources: sensor.sourceSummary,
+      costPolicy: sensor.costPolicy,
+    },
+    mapping,
+    processing: {
+      readyAtStart,
+      capacity,
+      eventsProcessed,
+      eventFailures,
+      aiCalls,
+      seriousBuys,
+      seriousSells,
+      seriousWatchOuts,
+      deadlineMs: MAX_CYCLE_MS,
+      eventResults: eventResults.slice(0, 12),
+    },
+    historicalPolicy: {
+      historicalCasesRequiredForSeriousSignal: false,
+      historicalCasesRemainLearningContext: true,
+    },
+    cost,
+    safety: { publishing: false, notifications: false, trades: false, databaseWrites: false },
+  };
+}

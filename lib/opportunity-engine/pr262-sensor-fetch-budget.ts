@@ -36,9 +36,9 @@ function policyFor(request: RequestInfo | URL): Policy | null {
   if (host === "api.commerce.gov") return { provider: "commerce", quotaKey: "sensor_commerce", cadenceKey: "sensor_commerce", maximumPer24Hours: 46, minimumIntervalMs: 29 * MINUTE_MS };
   if (host === "www.alphavantage.co") {
     const fn = (url.searchParams.get("function") ?? "unknown").toUpperCase();
-    return { provider: "alpha_vantage", quotaKey: "sensor_alpha_vantage", cadenceKey: `sensor_alpha:${fn}`, maximumPer24Hours: 8, minimumIntervalMs: fn === "EARNINGS_CALENDAR" ? 23 * 60 * MINUTE_MS : 179 * MINUTE_MS };
+    return { provider: "alpha_vantage", quotaKey: "sensor_alpha_vantage", cadenceKey: `sensor_alpha:${fn}`, maximumPer24Hours: 20, minimumIntervalMs: fn === "EARNINGS_CALENDAR" ? 23 * 60 * MINUTE_MS : 119 * MINUTE_MS };
   }
-  if (host === "financialmodelingprep.com") return { provider: "fmp", quotaKey: "sensor_fmp", cadenceKey: "sensor_fmp_news", maximumPer24Hours: 8, minimumIntervalMs: 179 * MINUTE_MS };
+  if (host === "financialmodelingprep.com") return { provider: "fmp", quotaKey: "sensor_fmp", cadenceKey: "sensor_fmp_news", maximumPer24Hours: 10, minimumIntervalMs: 119 * MINUTE_MS };
   if (host === "www.federalregister.gov") return { provider: "federal_register", quotaKey: "sensor_federal_register", cadenceKey: "sensor_federal_register", maximumPer24Hours: 46, minimumIntervalMs: 29 * MINUTE_MS };
   if (host === "api.fda.gov") return { provider: "openfda", quotaKey: "sensor_openfda", cadenceKey: "sensor_openfda", maximumPer24Hours: 4, minimumIntervalMs: 6 * 60 * MINUTE_MS };
   if (host === "www.nyse.com" && path === "/api/trade-halts/current") return { provider: "nyse", quotaKey: "sensor_trade_halts", cadenceKey: "sensor_trade_halts:nyse", maximumPer24Hours: 280, minimumIntervalMs: 4.5 * MINUTE_MS };
@@ -67,9 +67,6 @@ function addCount(state: BudgetState, quotaKey: string, atMs: number, amount = 1
 }
 
 function prune(state: BudgetState, nowMs: number) {
-  // Keep the current hour plus the previous 24 complete hour buckets. This is
-  // slightly conservative versus an exact 24-hour window, which is intentional:
-  // a crash or clock edge can reduce available calls, never increase them.
   const oldestHour = Math.floor((nowMs - DAY_MS) / HOUR_MS) * HOUR_MS;
   for (const [quotaKey, buckets] of Object.entries(state.hourlyCounts)) {
     for (const key of Object.keys(buckets)) {

@@ -22,10 +22,10 @@ const [railwayRaw, packageRaw, middleware, cronLauncher, legacySensorWorker, leg
 const railway = JSON.parse(railwayRaw);
 const pkg = JSON.parse(packageRaw);
 
+assert.equal(railway.build?.builder, "RAILPACK", "PR262 must use Railway's current Railpack builder");
 assert.equal(railway.deploy?.startCommand, "npm run pr262:cron", "PR262 must run only through the bounded cron launcher");
 assert.equal(railway.deploy?.cronSchedule, "*/5 * * * *", "PR262 must use Railway's five-minute cron schedule");
-assert.equal(railway.deploy?.restartPolicyType, "NEVER", "A completed cron must not become an always-on process");
-assert.equal(railway.deploy?.restartPolicyMaxRetries, 0, "Cron failures must wait for the next scheduled run rather than spin continuously");
+assert.equal(railway.deploy?.restartPolicyType, "NEVER", "A completed or failed cron must wait for the next schedule rather than become an always-on restart loop");
 assert.equal(pkg.scripts?.["pr262:cron"], "node scripts/pr262-cron-cycle.mjs", "Package script must enter the bounded cron launcher");
 
 assert.match(cronLauncher, /SWING_UP_PR262_CRON_RUNTIME_TOKEN/, "Cron must create or pass a short-lived internal token");

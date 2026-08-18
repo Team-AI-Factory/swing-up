@@ -16,6 +16,16 @@ const env = {
   PUBLIC_LEDGER_TRACKING_ENABLED: "false",
   PUBLIC_TRACKING_ENABLED: "false",
 };
+for (const key of [
+  "DATABASE_URL",
+  "DIRECT_URL",
+  "TELEGRAM_BOT_TOKEN",
+  "TELEGRAM_TEST_CHAT_ID",
+  "STRIPE_SECRET_KEY",
+  "STRIPE_WEBHOOK_SECRET",
+  "AWS_ACCESS_KEY_ID",
+  "AWS_SECRET_ACCESS_KEY",
+]) delete env[key];
 
 function stop(child, signal = "SIGTERM") {
   if (child && !child.killed) child.kill(signal);

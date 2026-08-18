@@ -61,6 +61,8 @@ for (const expected of [
 assert.match(historicalPolicy, /historicalCasesRequiredForSeriousSignal:\s*false/, "Historical cases must not gate Serious Signals");
 assert.match(historicalPolicy, /passed:\s*true/, "Compatibility history gate must remain non-blocking");
 assert.match(watchOutAuthority, /pr262_committee_verified_serious_watch_out/, "Serious Watch Out must have a committee-verified outbox path");
-assert.match(watchOutAuthority, /agentsCompleted\)\s*===\s*14/, "Serious Watch Out must require all 14 committee roles");
+assert.match(watchOutAuthority, /committee\.agentsCompleted\s*===\s*14/, "Serious Watch Out must require all 14 committee roles");
+assert.match(watchOutAuthority, /committee\.agentsFailed\s*===\s*0/, "Serious Watch Out must reject incomplete committee runs");
+assert.match(watchOutAuthority, /judge\.verdict\s*===\s*"positive"/, "Serious Watch Out must require a positive Final Judge");
 
 console.log("PR #262 controlled runtime smoke passed: five-minute cron enabled, legacy scanners blocked, comprehensive lightweight sensor wired, history gate disabled, and Serious Watch Out authority protected.");

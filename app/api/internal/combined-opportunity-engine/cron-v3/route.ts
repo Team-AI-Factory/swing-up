@@ -4,7 +4,8 @@ import { runPr262CronCycle } from "@/lib/opportunity-engine/pr262-cron-orchestra
 export const dynamic = "force-dynamic";
 
 function authorized(request: NextRequest) {
-  const expected = process.env.SWING_UP_PR262_SENSOR_TOKEN?.trim()
+  const expected = process.env.SWING_UP_PR262_CRON_RUNTIME_TOKEN?.trim()
+    || process.env.SWING_UP_PR262_SENSOR_TOKEN?.trim()
     || process.env.SWING_UP_AUTOMATION_TOKEN?.trim();
   const supplied = request.headers.get("x-swing-up-pr262-cron-token")?.trim();
   return Boolean(expected && supplied === expected);

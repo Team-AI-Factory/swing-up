@@ -6,7 +6,6 @@
   "deploy": {
     "startCommand": "npm run pr262:cron",
     "cronSchedule": "*/5 * * * *",
-    "restartPolicyType": "NEVER",
-    "restartPolicyMaxRetries": 0
+    "restartPolicyType": "NEVER"
   }
 }

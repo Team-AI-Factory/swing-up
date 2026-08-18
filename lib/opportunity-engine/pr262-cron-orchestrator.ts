@@ -2,6 +2,7 @@ import { enrichPr262SensorCompanyMappings } from "@/lib/opportunity-engine/pr262
 import { readPr262ChangeSensorState } from "@/lib/opportunity-engine/pr262-change-sensor";
 import { runPr262EventJob } from "@/lib/opportunity-engine/pr262-event-job";
 import { runPr262LightweightSensorV3 } from "@/lib/opportunity-engine/pr262-lightweight-sensor-v3";
+import { createPr262SensorBudgetedFetch } from "@/lib/opportunity-engine/pr262-sensor-fetch-budget";
 import { promotePr262SeriousWatchOut } from "@/lib/opportunity-engine/pr262-serious-watch-out-authority";
 import { recordPr262CostEffectiveness } from "@/lib/opportunity-engine/pr262-cost-effectiveness";
 
@@ -33,7 +34,18 @@ function asJson(value: unknown): Json {
 export async function runPr262CronCycle() {
   const startedAt = Date.now();
   const checkedAt = new Date().toISOString();
-  const sensor = await runPr262LightweightSensorV3();
+  const sourceBudget = await createPr262SensorBudgetedFetch();
+  let sensor: Awaited<ReturnType<typeof runPr262LightweightSensorV3>>;
+  let budgetPersistence: unknown = null;
+  try {
+    sensor = await runPr262LightweightSensorV3({ fetchImpl: sourceBudget.fetchImpl });
+  } finally {
+    budgetPersistence = await sourceBudget.flush().catch((error) => ({
+      persisted: false,
+      error: error instanceof Error ? error.message : "sensor_budget_flush_failed",
+    }));
+  }
+
   const mapping = await enrichPr262SensorCompanyMappings().catch((error) => ({
     mapped: 0,
     directoryCompanies: 0,
@@ -105,6 +117,8 @@ export async function runPr262CronCycle() {
       exposureCompanies: sensor.exposureCompanies,
       sources: sensor.sourceSummary,
       costPolicy: sensor.costPolicy,
+      providerBudget: sourceBudget.summary(),
+      providerBudgetPersistence: budgetPersistence,
     },
     mapping,
     processing: {

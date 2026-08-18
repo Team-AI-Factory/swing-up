@@ -15,6 +15,7 @@
     "db:migrate": "prisma migrate deploy",
     "db:studio": "prisma studio",
     "db:seed": "node prisma/seed.mjs",
+    "pr262:cron": "tsx scripts/pr262-cron-cycle.ts",
     "smoke:routes": "node scripts/smoke-routes.mjs",
     "smoke:production": "node scripts/production-smoke.mjs",
     "smoke:combined-opportunity-engine": "rm -rf /tmp/swing-up-opportunity-test && npx tsc scripts/combined-opportunity-engine-smoke.ts lib/opportunity-engine/engine.ts lib/opportunity-engine/confidence.ts lib/opportunity-engine/types.ts --outDir /tmp/swing-up-opportunity-test --module commonjs --moduleResolution node --target ES2022 --esModuleInterop --skipLibCheck && node /tmp/swing-up-opportunity-test/scripts/combined-opportunity-engine-smoke.js",
@@ -66,6 +67,7 @@
     "eslint": "^9.17.2",
     "eslint-config-next": "^15.1.3",
     "typescript": "^5.7.2",
-    "prisma": "^6.10.1"
+    "prisma": "^6.10.1",
+    "tsx": "^4.20.5"
   }
 }

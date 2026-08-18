@@ -8,12 +8,12 @@ const cjsModule = { exports: {} };
 new Function("require", "module", "exports", output)((name) => { throw new Error(`Unexpected import: ${name}`); }, cjsModule, cjsModule.exports);
 const { evaluateFiveCasePilotGate, US_SERIOUS_SIGNAL_PILOT_POLICY } = cjsModule.exports;
 
-function candidate({ samples, wins, p25 = 0.5, sameDirection = true, leakageSafe = true }) {
+function candidate({ samples, wins, p25 = 0.5 }) {
   const items = Array.from({ length: samples }, (_, index) => ({
     eventKey: `event-${index}`,
     recordId: `record-${index}`,
     hit: index < wins,
-    matchedFeatures: sameDirection ? ["same predicted direction"] : [],
+    matchedFeatures: ["optional historical context"],
     provenance: { origin: "public_historical_bootstrap", eventSourceUrl: `https://official.example/${index}`, priceSource: "public adjusted prices" },
   }));
   return {
@@ -22,7 +22,7 @@ function candidate({ samples, wins, p25 = 0.5, sameDirection = true, leakageSafe
       weightedHitRatePercent: samples ? (wins / samples) * 100 : 0,
       hitRatePercent: samples ? (wins / samples) * 100 : 0,
       p25DirectionAdjustedReturnPercent: p25,
-      leakageSafe,
+      leakageSafe: true,
       selectedHorizon: samples ? "7D" : null,
       items,
     },
@@ -30,30 +30,33 @@ function candidate({ samples, wins, p25 = 0.5, sameDirection = true, leakageSafe
 }
 
 const noHistory = evaluateFiveCasePilotGate(candidate({ samples: 0, wins: 0, p25: null }));
-assert.equal(noHistory.passed, false);
-assert.equal(noHistory.checks.fiveIndependentRealEvents, false);
+assert.equal(noHistory.passed, true);
+assert.equal(noHistory.historicallyRequired, false);
+assert.equal(noHistory.checks.historicalGateDisabled, true);
+assert.equal(noHistory.checks.currentEvidenceMayAdvanceWithoutHistory, true);
 
-const fourCases = evaluateFiveCasePilotGate(candidate({ samples: 4, wins: 4 }));
-assert.equal(fourCases.passed, false);
+const weakHistory = evaluateFiveCasePilotGate(candidate({ samples: 5, wins: 1, p25: -20 }));
+assert.equal(weakHistory.passed, true, "Weak historical analogs may remain context but cannot block current evidence");
+assert.equal(weakHistory.observedDirectionalHitRatePercent, 20);
+assert.equal(weakHistory.lowerQuartileDirectionAdjustedReturnPercent, -20);
 
-const fourOfFive = evaluateFiveCasePilotGate(candidate({ samples: 5, wins: 4 }));
-assert.equal(fourOfFive.passed, true);
-assert.equal(fourOfFive.observedDirectionalHitRatePercent, 80);
-assert.equal(fourOfFive.checks.observedDirectionalHitRateAtLeast80, true);
+const strongHistory = evaluateFiveCasePilotGate(candidate({ samples: 8, wins: 7, p25: 3 }));
+assert.equal(strongHistory.passed, true);
+assert.equal(strongHistory.independentRealEventCount, 8);
+assert.equal(strongHistory.observedDirectionalHitRatePercent, 87.5);
 
-const threeOfFive = evaluateFiveCasePilotGate(candidate({ samples: 5, wins: 3 }));
-assert.equal(threeOfFive.passed, false);
-assert.equal(threeOfFive.checks.observedDirectionalHitRateAtLeast80, false);
-
-const mixedDirection = evaluateFiveCasePilotGate(candidate({ samples: 5, wins: 5, sameDirection: false }));
-assert.equal(mixedDirection.passed, false);
-assert.equal(mixedDirection.checks.sameDirectionHistoricalEvents, false);
-
-const negativeWeakQuarter = evaluateFiveCasePilotGate(candidate({ samples: 5, wins: 4, p25: -0.1 }));
-assert.equal(negativeWeakQuarter.passed, false);
-
-assert.equal(US_SERIOUS_SIGNAL_PILOT_POLICY.minimumObservedDirectionalHitRatePercent, 80);
+assert.equal(US_SERIOUS_SIGNAL_PILOT_POLICY.minimumIndependentHistoricalEvents, 0);
+assert.equal(US_SERIOUS_SIGNAL_PILOT_POLICY.minimumObservedDirectionalHitRatePercent, 0);
+assert.equal(US_SERIOUS_SIGNAL_PILOT_POLICY.historicalCasesRequiredForSeriousSignal, false);
+assert.equal(US_SERIOUS_SIGNAL_PILOT_POLICY.requireLeakageSafeHistory, false);
 assert.equal(US_SERIOUS_SIGNAL_PILOT_POLICY.forwardOutcomeRequiredBeforeAlert, false);
 assert.equal(US_SERIOUS_SIGNAL_PILOT_POLICY.analystExpectationsCanVetoBuy, false);
 
-console.log(JSON.stringify({ ok: true, minimumIndependentEvents: 5, fourOfFivePasses: true, threeOfFiveFails: true, sameDirectionRequired: true, lowerQuartileRequired: true, ownForwardOutcomeNotRequiredBeforeAlert: true }, null, 2));
+console.log(JSON.stringify({
+  ok: true,
+  historicalGateDisabled: true,
+  noHistoryCanAdvance: true,
+  weakHistoryDoesNotBlock: true,
+  strongHistoryStillRecordedAsContext: true,
+  ownForwardOutcomeNotRequiredBeforeAlert: true,
+}, null, 2));

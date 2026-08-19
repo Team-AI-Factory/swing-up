@@ -28,14 +28,14 @@ const SENSOR_STATE_KEY = "branch-labs/pr-262/sensor/state-v1.json";
 const SEC_AGENT = "SwingUp/1.0 support@swingup.app";
 const TRADINGVIEW_SCAN = "https://scanner.tradingview.com/america/scan";
 const FMP_NEWS_URL = "https://financialmodelingprep.com/stable/news/stock";
+const FDA_MEDWATCH_RSS_URL = "https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/medwatch/rss.xml";
 const MAX_SEEN = 20_000;
 const MAX_FRESH = 500;
 const FIVE_MINUTES_MS = 5 * 60_000;
 const FIFTEEN_MINUTES_MS = 15 * 60_000;
-const TWENTY_MINUTES_MS = 20 * 60_000;
 const THIRTY_MINUTES_MS = 30 * 60_000;
+const SEVENTY_FIVE_MINUTES_MS = 75 * 60_000;
 const TWO_HOURS_MS = 2 * 60 * 60_000;
-const SIX_HOURS_MS = 6 * 60 * 60_000;
 const TWELVE_HOURS_MS = 12 * 60 * 60_000;
 const DAY_MS = 24 * 60 * 60_000;
 const URGENT_SEC_FORMS = ["8-K", "6-K", "424B5"] as const;
@@ -288,7 +288,7 @@ async function runFmpNews(fetchImpl: typeof fetch, exposure: Pr262ExposureEntry[
   if (!key) return { provider: "fmp_news", status: "not_configured", recordsRead: 0, receipts: [] as EventReceipt[], error: "FMP_API_KEY not configured", urls: [FMP_NEWS_URL] };
   const leaders = exposure.filter((item) => item.businessQuality >= 65).slice(0, 120);
   if (!leaders.length) return { provider: "fmp_news", status: "connected", recordsRead: 0, receipts: [] as EventReceipt[], error: null, urls: [FMP_NEWS_URL] };
-  const bucket = Math.floor(now.getTime() / THIRTY_MINUTES_MS);
+  const bucket = Math.floor(now.getTime() / TWO_HOURS_MS);
   const symbols = Array.from({ length: Math.min(3, leaders.length) }, (_, index) => leaders[(bucket * 3 + index) % leaders.length].ticker);
   const url = new URL(FMP_NEWS_URL);
   url.searchParams.set("symbols", symbols.join(","));
@@ -389,13 +389,13 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
     run("gdelt", FIFTEEN_MINUTES_MS, ["https://api.gdeltproject.org/api/v2/doc/doc"], async () => {
       const result = await fetchGdeltDiscovery(fetchImpl, now); return { status: result.status, recordsRead: result.recordsRead, receipts: result.receipts, error: result.error };
     }),
-    run("marketaux", TWENTY_MINUTES_MS, ["https://api.marketaux.com/v1/news/all"], async () => {
+    run("marketaux", FIFTEEN_MINUTES_MS, ["https://api.marketaux.com/v1/news/all"], async () => {
       const result = await fetchMarketauxDiscovery(fetchImpl, now); return { status: result.status, recordsRead: result.recordsRead, receipts: result.receipts, error: result.error };
     }),
     run("commerce", THIRTY_MINUTES_MS, ["https://api.commerce.gov/api/news"], async () => {
       const result = await fetchCommerceNews(fetchImpl, now); return { status: result.status, recordsRead: result.recordsRead, receipts: result.receipts, error: result.error };
     }),
-    run("alpha_news", TWO_HOURS_MS, ["https://www.alphavantage.co/query"], async () => {
+    run("alpha_news", SEVENTY_FIVE_MINUTES_MS, ["https://www.alphavantage.co/query"], async () => {
       const result = await fetchAlphaNews(fetchImpl, now); return { status: result.status, recordsRead: result.recordsRead, receipts: result.receipts, error: result.error };
     }),
     run("alpha_earnings", DAY_MS, ["https://www.alphavantage.co/query"], async () => {
@@ -404,7 +404,11 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
     run("federal_register", THIRTY_MINUTES_MS, ["https://www.federalregister.gov/api/v1/documents.json"], async () => {
       const result = await fetchFederalRegister(fetchImpl, now); return { status: result.status, recordsRead: result.recordsRead, receipts: result.receipts, error: result.error };
     }),
-    run("openfda", SIX_HOURS_MS, ["https://api.fda.gov/drug/enforcement.json"], async () => {
+    run("fda_medwatch", FIFTEEN_MINUTES_MS, [FDA_MEDWATCH_RSS_URL], async () => {
+      const parsed = parseRssForPr262Sensor(await boundedText(fetchImpl, FDA_MEDWATCH_RSS_URL, "application/rss+xml,text/xml"), "official", "v3_fda_medwatch", "fda_medwatch_safety", now);
+      return { status: parsed.status ?? "connected", recordsRead: parsed.recordsRead, events: parsed.events, error: parsed.error };
+    }),
+    run("openfda", DAY_MS, ["https://api.fda.gov/drug/enforcement.json"], async () => {
       const result = await fetchOpenFdaRecalls(fetchImpl, now); return { status: result.status, recordsRead: result.recordsRead, receipts: result.receipts, error: result.error };
     }),
     run("trade_halts", FIVE_MINUTES_MS, ["https://www.nyse.com/api/trade-halts/current", "https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts"], async () => {
@@ -414,7 +418,7 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
       const rows: ProviderResult[] = await fetchOfficialFeeds(fetchImpl, now);
       return { status: rows.every((item) => item.status === "connected") ? "connected" : rows.some((item) => item.status === "connected") ? "partial" : rows[0]?.status ?? "temporarily_unavailable", recordsRead: rows.reduce((sum, item) => sum + item.recordsRead, 0), receipts: rows.flatMap((item) => item.receipts), error: rows.map((item) => item.error).filter(Boolean).join(" | ").slice(0, 300) || null };
     }),
-    run("fmp_news", THIRTY_MINUTES_MS, [FMP_NEWS_URL], async () => runFmpNews(fetchImpl, exposure.entries, now).then((value) => ({ status: value.status, recordsRead: value.recordsRead, receipts: value.receipts, error: value.error }))),
+    run("fmp_news", TWO_HOURS_MS, [FMP_NEWS_URL], async () => runFmpNews(fetchImpl, exposure.entries, now).then((value) => ({ status: value.status, recordsRead: value.recordsRead, receipts: value.receipts, error: value.error }))),
     run("market_watch", FIVE_MINUTES_MS, [TRADINGVIEW_SCAN], async () => {
       const market = await marketWatch(fetchImpl, exposure.entries, now); return { status: "connected", recordsRead: Math.min(500, exposure.entries.length), events: market, error: null };
     }),
@@ -489,12 +493,13 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
       priceWatchMinutes: 5,
       allOfficialFeedsMinutes: 15,
       gdeltMinutes: 15,
-      marketauxMinutes: 20,
+      marketauxMinutes: 15,
       commerceMinutes: 30,
       federalRegisterMinutes: 30,
-      fmpNewsMinutes: 30,
-      alphaNewsMinutes: 120,
-      openFdaMinutes: 360,
+      fdaMedwatchMinutes: 15,
+      fmpNewsMinutes: 120,
+      alphaNewsMinutes: 75,
+      openFdaMinutes: 1440,
       macroMinutes: 720,
       alphaEarningsMinutes: 1440,
       directIssuerFeedTargetMinutes: 60,

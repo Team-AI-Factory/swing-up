@@ -37,7 +37,7 @@ const VALUE_REFRESH_PREFIX = "branch-labs/pr-262/value-investing/event-refresh";
 const LEASE_MS = 2 * 60 * 60_000;
 const COMMITTEE_WINDOW_MS = 24 * 60 * 60_000;
 const EVIDENCE_REVIEW_COOLDOWN_MS = 12 * 60 * 60_000;
-const MAX_COMMITTEE_CALLS_PER_DAY = 3;
+const MAX_COMMITTEE_CALLS_PER_DAY = 20;
 const MAX_STATE_RUNS = 200;
 const MAX_HISTORY_RECORDS = 50_000;
 const PROVIDER_RESERVATION_RETENTION_MS = 2 * 24 * 60 * 60_000;
@@ -731,7 +731,7 @@ async function refreshAffectedCompany(input: {
     if (created.conflict) {
       const concurrent = await readVersionedTextFromR2(immutableKey);
       if (!concurrent.found || !concurrent.text) throw new Error("pr262_event_value_refresh_conflict_read_failed");
-      persisted = validatedValueRefresh(JSON.parse(concurrent.text), input.event.id, ticker);
+      persisted = validatedValueRefresh(JSON.parse(concurrent.text), event.id, ticker);
     } else {
       persisted = validatedValueRefresh(payload, input.event.id, ticker);
     }

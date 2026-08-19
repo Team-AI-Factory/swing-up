@@ -1,3 +1,4 @@
+import { deliverSeriousSignalOutbox } from "@/lib/notifications/serious-signal-delivery";
 import { enrichPr262SensorCompanyMappings } from "@/lib/opportunity-engine/pr262-company-directory";
 import { readPr262ChangeSensorState } from "@/lib/opportunity-engine/pr262-change-sensor";
 import { runPr262EventJob } from "@/lib/opportunity-engine/pr262-event-job";
@@ -57,6 +58,7 @@ export async function runPr262CronCycle() {
   const readyAtStart = dueReadyCount(state);
   const capacity = capacityForQueue(readyAtStart);
   const eventResults: Json[] = [];
+  const notificationResults: Json[] = [];
   let eventFailures = 0;
   let aiCalls = 0;
   let seriousBuys = 0;
@@ -81,8 +83,24 @@ export async function runPr262CronCycle() {
         if (result.openAiCalled === true) aiCalls += 1;
         if (result.seriousSignalFound === true && result.alertType === "buy") seriousBuys += 1;
         if (result.seriousSignalFound === true && result.alertType === "sell") seriousSells += 1;
-        const watchOut = await promotePr262SeriousWatchOut(typeof result.resultKey === "string" ? result.resultKey : null).catch(() => ({ promoted: false }));
+
+        const watchOut = await promotePr262SeriousWatchOut(typeof result.resultKey === "string" ? result.resultKey : null)
+          .catch(() => ({ promoted: false, outboxKey: null as string | null }));
         if (watchOut.promoted) seriousWatchOuts += 1;
+
+        const outboxKeys = [...new Set([
+          typeof result.outboxKey === "string" ? result.outboxKey : null,
+          typeof watchOut.outboxKey === "string" ? watchOut.outboxKey : null,
+        ].filter((value): value is string => Boolean(value)))];
+        for (const outboxKey of outboxKeys) {
+          const delivery = await deliverSeriousSignalOutbox(outboxKey).catch((error) => ({
+            ok: false,
+            outboxKey,
+            seriousSignal: true,
+            error: error instanceof Error ? error.message.slice(0, 200) : "serious_signal_delivery_failed",
+          }));
+          notificationResults.push(asJson(delivery));
+        }
       } catch (error) {
         eventFailures += 1;
         eventResults.push({ status: "event_job_error", error: error instanceof Error ? error.message.slice(0, 260) : "event_job_failed" });
@@ -144,6 +162,11 @@ export async function runPr262CronCycle() {
       deadlineMs: MAX_CYCLE_MS,
       eventResults: eventResults.slice(0, 12),
     },
+    notifications: {
+      outboxFirst: true,
+      previewDeliveryBlocked: process.env.RAILWAY_GIT_BRANCH?.trim() === "agent/combined-opportunity-engine",
+      results: notificationResults.slice(0, 24),
+    },
     historicalPolicy: {
       historicalCasesRequiredForSeriousSignal: false,
       historicalCasesRemainLearningContext: true,
@@ -153,6 +176,6 @@ export async function runPr262CronCycle() {
       eventQuoteFallbackOrder: ["Yahoo Finance", "Financial Modeling Prep"],
     },
     cost,
-    safety: { publishing: false, notifications: false, trades: false, databaseWrites: false },
+    safety: { publishing: false, notificationsFromUnverifiedCandidates: false, trades: false, databaseWrites: false },
   };
 }

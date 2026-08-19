@@ -12,6 +12,11 @@ const MAX_CYCLE_MS = 210_000;
 
 type Json = Record<string, unknown>;
 
+type AiBudgetStatus = Awaited<ReturnType<typeof getPr262AiDailyBudgetStatus>> & {
+  accountingHealthy: boolean;
+  accountingError?: string | null;
+};
+
 function dueReadyCount(state: Awaited<ReturnType<typeof readPr262ChangeSensorState>>) {
   const now = Date.now();
   return state.pending.filter((event) => {
@@ -31,6 +36,26 @@ function capacityForQueue(ready: number) {
 
 function asJson(value: unknown): Json {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Json : {};
+}
+
+async function safeAiBudgetStatus(): Promise<AiBudgetStatus> {
+  try {
+    return { ...(await getPr262AiDailyBudgetStatus()), accountingHealthy: true, accountingError: null };
+  } catch (error) {
+    return {
+      allowed: false,
+      spentUsd: 0,
+      remainingUsd: 0,
+      limitUsd: Number(process.env.SWING_UP_PR262_AI_DAILY_LIMIT_USD) || 10,
+      warningUsd: Number(process.env.SWING_UP_PR262_AI_DAILY_WARNING_USD) || 6,
+      warning: true,
+      hardFuseTripped: false,
+      reviewsRecorded: 0,
+      unknownUsageReviews: 0,
+      accountingHealthy: false,
+      accountingError: error instanceof Error ? error.message.slice(0, 180) : "ai_budget_read_failed",
+    };
+  }
 }
 
 export async function runPr262CronCycle() {
@@ -61,7 +86,7 @@ export async function runPr262CronCycle() {
   const eventResults: Json[] = [];
   const notificationResults: Json[] = [];
   const aiCostResults: Json[] = [];
-  let aiBudget = await getPr262AiDailyBudgetStatus();
+  let aiBudget = await safeAiBudgetStatus();
   let eventFailures = 0;
   let aiCalls = 0;
   let seriousBuys = 0;
@@ -78,17 +103,35 @@ export async function runPr262CronCycle() {
   try {
     for (let index = 0; index < capacity && Date.now() - startedAt < MAX_CYCLE_MS; index += 1) {
       try {
-        const raw = await runPr262EventJob({ allowOpenAi: aiBudget.allowed });
+        const raw = await runPr262EventJob({ allowOpenAi: aiBudget.allowed && aiBudget.accountingHealthy });
         const result = asJson(raw);
         eventResults.push(result);
         const status = String(result.status ?? "");
         if (status === "idle" || status === "busy") break;
         if (result.openAiCalled === true) {
           aiCalls += 1;
-          const recorded = await recordPr262AiCommitteeCostFromResultKey(typeof result.resultKey === "string" ? result.resultKey : null)
-            .catch((error) => ({ recorded: false, error: error instanceof Error ? error.message : "ai_cost_record_failed" }));
-          aiCostResults.push(asJson(recorded));
-          aiBudget = await getPr262AiDailyBudgetStatus();
+          let recorded: Json;
+          try {
+            recorded = asJson(await recordPr262AiCommitteeCostFromResultKey(typeof result.resultKey === "string" ? result.resultKey : null));
+          } catch (error) {
+            recorded = { recorded: false, error: error instanceof Error ? error.message : "ai_cost_record_failed" };
+          }
+          aiCostResults.push(recorded);
+          const safeReasons = new Set(["already_recorded"]);
+          const recordHealthy = recorded.recorded === true || (typeof recorded.reason === "string" && safeReasons.has(recorded.reason));
+          if (!recordHealthy) {
+            const latest = await safeAiBudgetStatus();
+            aiBudget = {
+              ...latest,
+              allowed: false,
+              accountingHealthy: false,
+              accountingError: typeof recorded.error === "string"
+                ? recorded.error.slice(0, 180)
+                : `ai_cost_record_${String(recorded.reason ?? "unconfirmed")}`,
+            };
+          } else {
+            aiBudget = await safeAiBudgetStatus();
+          }
         }
         if (result.seriousSignalFound === true && result.alertType === "buy") seriousBuys += 1;
         if (result.seriousSignalFound === true && result.alertType === "sell") seriousSells += 1;
@@ -176,6 +219,7 @@ export async function runPr262CronCycle() {
       actualTokenUsagePreferred: true,
       unknownUsageFallbackUsd: 0.5,
       candidatesRemainQueuedWhenFuseBlocksAi: true,
+      accountingFailureBlocksAdditionalAiOnly: true,
       results: aiCostResults.slice(-20),
     },
     notifications: {

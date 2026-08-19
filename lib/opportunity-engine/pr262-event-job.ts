@@ -731,7 +731,7 @@ async function refreshAffectedCompany(input: {
     if (created.conflict) {
       const concurrent = await readVersionedTextFromR2(immutableKey);
       if (!concurrent.found || !concurrent.text) throw new Error("pr262_event_value_refresh_conflict_read_failed");
-      persisted = validatedValueRefresh(JSON.parse(concurrent.text), event.id, ticker);
+      persisted = validatedValueRefresh(JSON.parse(concurrent.text), input.event.id, ticker);
     } else {
       persisted = validatedValueRefresh(payload, input.event.id, ticker);
     }

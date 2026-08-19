@@ -28,6 +28,14 @@ for (const key of [
   "AWS_SECRET_ACCESS_KEY",
 ]) delete env[key];
 
+// FMP's free/individual entitlement must never silently become a production
+// dependency. Production use is enabled only after an explicit commercial-use
+// approval flag is configured for the dedicated sensor service.
+if ((env.FMP_COMMERCIAL_USE_APPROVED || "").trim().toLowerCase() !== "true") {
+  delete env.FMP_API_KEY;
+  delete env.FMP_BASE_URL;
+}
+
 // The isolated PR preview must never notify anyone. On production/main the
 // dedicated sensor service may retain notification credentials so only a
 // committee-verified outbox item can be delivered by the notification consumer.

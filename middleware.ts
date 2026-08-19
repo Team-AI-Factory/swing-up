@@ -7,7 +7,14 @@ const PROTECTED_PRODUCTION_PATHS = [
   "/api/internal/run-live-alert-cycle",
   "/api/internal/e2e-alert-test",
   "/api/internal/full-e2e-telegram-test",
+  "/api/internal/candidate-factory-run",
+  "/api/internal/ledger-outcome-scheduler",
+  "/api/internal/live-outcome-evaluator",
+  "/api/internal/railway-branch-signal-lab",
   "/api/internal/combined-opportunity-engine",
+  "/api/candidate-alerts/from-raw-signal",
+  "/api/candidate-alerts/persist-analysis",
+  "/api/price-snapshots/from-alert",
   "/api/ai-committee/run",
 ] as const;
 
@@ -43,8 +50,9 @@ function hiddenRoute() {
 
 /**
  * PR #262 remains tightly isolated before merge, while production keeps the
- * normal Swing Up API surface. After merge, only high-risk internal mutation,
- * committee, and scanner routes require an internal bearer/token credential.
+ * normal Swing Up API surface. After merge, high-risk mutation, committee,
+ * scanner and analysis-persistence routes require an internal bearer/token
+ * credential instead of relying on a branch-wide shutdown barrier.
  */
 export function middleware(request: NextRequest) {
   const path = request.nextUrl.pathname;

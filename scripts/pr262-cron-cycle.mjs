@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 
+const PR262_BRANCH = "agent/combined-opportunity-engine";
 const port = process.env.PR262_CRON_PORT || "3015";
 const token = process.env.SWING_UP_PR262_SENSOR_TOKEN?.trim()
   || process.env.SWING_UP_AUTOMATION_TOKEN?.trim()
@@ -16,16 +17,28 @@ const env = {
   PUBLIC_LEDGER_TRACKING_ENABLED: "false",
   PUBLIC_TRACKING_ENABLED: "false",
 };
+
+// The sensor never needs the production database, payments, or AWS credentials.
 for (const key of [
   "DATABASE_URL",
   "DIRECT_URL",
-  "TELEGRAM_BOT_TOKEN",
-  "TELEGRAM_TEST_CHAT_ID",
   "STRIPE_SECRET_KEY",
   "STRIPE_WEBHOOK_SECRET",
   "AWS_ACCESS_KEY_ID",
   "AWS_SECRET_ACCESS_KEY",
 ]) delete env[key];
+
+// The isolated PR preview must never notify anyone. On production/main the
+// dedicated sensor service may retain notification credentials so only a
+// committee-verified outbox item can be delivered by the notification consumer.
+if ((process.env.RAILWAY_GIT_BRANCH || "").trim() === PR262_BRANCH) {
+  for (const key of [
+    "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_TEST_CHAT_ID",
+    "TELEGRAM_SERIOUS_SIGNAL_CHAT_ID",
+    "SWING_UP_SERIOUS_SIGNAL_WEBHOOK_URL",
+  ]) delete env[key];
+}
 
 function stop(child, signal = "SIGTERM") {
   if (child && !child.killed) child.kill(signal);

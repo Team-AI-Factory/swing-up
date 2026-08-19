@@ -1,4 +1,5 @@
 import { deliverSeriousSignalOutbox } from "@/lib/notifications/serious-signal-delivery";
+import { getPr262AiDailyBudgetStatus, recordPr262AiCommitteeCostFromResultKey } from "@/lib/opportunity-engine/pr262-ai-daily-cost";
 import { enrichPr262SensorCompanyMappings } from "@/lib/opportunity-engine/pr262-company-directory";
 import { readPr262ChangeSensorState } from "@/lib/opportunity-engine/pr262-change-sensor";
 import { runPr262EventJob } from "@/lib/opportunity-engine/pr262-event-job";
@@ -59,6 +60,8 @@ export async function runPr262CronCycle() {
   const capacity = capacityForQueue(readyAtStart);
   const eventResults: Json[] = [];
   const notificationResults: Json[] = [];
+  const aiCostResults: Json[] = [];
+  let aiBudget = await getPr262AiDailyBudgetStatus();
   let eventFailures = 0;
   let aiCalls = 0;
   let seriousBuys = 0;
@@ -75,12 +78,18 @@ export async function runPr262CronCycle() {
   try {
     for (let index = 0; index < capacity && Date.now() - startedAt < MAX_CYCLE_MS; index += 1) {
       try {
-        const raw = await runPr262EventJob({ allowOpenAi: true });
+        const raw = await runPr262EventJob({ allowOpenAi: aiBudget.allowed });
         const result = asJson(raw);
         eventResults.push(result);
         const status = String(result.status ?? "");
         if (status === "idle" || status === "busy") break;
-        if (result.openAiCalled === true) aiCalls += 1;
+        if (result.openAiCalled === true) {
+          aiCalls += 1;
+          const recorded = await recordPr262AiCommitteeCostFromResultKey(typeof result.resultKey === "string" ? result.resultKey : null)
+            .catch((error) => ({ recorded: false, error: error instanceof Error ? error.message : "ai_cost_record_failed" }));
+          aiCostResults.push(asJson(recorded));
+          aiBudget = await getPr262AiDailyBudgetStatus();
+        }
         if (result.seriousSignalFound === true && result.alertType === "buy") seriousBuys += 1;
         if (result.seriousSignalFound === true && result.alertType === "sell") seriousSells += 1;
 
@@ -161,6 +170,13 @@ export async function runPr262CronCycle() {
       seriousWatchOuts,
       deadlineMs: MAX_CYCLE_MS,
       eventResults: eventResults.slice(0, 12),
+    },
+    aiCostControl: {
+      ...aiBudget,
+      actualTokenUsagePreferred: true,
+      unknownUsageFallbackUsd: 0.5,
+      candidatesRemainQueuedWhenFuseBlocksAi: true,
+      results: aiCostResults.slice(-20),
     },
     notifications: {
       outboxFirst: true,

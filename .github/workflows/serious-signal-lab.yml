@@ -54,7 +54,7 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Verify PR #262 runtime remains fully paused
+      - name: Verify PR #262 controlled five-minute runtime
         run: npm run smoke:pr262-runtime-pause
 
       - name: Verify PR #262 sensor-to-committee authority path
@@ -69,8 +69,10 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Start isolated application
+      - name: Start isolated PR262 application
         shell: bash
+        env:
+          RAILWAY_GIT_BRANCH: agent/combined-opportunity-engine
         run: |
           npm start -- --hostname 127.0.0.1 --port 3010 > /tmp/swing-up-branch.log 2>&1 &
           echo $! > /tmp/swing-up-branch.pid
@@ -78,6 +80,7 @@ jobs:
       - name: Verify branch isolation and committee safety gates
         env:
           SWING_UP_EVAL_BASE_URL: http://127.0.0.1:3010
+          RAILWAY_GIT_BRANCH: agent/combined-opportunity-engine
         run: npm run smoke:branch-lab-security
 
       - name: Verify dedicated five-minute alarm process mechanics

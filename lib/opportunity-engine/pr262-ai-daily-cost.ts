@@ -137,4 +137,16 @@ export async function recordPr262AiCommitteeCost(reportValue: unknown, now = new
   return { recorded: true, entry, ...(await getPr262AiDailyBudgetStatus(now)) };
 }
 
+export async function recordPr262AiCommitteeCostFromResultKey(resultKey: string | null | undefined, now = new Date()) {
+  if (!resultKey) return { recorded: false, reason: "no_result_key", ...(await getPr262AiDailyBudgetStatus(now)) };
+  const stored = await readVersionedTextFromR2(resultKey);
+  if (!stored.found || !stored.text) return { recorded: false, reason: "result_missing", ...(await getPr262AiDailyBudgetStatus(now)) };
+  try {
+    const payload = object(JSON.parse(stored.text));
+    return recordPr262AiCommitteeCost(payload.report, now);
+  } catch {
+    return { recorded: false, reason: "result_invalid", ...(await getPr262AiDailyBudgetStatus(now)) };
+  }
+}
+
 export const PR262_AI_DAILY_COST_KEY = STATE_KEY;

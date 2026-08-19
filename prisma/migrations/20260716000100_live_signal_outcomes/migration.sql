@@ -33,6 +33,3 @@ CREATE INDEX IF NOT EXISTS "price_snapshots_alert_id_captured_at_idx"
   ON "price_snapshots"("alert_id", "captured_at");
 CREATE INDEX IF NOT EXISTS "price_snapshots_ticker_data_quality_captured_at_idx"
   ON "price_snapshots"("ticker", "data_quality", "captured_at");
-
-ALTER TABLE "ai_committee_runs"
-  ALTER COLUMN "dry_run" SET DEFAULT false;

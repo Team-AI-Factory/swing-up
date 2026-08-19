@@ -30,29 +30,29 @@ function policyFor(request: RequestInfo | URL): Policy | null {
   if (host === "data.sec.gov" && path.startsWith("/submissions/")) {
     return { provider: "sec_edgar", quotaKey: "sensor_sec_submissions", cadenceKey: `sensor_sec_submission:${path}`, maximumPer24Hours: 190, minimumIntervalMs: 29 * MINUTE_MS };
   }
-  if (host === "news.google.com") return { provider: "google_news", quotaKey: "sensor_google_news", cadenceKey: "sensor_google_news", maximumPer24Hours: 280, minimumIntervalMs: 4.5 * MINUTE_MS };
-  if (host === "api.gdeltproject.org") return { provider: "gdelt", quotaKey: "sensor_gdelt", cadenceKey: "sensor_gdelt", maximumPer24Hours: 90, minimumIntervalMs: 14 * MINUTE_MS };
-  if (host === "api.marketaux.com") return { provider: "marketaux", quotaKey: "sensor_marketaux", cadenceKey: "sensor_marketaux", maximumPer24Hours: 90, minimumIntervalMs: 19 * MINUTE_MS };
-  if (host === "api.commerce.gov") return { provider: "commerce", quotaKey: "sensor_commerce", cadenceKey: "sensor_commerce", maximumPer24Hours: 46, minimumIntervalMs: 29 * MINUTE_MS };
+  if (host === "news.google.com") return { provider: "google_news", quotaKey: "sensor_google_news", cadenceKey: "sensor_google_news", maximumPer24Hours: 300, minimumIntervalMs: 4.5 * MINUTE_MS };
+  if (host === "api.gdeltproject.org") return { provider: "gdelt", quotaKey: "sensor_gdelt", cadenceKey: "sensor_gdelt", maximumPer24Hours: 100, minimumIntervalMs: 14 * MINUTE_MS };
+  if (host === "api.marketaux.com") return { provider: "marketaux", quotaKey: "sensor_marketaux", cadenceKey: "sensor_marketaux", maximumPer24Hours: 96, minimumIntervalMs: 14 * MINUTE_MS };
+  if (host === "api.commerce.gov") return { provider: "commerce", quotaKey: "sensor_commerce", cadenceKey: "sensor_commerce", maximumPer24Hours: 52, minimumIntervalMs: 29 * MINUTE_MS };
   if (host === "www.alphavantage.co") {
     const fn = (url.searchParams.get("function") ?? "unknown").toUpperCase();
-    return { provider: "alpha_vantage", quotaKey: "sensor_alpha_vantage", cadenceKey: `sensor_alpha:${fn}`, maximumPer24Hours: 20, minimumIntervalMs: fn === "EARNINGS_CALENDAR" ? 23 * 60 * MINUTE_MS : 119 * MINUTE_MS };
+    return { provider: "alpha_vantage", quotaKey: "sensor_alpha_vantage", cadenceKey: `sensor_alpha:${fn}`, maximumPer24Hours: 20, minimumIntervalMs: fn === "EARNINGS_CALENDAR" ? 23 * 60 * MINUTE_MS : 74 * MINUTE_MS };
   }
   if (host === "financialmodelingprep.com") return { provider: "fmp", quotaKey: "sensor_fmp", cadenceKey: "sensor_fmp_news", maximumPer24Hours: 10, minimumIntervalMs: 119 * MINUTE_MS };
-  if (host === "www.federalregister.gov") return { provider: "federal_register", quotaKey: "sensor_federal_register", cadenceKey: "sensor_federal_register", maximumPer24Hours: 46, minimumIntervalMs: 29 * MINUTE_MS };
-  if (host === "api.fda.gov") return { provider: "openfda", quotaKey: "sensor_openfda", cadenceKey: "sensor_openfda", maximumPer24Hours: 4, minimumIntervalMs: 6 * 60 * MINUTE_MS };
-  if (host === "www.nyse.com" && path === "/api/trade-halts/current") return { provider: "nyse", quotaKey: "sensor_trade_halts", cadenceKey: "sensor_trade_halts:nyse", maximumPer24Hours: 280, minimumIntervalMs: 4.5 * MINUTE_MS };
+  if (host === "www.federalregister.gov") return { provider: "federal_register", quotaKey: "sensor_federal_register", cadenceKey: "sensor_federal_register", maximumPer24Hours: 52, minimumIntervalMs: 29 * MINUTE_MS };
+  if (host === "api.fda.gov") return { provider: "openfda", quotaKey: "sensor_openfda", cadenceKey: "sensor_openfda", maximumPer24Hours: 1, minimumIntervalMs: 23 * 60 * MINUTE_MS };
+  if (host === "www.nyse.com" && path === "/api/trade-halts/current") return { provider: "nyse", quotaKey: "sensor_trade_halts", cadenceKey: "sensor_trade_halts:nyse", maximumPer24Hours: 300, minimumIntervalMs: 4.5 * MINUTE_MS };
   if (["m.nasdaqtrader.com", "www.nasdaqtrader.com", "nasdaqtrader.com"].includes(host) && path === "/rss.aspx") return { provider: "nasdaq_trader", quotaKey: "sensor_trade_halts_fallback", cadenceKey: `sensor_trade_halts:${host}`, maximumPer24Hours: 48, minimumIntervalMs: 29 * MINUTE_MS };
   if (host === "fred.stlouisfed.org" || host === "api.stlouisfed.org") {
     const series = (url.searchParams.get("series_id") ?? url.searchParams.get("id") ?? path).toUpperCase();
     return { provider: "fred", quotaKey: "sensor_fred", cadenceKey: `sensor_fred:${series}`, maximumPer24Hours: 48, minimumIntervalMs: 11 * 60 * MINUTE_MS };
   }
   if (host === "api.frankfurter.app") return { provider: "frankfurter", quotaKey: "sensor_frankfurter", cadenceKey: "sensor_frankfurter", maximumPer24Hours: 2, minimumIntervalMs: 11.5 * 60 * MINUTE_MS };
-  if (["www.federalreserve.gov", "www.bls.gov", "apps.bea.gov", "www.whitehouse.gov", "www.cisa.gov", "www.state.gov", "www.defense.gov"].includes(host)
+  if (["www.federalreserve.gov", "www.bls.gov", "apps.bea.gov", "www.whitehouse.gov", "www.cisa.gov", "www.state.gov", "www.defense.gov", "www.fda.gov"].includes(host)
     || (host === "www.sec.gov" && path.startsWith("/news/"))) {
-    return { provider: "official_government", quotaKey: "sensor_official_government", cadenceKey: `sensor_official:${host}${path}`, maximumPer24Hours: 1_100, minimumIntervalMs: 14 * MINUTE_MS };
+    return { provider: "official_government", quotaKey: "sensor_official_government", cadenceKey: `sensor_official:${host}${path}`, maximumPer24Hours: 1_200, minimumIntervalMs: 14 * MINUTE_MS };
   }
-  if (host === "scanner.tradingview.com") return { provider: "tradingview", quotaKey: "sensor_tradingview", cadenceKey: "sensor_tradingview_watch", maximumPer24Hours: 280, minimumIntervalMs: 4.5 * MINUTE_MS };
+  if (host === "scanner.tradingview.com") return { provider: "tradingview", quotaKey: "sensor_tradingview", cadenceKey: "sensor_tradingview_watch", maximumPer24Hours: 300, minimumIntervalMs: 4.5 * MINUTE_MS };
   return null;
 }
 

@@ -406,7 +406,7 @@ model AiCommitteeRun {
   alertId             String?                  @map("alert_id") @db.Uuid
   status              String
   runMode             String                   @map("run_mode")
-  dryRun              Boolean                  @default(false) @map("dry_run")
+  dryRun              Boolean                  @default(true) @map("dry_run")
   agentIds            Json                     @default("[]") @map("agent_ids")
   finalRecommendation String?                  @map("final_recommendation")
   selectedActionLabel String?                  @map("selected_action_label")

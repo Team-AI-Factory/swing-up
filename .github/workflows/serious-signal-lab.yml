@@ -86,6 +86,20 @@ jobs:
       - name: Verify dedicated five-minute alarm process mechanics
         run: npm run smoke:branch-worker-process
 
+      - name: Start production-compatible application boundary
+        shell: bash
+        env:
+          SWING_UP_INTERNAL_API_TOKEN: ci-pr262-internal-token
+        run: |
+          env -u RAILWAY_GIT_BRANCH npm start -- --hostname 127.0.0.1 --port 3011 > /tmp/swing-up-production-compat.log 2>&1 &
+          echo $! > /tmp/swing-up-production-compat.pid
+
+      - name: Verify normal production API remains available and mutation routes require auth
+        env:
+          SWING_UP_PRODUCTION_COMPAT_BASE_URL: http://127.0.0.1:3011
+          SWING_UP_INTERNAL_API_TOKEN: ci-pr262-internal-token
+        run: node scripts/pr262-production-api-boundary-smoke.mjs
+
       - name: Optional branch preview smoke
         if: ${{ github.event_name == 'workflow_dispatch' && vars.SWING_UP_BRANCH_TEST_URL != '' }}
         env:
@@ -93,10 +107,14 @@ jobs:
           SWING_UP_AUTOMATION_TOKEN: ${{ secrets.SWING_UP_AUTOMATION_TOKEN }}
         run: node scripts/branch-preview-smoke.mjs
 
-      - name: Show server log on failure
+      - name: Show server logs on failure
         if: failure()
-        run: tail -200 /tmp/swing-up-branch.log || true
+        run: |
+          tail -200 /tmp/swing-up-branch.log || true
+          tail -200 /tmp/swing-up-production-compat.log || true
 
-      - name: Stop isolated application
+      - name: Stop isolated applications
         if: always()
-        run: kill "$(cat /tmp/swing-up-branch.pid)" 2>/dev/null || true
+        run: |
+          kill "$(cat /tmp/swing-up-branch.pid)" 2>/dev/null || true
+          kill "$(cat /tmp/swing-up-production-compat.pid)" 2>/dev/null || true

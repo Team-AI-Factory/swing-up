@@ -158,9 +158,9 @@ export async function runPilotEquitySignalLab(input: PilotEquitySignalLabInput =
       ...historicalLearning,
       minimumIndependentRealEventsForPilotSeriousBuySell: US_SERIOUS_SIGNAL_PILOT_POLICY.minimumIndependentHistoricalEvents,
       minimumObservedDirectionalHitRatePercent: US_SERIOUS_SIGNAL_PILOT_POLICY.minimumObservedDirectionalHitRatePercent,
-      historicalComparisonRequiredForSeriousSignal: true,
-      actionableBuySellRequiresCalibratedHistory: true,
-      historicalEvidenceRole: "mandatory_same_company_or_same_industry_five_case_pilot_and_r2_learning",
+      historicalComparisonRequiredForSeriousSignal: false,
+      actionableBuySellRequiresCalibratedHistory: false,
+      historicalEvidenceRole: "optional_same_company_or_industry_learning_context",
       publicHistoricalFamiliesBuilt: ["earnings_guidance", "regulatory_approval"],
       statisticallyEquivalentToThirtySamples: false,
       forwardOutcomeRequiredBeforeAlert: false,
@@ -218,19 +218,8 @@ export async function runPilotEquitySignalLab(input: PilotEquitySignalLabInput =
       alertType: null,
       blockers: [...new Set([
         ...strings(base.blockers),
-        "Event Buy and Sell require the same-company or same-industry Pilot 5 gate. Foundation valuation and P0/P1 Watch Out alerts are emitted separately by their approved engines.",
+        "This event path only emits directional Buy or Sell decisions. Foundation valuation and P0/P1 Watch Out alerts are emitted separately by their approved engines.",
       ])],
-    };
-  }
-
-  if (!pilotHistoricalGate.passed) {
-    return {
-      ...common,
-      status: "candidate_needs_same_company_or_industry_pilot_history",
-      seriousSignalFound: false,
-      actionableSignalFound: false,
-      alertType: null,
-      blockers: [...new Set([...strings(base.blockers), ...pilotHistoricalGate.blockers])],
     };
   }
 
@@ -250,11 +239,11 @@ export async function runPilotEquitySignalLab(input: PilotEquitySignalLabInput =
 
   return {
     ...common,
-    status: `pilot_serious_${String(base.alertType)}`,
+    status: `verified_serious_${String(base.alertType)}`,
     seriousSignalFound: true,
     actionableSignalFound: true,
     alertType: base.alertType,
     pilotWarning: US_SERIOUS_SIGNAL_PILOT_POLICY.warning,
-    alertTimingPolicy: "Current evidence, full article confirmation, peer history, and committee approval can trigger immediately. Swing Up does not wait for its own future outcome checkpoints before alerting.",
+    alertTimingPolicy: "Current evidence, full article confirmation, and committee approval can trigger immediately. Peer history remains optional learning context, and Swing Up does not wait for its own future outcome checkpoints before alerting.",
   };
 }

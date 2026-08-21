@@ -1,5 +1,6 @@
 import { getR2Config, readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 import { normalizeEquitySymbol } from "@/lib/branch-signal-lab-policy";
+import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 
 export type EquityUniverseEntry = {
   ticker: string;
@@ -37,10 +38,17 @@ const NASDAQ_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/symdir/nasdaqlis
 const OTHER_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/symdir/otherlisted.txt";
 const SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers_exchange.json";
 
-export function resolveEquityUniverseCacheKey(branch = process.env.RAILWAY_GIT_BRANCH) {
+export function resolveEquityUniverseCacheKey(
+  branch = process.env.RAILWAY_GIT_BRANCH,
+  environment: Record<string, string | undefined> = process.env,
+) {
   const normalizedBranch = typeof branch === "string" ? branch.trim() : "";
   if (normalizedBranch === PR_261_BRANCH) return "branch-labs/pr-261/equity-universe/v1.json";
-  if (normalizedBranch === PR_262_BRANCH) return "branch-labs/pr-262/equity-universe/v1.json";
+  const productionWithoutBranchMetadata = !normalizedBranch
+    && environment.RAILWAY_ENVIRONMENT_NAME?.trim().toLowerCase() === "production";
+  if (normalizedBranch === PR_262_BRANCH || normalizedBranch === "main" || productionWithoutBranchMetadata) {
+    return pr262StorageKey("equity-universe/v1.json", { ...environment, RAILWAY_GIT_BRANCH: normalizedBranch });
+  }
   // Unknown and local branches must never borrow another branch's universe.
   // They can still build a fresh in-memory snapshot from the official sources.
   return null;
@@ -109,6 +117,41 @@ function sanitizeCachedSnapshot(snapshot: EquityUniverseSnapshot) {
       },
     },
   };
+}
+
+export function validEquityUniverseSnapshot(value: unknown): value is EquityUniverseSnapshot {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const snapshot = value as Partial<EquityUniverseSnapshot>;
+  if (snapshot.version !== 1
+    || snapshot.scope !== "active_us_exchange_listed_common_equities_and_adrs"
+    || !["nasdaq_plus_sec", "partial_nasdaq_plus_sec", "sec_official_fallback"].includes(snapshot.constructionMode ?? "")
+    || !Number.isFinite(Date.parse(snapshot.refreshedAt ?? ""))
+    || !Array.isArray(snapshot.entries)
+    || snapshot.entries.length === 0
+    || !snapshot.coverage
+    || snapshot.coverage.eligibleEquities !== snapshot.entries.length) return false;
+  const tickers = new Set<string>();
+  let cikMapped = 0;
+  for (const entry of snapshot.entries) {
+    const ticker = normalizeEquitySymbol(entry?.ticker);
+    const cik = entry?.cik;
+    if (!ticker
+      || ticker !== entry.ticker
+      || tickers.has(ticker)
+      || typeof entry.name !== "string"
+      || !entry.name.trim()
+      || (entry.exchange !== null && (typeof entry.exchange !== "string" || !entry.exchange.trim()))
+      || (cik !== null && !/^\d{10}$/.test(cik))
+      || !Array.isArray(entry.aliases)
+      || entry.aliases.some((alias) => typeof alias !== "string")
+      || (entry.securityType !== "common_stock" && entry.securityType !== "adr")
+      || !Array.isArray(entry.sourceNames)
+      || !entry.sourceNames.length
+      || entry.sourceNames.some((source) => typeof source !== "string" || !source.trim())) return false;
+    tickers.add(ticker);
+    if (cik) cikMapped += 1;
+  }
+  return snapshot.coverage.cikMapped === cikMapped;
 }
 
 function parsePipeDirectory(text: string, kind: "nasdaq" | "other"): ParsedDirectory {
@@ -211,9 +254,8 @@ async function cachedSnapshot(cacheKey: string | null) {
   try {
     const object = await readVersionedTextFromR2(cacheKey);
     if (!object.found || !object.text) return { snapshot: null, etag: object.etag };
-    const snapshot = JSON.parse(object.text) as EquityUniverseSnapshot;
-    if (!snapshot || snapshot.version !== 1 || !Array.isArray(snapshot.entries)) return { snapshot: null, etag: object.etag };
-    if (!snapshot.constructionMode) snapshot.constructionMode = "nasdaq_plus_sec";
+    const snapshot = JSON.parse(object.text) as unknown;
+    if (!validEquityUniverseSnapshot(snapshot)) return { snapshot: null, etag: object.etag };
     return { snapshot: sanitizeCachedSnapshot(snapshot), etag: object.etag };
   } catch {
     return { snapshot: null, etag: null };
@@ -223,9 +265,13 @@ async function cachedSnapshot(cacheKey: string | null) {
 export async function loadEquityUniverse(fetchImpl: typeof fetch, now = new Date()) {
   const cacheKey = resolveEquityUniverseCacheKey();
   const cached = await cachedSnapshot(cacheKey);
+  const cachedRefreshedMs = Date.parse(cached.snapshot?.refreshedAt ?? "");
+  const cachedAgeMs = now.getTime() - cachedRefreshedMs;
   if (cached.snapshot
     && cached.snapshot.constructionMode === "nasdaq_plus_sec"
-    && now.getTime() - Date.parse(cached.snapshot.refreshedAt) < CACHE_MAX_AGE_MS) {
+    && Number.isFinite(cachedRefreshedMs)
+    && cachedAgeMs >= -5 * 60_000
+    && cachedAgeMs < CACHE_MAX_AGE_MS) {
     return { snapshot: cached.snapshot, cache: "cloudflare_r2" as const, refreshed: false, r2Write: false };
   }
   const settled = await Promise.allSettled([

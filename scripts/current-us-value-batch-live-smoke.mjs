@@ -102,7 +102,7 @@ async function main() {
           && latestReport.newSeriousSignalCount <= latestReport.seriousSignalCount
           && Array.isArray(latestReport.newSeriousSignals)
           && latestReport.newSeriousSignals.length === latestReport.newSeriousSignalCount
-          && latestReport.newSeriousSignals.every((item) => typeof item.outboxKey === "string" && item.outboxKey.startsWith("branch-labs/pr-262/serious-signal/outbox/foundation/"))
+          && latestReport.newSeriousSignals.every((item) => typeof item.outboxKey === "string" && item.outboxKey.startsWith("branch-labs/pr-262/research-candidates/outbox/foundation/"))
           && latestReport.reportWarehouse?.backend === "cloudflare_r2"
           && latestReport.reportWarehouse?.persisted === true
           && typeof latestReport.reportWarehouse?.latestKey === "string"

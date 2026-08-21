@@ -1,7 +1,8 @@
 import crypto from "node:crypto";
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
+import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 
-const OUTBOX_PREFIX = "branch-labs/pr-262/serious-signal/outbox/watch-out-v2";
+const OUTBOX_PREFIX = pr262StorageKey("serious-signal/outbox/watch-out-v2");
 
 type Json = Record<string, unknown>;
 
@@ -15,7 +16,8 @@ function text(value: unknown) {
 
 function normalizedCik(value: unknown) {
   const digits = text(value)?.replace(/\D/g, "") ?? "";
-  return digits ? digits.replace(/^0+/, "") || "0" : null;
+  if (!digits || digits.length > 10 || /^0+$/.test(digits)) return null;
+  return digits.replace(/^0+/, "");
 }
 
 function riskRule(candidate: Json) {
@@ -59,11 +61,16 @@ function committeeProof(report: Json, pointer: Json) {
   const officialEvidence = Array.isArray(candidate.receipts) && candidate.receipts.map(object).some((receipt) =>
     receipt.official === true || receipt.primarySource === true || receipt.channel === "sec_current_filings");
   const ruleId = riskRule(candidate);
-  const approved = candidate.direction === "downside"
+  const approved = report.seriousSignalFound === true
+    && report.actionableSignalFound === true
+    && report.alertType === "sell"
+    && candidate.direction === "downside"
     && candidateTicker !== null
     && candidateTicker === pointerTicker
     && candidateCik !== null
     && candidateCik === pointerCik
+    && text(candidate.evidenceFingerprint) !== null
+    && candidate.evidenceFingerprint === report.candidateFingerprint
     && candidate.gatePassed === true
     && Number(candidate.eventTruth) >= 80
     && Number(candidate.mappingConfidence) >= 95
@@ -72,8 +79,11 @@ function committeeProof(report: Json, pointer: Json) {
     && Number(candidate.evidenceIndependence) >= 78
     && candidate.rumour !== true
     && Number(candidate.contradictionPenalty) < 50
-    && quote.price !== null
-    && quote.price !== undefined
+    && Number(candidate.pricedInPenalty) < 50
+    && Number.isFinite(Number(quote.price))
+    && Number(quote.price) > 0
+    && quote.actionableForSeriousSignal === true
+    && !["halted", "unknown"].includes(String(quote.marketSession ?? "unknown"))
     && halt.currentStateKnown === true
     && officialEvidence
     && committee.ok === true
@@ -108,22 +118,33 @@ export async function promotePr262SeriousWatchOut(resultKey: string | null | und
     cik: text(pointer.cik),
     alertType: "watch_out",
     ruleId: proof.ruleId,
+    candidateFingerprint: report.candidateFingerprint,
     historicalCaseRequirement: "disabled",
     candidate: proof.candidate,
     committee: proof.committee,
     authority: {
       exactIssuerMapping: true,
       currentEvidenceGatesPassed: true,
+      freshQuoteAndHaltStateKnown: true,
       fullCommitteeAgentsCompleted: 14,
       finalJudgePositiveMinimumConfidence: 80,
       historicalCasesRequired: false,
     },
-    delivery: { enabled: false, published: false, notified: false, traded: false },
+    delivery: { mode: "durable_consumer", producerSendsDirectly: false, published: false, notifiedAtCreation: false, traded: false },
   };
   const written = await writeVersionedJsonToR2(outboxKey, outbox, { createOnly: true });
   if (written.conflict) {
     const existing = await readVersionedTextFromR2(outboxKey);
     if (!existing.found || !existing.text) throw new Error("pr262_watch_out_outbox_conflict_read_failed");
+    const value = object(JSON.parse(existing.text));
+    if (value.kind !== outbox.kind
+      || value.resultKey !== resultKey
+      || value.ticker !== ticker
+      || normalizedCik(value.cik) !== normalizedCik(pointer.cik)
+      || value.ruleId !== proof.ruleId
+      || value.candidateFingerprint !== report.candidateFingerprint) {
+      throw new Error("pr262_watch_out_outbox_content_conflict");
+    }
   }
   return { promoted: true, reason: written.written ? "new_serious_watch_out" : "already_recorded", outboxKey, ruleId: proof.ruleId, ticker };
 }

@@ -167,7 +167,7 @@ jobs:
           else:
               if certified or research_ready:
                   raise SystemExit("Unsuccessful calibration attempted to expose a validated historical research definition.")
-              print("No new legacy research definition. The supervised US Buy/Sell path still requires its separate mandatory five-case pilot gate.")
+              print("No new legacy research definition. Current verified evidence and Committee authority remain the Serious Signal gate; history is optional learning context.")
           PY
 
       - name: Audit deployed Railway provider capabilities

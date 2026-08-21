@@ -21,11 +21,16 @@ Allowed changes are limited to:
 - regression tests;
 - documentation that makes the final architecture accurate.
 
-Cloudflare Worker migration is explicitly deferred. Railway remains the current sensor owner.
+The user has now explicitly approved the Cloudflare Worker migration. The cheap
+Worker implementation is present, but production ownership must change only
+after a live five-minute shadow deployment has been observed. Railway remains
+the sensor owner during shadow; Cloudflare becomes the sole sensor owner at the
+controlled cutover.
 
 ## Current architecture
 
-- Five-minute lightweight Railway sensor; no old always-on deep scanner.
+- Five-minute cheap sensor on Railway during shadow, then Cloudflare Worker;
+  no old always-on deep scanner.
 - SEC/news/official/market sensors record deltas and deduplicate.
 - Exact issuer mapping before specialist work.
 - Targeted company refresh only.
@@ -38,10 +43,20 @@ Cloudflare Worker migration is explicitly deferred. Railway remains the current 
 
 ## Production deployment requirement
 
-Production must keep two Railway services from the same repository:
+Production keeps the persistent Railway web/API service and a small recovery
+service from the same repository:
 
-1. Web/API service: `railway.web.json` — persistent app + database migrations.
-2. Sensor service: `railway.sensor.json` — five-minute bounded cron.
+1. Web/API service: repository-default `railway.json` — persistent app + database migrations.
+2. During shadow: `railway.sensor.json` — five-minute bounded Railway sensing.
+3. After cutover: disable that sensor and enable
+   `railway.analysis-recovery.json` — hourly analysis/delivery recovery only.
+4. Daily: `railway.foundation.json` — production-only complete U.S. universe,
+   valuation batches, and a full-coverage exposure index. It reports success
+   only after every batch is present.
+
+Cloudflare performs the production five-minute cheap scan and immediately
+hands retained work to the persistent Railway web/API route. Quiet scans do not
+wake Railway.
 
 Do not merge a configuration that turns the normal web application into a cron worker.
 
@@ -65,9 +80,15 @@ Do not rely on a branch-wide blocker as the only security control for a dangerou
 
 A Serious Signal must be written exactly once to a durable outbox before delivery.
 
-Immediate delivery can use Telegram/webhook first. Web Push for the home-screen Swing Up web app should use a standard push subscription + service worker and must require user permission. Email may be added when a production email provider is configured.
+Immediate delivery uses Telegram and/or an HTTPS webhook. The authenticated
+`/serious-signals` web/app surface reads a sanitized rolling 48-hour feed.
+Native Web Push and email may be added later when their providers and permission
+flows are selected; they are not part of this merge gate.
 
-ChatGPT monitoring should use a sanitized read-only Serious Signal feed and may run hourly; it is not the immediate-delivery channel.
+ChatGPT monitoring should use the same sanitized read-only Serious Signal feed
+and may run hourly; it is not the immediate-delivery channel. Outbound retries
+are at-least-once and expire after 30 minutes by default so an old quote is not
+presented as a fresh alert.
 
 ## Cost requirement
 

@@ -22,6 +22,7 @@ new Function("require", "module", "exports", output)((name) => {
       return { written: true, conflict: false, etag: "test" };
     },
   };
+  if (name === "@/lib/opportunity-engine/pr262-storage") return { pr262StorageKey: (relative) => `branch-labs/pr-262/${relative}` };
   throw new Error(`Unexpected import in value safety smoke: ${name}`);
 }, cjsModule, cjsModule.exports);
 const {

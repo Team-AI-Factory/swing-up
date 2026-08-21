@@ -1,6 +1,7 @@
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
+import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 
-const PREFIX = "branch-labs/pr-262/metrics/cost-effectiveness";
+const PREFIX = pr262StorageKey("metrics/cost-effectiveness");
 
 type CycleMetrics = {
   checkedAt: string;

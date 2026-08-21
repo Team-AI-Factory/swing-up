@@ -70,7 +70,7 @@ const providerFailureStreaks = new Map<string, number>();
 let nasdaqTradeHaltEndpointIndex = 0;
 
 function selectEquityReceipts<T extends EventReceipt>(receipts: T[], limit: number) {
-  // PR262's Pilot-5 policy predates the official halt channel. The balancing
+  // PR262's optional historical-context path predates the official halt channel. The balancing
   // algorithm is channel-agnostic at runtime, so bridge only that old type
   // boundary while keeping EventReceipt's halt channel truthful.
   return selectBalancedReceipts(

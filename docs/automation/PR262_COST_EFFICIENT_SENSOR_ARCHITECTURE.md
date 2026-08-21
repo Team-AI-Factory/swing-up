@@ -2,7 +2,10 @@
 
 ## Current status
 
-PR #262 is active in its isolated Railway preview as a bounded five-minute sensor cron. The previous always-on deep scanner is retired.
+PR #262 keeps a bounded five-minute Railway sensor active while the new
+Cloudflare Worker runs in an isolated live shadow. After the controlled
+ownership cutover, Cloudflare owns cheap five-minute discovery and Railway owns
+only targeted analysis and recovery. The previous always-on deep scanner is retired.
 
 The active design is:
 
@@ -42,7 +45,9 @@ Historical analogs may improve forecasting but cannot block a signal based on st
 
 PR #262 must **not** turn the normal Swing Up website into a cron job when merged.
 
-Production requires two independently configured Railway services from the same repository:
+Production requires the persistent Railway web/API service plus explicitly
+separated pre-cutover sensor, post-cutover recovery, and daily foundation
+configurations:
 
 ### 1. Swing Up web/API service
 
@@ -50,13 +55,36 @@ Use `railway.web.json`.
 
 It keeps the persistent Next.js web/API application online and preserves production database migrations before application startup.
 
-### 2. Serious Signal sensor service
+### 2. Pre-cutover Railway sensor service
 
 Use `railway.sensor.json`.
 
 It runs `npm run pr262:cron` every five minutes, does one bounded cycle, and exits. It must not replace the normal web/API service.
 
-The current PR preview still uses the branch-specific default `railway.json` so the live PR sensor is not interrupted before the separate production sensor service is attached. Before merge, the production Railway services must explicitly point at their separate configuration files, or the repository default must be restored to the web service configuration after the sensor service is safely separated.
+Keep this service active during Cloudflare shadow. Disable it at the production
+ownership cutover so Railway and Cloudflare never scan the same sources as two
+owners.
+
+### 3. Post-cutover Railway recovery service
+
+Use `railway.analysis-recovery.json`.
+
+Cloudflare invokes the Railway analysis route immediately whenever its R2 queue
+contains work. The hourly recovery job processes interrupted handoffs and
+delivery retries without scanning sources.
+
+### 4. Daily production foundation service
+
+Use `railway.foundation.json`.
+
+It refreshes the production-only U.S. universe and resumable valuation batches,
+then materializes an exposure index only after the entire value cycle is
+complete. It has no database, AI, payment, publishing, or notification
+credentials. A partial batch set can never be reported as ready coverage.
+
+The repository default `railway.json` is restored to the persistent web/API
+service. The sensor, recovery, and foundation jobs must be created as separate
+Railway services that explicitly select their matching configuration files.
 
 ## API security boundary
 
@@ -70,14 +98,22 @@ Publishing/notification routes must never rely only on a global branch middlewar
 
 Serious Signal detection and user delivery are separate responsibilities.
 
-A committee-approved alert must first be persisted to the outbox with a stable identity. Delivery consumers then send it through configured channels and record delivery state so retries cannot create duplicate notifications.
+A committee-approved alert must first be persisted to the outbox with a stable
+identity. Delivery consumers use durable claims and receipts. External delivery
+is honestly at-least-once; the webhook receives an idempotency key, while a
+crash after Telegram accepts a message but before its receipt is written can
+still cause a duplicate. A notification expires after 30 minutes by default
+(and is hard-capped at two hours) so recovery never presents an old quote as
+current. The authenticated web feed retains 48 hours of history.
 
 Target channels:
 
 - immediate Telegram or another webhook-capable phone channel;
-- Web Push for the installed/home-screen Swing Up web app after the user grants notification permission;
-- email when a production email provider is configured;
 - a sanitized read-only Serious Signal feed for hourly ChatGPT monitoring/summary.
+
+Native Web Push and email are optional future channels, not hidden fallbacks or
+merge requirements. The implemented web/app surface is the authenticated live
+feed plus Telegram/HTTPS webhook delivery.
 
 No raw candidate or unfinished committee result may be delivered as a Serious Signal.
 
@@ -96,13 +132,21 @@ Mandatory production controls:
 - cost/effectiveness metrics for provider calls, AI calls, queue age, duplicates skipped, cycle time, and Serious Signals produced;
 - no automatic expensive fallback when a source is unavailable.
 
-## R2 and future Cloudflare option
+## R2 and Cloudflare cheap sensor
 
-Cloudflare R2 remains the durable PR262 store.
+Cloudflare R2 remains the durable PR262 store. PR262 key construction on
+Railway and the Worker is locked to the exact `production/pr262/` namespace; a
+generic R2 write-prefix setting cannot silently redirect only one side of the
+queue. The isolated Railway sensor/recovery/foundation jobs additionally set a
+global write fence to that prefix. The persistent web/API service must retain
+its existing broader R2 write policy because the rest of Swing Up still owns
+non-PR262 namespaces; PR262's own key resolver provides its namespace fence.
 
-A future optimization may move only the lightweight sensor/state layer to Cloudflare Workers with a native R2 binding. Deep source analysis, valuation and committee work should remain on Railway. This migration is optional and is **not a merge prerequisite** for PR #262.
-
-Until that migration is explicitly approved and shadow-tested, Railway remains the sensor owner.
+Only the lightweight sensor/state layer moves to Cloudflare Workers with a
+native R2 binding. Deep source analysis, valuation, committee work and delivery
+remain on Railway. Shadow storage and production storage are strictly
+separated; shadow cannot invoke analysis. Railway remains the sensor owner
+until the shadow observation and explicit two-sided cutover are complete.
 
 ## Merge blockers
 

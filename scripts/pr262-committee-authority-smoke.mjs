@@ -37,7 +37,7 @@ function watchOut(overrides = {}) {
       officialSourceConfirmed: true,
       secDiligenceConfirmed: true,
       priceCrossChecked: false,
-      historicalPilotPassed: true,
+      historicalContextAvailable: false,
       longTermNormalizationPassed: true,
       specialistModel: "general",
       committeeApproved: true,
@@ -80,7 +80,7 @@ const legacySignal = watchOut({ fingerprint: "legacy", evidence: {
   officialSourceConfirmed: true,
   secDiligenceConfirmed: true,
   priceCrossChecked: false,
-  historicalPilotPassed: true,
+  historicalContextAvailable: false,
   longTermNormalizationPassed: true,
   specialistModel: "general",
 } });

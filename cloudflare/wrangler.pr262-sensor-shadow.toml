@@ -1,0 +1,43 @@
+name = "swing-up-pr262-cheap-sensor-shadow"
+main = "pr262-sensor-worker.mjs"
+compatibility_date = "2026-08-19"
+workers_dev = true
+
+[triggers]
+crons = ["*/5 * * * *"]
+
+[limits]
+cpu_ms = 10000
+subrequests = 32
+
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[vars]
+SENSOR_OWNER = "cloudflare_worker"
+SENSOR_DEPLOYMENT_MODE = "shadow"
+ANALYSIS_HANDOFF_ENABLED = "false"
+SENSOR_WALL_MS = "42000"
+SENSOR_STATE_KEY = "branch-labs/pr-262/cloudflare-shadow/sensor/state-v1.json"
+SENSOR_RUN_PREFIX = "branch-labs/pr-262/cloudflare-shadow/sensor/runs"
+EQUITY_UNIVERSE_KEY = "branch-labs/pr-262/equity-universe/v1.json"
+EXPOSURE_INDEX_KEY = "branch-labs/pr-262/sensor/exposure-index-v1.json"
+DIRECT_FEEDS_KEY = "branch-labs/pr-262/cloudflare-shadow/sensor/direct-company-feeds-v1.json"
+FMP_COMMERCIAL_USE_APPROVED = "false"
+
+[[r2_buckets]]
+binding = "SENSOR_R2"
+bucket_name = "replace-with-shadow-bucket"
+
+[[r2_buckets]]
+binding = "REFERENCE_R2"
+bucket_name = "swingup"
+
+[[durable_objects.bindings]]
+name = "SENSOR_COORDINATOR"
+class_name = "SensorCoordinator"
+
+[exports.SensorCoordinator]
+type = "durable-object"
+storage = "sqlite"

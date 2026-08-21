@@ -7,12 +7,13 @@ import {
 } from "@/lib/r2-warehouse";
 import type { UsValueCompanyAnalysis } from "@/lib/opportunity-engine/us-value-investing-engine";
 import { readResumableUsValueState } from "@/lib/opportunity-engine/us-value-investing-resumable";
+import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 
 const BRANCH = "agent/combined-opportunity-engine" as const;
-const R2_PREFIX = "branch-labs/pr-262/signal-operations/earnings-buy-radar" as const;
+const R2_PREFIX = pr262StorageKey("signal-operations/earnings-buy-radar");
 const LATEST_KEY = `${R2_PREFIX}/latest.json`;
-const OUTBOX_PREFIX = "branch-labs/pr-262/serious-signal/outbox/earnings-buy" as const;
-const NORMALIZATION_PREFIX = "branch-labs/pr-262/signal-operations/long-term-normalization" as const;
+const OUTBOX_PREFIX = pr262StorageKey("research-candidates/outbox/earnings-buy");
+const NORMALIZATION_PREFIX = pr262StorageKey("signal-operations/long-term-normalization");
 const SEC_AGENT = "SwingUp/1.0 support@swingup.app";
 const MAX_COMPANIES_FOR_LIVE_QUOTES = 1_500;
 const MAX_OFFICIAL_EARNINGS_CHECKS = 24;
@@ -532,7 +533,7 @@ export async function runUsEarningsBuyRadar(input: { fetchImpl?: typeof fetch; n
     const outboxKey = `${OUTBOX_PREFIX}/${item.ticker.toUpperCase()}/${id}.json`;
     const payload = {
       version: 1,
-      kind: "pr262_direct_earnings_serious_buy",
+      kind: "pr262_direct_earnings_research_candidate",
       branch: BRANCH,
       fingerprint: id,
       checkedAt,

@@ -13,14 +13,15 @@ import {
 import { assessStrategicOptionality, type StrategicOptionalityAssessment } from "@/lib/opportunity-engine/strategic-optionality";
 import type { UsValueCompanyAnalysis } from "@/lib/opportunity-engine/us-value-investing-engine";
 import { readResumableUsValueState } from "@/lib/opportunity-engine/us-value-investing-resumable";
+import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 
 const BRANCH = "agent/combined-opportunity-engine" as const;
-const R2_PREFIX = "branch-labs/pr-262/signal-operations/preprice-buy-radar" as const;
+const R2_PREFIX = pr262StorageKey("signal-operations/preprice-buy-radar");
 const LATEST_KEY = `${R2_PREFIX}/latest.json`;
-const OUTBOX_PREFIX = "branch-labs/pr-262/serious-signal/outbox/preprice-buy" as const;
-const RELATIONSHIP_INDEX_KEY = "branch-labs/pr-262/signal-operations/strategic-relationships/index.json";
-const NORMALIZATION_PREFIX = "branch-labs/pr-262/signal-operations/long-term-normalization";
-const WATCH_OUT_KEY = "branch-labs/pr-262/serious-signal/us-watch-out/latest.json";
+const OUTBOX_PREFIX = pr262StorageKey("research-candidates/outbox/preprice-buy");
+const RELATIONSHIP_INDEX_KEY = pr262StorageKey("signal-operations/strategic-relationships/index.json");
+const NORMALIZATION_PREFIX = pr262StorageKey("signal-operations/long-term-normalization");
+const WATCH_OUT_KEY = pr262StorageKey("research-candidates/us-watch-out/latest.json");
 const MAX_SOURCE_CANDIDATES = 100;
 const MAX_DECISION_GRADE_READS = 40;
 const MAX_PRICE_CONFIRMATIONS = 40;
@@ -740,7 +741,7 @@ export async function runUsPrePriceBuyRadar(input: { fetchImpl?: typeof fetch; n
     try {
       const written = await writeVersionedJsonToR2(outboxKey, {
         version: 1,
-        kind: "pr262_source_first_serious_buy",
+        kind: "pr262_source_first_research_candidate",
         branch: BRANCH,
         fingerprint: id,
         checkedAt,

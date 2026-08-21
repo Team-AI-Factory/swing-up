@@ -1,6 +1,7 @@
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
+import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 
-const STATE_KEY = "branch-labs/pr-262/sensor/provider-budgets-v1.json";
+const STATE_KEY = pr262StorageKey("sensor/provider-budgets-v1.json");
 const DAY_MS = 24 * 60 * 60_000;
 const HOUR_MS = 60 * 60_000;
 const MINUTE_MS = 60_000;
@@ -114,49 +115,70 @@ function migrate(raw: unknown, nowMs: number): BudgetState {
 
 async function load(now: Date) {
   const current = await readVersionedTextFromR2(STATE_KEY);
-  if (!current.found || !current.text) return { state: emptyState(), etag: current.etag };
-  try { return { state: migrate(JSON.parse(current.text), now.getTime()), etag: current.etag }; }
-  catch { return { state: emptyState(), etag: current.etag }; }
+  if (!current.found || !current.text) return { state: emptyState(), etag: current.etag, corrupt: false };
+  try { return { state: migrate(JSON.parse(current.text), now.getTime()), etag: current.etag, corrupt: false }; }
+  catch { return { state: emptyState(), etag: current.etag, corrupt: true }; }
 }
 
-export async function createPr262SensorBudgetedFetch(input: { now?: Date; fetchImpl?: typeof fetch } = {}) {
+export async function createPr262SensorBudgetedFetch(input: { now?: Date; fetchImpl?: typeof fetch; signal?: AbortSignal } = {}) {
   const now = input.now ?? new Date();
   const rawFetch = input.fetchImpl ?? fetch;
-  const loaded = await load(now);
-  const state = loaded.state;
+  let loaded = await load(now);
+  let state = loaded.state;
   const blocked: Array<{ provider: string; reason: string; nextEligibleAt: string | null }> = [];
-  let dirty = false;
+
+  const reserveBeforeNetwork = async (policy: Policy, currentMs: number) => {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      loaded = await load(new Date(currentMs));
+      if (loaded.corrupt) throw new Error("pr262_sensor_provider_budget_state_invalid");
+      const candidate = loaded.state;
+      prune(candidate, currentMs);
+      const used = quotaCount(candidate, policy.quotaKey);
+      if (used >= policy.maximumPer24Hours) {
+        blocked.push({ provider: policy.provider, reason: "rolling_24h_budget", nextEligibleAt: null });
+        throw new Error(`pr262_sensor_budget_guard:${policy.provider}:rolling_24h_budget`);
+      }
+      const last = Date.parse(candidate.lastCadenceAt[policy.cadenceKey] ?? "");
+      if (Number.isFinite(last) && currentMs - last < policy.minimumIntervalMs) {
+        const nextEligibleAt = new Date(last + policy.minimumIntervalMs).toISOString();
+        blocked.push({ provider: policy.provider, reason: "minimum_interval", nextEligibleAt });
+        throw new Error(`pr262_sensor_budget_guard:${policy.provider}:minimum_interval`);
+      }
+      addCount(candidate, policy.quotaKey, currentMs);
+      candidate.lastCadenceAt[policy.cadenceKey] = new Date(currentMs).toISOString();
+      candidate.updatedAt = new Date(currentMs).toISOString();
+      const written = await writeVersionedJsonToR2(
+        STATE_KEY,
+        candidate,
+        loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true },
+      );
+      if (!written.conflict) {
+        state = candidate;
+        loaded = { state: candidate, etag: written.etag, corrupt: false };
+        return;
+      }
+    }
+    throw new Error("pr262_sensor_provider_budget_reservation_conflict");
+  };
 
   const fetchImpl: typeof fetch = async (request, init) => {
     const policy = policyFor(request);
-    if (!policy) return rawFetch(request, init);
+    const signal = input.signal
+      ? init?.signal ? AbortSignal.any([input.signal, init.signal]) : input.signal
+      : init?.signal;
+    if (!policy) return rawFetch(request, { ...init, signal });
     const currentMs = Date.now();
-    prune(state, currentMs);
-    const used = quotaCount(state, policy.quotaKey);
-    if (used >= policy.maximumPer24Hours) {
-      blocked.push({ provider: policy.provider, reason: "rolling_24h_budget", nextEligibleAt: null });
-      throw new Error(`pr262_sensor_budget_guard:${policy.provider}:rolling_24h_budget`);
-    }
-    const last = Date.parse(state.lastCadenceAt[policy.cadenceKey] ?? "");
-    if (Number.isFinite(last) && currentMs - last < policy.minimumIntervalMs) {
-      const nextEligibleAt = new Date(last + policy.minimumIntervalMs).toISOString();
-      blocked.push({ provider: policy.provider, reason: "minimum_interval", nextEligibleAt });
-      throw new Error(`pr262_sensor_budget_guard:${policy.provider}:minimum_interval`);
-    }
-    addCount(state, policy.quotaKey, currentMs);
-    state.lastCadenceAt[policy.cadenceKey] = new Date(currentMs).toISOString();
-    dirty = true;
-    return rawFetch(request, init);
+    await reserveBeforeNetwork(policy, currentMs);
+    return rawFetch(request, { ...init, signal });
   };
 
   const flush = async () => {
-    if (!dirty) return { persisted: false, key: STATE_KEY, hourlyBucketCount: Object.values(state.hourlyCounts).reduce((sum, buckets) => sum + Object.keys(buckets).length, 0) };
-    const nowMs = Date.now();
-    prune(state, nowMs);
-    state.updatedAt = new Date(nowMs).toISOString();
-    const written = await writeVersionedJsonToR2(STATE_KEY, state, loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true });
-    if (written.conflict) throw new Error("pr262_sensor_provider_budget_state_conflict");
-    return { persisted: true, key: STATE_KEY, hourlyBucketCount: Object.values(state.hourlyCounts).reduce((sum, buckets) => sum + Object.keys(buckets).length, 0) };
+    return {
+      persisted: true,
+      key: STATE_KEY,
+      reservationsPersistedBeforeNetwork: true,
+      hourlyBucketCount: Object.values(state.hourlyCounts).reduce((sum, buckets) => sum + Object.keys(buckets).length, 0),
+    };
   };
 
   return {
@@ -168,6 +190,7 @@ export async function createPr262SensorBudgetedFetch(input: { now?: Date; fetchI
       policiesAreHardNetworkGuards: true,
       freeTierHeadroomReserved: true,
       compactR2Ledger: true,
+      reservationsPersistedBeforeNetwork: true,
     }),
   };
 }

@@ -13,12 +13,17 @@ import {
   hardenAndPersistUsValueInvestingCycle,
   type HardenedUsValueInvestingCycle,
 } from "@/lib/opportunity-engine/us-value-investing-safety";
+import { pr262StorageKey, resolvePr262StoragePrefix } from "@/lib/opportunity-engine/pr262-storage";
 
-const BRANCH = "agent/combined-opportunity-engine" as const;
-const R2_PREFIX = "branch-labs/pr-262/value-investing/resumable" as const;
+const PR262_BRANCH = "agent/combined-opportunity-engine";
+const STORAGE_PREFIX = resolvePr262StoragePrefix();
+const RUNTIME_BRANCH = process.env.RAILWAY_GIT_BRANCH?.trim()
+  || (STORAGE_PREFIX.startsWith("production/pr262/") ? "main" : PR262_BRANCH);
+const PRODUCTION_R2_WRITES = STORAGE_PREFIX.startsWith("production/pr262/");
+const R2_PREFIX = pr262StorageKey("value-investing/resumable");
 const STATE_KEY = `${R2_PREFIX}/state.json`;
 const LATEST_SUMMARY_KEY = `${R2_PREFIX}/latest/index.json`;
-const SIGNAL_OUTBOX_PREFIX = "branch-labs/pr-262/serious-signal/outbox/foundation" as const;
+const SIGNAL_OUTBOX_PREFIX = pr262StorageKey("research-candidates/outbox/foundation");
 const BATCH_SIZE = 500;
 const BATCHES_PER_RUN = 4;
 const TOP_ALERT_LIMIT = 250;
@@ -42,7 +47,7 @@ type ResumableBatchSummary = {
 type ResumableBatchObject = {
   version: 1;
   kind: "us_value_investing_company_batch";
-  branch: typeof BRANCH;
+  branch: string;
   cycleId: string;
   sourceCheckedAt: string;
   persistedAt: string;
@@ -60,13 +65,13 @@ type ResumableBatchObject = {
     publishing: false;
     notifications: false;
     trades: false;
-    productionWrites: false;
+    productionWrites: boolean;
   };
 };
 
 export type ResumableUsValueState = {
   version: 1;
-  branch: typeof BRANCH;
+  branch: string;
   cycleId: string;
   status: "running" | "complete";
   startedAt: string;
@@ -105,7 +110,7 @@ export type ResumableUsValueRun = {
   version: 1;
   ok: boolean;
   mode: "pr262_us_value_resumable_batches";
-  branch: typeof BRANCH;
+  branch: string;
   checkedAt: string;
   runtime: {
     commitSha: string | null;
@@ -169,7 +174,7 @@ export type ResumableUsValueRun = {
     publishing: false;
     notifications: false;
     trades: false;
-    productionWrites: false;
+    productionWrites: boolean;
     nonUsScanning: false;
   };
 };
@@ -250,7 +255,7 @@ function validState(value: unknown): value is ResumableUsValueState {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const item = value as Record<string, unknown>;
   return item.version === 1
-    && item.branch === BRANCH
+    && item.branch === RUNTIME_BRANCH
     && typeof item.cycleId === "string"
     && (item.status === "running" || item.status === "complete")
     && typeof item.universeFingerprint === "string"
@@ -284,7 +289,7 @@ function newState(input: {
 }): ResumableUsValueState {
   return {
     version: 1,
-    branch: BRANCH,
+    branch: RUNTIME_BRANCH,
     cycleId: cycleId(input.checkedAt, input.fingerprint),
     status: "running",
     startedAt: input.checkedAt,
@@ -327,7 +332,7 @@ function buildBatch(
   return {
     version: 1,
     kind: "us_value_investing_company_batch",
-    branch: BRANCH,
+    branch: RUNTIME_BRANCH,
     cycleId: state.cycleId,
     sourceCheckedAt,
     persistedAt: new Date().toISOString(),
@@ -352,7 +357,7 @@ function buildBatch(
       publishing: false,
       notifications: false,
       trades: false,
-      productionWrites: false,
+      productionWrites: PRODUCTION_R2_WRITES,
     },
   };
 }
@@ -416,8 +421,8 @@ async function persistSignalOutbox(
       const outboxKey = `${SIGNAL_OUTBOX_PREFIX}/${action}/${item.ticker.toUpperCase()}/${fingerprint}.json`;
       const payload = {
         version: 1,
-        kind: "pr262_new_foundation_serious_signal",
-        branch: BRANCH,
+        kind: "pr262_foundation_research_candidate",
+        branch: RUNTIME_BRANCH,
         fingerprint,
         action,
         ticker: item.ticker,
@@ -467,7 +472,7 @@ async function finalizeState(state: ResumableUsValueState, checkedAt: string, et
   const summary = {
     version: 1,
     kind: "us_value_investing_resumable_summary",
-    branch: BRANCH,
+    branch: RUNTIME_BRANCH,
     cycleId: state.cycleId,
     status: state.status,
     startedAt: state.startedAt,
@@ -493,7 +498,7 @@ async function finalizeState(state: ResumableUsValueState, checkedAt: string, et
       publishing: false,
       notifications: false,
       trades: false,
-      productionWrites: false,
+      productionWrites: PRODUCTION_R2_WRITES,
     },
   };
   await writeVersionedJsonToR2(LATEST_SUMMARY_KEY, summary);
@@ -521,6 +526,8 @@ function confirmedSignals(
 export async function runResumableUsValueBatch(input: {
   fetchImpl?: typeof fetch;
   now?: Date;
+  foundationOnly?: boolean;
+  requireCompleteUniverse?: boolean;
 } = {}): Promise<ResumableUsValueRun> {
   const now = input.now ?? new Date();
   const checkedAt = now.toISOString();
@@ -529,6 +536,9 @@ export async function runResumableUsValueBatch(input: {
   if (!getR2Config().configured) throw new Error("cloudflare_r2_not_configured");
 
   const raw = await runUsValueInvestingCycle({ fetchImpl, now, persist: false });
+  if (input.requireCompleteUniverse && !raw.ok) {
+    throw new Error("production_foundation_universe_incomplete");
+  }
   const hardened = await hardenAndPersistUsValueInvestingCycle(raw, { persist: false });
   const sortedAnalyses = [...hardened.analyses].sort((left, right) => companyKey(left).localeCompare(companyKey(right)));
   const fingerprint = universeFingerprint(sortedAnalyses);
@@ -591,16 +601,18 @@ export async function runResumableUsValueBatch(input: {
   }
 
   let diligence: Awaited<ReturnType<typeof buildCatalystCompanyDiligence>> | null = null;
-  try {
-    diligence = await buildCatalystCompanyDiligence({
-      candidates: [],
-      valueInvesting: hardened,
-      fetchImpl,
-      now,
-      persist: true,
-    });
-  } catch (error) {
-    warehouseErrors.push(`diligence:${safeError(error)}`);
+  if (!input.foundationOnly) {
+    try {
+      diligence = await buildCatalystCompanyDiligence({
+        candidates: [],
+        valueInvesting: hardened,
+        fetchImpl,
+        now,
+        persist: true,
+      });
+    } catch (error) {
+      warehouseErrors.push(`diligence:${safeError(error)}`);
+    }
   }
 
   const confirmed = diligence
@@ -608,17 +620,19 @@ export async function runResumableUsValueBatch(input: {
     : { buy: [], sell: [], watchOut: [] };
   const seriousSignalCount = confirmed.buy.length + confirmed.sell.length + confirmed.watchOut.length;
   let newSeriousSignals: ResumableUsValueRun["newSeriousSignals"] = [];
-  try {
-    newSeriousSignals = await persistSignalOutbox(confirmed, checkedAt);
-  } catch (error) {
-    warehouseErrors.push(`outbox:${safeError(error)}`);
+  if (!input.foundationOnly) {
+    try {
+      newSeriousSignals = await persistSignalOutbox(confirmed, checkedAt);
+    } catch (error) {
+      warehouseErrors.push(`outbox:${safeError(error)}`);
+    }
   }
 
   return {
     version: 1,
     ok: raw.ok && warehouseErrors.length === 0,
     mode: "pr262_us_value_resumable_batches",
-    branch: BRANCH,
+    branch: RUNTIME_BRANCH,
     checkedAt,
     runtime: {
       commitSha: process.env.RAILWAY_GIT_COMMIT_SHA?.trim() || null,
@@ -668,7 +682,7 @@ export async function runResumableUsValueBatch(input: {
       publishing: false,
       notifications: false,
       trades: false,
-      productionWrites: false,
+      productionWrites: PRODUCTION_R2_WRITES,
       nonUsScanning: false,
     },
   };
@@ -680,7 +694,7 @@ export async function readResumableUsValueState() {
 }
 
 export const RESUMABLE_US_VALUE_POLICY = Object.freeze({
-  branch: BRANCH,
+  branch: RUNTIME_BRANCH,
   batchSize: BATCH_SIZE,
   batchesPerRun: BATCHES_PER_RUN,
   completedCompanyRecordsPersistImmediately: true,

@@ -11,18 +11,19 @@ import {
   readResumableUsValueState,
   type ResumableUsValueState,
 } from "@/lib/opportunity-engine/us-value-investing-resumable";
+import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 
 const BRANCH = "agent/combined-opportunity-engine" as const;
-const R2_PREFIX = "branch-labs/pr-262/signal-operations" as const;
+const R2_PREFIX = pr262StorageKey("signal-operations");
 const REGISTRY_KEY = `${R2_PREFIX}/active-registry.json`;
 const LATEST_REPORT_KEY = `${R2_PREFIX}/latest.json`;
 const NOTIFICATION_DIGEST_KEY = `${R2_PREFIX}/notification-digest/latest.json`;
 const NORMALIZATION_PREFIX = `${R2_PREFIX}/long-term-normalization`;
 const SPECIALIST_PREFIX = `${R2_PREFIX}/specialist-valuations`;
-const BRANCH_LAB_STATE_KEY = "branch-labs/pr-262/serious-signal/state.json";
-const EVENT_JOB_STATE_KEY = "branch-labs/pr-262/event-job/state-v1.json";
-const DILIGENCE_KEY = "branch-labs/pr-262/value-investing/catalyst-diligence/latest.json";
-const WATCH_OUT_KEY = "branch-labs/pr-262/serious-signal/us-watch-out/latest.json";
+const BRANCH_LAB_STATE_KEY = pr262StorageKey("research-candidates/state.json");
+const EVENT_JOB_STATE_KEY = pr262StorageKey("event-job/state-v1.json");
+const DILIGENCE_KEY = pr262StorageKey("value-investing/catalyst-diligence/latest.json");
+const WATCH_OUT_KEY = pr262StorageKey("research-candidates/us-watch-out/latest.json");
 const MAX_PRICE_CANDIDATES = 5_000;
 const MAX_YAHOO_CROSS_CHECKS = 40;
 const MAX_FRESH_SEC_NORMALIZATIONS = 12;
@@ -167,7 +168,7 @@ export type ActiveSeriousSignal = {
     officialSourceConfirmed: boolean;
     secDiligenceConfirmed: boolean;
     priceCrossChecked: boolean;
-    historicalPilotPassed: boolean | null;
+    historicalContextAvailable: boolean | null;
     longTermNormalizationPassed: boolean | null;
     specialistModel: SpecialistValuation["model"];
     committeeApproved: boolean;
@@ -371,7 +372,7 @@ function parseEventCandidates(historyValue: unknown) {
 type CommitteeApproval = {
   approved: boolean;
   actionable: boolean;
-  historicalPilotPassed: boolean;
+  historicalContextAvailable: boolean;
   agentsCompleted: number;
   agentsFailed: number;
   finalJudgePositive: boolean;
@@ -383,21 +384,22 @@ function committeeApprovalFromRun(runValue: unknown): CommitteeApproval {
   const committee = object(run.committee);
   const finalJudge = object(committee.finalJudge);
   const output = object(committee.output);
-  const historicalPilotPassed = object(run.historicalPilot).passed === true;
+  const historicalPilot = object(run.historicalPilot);
+  const historicalContextAvailable = (finite(historicalPilot.reportedSampleSize) ?? 0) > 0
+    || (finite(historicalPilot.independentRealEventCount) ?? 0) > 0;
   const agentsCompleted = Math.max(0, Math.floor(finite(committee.agentsCompleted) ?? 0));
   const agentsFailed = Math.max(0, Math.floor(finite(committee.agentsFailed) ?? 0));
   const confidence = finite(finalJudge.confidence);
   const finalJudgePositive = finalJudge.verdict === "positive" && (confidence ?? 0) >= 80;
   return {
     approved: run.seriousSignalFound === true
-      && historicalPilotPassed
       && committee.ok === true
       && agentsCompleted === 14
       && agentsFailed === 0
       && finalJudgePositive
       && output.overallRecommendation === "approve",
     actionable: run.actionableSignalFound === true && (run.alertType === "buy" || run.alertType === "sell"),
-    historicalPilotPassed,
+    historicalContextAvailable,
     agentsCompleted,
     agentsFailed,
     finalJudgePositive,
@@ -410,7 +412,7 @@ function committeeApprovalFromCandidate(candidate: Json): CommitteeApproval {
   return {
     approved: approval.approved === true,
     actionable: approval.actionable === true,
-    historicalPilotPassed: approval.historicalPilotPassed === true,
+    historicalContextAvailable: approval.historicalContextAvailable === true,
     agentsCompleted: Math.max(0, Math.floor(finite(approval.agentsCompleted) ?? 0)),
     agentsFailed: Math.max(0, Math.floor(finite(approval.agentsFailed) ?? 0)),
     finalJudgePositive: approval.finalJudgePositive === true,
@@ -1089,7 +1091,6 @@ function eventGatePassed(candidate: Json) {
   const committee = committeeApprovalFromCandidate(candidate);
   return committee.approved
     && committee.actionable
-    && committee.historicalPilotPassed
     && candidate.gatePassed === true
     && (finite(candidate.eventTruth) ?? 0) >= 80
     && (finite(candidate.mappingConfidence) ?? 0) >= 95
@@ -1143,7 +1144,7 @@ function makeSignal(input: {
   officialSourceConfirmed: boolean;
   secDiligenceConfirmed: boolean;
   priceCrossChecked: boolean;
-  historicalPilotPassed: boolean | null;
+  historicalContextAvailable: boolean | null;
   normalization: LongTermNormalization | null;
   specialist: SpecialistValuation;
   eventKey?: string | null;
@@ -1182,7 +1183,7 @@ function makeSignal(input: {
       officialSourceConfirmed: input.officialSourceConfirmed,
       secDiligenceConfirmed: input.secDiligenceConfirmed,
       priceCrossChecked: input.priceCrossChecked,
-      historicalPilotPassed: input.historicalPilotPassed,
+      historicalContextAvailable: input.historicalContextAvailable,
       longTermNormalizationPassed: input.normalization?.durableEnoughForSeriousBuy ?? null,
       specialistModel: input.specialist.model,
       committeeApproved: input.committee?.approved === true,
@@ -1464,7 +1465,7 @@ export async function runUsSignalOperations(input: {
       officialSourceConfirmed: true,
       secDiligenceConfirmed: diligence.watchOut.has(ticker),
       priceCrossChecked: true,
-      historicalPilotPassed: null,
+      historicalContextAvailable: null,
       normalization: normalizationMap.get(ticker) ?? null,
       specialist,
       eventKey: text(raw.duplicateKey) ?? text(raw.ruleId),
@@ -1517,7 +1518,7 @@ export async function runUsSignalOperations(input: {
         officialSourceConfirmed: true,
         secDiligenceConfirmed: true,
         priceCrossChecked: true,
-        historicalPilotPassed: null,
+        historicalContextAvailable: null,
         normalization,
         specialist,
         checkedAt,
@@ -1536,7 +1537,7 @@ export async function runUsSignalOperations(input: {
         officialSourceConfirmed: true,
         secDiligenceConfirmed: true,
         priceCrossChecked: true,
-        historicalPilotPassed: null,
+        historicalContextAvailable: null,
         normalization,
         specialist,
         checkedAt,
@@ -1583,7 +1584,7 @@ export async function runUsSignalOperations(input: {
         officialSourceConfirmed: true,
         secDiligenceConfirmed: true,
         priceCrossChecked: true,
-        historicalPilotPassed: null,
+        historicalContextAvailable: null,
         normalization,
         specialist,
         checkedAt,
@@ -1602,7 +1603,7 @@ export async function runUsSignalOperations(input: {
         officialSourceConfirmed: true,
         secDiligenceConfirmed: true,
         priceCrossChecked: true,
-        historicalPilotPassed: null,
+        historicalContextAvailable: null,
         normalization,
         specialist,
         checkedAt,
@@ -1621,7 +1622,7 @@ export async function runUsSignalOperations(input: {
         officialSourceConfirmed: true,
         secDiligenceConfirmed: true,
         priceCrossChecked: crossCheck?.passed ?? false,
-        historicalPilotPassed: null,
+        historicalContextAvailable: null,
         normalization,
         specialist,
         checkedAt,
@@ -1719,7 +1720,7 @@ export async function runUsSignalOperations(input: {
         officialSourceConfirmed: true,
         secDiligenceConfirmed: true,
         priceCrossChecked: true,
-        historicalPilotPassed: null,
+        historicalContextAvailable: null,
         normalization,
         specialist,
         eventKey: eventKey(candidate),
@@ -1736,7 +1737,6 @@ export async function runUsSignalOperations(input: {
     const item = analysisByTicker.get(ticker);
     if (!item) continue;
     const pilot = evaluateFiveCasePilotGate(candidate);
-    if (!pilot.passed) continue;
     const crossCheck = priceCrossChecks.get(ticker);
     if (crossCheck?.passed !== true) continue;
     const action: SignalAction = direction === "upside" ? "buy" : "sell";
@@ -1748,21 +1748,25 @@ export async function runUsSignalOperations(input: {
       item,
       currentPrice: crossCheck.tradingViewPrice,
       confidence: Math.min(95, Math.round(
-        (finite(candidate.eventTruth) ?? 0) * 0.3
-        + (finite(candidate.mappingConfidence) ?? 0) * 0.2
-        + (finite(candidate.evidenceIndependence) ?? 0) * 0.2
-        + pilot.observedDirectionalHitRatePercent * 0.3
+        (finite(candidate.eventTruth) ?? 0) * 0.25
+        + (finite(candidate.mappingConfidence) ?? 0) * 0.15
+        + (finite(candidate.materiality) ?? 0) * 0.15
+        + (finite(candidate.transmissionConfidence) ?? 0) * 0.15
+        + (finite(candidate.evidenceIndependence) ?? 0) * 0.15
+        + (committee.finalJudgeConfidence ?? 0) * 0.15
       )),
       regime,
       reasons: [
         text(candidate.eventHeadline) ?? "Verified event-driven opportunity.",
-        `The Pilot 5 gate passed with ${pilot.independentRealEventCount} independent same-direction events and ${pilot.observedDirectionalHitRatePercent.toFixed(1)}% observed success.`,
-        pilot.warning,
+        pilot.reportedSampleSize > 0 || pilot.independentRealEventCount > 0
+          ? `Historical analogues are available as optional context (${Math.max(pilot.reportedSampleSize, pilot.independentRealEventCount)} records); they did not grant or veto this signal.`
+          : "No historical analogue was required; verified current evidence and the full Committee supplied decision authority.",
+        "Historical outcomes remain learning and calibration context only.",
       ],
       officialSourceConfirmed: officialReceiptConfirmed(candidate),
       secDiligenceConfirmed: action === "buy" ? diligence.buy.has(ticker) : diligence.sell.has(ticker),
       priceCrossChecked: true,
-      historicalPilotPassed: committee.historicalPilotPassed,
+      historicalContextAvailable: pilot.reportedSampleSize > 0 || pilot.independentRealEventCount > 0,
       normalization: normalizationMap.get(ticker) ?? null,
       specialist,
       eventKey: eventKey(candidate),
@@ -1899,7 +1903,7 @@ export const US_SIGNAL_OPERATIONS_POLICY = Object.freeze({
   fiveToTenYearNormalization: true,
   independentPriceCrossCheck: true,
   sectorAndMarketRegimeCalibration: true,
-  eventPilotRequiresFourOfFive: true,
+  historicalPilotProvidesOptionalContextOnly: true,
   analystExpectationsCanVetoBuy: false,
   publishing: false,
   directUserNotifications: false,

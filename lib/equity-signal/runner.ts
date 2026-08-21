@@ -34,6 +34,7 @@ export type EquityProviderCallDecision = {
 export type EquitySignalLabInput = {
   allowOpenAi?: boolean;
   fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
   now?: Date;
   outcomeTickers?: string[];
   historicalSignals?: HistoricalSignalRecord[];
@@ -56,7 +57,7 @@ export type EquitySignalLabInput = {
     historicalSignalsComplete?: boolean;
     storedCompanyAnalysis?: Record<string, unknown>;
   };
-  /** Prevents a paid committee call until the mandatory Pilot-5 gate passes. */
+  /** Legacy compatibility switch. The current PR262 policy always keeps history non-blocking. */
   requirePilotBeforeOpenAi?: boolean;
 };
 
@@ -228,7 +229,7 @@ function evidencePack(candidate: ImpactCandidate, providers: ProviderResult[], m
     historicalPatternMatch: section(candidate.historicalAnalog.available, candidate.historicalAnalog.strength, `${candidate.historicalAnalog.summary} Forecast status: ${candidate.priceForecast.status}. ${candidate.priceForecast.warning}`, historicalItems),
     previousSimilarOutcomes: section(candidate.historicalAnalog.available && candidate.historicalAnalog.sampleSize > 0, candidate.historicalAnalog.strength, `${candidate.historicalAnalog.summary} Only outcomes observable before this scan were eligible.`, historicalItems),
     score: { actionStrength: candidate.score, profitPotential: candidate.score, evidenceConfidence: Math.round((candidate.eventTruth + candidate.evidenceIndependence + candidate.mappingConfidence) / 3), riskLevel: candidate.contradictionPenalty >= 50 ? "high" : candidate.relationship === "direct" ? "medium" : "medium_high", pricedInCheck: candidate.quote ? "market_snapshot_checked_but_no_prior_move_required" : "not_checked", eventTruth: candidate.eventTruth, mappingConfidence: candidate.mappingConfidence, materiality: candidate.materiality, transmissionConfidence: candidate.transmissionConfidence, historicalSupport: candidate.historicalSupport, contradictionPenalty: candidate.contradictionPenalty, priorPriceMoveRequired: false, gateChecks: candidate.gateChecks, createdAt: now.toISOString(), persisted: false },
-    currentRiskLabels: [`direction:${candidate.direction}`, `relationship:${candidate.relationship}`, `event_family:${candidate.eventFamily}`, `historical_support:${candidate.historicalAnalog.strength}`, `historical_comparison_required:true`, `alert_readiness:${seriousActionEligible(candidate) ? "actionable_candidate" : "watch_only"}`, ...(candidate.rumour ? ["rumour"] : []), ...(!candidate.quote ? ["market_quote_unavailable"] : []), ...(candidate.quote && candidate.quote.actionableForSeriousSignal !== true ? ["market_quote_stale_for_action"] : [])],
+    currentRiskLabels: [`direction:${candidate.direction}`, `relationship:${candidate.relationship}`, `event_family:${candidate.eventFamily}`, `historical_support:${candidate.historicalAnalog.strength}`, "historical_comparison_role:optional_context_only", `alert_readiness:${seriousActionEligible(candidate) ? "actionable_candidate" : "watch_only"}`, ...(candidate.rumour ? ["rumour"] : []), ...(!candidate.quote ? ["market_quote_unavailable"] : []), ...(candidate.quote && candidate.quote.actionableForSeriousSignal !== true ? ["market_quote_stale_for_action"] : [])],
     missingEvidence,
     dataFreshnessWarnings,
     compatibility: { callsOpenAi: false, publishes: false, sendsTelegram: false, writesDatabase: false },
@@ -259,6 +260,8 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
   const targeted = input.targetedContext;
   const mode = targeted ? "pr262_targeted_event_job" : "railway_branch_live_read_only";
   const startedAt = Date.now();
+  let paidCommitteeAdmitted = false;
+  let admittedCandidateFingerprint: string | null = null;
   try {
     // The universe is required for every downstream mapping. Resolve it first
     // so a missing universe cannot consume news or price-history allowances.
@@ -409,9 +412,10 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
         earliestEligibleCheckpoint: "1D",
         checkpointsUsedOnlyAfterTheyAreObservable: true,
         numericForecastRequiresIndependentRealEvents: 3,
-        historicalComparisonRequiredForSeriousSignal: true,
+        historicalComparisonRequiredForSeriousSignal: false,
         findingsAndLaterOutcomesStoredInR2: true,
-        actionableBuySellRequiresCalibratedHistory: true,
+        actionableBuySellRequiresCalibratedHistory: false,
+        historicalEvidenceRole: "optional_learning_and_calibration_context_only",
       },
       _historicalSignalLibraryAdditions: historicalBootstrap.records,
       qualifiedFindings,
@@ -507,28 +511,31 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       };
     }
     const pilotGate = evaluateFiveCasePilotGate(best);
-    if (input.requirePilotBeforeOpenAi && !pilotGate.passed) {
-      return {
-        ...common,
-        status: "candidate_needs_same_company_or_industry_pilot_history",
-        seriousSignalFound: false,
-        actionableSignalFound: false,
-        alertType: null,
-        openAiCalled: false,
-        candidateFingerprint: fingerprint,
-        selectedCandidate,
-        historicalPilot: pilotGate,
-        qualityScore: best.score,
-        blockers: pilotGate.blockers,
-        technicalFailureFingerprint: null,
-      };
-    }
     const aiProvider = getAiCommitteeProviderStatus();
     if (!input.allowOpenAi) return { ...common, status: "qualified_signal_openai_not_requested", seriousSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, committee: { configured: aiProvider.configured, enabled: aiProvider.enabled }, blockers: ["The rolling OpenAI review budget was not available; the qualified event remains recorded without another paid call."], technicalFailureFingerprint: null };
     if (!aiProvider.configured || !aiProvider.enabled) return { ...common, ok: false, status: "configuration_blocker", seriousSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, blockers: [aiProvider.configured ? "AI committee is disabled." : "OPENAI_API_KEY is not available in this deployment."], technicalFailureFingerprint: aiProvider.configured ? "ai_committee_disabled" : "openai_key_missing", failureScope: "configuration", repairEligible: false };
     if (input.beforeOpenAiCall && !await input.beforeOpenAiCall({ candidateFingerprint: fingerprint, checkedAt: now.toISOString(), ticker: best.ticker, direction: best.direction })) return { ...common, status: "qualified_signal_openai_reservation_denied", seriousSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, blockers: ["The durable committee budget or same-evidence lock denied this paid review."], technicalFailureFingerprint: null };
+    // From this point onward the caller must conservatively retain or reconcile
+    // its durable cost reservation. A provider exception after one paid request
+    // must never be reported as a no-call path that reopens the daily fuse.
+    paidCommitteeAdmitted = true;
+    admittedCandidateFingerprint = fingerprint;
     const pack = evidencePack(best, providers, macroResult.context, now, fingerprint, quoted.benchmarkQuote, targeted?.storedCompanyAnalysis);
-    const committee = await runAiCommittee({ [TRUSTED_IN_MEMORY_EVIDENCE]: pack, persistResult: false, dryRun: false, confirmRun: true, mode: "preview", maxAgents: 13, maxCostUsd: 0.75 });
+    const committee = await runAiCommittee({
+      [TRUSTED_IN_MEMORY_EVIDENCE]: pack,
+      persistResult: false,
+      dryRun: false,
+      confirmRun: true,
+      mode: "preview",
+      maxAgents: 13,
+      maxCostUsd: 0.75,
+      signal: input.signal,
+      // PR262's $0.75 pre-call reservation is a hard bound only for this
+      // documented model family and a bounded prompt. A deployment cannot
+      // silently switch the 14-role review to a more expensive model.
+      allowedModels: ["gpt-4.1-mini", "gpt-4.1-mini-2025-04-14"],
+      maximumPromptBytes: 100_000,
+    });
     const results = Array.isArray(committee.agentResults) ? committee.agentResults : [];
     const completed = results.filter((result) => result.status === "completed").length;
     const failed = results.filter((result) => result.status === "failed").length;
@@ -541,15 +548,14 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       && finalJudge?.verdict === "positive"
       && (finalJudge.confidence ?? 0) >= 80
       && best.gatePassed
-      && Boolean(best.quote)
-      && pilotGate.passed;
+      && Boolean(best.quote);
     const actionableSignalFound = seriousSignalFound && seriousActionEligible(best);
     const alertType = !seriousSignalFound ? null : actionableSignalFound ? best.direction === "upside" ? "buy" : "sell" : "watch";
-    return { ...common, status: seriousSignalFound ? `serious_${alertType}` : "candidate_needs_more_data", seriousSignalFound, actionableSignalFound, alertType, openAiCalled: true, candidateFingerprint: fingerprint, selectedCandidate, historicalPilot: pilotGate, qualityScore: Math.round((best.score * 0.45 + (committee.committeeOutput?.evidenceConfidenceScore ?? 0) * 0.25 + (finalJudge?.confidence ?? 0) * 0.3) * 100) / 100, committee: { ok: committee.ok, status: committee.status, agentsPlanned: committee.plannedAgents?.length ?? 0, agentsCompleted: completed, agentsFailed: failed, finalJudge: finalJudge ? { verdict: finalJudge.verdict, confidence: finalJudge.confidence, concerns: finalJudge.concerns, missingData: finalJudge.missingData, followUpChecks: finalJudge.followUpChecks } : null, output: committee.committeeOutput, writesDatabase: committee.compatibility?.writesDatabase ?? false }, blockers: seriousSignalFound ? [] : [...new Set([...pilotGate.blockers, ...(committee.committeeOutput?.missingEvidence ?? []), ...(finalJudge?.missingData ?? []), ...(finalJudge?.concerns ?? [])])].slice(0, 12), technicalFailureFingerprint: committee.ok ? null : `committee_${committee.status}`, failureScope: committee.ok ? "none" : "external_provider", repairEligible: false };
+    return { ...common, status: seriousSignalFound ? `serious_${alertType}` : "candidate_needs_more_data", seriousSignalFound, actionableSignalFound, alertType, openAiCalled: true, candidateFingerprint: fingerprint, selectedCandidate, historicalPilot: pilotGate, qualityScore: Math.round((best.score * 0.45 + (committee.committeeOutput?.evidenceConfidenceScore ?? 0) * 0.25 + (finalJudge?.confidence ?? 0) * 0.3) * 100) / 100, committee: { ok: committee.ok, status: committee.status, agentsPlanned: committee.plannedAgents?.length ?? 0, agentsCompleted: completed, agentsFailed: failed, finalJudge: finalJudge ? { verdict: finalJudge.verdict, confidence: finalJudge.confidence, concerns: finalJudge.concerns, missingData: finalJudge.missingData, followUpChecks: finalJudge.followUpChecks } : null, output: committee.committeeOutput, writesDatabase: committee.compatibility?.writesDatabase ?? false }, blockers: seriousSignalFound ? [] : [...new Set([...(committee.committeeOutput?.missingEvidence ?? []), ...(finalJudge?.missingData ?? []), ...(finalJudge?.concerns ?? [])])].slice(0, 12), technicalFailureFingerprint: committee.ok ? null : `committee_${committee.status}`, failureScope: committee.ok ? "none" : "external_provider", repairEligible: false };
   } catch (error) {
     const message = error instanceof Error ? error.message.slice(0, 200) : "equity_signal_lab_failed";
     const external = /(?:http_|rate|quota|cadence|temporarily|unavailable|timeout|fetch|official_equity_universe)/i.test(message);
-    return { ok: false, mode, assetClass: "public_equity", status: external ? "source_temporarily_unavailable" : "technical_failure", checkedAt: now.toISOString(), durationMs: Date.now() - startedAt, seriousSignalFound: false, openAiCalled: false, databaseWrites: false, publishing: false, notifications: false, realProviderResponsesOnly: true, qualityScore: 0, blockers: [external ? "A required universe source was temporarily unavailable and no real cached universe existed yet. No substitute or invented data was used." : message], technicalFailureFingerprint: external ? "external_provider_equity_universe" : message.replace(/\d+/g, "#"), failureScope: external ? "external_provider" : "application", repairEligible: !external };
+    return { ok: false, mode, assetClass: "public_equity", status: external ? "source_temporarily_unavailable" : "technical_failure", checkedAt: now.toISOString(), durationMs: Date.now() - startedAt, seriousSignalFound: false, openAiCalled: paidCommitteeAdmitted, candidateFingerprint: admittedCandidateFingerprint, databaseWrites: false, publishing: false, notifications: false, realProviderResponsesOnly: true, qualityScore: 0, blockers: [external ? "A required universe source was temporarily unavailable and no real cached universe existed yet. No substitute or invented data was used." : message], technicalFailureFingerprint: external ? "external_provider_equity_universe" : message.replace(/\d+/g, "#"), failureScope: external ? "external_provider" : "application", repairEligible: !external };
   }
 }
 

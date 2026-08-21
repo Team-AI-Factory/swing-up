@@ -7,6 +7,11 @@ const nodeRequire = createRequire(import.meta.url);
 const objects = new Map();
 let revision = 0;
 
+const directAnnouncementSource = readFileSync(new URL("../lib/opportunity-engine/pr262-direct-announcements.ts", import.meta.url), "utf8");
+assert.match(directAnnouncementSource, /redirect: "manual"/, "Direct issuer feeds must never auto-follow an unvalidated redirect.");
+assert.match(directAnnouncementSource, /current = new URL\(location, url\)\.toString\(\)/, "Every direct issuer redirect must be resolved and revalidated.");
+assert.match(directAnnouncementSource, /direct_feed_redirect_limit/, "Direct issuer redirect chains must be bounded.");
+
 function putObject(key, value) {
   revision += 1;
   objects.set(key, { text: JSON.stringify(value), etag: `etag-${revision}` });
@@ -44,6 +49,7 @@ function loadTypeScript(relativePath, stubs) {
 
 const sensor = loadTypeScript("../lib/opportunity-engine/pr262-change-sensor.ts", {
   "@/lib/r2-warehouse": r2,
+  "@/lib/opportunity-engine/pr262-storage": { pr262StorageKey: (relative) => `branch-labs/pr-262/${relative}` },
 });
 
 const valueStateKey = "branch-labs/pr-262/value-investing/resumable/state.json";
@@ -207,6 +213,10 @@ assert.equal(fifteenMinuteCadence.persistedState.cursors.officialFeedIndex, 2);
 const directory = loadTypeScript("../lib/opportunity-engine/pr262-company-directory.ts", {
   "@/lib/r2-warehouse": r2,
   "@/lib/opportunity-engine/pr262-change-sensor": sensor,
+  "@/lib/opportunity-engine/pr262-storage": {
+    pr262StorageKey: (relative) => `branch-labs/pr-262/${relative}`,
+    resolvePr262StoragePrefix: () => "branch-labs/pr-262/",
+  },
 });
 
 putObject(valueStateKey, { cycleId: "cycle-test", completedBatchKeys: [batchKey] });
@@ -261,8 +271,23 @@ putObject(sensorStateKey, {
   seen: [parsed.events[0].id],
   pending: [parsed.events[0]],
   lastMarketWatchAt: null,
-  cursors: { secUrgentFormIndex: 1, newsQueryIndex: 1, officialFeedIndex: 1 },
+  cursors: { secUrgentFormIndex: 1, newsQueryIndex: 1, officialFeedIndex: 1, directIssuerFeedIndex: 37 },
   sourceHealth: {},
+  sensorReadiness: {
+    version: 1,
+    checkedAt: now.toISOString(),
+    universeReady: true,
+    universeEntries: 2,
+    exposureReady: true,
+    exposureEntries: 2,
+  },
+  cloudflareSensor: {
+    version: 1,
+    owner: "cloudflare_worker",
+    lastScanId: "cf-scan-test",
+    lastRunKey: "branch-labs/pr-262/cloudflare-shadow/sensor/runs/test.json",
+    checkedAt: now.toISOString(),
+  },
 });
 
 const mapping = await directory.enrichPr262SensorCompanyMappings();
@@ -271,12 +296,22 @@ assert.equal(mapping.failClosed, 0);
 assert.equal(mapping.directoryCompanies, 2);
 assert.equal(mapping.directoryCompaniesWithCik, 2);
 const rebuiltDirectory = JSON.parse(objects.get(directoryKey).text);
-assert.equal(rebuiltDirectory.version, 4);
+assert.equal(rebuiltDirectory.version, 5);
+assert.match(rebuiltDirectory.entriesDigest, /^[0-9a-f]{64}$/);
 assert.deepEqual(rebuiltDirectory.entries.map((entry) => entry.ticker), ["DTST", "TWST"]);
 const mappedState = JSON.parse(objects.get(sensorStateKey).text);
 assert.equal(mappedState.pending[0].ticker, "TWST");
 assert.notEqual(mappedState.pending[0].ticker, "DTST");
 assert.equal(mappedState.pending[0].mappingMethod, "official_sec_cik_exact");
+
+putObject(directoryKey, {
+  ...rebuiltDirectory,
+  entriesWithCik: 1,
+  entries: rebuiltDirectory.entries.slice(0, 1),
+});
+const recoveredDirectoryMapping = await directory.enrichPr262SensorCompanyMappings();
+assert.equal(recoveredDirectoryMapping.directoryCompanies, 2, "A truncated cached directory must fail its digest and rebuild from immutable batches.");
+assert.equal(JSON.parse(objects.get(directoryKey).text).entries.length, 2);
 
 const resolved = await directory.readPr262ResolvedSensorCompany(parsed.events[0].id);
 assert.equal(resolved.event.ticker, "TWST");
@@ -348,9 +383,18 @@ assert.equal(await sensor.readNextPr262PendingSensorEvent({ now, minimumPriority
 const afterRetry = await sensor.readPr262ChangeSensorState();
 assert.equal(afterRetry.pending[0].queueAttempts, 1);
 assert.equal(afterRetry.pending[0].queueNextAttemptAt, nextRetryAt);
+assert.equal(afterRetry.cursors.directIssuerFeedIndex, 37);
+assert.equal(afterRetry.cloudflareSensor.owner, "cloudflare_worker");
+assert.equal(afterRetry.cloudflareSensor.lastScanId, "cf-scan-test");
+assert.equal(afterRetry.sensorReadiness.exposureReady, true);
 const acknowledged = await sensor.acknowledgePr262PendingSensorEvent(parsed.events[0].id);
 assert.equal(acknowledged.acknowledged, true);
-assert.equal((await sensor.readPr262ChangeSensorState()).pending.length, 0);
+const afterAcknowledgement = await sensor.readPr262ChangeSensorState();
+assert.equal(afterAcknowledgement.pending.length, 0);
+assert.equal(afterAcknowledgement.cursors.directIssuerFeedIndex, 37);
+assert.equal(afterAcknowledgement.cloudflareSensor.owner, "cloudflare_worker");
+assert.equal(afterAcknowledgement.cloudflareSensor.lastRunKey, "branch-labs/pr-262/cloudflare-shadow/sensor/runs/test.json");
+assert.equal(afterAcknowledgement.sensorReadiness.universeReady, true);
 
 const mappedDueRetry = {
   ...parsed.events[0],
@@ -424,6 +468,7 @@ console.log(JSON.stringify({
   healthySkippedSourcesReportedAsNotDue: true,
   providerAndEventRetriesPersistedInR2: true,
   eventAcknowledgementPreservesQueueState: true,
+  railwayAnalysisPreservesCloudflareOwnershipMetadata: true,
   mappedRetriesProtectedFromUnmappedQueueFloods: true,
   unresolvedQueuePartitionExpiresAfterOneDay: true,
   freshEqualPriorityFilingsRunNewestFirst: true,

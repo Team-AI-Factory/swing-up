@@ -79,7 +79,9 @@ export type MarketQuote = {
   providerFetchedAt?: string | null;
   /** Age since the last successful provider response; failed retries cannot reset it. */
   cacheAgeMs?: number | null;
-  /** False once a carried quote is too old to support Buy/Sell. */
+  /** Age of the market observation itself, independent of provider fetch time. */
+  quoteAgeMs?: number | null;
+  /** False once either the provider response or market observation is too old to support Buy/Sell. */
   actionableForSeriousSignal?: boolean;
   marketSession?: "pre_market" | "regular" | "post_market" | "latest_close" | "halted" | "unknown";
 };

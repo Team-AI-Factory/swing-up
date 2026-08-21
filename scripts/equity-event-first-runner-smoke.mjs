@@ -63,10 +63,12 @@ const haltProvider = { ...provider("nasdaq_trade_halts"), receipts: [], recordsR
 
 const agentResults = Array.from({ length: 13 }, (_, index) => ({ agentId: `agent_${index}`, status: "completed", verdict: "positive", confidence: 82, concerns: [], missingData: [], followUpChecks: [] })).concat({ agentId: "final_judge", status: "completed", verdict: "positive", confidence: 85, concerns: [], missingData: [], followUpChecks: [] });
 let committeeCalls = 0;
+let committeeThrows = false;
 let quoteActionable = true;
 const stubs = {
   "@/lib/ai-committee/orchestrator": { TRUSTED_IN_MEMORY_EVIDENCE: trusted, runAiCommittee: async (input) => {
     committeeCalls += 1;
+    if (committeeThrows) throw new Error("provider_response_parse_failed");
     return { ok: true, status: "completed", agentResults, plannedAgents: agentResults.map((item) => item.agentId), committeeOutput: { overallRecommendation: "approve", evidenceConfidenceScore: 85, missingEvidence: [] }, compatibility: { writesDatabase: false }, receivedEvidence: input[trusted] };
   } },
   "@/lib/ai-committee/provider": { getAiCommitteeProviderStatus: () => ({ configured: true, enabled: true }) },
@@ -143,31 +145,34 @@ const targetedUniverse = {
   coverage: { nasdaqRows: 1, otherExchangeRows: 0, eligibleEquities: 1, cikMapped: 1, cikMappedPercent: 100, adrCount: 0, excludedByReason: {} },
   sources: [{ name: "SEC exact issuer", url: "https://www.sec.gov/", status: "connected", records: 1, error: null }],
 };
-const targetedBlockedBeforeAi = await runEquitySignalLab({
+const targetedWithoutHistory = await runEquitySignalLab({
   now: new Date("2026-07-22T10:00:00.000Z"),
   allowOpenAi: true,
   requirePilotBeforeOpenAi: true,
   targetedContext: { universe: targetedUniverse, receipts: [receipt], providers: [provider("targeted_full_source"), haltProvider], historicalSignalsComplete: true },
 });
-assert.equal(targetedBlockedBeforeAi.mode, "pr262_targeted_event_job");
-assert.equal(targetedBlockedBeforeAi.status, "candidate_needs_same_company_or_industry_pilot_history");
-assert.equal(targetedBlockedBeforeAi.openAiCalled, false);
-assert.equal(committeeCalls, 0);
-
-const blockedByPilot = await runEquitySignalLab({ now: new Date("2026-07-22T10:00:00.000Z"), allowOpenAi: true, beforeOpenAiCall: async () => true });
-assert.equal(blockedByPilot.seriousSignalFound, false);
-assert.equal(blockedByPilot.actionableSignalFound, false);
-assert.equal(blockedByPilot.alertType, null);
-assert.equal(blockedByPilot.status, "candidate_needs_more_data");
-assert.equal(blockedByPilot.historicalPilot.passed, false);
-assert.equal(blockedByPilot.selectedCandidate.priceForecast.status, "insufficient_history");
-assert.equal(blockedByPilot.historicalLearning.findingsAndLaterOutcomesStoredInR2, true);
-assert.equal(blockedByPilot.openAiCalled, true);
-assert.equal(blockedByPilot.committee.finalJudge.confidence, 85);
-assert.equal(blockedByPilot.databaseWrites, false);
-assert.equal(blockedByPilot.publishing, false);
-assert.equal(blockedByPilot.notifications, false);
+assert.equal(targetedWithoutHistory.mode, "pr262_targeted_event_job");
+assert.equal(targetedWithoutHistory.status, "serious_buy");
+assert.equal(targetedWithoutHistory.openAiCalled, true);
+assert.equal(targetedWithoutHistory.seriousSignalFound, true);
+assert.equal(targetedWithoutHistory.historicalLearning.historicalComparisonRequiredForSeriousSignal, false);
 assert.equal(committeeCalls, 1);
+
+const optionalHistory = await runEquitySignalLab({ now: new Date("2026-07-22T10:00:00.000Z"), allowOpenAi: true, beforeOpenAiCall: async () => true });
+assert.equal(optionalHistory.seriousSignalFound, true);
+assert.equal(optionalHistory.actionableSignalFound, true);
+assert.equal(optionalHistory.alertType, "buy");
+assert.equal(optionalHistory.status, "serious_buy");
+assert.equal(optionalHistory.historicalPilot.passed, false);
+assert.equal(optionalHistory.selectedCandidate.priceForecast.status, "insufficient_history");
+assert.equal(optionalHistory.historicalLearning.findingsAndLaterOutcomesStoredInR2, true);
+assert.equal(optionalHistory.historicalLearning.actionableBuySellRequiresCalibratedHistory, false);
+assert.equal(optionalHistory.openAiCalled, true);
+assert.equal(optionalHistory.committee.finalJudge.confidence, 85);
+assert.equal(optionalHistory.databaseWrites, false);
+assert.equal(optionalHistory.publishing, false);
+assert.equal(optionalHistory.notifications, false);
+assert.equal(committeeCalls, 2);
 
 const calibratedHistory = Array.from({ length: 20 }, (_, index) => ({
   id: `history-${index}`,
@@ -185,7 +190,7 @@ assert.equal(calibrated.selectedCandidate.priceForecast.horizon, "7D");
 assert.equal(calibrated.historicalLearning.realPointInTimeSignalsAvailable, 20);
 assert.equal(calibrated.historicalLearning.swingUpForwardSignalsAvailable, 15);
 assert.equal(calibrated.historicalLearning.publicBootstrapSignalsAvailable, 5);
-assert.equal(committeeCalls, 2);
+assert.equal(committeeCalls, 3);
 
 quoteActionable = false;
 const staleQuoteWatch = await runEquitySignalLab({
@@ -203,7 +208,7 @@ assert.equal(staleQuoteWatch.openAiCalled, false);
 assert.equal(staleQuoteWatch.status, "qualified_event_watch_only");
 assert.equal(staleQuoteWatch.selectedCandidate.quote.actionableForSeriousSignal, false);
 assert.equal(staleQuoteWatch.selectedCandidate.quote.cacheAgeMs, 16 * 60 * 1000);
-assert.equal(committeeCalls, 2);
+assert.equal(committeeCalls, 3);
 quoteActionable = true;
 
 const unknownHaltState = await runEquitySignalLab({
@@ -221,6 +226,18 @@ assert.equal(unknownHaltState.openAiCalled, false);
 assert.equal(unknownHaltState.status, "qualified_event_watch_only");
 assert.equal(unknownHaltState.selectedCandidate.quote.marketSession, "unknown");
 assert.equal(unknownHaltState.tradingHaltSafety.currentStateKnown, false);
-assert.equal(committeeCalls, 2);
+assert.equal(committeeCalls, 3);
 
-console.log(JSON.stringify({ ok: true, eventQualifiedAtZeroPercentMove: true, cryptoDisabled: true, priorMoveNotRequired: true, strictCommitteeStillRequired: true, pilotFiveBlocksWithoutHistory: true, targetedPilotGateRunsBeforePaidCommittee: true, staleQuoteCannotBecomeActionable: true, unknownHaltStateForcesWatch: true, historyStillStoredAndRefined: true, buyAfterPilotHistory: true, noWritesOrPublishing: true }, null, 2));
+committeeThrows = true;
+const paidCommitteeFailure = await runEquitySignalLab({
+  now: new Date("2026-07-22T10:00:00.000Z"),
+  allowOpenAi: true,
+  beforeOpenAiCall: async () => true,
+  targetedContext: { universe: targetedUniverse, receipts: [receipt], providers: [provider("targeted_full_source"), haltProvider], historicalSignalsComplete: true },
+});
+assert.equal(paidCommitteeFailure.ok, false);
+assert.equal(paidCommitteeFailure.openAiCalled, true, "A failure after paid-committee admission must retain the cost reservation.");
+assert.equal(paidCommitteeFailure.candidateFingerprint, "event-fingerprint");
+committeeThrows = false;
+
+console.log(JSON.stringify({ ok: true, eventQualifiedAtZeroPercentMove: true, cryptoDisabled: true, priorMoveNotRequired: true, strictCommitteeStillRequired: true, historyNeverBlocksCurrentEvidence: true, targetedCurrentEvidenceCanReachCommitteeWithoutHistory: true, paidCommitteeFailureRetainsCostReservation: true, staleQuoteCannotBecomeActionable: true, unknownHaltStateForcesWatch: true, historyStillStoredAndRefined: true, strongHistoryStillImprovesForecastContext: true, noWritesOrPublishing: true }, null, 2));

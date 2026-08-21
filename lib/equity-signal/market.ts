@@ -169,6 +169,9 @@ async function alphaQuote(ticker: string, fetchImpl: typeof fetch, now: Date): P
 }
 
 async function fmpQuote(ticker: string, fetchImpl: typeof fetch, now: Date): Promise<MarketQuote> {
+  if (process.env.FMP_COMMERCIAL_USE_APPROVED?.trim().toLowerCase() !== "true") {
+    throw new Error("fmp_commercial_use_not_approved");
+  }
   const key = process.env.FMP_API_KEY?.trim();
   if (!key) throw new Error("fmp_not_configured");
   if ((globalCache.__swingUpFmpNotEntitledUntil ?? 0) > now.getTime()) throw new Error("fmp_not_entitled_cached");
@@ -290,11 +293,20 @@ function quoteForConsumer(outcome: CachedQuote, now: Date): MarketQuote | null {
   const cacheAgeMs = outcome.quoteFetchedAt === null
     ? null
     : Math.max(0, now.getTime() - outcome.quoteFetchedAt);
+  const observedAtMs = Date.parse(outcome.quote.observedAt);
+  const quoteAgeMs = Number.isFinite(observedAtMs)
+    ? Math.max(0, now.getTime() - observedAtMs)
+    : null;
   return {
     ...outcome.quote,
     providerFetchedAt: outcome.quoteFetchedAt === null ? null : new Date(outcome.quoteFetchedAt).toISOString(),
     cacheAgeMs,
-    actionableForSeriousSignal: cacheAgeMs !== null && cacheAgeMs <= MAX_ACTIONABLE_QUOTE_CACHE_AGE_MS,
+    quoteAgeMs,
+    actionableForSeriousSignal: cacheAgeMs !== null
+      && cacheAgeMs <= MAX_ACTIONABLE_QUOTE_CACHE_AGE_MS
+      && quoteAgeMs !== null
+      && quoteAgeMs <= MAX_ACTIONABLE_QUOTE_CACHE_AGE_MS
+      && observedAtMs <= now.getTime() + 5 * 60_000,
   };
 }
 

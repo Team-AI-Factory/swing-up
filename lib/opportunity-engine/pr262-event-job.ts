@@ -27,14 +27,18 @@ import {
   type Pr262ResolvedSensorCompany,
 } from "@/lib/opportunity-engine/pr262-company-directory";
 import { refreshUsValueCompany, type UsValueCompanyAnalysis } from "@/lib/opportunity-engine/us-value-investing-engine";
+import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
+import { promotePr262SeriousWatchOut } from "@/lib/opportunity-engine/pr262-serious-watch-out-authority";
 
-const STATE_KEY = "branch-labs/pr-262/event-job/state-v1.json";
-const LATEST_KEY = "branch-labs/pr-262/event-job/latest.json";
-const RUN_PREFIX = "branch-labs/pr-262/event-job/runs";
-const OUTBOX_PREFIX = "branch-labs/pr-262/serious-signal/outbox/event-job";
-const HISTORY_KEY = "branch-labs/pr-262/serious-signal/equity-history-v1.json";
-const VALUE_REFRESH_PREFIX = "branch-labs/pr-262/value-investing/event-refresh";
-const LEASE_MS = 2 * 60 * 60_000;
+const STATE_KEY = pr262StorageKey("event-job/state-v1.json");
+const LATEST_KEY = pr262StorageKey("event-job/latest.json");
+const RUN_PREFIX = pr262StorageKey("event-job/runs");
+const OUTBOX_PREFIX = pr262StorageKey("serious-signal/outbox/event-job");
+const HISTORY_KEY = pr262StorageKey("serious-signal/equity-history-v1.json");
+const VALUE_REFRESH_PREFIX = pr262StorageKey("value-investing/event-refresh");
+const PRODUCTION_R2_WRITES = STATE_KEY.startsWith("production/pr262/");
+const LEASE_MS = 5 * 60_000;
+const LEASE_HEARTBEAT_MS = 60_000;
 const COMMITTEE_WINDOW_MS = 24 * 60 * 60_000;
 const EVIDENCE_REVIEW_COOLDOWN_MS = 12 * 60 * 60_000;
 const MAX_COMMITTEE_CALLS_PER_DAY = 20;
@@ -78,6 +82,8 @@ export type Pr262EventJobInput = {
   resolveHost?: (hostname: string) => Promise<string[]>;
   fullSourceTransport?: FullSourceTransport;
   clock?: () => Date;
+  signal?: AbortSignal;
+  deadlineAtMs?: number;
 };
 
 function object(value: unknown): Json {
@@ -90,7 +96,8 @@ function text(value: unknown) {
 
 function normalizedCik(value: unknown) {
   const digits = text(value)?.replace(/\D/g, "") ?? "";
-  return digits ? digits.replace(/^0+/, "") || "0" : null;
+  if (!digits || digits.length > 10 || /^0+$/.test(digits)) return null;
+  return digits.replace(/^0+/, "");
 }
 
 function safeSegment(value: string) {
@@ -221,6 +228,20 @@ class RetryAtError extends Error {
     super(message);
     this.name = "RetryAtError";
   }
+}
+
+class EventJobDeadlineError extends Error {
+  constructor() {
+    super("pr262_event_job_deadline_exceeded");
+    this.name = "EventJobDeadlineError";
+  }
+}
+
+function composedSignal(signals: Array<AbortSignal | null | undefined>) {
+  const active = signals.filter((signal): signal is AbortSignal => Boolean(signal));
+  if (!active.length) return undefined;
+  if (active.length === 1) return active[0];
+  return AbortSignal.any(active);
 }
 
 async function reserveProviderCall(input: {
@@ -770,6 +791,19 @@ async function loadHistoricalLibrary() {
   return { records: mergeHistoricalSignals(records).slice(-MAX_HISTORY_RECORDS), etag: current.etag };
 }
 
+async function loadOptionalHistoricalLibrary() {
+  try {
+    return { ...(await loadHistoricalLibrary()), available: true, error: null as string | null };
+  } catch (error) {
+    return {
+      records: [] as HistoricalSignalRecord[],
+      etag: null,
+      available: false,
+      error: error instanceof Error ? error.message.replace(/\s+/g, " ").slice(0, 180) : "optional_history_read_failed",
+    };
+  }
+}
+
 function trackedFinding(report: Json): HistoricalSignalRecord | null {
   const candidate = object(report.selectedCandidate);
   const direction = candidate.direction === "upside" || candidate.direction === "downside" ? candidate.direction : null;
@@ -825,7 +859,6 @@ function committeeApproved(report: Json, pointer: Json) {
   const candidate = object(report.selectedCandidate);
   const quote = object(candidate.quote);
   const halt = object(report.tradingHaltSafety);
-  const pilot = object(report.historicalPilot);
   const officialEvidence = Array.isArray(candidate.receipts) && candidate.receipts.map(object).some((receipt) =>
     receipt.official === true || receipt.primarySource === true || receipt.channel === "sec_current_filings");
   const candidateTicker = text(candidate.ticker)?.toUpperCase() ?? null;
@@ -839,7 +872,9 @@ function committeeApproved(report: Json, pointer: Json) {
     && candidateTicker === pointerTicker
     && candidateCik !== null
     && candidateCik === pointerCik
+    && text(candidate.evidenceFingerprint) !== null
     && candidate.evidenceFingerprint === report.candidateFingerprint
+    && candidate.direction === (report.alertType === "buy" ? "upside" : "downside")
     && candidate.gatePassed === true
     && Number(candidate.eventTruth) >= 80
     && Number(candidate.mappingConfidence) >= 95
@@ -849,10 +884,11 @@ function committeeApproved(report: Json, pointer: Json) {
     && candidate.rumour !== true
     && Number(candidate.contradictionPenalty) < 50
     && Number(candidate.pricedInPenalty) < 50
+    && Number.isFinite(Number(quote.price))
+    && Number(quote.price) > 0
     && quote.actionableForSeriousSignal === true
     && !["halted", "unknown"].includes(String(quote.marketSession ?? "unknown"))
     && halt.currentStateKnown === true
-    && pilot.passed === true
     && officialEvidence
     && committee.ok === true
     && committee.agentsCompleted === 14
@@ -926,6 +962,7 @@ async function finalizePersistedResult(input: {
   payload: Json;
   now: Date;
   clock: () => Date;
+  stopHeartbeat: () => Promise<void>;
 }) {
   const validated = validatedResultPayload(input.payload, input.eventId, input.resultKey);
   const report = validated.report;
@@ -937,34 +974,58 @@ async function finalizePersistedResult(input: {
     checkedAt,
     (value) => text(object(value.report).checkedAt),
   );
-  const historyWrite = await persistTrackedFinding(report, input.now);
+  const historyWrite = await persistTrackedFinding(report, input.now).catch((error) => ({
+    persisted: false,
+    reason: "optional_history_write_failed",
+    error: error instanceof Error ? error.message.replace(/\s+/g, " ").slice(0, 180) : "optional_history_write_failed",
+  }));
   let outboxKey: string | null = null;
   if (committeeApproved(report, pointer)) {
     const alertType = String(report.alertType);
     const fingerprint = text(report.candidateFingerprint) ?? safeSegment(input.eventId);
-    outboxKey = `${OUTBOX_PREFIX}/${alertType}/${String(pointer.ticker).toUpperCase()}/${safeSegment(fingerprint)}.json`;
-    const outboxPayload = {
-      version: 1,
-      kind: "pr262_committee_verified_event_signal",
-      createdAt: checkedAt,
-      eventId: input.eventId,
-      resultKey: input.resultKey,
-      ticker: String(pointer.ticker).toUpperCase(),
-      cik: text(pointer.cik),
-      alertType,
-      candidate: report.selectedCandidate,
-      historicalPilot: report.historicalPilot,
-      committee: report.committee,
-      delivery: { enabled: false, published: false, notified: false, traded: false },
-    };
-    const written = await writeVersionedJsonToR2(outboxKey, outboxPayload, { createOnly: true });
-    if (written.conflict) {
-      const existing = await readVersionedTextFromR2(outboxKey);
-      const value = existing.found && existing.text ? object(JSON.parse(existing.text)) : {};
-      if (value.eventId !== input.eventId || value.resultKey !== input.resultKey) throw new Error("pr262_event_outbox_conflict");
+    const seriousWatchOut = alertType === "sell"
+      ? await promotePr262SeriousWatchOut(input.resultKey)
+      : { promoted: false, outboxKey: null as string | null };
+    if (seriousWatchOut.promoted && seriousWatchOut.outboxKey) {
+      // A qualifying downside risk is one Watch Out alert, not a duplicate
+      // Sell plus Watch Out pair for the same Committee decision.
+      outboxKey = seriousWatchOut.outboxKey;
+    } else {
+      outboxKey = `${OUTBOX_PREFIX}/${alertType}/${String(pointer.ticker).toUpperCase()}/${safeSegment(fingerprint)}.json`;
+      const outboxPayload = {
+        version: 1,
+        kind: "pr262_committee_verified_event_signal",
+        createdAt: checkedAt,
+        eventId: input.eventId,
+        resultKey: input.resultKey,
+        ticker: String(pointer.ticker).toUpperCase(),
+        cik: text(pointer.cik),
+        alertType,
+        candidateFingerprint: report.candidateFingerprint,
+        candidate: report.selectedCandidate,
+        historicalPilot: report.historicalPilot,
+        historicalEvidenceRole: "optional_learning_context_only",
+        committee: report.committee,
+        authority: {
+          exactIssuerMapping: true,
+          currentEvidenceGatesPassed: true,
+          freshQuoteAndHaltStateKnown: true,
+          fullCommitteeAgentsCompleted: 14,
+          finalJudgePositiveMinimumConfidence: 80,
+          historicalCasesRequired: false,
+        },
+        delivery: { mode: "durable_consumer", producerSendsDirectly: false, published: false, notifiedAtCreation: false, traded: false },
+      };
+      const written = await writeVersionedJsonToR2(outboxKey, outboxPayload, { createOnly: true });
+      if (written.conflict) {
+        const existing = await readVersionedTextFromR2(outboxKey);
+        const value = existing.found && existing.text ? object(JSON.parse(existing.text)) : {};
+        if (value.eventId !== input.eventId || value.resultKey !== input.resultKey) throw new Error("pr262_event_outbox_conflict");
+      }
     }
   }
   await renewLease(input.eventId, input.ownerId, input.clock());
+  await input.stopHeartbeat();
   await completeState(input.eventId, input.ownerId, input.resultKey, report, input.clock());
   await acknowledgePr262PendingSensorEvent(input.eventId).catch(() => null);
   return { report, checkedAt, historyWrite, outboxKey, pointer };
@@ -1013,10 +1074,48 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
   }
   const ownerId = claim.ownerId;
   const resultKey = eventResultKey(event);
+  const jobAbort = new AbortController();
+  const deadlineAtMs = Number.isFinite(input.deadlineAtMs) ? Number(input.deadlineAtMs) : Number.POSITIVE_INFINITY;
+  const abortFromCaller = () => jobAbort.abort(input.signal?.reason ?? new Error("pr262_event_job_aborted"));
+  if (input.signal?.aborted) abortFromCaller();
+  else input.signal?.addEventListener("abort", abortFromCaller, { once: true });
+  const deadlineDelayMs = Number.isFinite(deadlineAtMs) ? Math.max(0, deadlineAtMs - Date.now()) : null;
+  const deadlineTimer = deadlineDelayMs === null ? null : setTimeout(() => jobAbort.abort(new EventJobDeadlineError()), deadlineDelayMs);
+  deadlineTimer?.unref?.();
+  let heartbeatStopped = false;
+  let heartbeatFailure: Error | null = null;
+  let heartbeatPending: Promise<void> = Promise.resolve();
+  const runHeartbeat = () => {
+    if (heartbeatStopped || heartbeatFailure) return;
+    heartbeatPending = heartbeatPending
+      .then(() => renewLease(event.id, ownerId, clock()))
+      .catch((error) => {
+        heartbeatFailure = error instanceof Error ? error : new Error("pr262_event_job_heartbeat_failed");
+        jobAbort.abort(heartbeatFailure);
+      });
+  };
+  const heartbeatTimer = setInterval(runHeartbeat, LEASE_HEARTBEAT_MS);
+  heartbeatTimer.unref?.();
+  const stopHeartbeat = async () => {
+    if (!heartbeatStopped) {
+      heartbeatStopped = true;
+      clearInterval(heartbeatTimer);
+    }
+    await heartbeatPending;
+  };
+  const assertJobActive = () => {
+    if (heartbeatFailure) throw heartbeatFailure;
+    if (Date.now() >= deadlineAtMs) throw new EventJobDeadlineError();
+    if (jobAbort.signal.aborted) {
+      throw jobAbort.signal.reason instanceof Error ? jobAbort.signal.reason : new Error("pr262_event_job_aborted");
+    }
+  };
   try {
+    assertJobActive();
     const recovered = await readExistingResult(resultKey, event.id);
     if (recovered) {
-      const finalized = await finalizePersistedResult({ eventId: event.id, ownerId, resultKey, payload: recovered.payload, now, clock });
+      assertJobActive();
+      const finalized = await finalizePersistedResult({ eventId: event.id, ownerId, resultKey, payload: recovered.payload, now, clock, stopHeartbeat });
       return {
         ok: true,
         mode: "pr262_targeted_event_job",
@@ -1038,6 +1137,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       };
     }
 
+    assertJobActive();
     const resolved = await readPr262ResolvedSensorCompany(event.id);
     if (!resolved) throw new Error("pr262_event_exact_company_not_resolved");
     assertSecEventIdentity(resolved.event);
@@ -1045,9 +1145,11 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       throw new Error("pr262_event_sec_cik_mismatch");
     }
     const quotaAwareFetch: typeof fetch = async (request, init) => {
+      assertJobActive();
       const budget = branchProviderCallRequest(request, now);
       if (budget) await reserveProviderCall({ eventId: event.id, ownerId, now, request: budget });
-      return fetchImpl(request, init);
+      assertJobActive();
+      return fetchImpl(request, { ...init, signal: composedSignal([init?.signal, jobAbort.signal]) });
     };
     if (!["sec", "market_price"].includes(resolved.event.source)) {
       await reserveProviderCall({
@@ -1065,6 +1167,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
         },
       });
     }
+    assertJobActive();
     const baseReceipt = eventReceipt(resolved.event, resolved.directoryEntry.company, resolved.directoryEntry.ticker);
     const [source, haltProvider, history] = await Promise.all([
       readDecisionGradeSource(
@@ -1078,8 +1181,9 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
         input.fullSourceTransport ?? pinnedHttpsTransport,
       ),
       fetchNasdaqTradeHalts(quotaAwareFetch, now),
-      loadHistoricalLibrary(),
+      loadOptionalHistoricalLibrary(),
     ]);
+    assertJobActive();
     const eventAgeMs = Math.max(0, now.getTime() - Date.parse(event.observedAt));
     const sourceExpiredWithoutEvidence = !source.decisionGrade
       && event.source !== "market_price"
@@ -1109,13 +1213,16 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
           }),
         })
       : null;
+    assertJobActive();
     await renewLease(event.id, ownerId, clock());
     const eventReceipts = [...source.receipts, ...haltProvider.receipts];
     let committeeRetryAt: string | null = null;
     const beforeOpenAiCall: NonNullable<EquitySignalLabInput["beforeOpenAiCall"]> = async (reservation) => {
+      assertJobActive();
       if (input.beforeOpenAiCall && !await input.beforeOpenAiCall(reservation)) return false;
       const decision = await reserveCommitteeCall({ eventId: event.id, ownerId, now, reservation });
       committeeRetryAt = decision.nextRetryAt;
+      assertJobActive();
       return decision.allowed;
     };
     const effectiveAllowOpenAi = allowOpenAi && source.decisionGrade && !sourceExpiredWithoutEvidence;
@@ -1138,9 +1245,10 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       : object(await runEquitySignalLab({
           allowOpenAi: effectiveAllowOpenAi,
           fetchImpl: quotaAwareFetch,
+          signal: jobAbort.signal,
           now,
           historicalSignals: history.records,
-          requirePilotBeforeOpenAi: true,
+          requirePilotBeforeOpenAi: false,
           beforeOpenAiCall,
           targetedContext: {
             universe: exactIssuerUniverse(resolved, now),
@@ -1151,6 +1259,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
             storedCompanyAnalysis: object(companyRefresh?.analysis ?? resolved.valueAnalysis),
           },
         }));
+    assertJobActive();
     const retryClassificationAllowsAi = event.source === "market_price" ? allowOpenAi : effectiveAllowOpenAi;
     if (retryableReport(report, retryClassificationAllowsAi) && eventAgeMs <= 7 * 24 * 60 * 60_000) {
       throw new RetryAtError(committeeRetryAt, `pr262_event_report_retry:${text(report.status) ?? "unknown"}`);
@@ -1174,16 +1283,24 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
         recovered: companyRefresh.recovered,
         analysis: companyRefresh.analysis,
       } : null,
+      historicalContext: {
+        requiredForSeriousSignal: false,
+        available: history.available,
+        recordsLoaded: history.records.length,
+        error: history.error,
+      },
       report,
-      safety: { databaseWrites: false, publishing: false, notifications: false, trades: false, productionWrites: false },
+      safety: { databaseWrites: false, publishing: false, notifications: false, trades: false, productionWrites: PRODUCTION_R2_WRITES },
     };
     await renewLease(event.id, ownerId, clock());
+    assertJobActive();
     const created = await writeVersionedJsonToR2(resultKey, resultPayload, { createOnly: true });
     const persisted = created.conflict
       ? await readExistingResult(resultKey, event.id)
       : validatedResultPayload(resultPayload, event.id, resultKey);
     if (!persisted) throw new Error("pr262_event_result_conflict_read_failed");
-    const finalized = await finalizePersistedResult({ eventId: event.id, ownerId, resultKey, payload: persisted.payload, now, clock });
+    assertJobActive();
+    const finalized = await finalizePersistedResult({ eventId: event.id, ownerId, resultKey, payload: persisted.payload, now, clock, stopHeartbeat });
     return {
       ok: true,
       mode: "pr262_targeted_event_job",
@@ -1207,20 +1324,29 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
         broadEventFeedPolls: 0,
         affectedCompanyValuationRefreshes: companyRefresh ? 1 : 0,
         maximumCommitteeCallsPer24Hours: MAX_COMMITTEE_CALLS_PER_DAY,
-        pilotGateRunsBeforeCommittee: true,
+        optionalHistoryContextPreparedBeforeCommittee: history.available,
+        optionalHistoryContextRequiredForCommittee: false,
         durableProviderBudgets: true,
       },
       safety: { databaseWrites: false, publishing: false, notifications: false, trades: false },
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message.replace(/\s+/g, " ").slice(0, 240) : "pr262_event_job_failed";
+    const effectiveError = jobAbort.signal.aborted && jobAbort.signal.reason instanceof Error
+      ? jobAbort.signal.reason
+      : error;
+    const message = effectiveError instanceof Error ? effectiveError.message.replace(/\s+/g, " ").slice(0, 240) : "pr262_event_job_failed";
+    await stopHeartbeat().catch(() => null);
     await releaseLease(event.id, ownerId, clock()).catch(() => null);
-    const requestedRetryAt = error instanceof ProviderBudgetError || error instanceof RetryAtError ? Date.parse(error.nextRetryAt ?? "") : Number.NaN;
+    const requestedRetryAt = effectiveError instanceof ProviderBudgetError || effectiveError instanceof RetryAtError ? Date.parse(effectiveError.nextRetryAt ?? "") : Number.NaN;
     const nextRetryAt = new Date(Number.isFinite(requestedRetryAt) && requestedRetryAt > now.getTime()
       ? requestedRetryAt
       : now.getTime() + retryDelay(event)).toISOString();
     await retryPr262PendingSensorEvent({ eventId: event.id, error: message, nextRetryAt, attemptedAt: now }).catch(() => null);
     throw new Error(`${message}; next_retry_at=${nextRetryAt}`);
+  } finally {
+    if (deadlineTimer) clearTimeout(deadlineTimer);
+    input.signal?.removeEventListener("abort", abortFromCaller);
+    await stopHeartbeat().catch(() => null);
   }
 }
 

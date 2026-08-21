@@ -62,7 +62,8 @@ jobs:
           grep -q 'fiveToTenYearNormalization: true' lib/opportunity-engine/us-signal-operations.ts
           grep -q 'independentPriceCrossCheck: true' lib/opportunity-engine/us-signal-operations.ts
           grep -q 'sectorAndMarketRegimeCalibration: true' lib/opportunity-engine/us-signal-operations.ts
-          grep -q 'eventPilotRequiresFourOfFive: true' lib/opportunity-engine/us-signal-operations.ts
+          grep -q 'historicalPilotProvidesOptionalContextOnly: true' lib/opportunity-engine/us-signal-operations.ts
+          if grep -q 'eventPilotRequiresFourOfFive: true' lib/opportunity-engine/us-signal-operations.ts; then exit 1; fi
           grep -q 'analystExpectationsCanVetoBuy: false' lib/opportunity-engine/us-signal-operations.ts
           grep -q 'publishing: false' lib/opportunity-engine/us-signal-operations.ts
           grep -q 'directUserNotifications: false' lib/opportunity-engine/us-signal-operations.ts

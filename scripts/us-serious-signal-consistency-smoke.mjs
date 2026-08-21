@@ -35,7 +35,7 @@ function signal(overrides = {}) {
       officialSourceConfirmed: true,
       secDiligenceConfirmed: true,
       priceCrossChecked: true,
-      historicalPilotPassed: null,
+      historicalContextAvailable: null,
       longTermNormalizationPassed: true,
       specialistModel: "general",
       committeeApproved: true,
@@ -85,13 +85,13 @@ const validSpecialist = signal({
     specialistModel: "cyclical_mid_cycle",
   },
 });
-const badPilot = signal({
+const noHistory = signal({
   ticker: "EVENT",
   company: "Event Example",
   source: "event_pilot",
   evidence: {
     ...signal().evidence,
-    historicalPilotPassed: false,
+    historicalContextAvailable: false,
   },
 });
 const incompleteCommittee = signal({
@@ -106,18 +106,18 @@ const incompleteCommittee = signal({
 const verified = verifyUsSeriousSignals({
   checkedAt: "2026-08-09T00:00:00Z",
   seriousSignals: {
-    buy: [validGeneral, inconsistentSpecialist, unsupportedPharma, validSpecialist, badPilot, incompleteCommittee],
+    buy: [validGeneral, inconsistentSpecialist, unsupportedPharma, validSpecialist, noHistory, incompleteCommittee],
     sell: [],
     watchOut: [],
   },
 });
 
-assert.deepEqual(verified.seriousSignals.buy.map((item) => item.ticker), ["SAFE", "CYCLE"]);
-assert.equal(verified.verifiedCounts.buy, 2);
+assert.deepEqual(verified.seriousSignals.buy.map((item) => item.ticker), ["SAFE", "CYCLE", "EVENT"]);
+assert.equal(verified.verifiedCounts.buy, 3);
 assert.equal(verified.rawCounts.buy, 6);
 assert.ok(verified.rejected.some((item) => item.ticker === "GSL" && item.reasons.some((reason) => reason.includes("specialist"))));
 assert.ok(verified.rejected.some((item) => item.ticker === "IRWD" && item.reasons.some((reason) => reason.includes("pharmaceutical"))));
-assert.ok(verified.rejected.some((item) => item.ticker === "EVENT" && item.reasons.some((reason) => reason.includes("Pilot 5"))));
+assert.equal(verified.rejected.some((item) => item.ticker === "EVENT"), false);
 assert.ok(verified.rejected.some((item) => item.ticker === "PARTIAL" && item.reasons.some((reason) => reason.includes("13 specialists plus the Final Judge"))));
 
 console.log(JSON.stringify({
@@ -126,6 +126,6 @@ console.log(JSON.stringify({
   inconsistentShippingBuyRejected: true,
   unsupportedPharmaGeneralBuyRejected: true,
   potentialReconciliationRequired: true,
-  pilotFivePreserved: true,
+  missingHistoryDoesNotVetoCurrentEvidence: true,
   fullCommitteeProofRequired: true,
 }, null, 2));

@@ -2,6 +2,7 @@ import {
   getR2Config,
   writeVersionedJsonToR2,
 } from "@/lib/r2-warehouse";
+import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 
 export type ValueAlertAction = "buy" | "sell" | "watch_out" | "watch" | "no_action";
 export type ValueAlertTier =
@@ -129,7 +130,7 @@ export type UsValueInvestingCycle = {
   };
   warehouse: {
     storage: "cloudflare_r2" | "not_persisted";
-    branchPrefix: "branch-labs/pr-262/value-investing";
+    branchPrefix: string;
     latestIndexKey: string;
     immutableRunKey: string | null;
     shardKeys: string[];
@@ -194,7 +195,7 @@ type PageResult = {
 };
 
 const MARKET_SCOPE = "US listed common stocks and ADRs only" as const;
-const R2_PREFIX = "branch-labs/pr-262/value-investing" as const;
+const R2_PREFIX = pr262StorageKey("value-investing");
 const LATEST_INDEX_KEY = `${R2_PREFIX}/latest/index.json`;
 const PAGE_SIZE = 1_000;
 const MAX_LISTINGS = 20_000;

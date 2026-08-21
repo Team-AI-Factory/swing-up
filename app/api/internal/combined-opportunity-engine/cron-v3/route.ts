@@ -1,20 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
-import { runPr262CronCycle } from "@/lib/opportunity-engine/pr262-cron-orchestrator";
+import { internalApiScopeAuthorized } from "@/lib/internal-api-auth";
+import {
+  runPr262AnalysisOnlyCycle,
+  runPr262CronCycle,
+} from "@/lib/opportunity-engine/pr262-cron-orchestrator";
 
 export const dynamic = "force-dynamic";
 
 function authorized(request: NextRequest) {
-  const expected = process.env.SWING_UP_PR262_CRON_RUNTIME_TOKEN?.trim()
-    || process.env.SWING_UP_PR262_SENSOR_TOKEN?.trim()
-    || process.env.SWING_UP_AUTOMATION_TOKEN?.trim();
-  const supplied = request.headers.get("x-swing-up-pr262-cron-token")?.trim();
-  return Boolean(expected && supplied === expected);
+  return internalApiScopeAuthorized(request.headers, "cron_runtime");
 }
 
 export async function POST(request: NextRequest) {
   if (!authorized(request)) return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
   try {
-    const result = await runPr262CronCycle();
+    const body = await request.json().catch(() => ({})) as Record<string, unknown>;
+    const result = body.mode === "analysis_only"
+      ? await runPr262AnalysisOnlyCycle()
+      : await runPr262CronCycle();
     return NextResponse.json(result, { status: result.ok ? 200 : 503 });
   } catch (error) {
     return NextResponse.json({

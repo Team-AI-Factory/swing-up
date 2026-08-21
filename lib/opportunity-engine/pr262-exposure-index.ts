@@ -1,8 +1,10 @@
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
+import { pr262StorageKey, resolvePr262StoragePrefix } from "@/lib/opportunity-engine/pr262-storage";
 
-const VALUE_STATE_KEY = "branch-labs/pr-262/value-investing/resumable/state.json";
-const EQUITY_UNIVERSE_KEY = "branch-labs/pr-262/equity-universe/v1.json";
-const EXPOSURE_INDEX_KEY = "branch-labs/pr-262/sensor/exposure-index-v1.json";
+const VALUE_STATE_KEY = pr262StorageKey("value-investing/resumable/state.json");
+const EQUITY_UNIVERSE_KEY = pr262StorageKey("equity-universe/v1.json");
+const EXPOSURE_INDEX_KEY = pr262StorageKey("sensor/exposure-index-v1.json");
+const VALUE_BATCH_PREFIX = `${resolvePr262StoragePrefix()}value-investing/resumable/`;
 const INDEX_TTL_MS = 24 * 60 * 60_000;
 
 type Json = Record<string, unknown>;
@@ -25,9 +27,16 @@ export type Pr262ExposureEntry = {
 };
 
 export type Pr262ExposureIndex = {
-  version: 1;
+  version: 2;
   valueCycleId: string;
   builtAt: string;
+  valueCoverage: {
+    complete: boolean;
+    totalCompanies: number;
+    companiesStored: number;
+    completedBatches: number;
+    totalBatches: number;
+  };
   entries: Pr262ExposureEntry[];
 };
 
@@ -44,6 +53,10 @@ function finite(value: unknown) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function integer(value: unknown, minimum = 0) {
+  return typeof value === "number" && Number.isInteger(value) && value >= minimum ? value : null;
+}
+
 function normalizeCik(value: unknown) {
   const digits = String(value ?? "").replace(/\D/g, "");
   if (!digits || digits.length > 10 || /^0+$/.test(digits)) return null;
@@ -58,11 +71,35 @@ async function readJson(key: string) {
 
 function validIndex(value: unknown): value is Pr262ExposureIndex {
   const item = object(value);
-  return item.version === 1
+  const coverage = object(item.valueCoverage);
+  const totalCompanies = integer(coverage.totalCompanies, 1);
+  const companiesStored = integer(coverage.companiesStored, 1);
+  const completedBatches = integer(coverage.completedBatches, 1);
+  const totalBatches = integer(coverage.totalBatches, 1);
+  const entries = Array.isArray(item.entries) ? item.entries : [];
+  const tickers = new Set<string>();
+  return item.version === 2
     && typeof item.valueCycleId === "string"
+    && Boolean(item.valueCycleId.trim())
     && typeof item.builtAt === "string"
     && Number.isFinite(Date.parse(item.builtAt))
-    && Array.isArray(item.entries);
+    && coverage.complete === true
+    && totalCompanies !== null
+    && companiesStored === totalCompanies
+    && completedBatches !== null
+    && totalBatches === completedBatches
+    && entries.length === totalCompanies
+    && entries.every((raw) => {
+      const entry = object(raw);
+      const ticker = text(entry.ticker)?.toUpperCase() ?? "";
+      const valid = Boolean(ticker)
+        && entry.ticker === ticker
+        && Boolean(text(entry.company))
+        && Boolean(text(entry.tradingViewSymbol))
+        && !tickers.has(ticker);
+      if (valid) tickers.add(ticker);
+      return valid;
+    });
 }
 
 export async function loadPr262ExposureIndex(now = new Date()): Promise<Pr262ExposureIndex> {
@@ -75,8 +112,33 @@ export async function loadPr262ExposureIndex(now = new Date()): Promise<Pr262Exp
   const cycleId = text(valueState.cycleId) ?? "";
   if (!cycleId) throw new Error("pr262_exposure_value_cycle_missing");
 
+  const totalCompanies = integer(valueState.totalCompanies, 1);
+  const companiesStored = integer(valueState.companiesStored, 1);
+  const batchSize = integer(valueState.batchSize, 1);
+  const totalBatches = integer(valueState.totalBatches, 1);
+  const universeFingerprint = text(valueState.universeFingerprint);
+  const rawBatchKeys = Array.isArray(valueState.completedBatchKeys) ? valueState.completedBatchKeys : [];
+  const batchKeys = rawBatchKeys.filter((key): key is string => typeof key === "string" && key.startsWith(VALUE_BATCH_PREFIX));
+  if (valueState.status !== "complete"
+    || totalCompanies === null
+    || companiesStored === null
+    || companiesStored !== totalCompanies
+    || batchSize === null
+    || totalBatches === null
+    || totalBatches !== Math.ceil(totalCompanies / batchSize)
+    || !universeFingerprint
+    || rawBatchKeys.length !== totalBatches
+    || batchKeys.length !== totalBatches
+    || new Set(batchKeys).size !== totalBatches) {
+    throw new Error("pr262_exposure_value_cycle_incomplete");
+  }
+
   if (validIndex(cached.value)
     && cached.value.valueCycleId === cycleId
+    && cached.value.valueCoverage.totalCompanies === totalCompanies
+    && cached.value.valueCoverage.companiesStored === companiesStored
+    && cached.value.valueCoverage.completedBatches === batchKeys.length
+    && cached.value.valueCoverage.totalBatches === totalBatches
     && now.getTime() - Date.parse(cached.value.builtAt) >= 0
     && now.getTime() - Date.parse(cached.value.builtAt) < INDEX_TTL_MS) {
     return cached.value;
@@ -91,24 +153,49 @@ export async function loadPr262ExposureIndex(now = new Date()): Promise<Pr262Exp
     cikByTicker.set(ticker, { cik: normalizeCik(entry.cik), exchange: text(entry.exchange) });
   }
 
-  const batchKeys = Array.isArray(valueState.completedBatchKeys)
-    ? valueState.completedBatchKeys.filter((key): key is string => typeof key === "string" && key.startsWith("branch-labs/pr-262/value-investing/resumable/"))
-    : [];
-  if (!batchKeys.length) throw new Error("pr262_exposure_value_batches_missing");
-
   const entries = new Map<string, Pr262ExposureEntry>();
+  const batchIndexes = new Set<number>();
+  let analysesRead = 0;
   for (let offset = 0; offset < batchKeys.length; offset += 4) {
     const keys = batchKeys.slice(offset, offset + 4);
     const batches = await Promise.all(keys.map((key) => readJson(key)));
-    for (const loaded of batches) {
+    for (let batchOffset = 0; batchOffset < batches.length; batchOffset += 1) {
+      const loaded = batches[batchOffset];
+      const key = keys[batchOffset];
       const batch = object(loaded.value);
-      if (batch.cycleId !== cycleId || !Array.isArray(batch.analyses)) continue;
+      const metadata = object(batch.batch);
+      const batchIndex = integer(metadata.batchIndex);
+      const startIndex = integer(metadata.startIndex);
+      const endIndexExclusive = integer(metadata.endIndexExclusive);
+      const companyCount = integer(metadata.companyCount, 1);
+      if (batch.version !== 1
+        || batch.kind !== "us_value_investing_company_batch"
+        || batch.cycleId !== cycleId
+        || batch.universeFingerprint !== universeFingerprint
+        || batchIndex === null
+        || batchIndex >= totalBatches
+        || batchIndexes.has(batchIndex)
+        || key !== `${VALUE_BATCH_PREFIX}cycles/${cycleId}/batches/batch-${String(batchIndex).padStart(3, "0")}.json`
+        || startIndex === null
+        || endIndexExclusive === null
+        || companyCount === null
+        || startIndex !== batchIndex * batchSize
+        || endIndexExclusive !== Math.min(totalCompanies, startIndex + batchSize)
+        || companyCount !== endIndexExclusive - startIndex
+        || !Array.isArray(batch.analyses)
+        || batch.analyses.length !== companyCount) {
+        throw new Error("pr262_exposure_value_batch_invalid");
+      }
+      batchIndexes.add(batchIndex);
+      analysesRead += batch.analyses.length;
       for (const raw of batch.analyses) {
         const analysis = object(raw);
         const ticker = text(analysis.ticker)?.toUpperCase();
         const company = text(analysis.company);
         const tradingViewSymbol = text(analysis.tradingViewSymbol);
-        if (!ticker || !company || !tradingViewSymbol) continue;
+        if (!ticker || analysis.ticker !== ticker || !company || !tradingViewSymbol || entries.has(ticker)) {
+          throw new Error("pr262_exposure_value_analysis_invalid");
+        }
         const scores = object(analysis.scores);
         const fairValue = object(analysis.fairValue);
         const universeEntry = cikByTicker.get(ticker);
@@ -131,16 +218,26 @@ export async function loadPr262ExposureIndex(now = new Date()): Promise<Pr262Exp
       }
     }
   }
+  if (batchIndexes.size !== totalBatches
+    || analysesRead !== totalCompanies
+    || entries.size !== totalCompanies) {
+    throw new Error("pr262_exposure_value_coverage_mismatch");
+  }
 
   const payload: Pr262ExposureIndex = {
-    version: 1,
+    version: 2,
     valueCycleId: cycleId,
     builtAt: now.toISOString(),
+    valueCoverage: {
+      complete: true,
+      totalCompanies,
+      companiesStored,
+      completedBatches: batchKeys.length,
+      totalBatches,
+    },
     entries: [...entries.values()].sort((left, right) =>
       (right.marketCap ?? 0) - (left.marketCap ?? 0) || right.businessQuality - left.businessQuality || left.ticker.localeCompare(right.ticker)),
   };
-  if (!payload.entries.length) throw new Error("pr262_exposure_index_empty");
-
   const written = await writeVersionedJsonToR2(
     EXPOSURE_INDEX_KEY,
     payload,
@@ -148,7 +245,12 @@ export async function loadPr262ExposureIndex(now = new Date()): Promise<Pr262Exp
   );
   if (!written.conflict) return payload;
   const concurrent = await readJson(EXPOSURE_INDEX_KEY);
-  if (validIndex(concurrent.value) && concurrent.value.valueCycleId === cycleId) return concurrent.value;
+  if (validIndex(concurrent.value)
+    && concurrent.value.valueCycleId === cycleId
+    && concurrent.value.valueCoverage.totalCompanies === totalCompanies
+    && concurrent.value.valueCoverage.companiesStored === companiesStored
+    && concurrent.value.valueCoverage.completedBatches === totalBatches
+    && concurrent.value.valueCoverage.totalBatches === totalBatches) return concurrent.value;
   throw new Error("pr262_exposure_index_conflict");
 }
 

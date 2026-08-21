@@ -12,19 +12,30 @@ import {
 } from "@/lib/equity-signal/event-sources";
 import { fetchMacroContext } from "@/lib/equity-signal/macro";
 import type { EventReceipt, ProviderResult } from "@/lib/equity-signal/types";
-import { loadEquityUniverse, type EquityUniverseEntry } from "@/lib/equity-signal/universe";
+import {
+  loadEquityUniverse,
+  validEquityUniverseSnapshot,
+  type EquityUniverseEntry,
+  type EquityUniverseSnapshot,
+} from "@/lib/equity-signal/universe";
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
+import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 import {
   parseRssForPr262Sensor,
   parseSecAtomForSensor,
   partitionPr262PendingEvents,
   type Pr262SensorEvent,
+  type Pr262SensorReadiness,
   type Pr262SensorSourceHealth,
 } from "@/lib/opportunity-engine/pr262-change-sensor";
 import { runPr262DirectAnnouncementMonitor } from "@/lib/opportunity-engine/pr262-direct-announcements";
-import { loadPr262ExposureIndex, type Pr262ExposureEntry } from "@/lib/opportunity-engine/pr262-exposure-index";
+import {
+  loadPr262ExposureIndex,
+  type Pr262ExposureEntry,
+  type Pr262ExposureIndex,
+} from "@/lib/opportunity-engine/pr262-exposure-index";
 
-const SENSOR_STATE_KEY = "branch-labs/pr-262/sensor/state-v1.json";
+const SENSOR_STATE_KEY = pr262StorageKey("sensor/state-v1.json");
 const SEC_AGENT = "SwingUp/1.0 support@swingup.app";
 const TRADINGVIEW_SCAN = "https://scanner.tradingview.com/america/scan";
 const FMP_NEWS_URL = "https://financialmodelingprep.com/stable/news/stock";
@@ -38,6 +49,7 @@ const SEVENTY_FIVE_MINUTES_MS = 75 * 60_000;
 const TWO_HOURS_MS = 2 * 60 * 60_000;
 const TWELVE_HOURS_MS = 12 * 60 * 60_000;
 const DAY_MS = 24 * 60 * 60_000;
+const UNIVERSE_READINESS_MAX_AGE_MS = 30 * 60 * 60_000;
 const URGENT_SEC_FORMS = ["8-K", "6-K", "424B5"] as const;
 const GOOGLE_QUERIES = [
   '(earnings OR guidance OR acquisition OR merger OR "contract award" OR recall OR investigation OR offering) (NASDAQ OR NYSE OR company)',
@@ -52,8 +64,10 @@ type CompatState = {
   seen: string[];
   pending: Pr262SensorEvent[];
   lastMarketWatchAt: string | null;
-  cursors: { secUrgentFormIndex: number; newsQueryIndex: number; officialFeedIndex: number };
+  cursors: { secUrgentFormIndex: number; newsQueryIndex: number; officialFeedIndex: number; directIssuerFeedIndex: number };
   sourceHealth: Record<string, Pr262SensorSourceHealth>;
+  sensorReadiness: Pr262SensorReadiness;
+  cloudflareSensor: null;
 };
 
 type SourceSummary = {
@@ -79,54 +93,34 @@ function finite(value: unknown) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+export function pr262UniverseReadyForSensor(snapshot: EquityUniverseSnapshot, now = new Date()) {
+  const refreshedAt = Date.parse(snapshot?.refreshedAt ?? "");
+  return validEquityUniverseSnapshot(snapshot)
+    && snapshot.constructionMode === "nasdaq_plus_sec"
+    && Number.isFinite(refreshedAt)
+    && refreshedAt <= now.getTime() + FIVE_MINUTES_MS
+    && now.getTime() - refreshedAt <= UNIVERSE_READINESS_MAX_AGE_MS;
+}
+
 function hash(value: string) {
   return crypto.createHash("sha256").update(value).digest("hex").slice(0, 24);
 }
 
-function normalizeCompany(value: string) {
-  return value.toLowerCase()
-    .replace(/&/g, " and ")
-    .replace(/\b(?:incorporated|inc|corporation|corp|company|co|limited|ltd|plc|holdings?|group|common stock|ordinary shares?|american depositary shares?|ads|adr|class [a-z])\b/g, " ")
-    .replace(/[^a-z0-9]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+function safeError(error: unknown) {
+  return error instanceof Error
+    ? error.message.replace(/\s+/g, " ").slice(0, 200)
+    : "pr262_exposure_index_unavailable";
 }
 
-function buildAliasResolver(entries: EquityUniverseEntry[]) {
-  const aliasMap = new Map<string, string | null>();
+function buildStructuredTickerResolver(entries: EquityUniverseEntry[]) {
   const display = new Map(entries.map((entry) => [entry.ticker, entry.name]));
-  for (const entry of entries) {
-    for (const alias of [...new Set([entry.name, ...entry.aliases].map(normalizeCompany).filter((value) => value.length >= 5))]) {
-      if (!aliasMap.has(alias)) aliasMap.set(alias, entry.ticker);
-      else if (aliasMap.get(alias) !== entry.ticker) aliasMap.set(alias, null);
-    }
-  }
-  const usableAliases = [...aliasMap.entries()]
-    .filter((item): item is [string, string] => Boolean(item[1]))
-    .sort((left, right) => right[0].length - left[0].length);
   return {
     resolve(receipt: EventReceipt) {
       const direct = receipt.symbolHints.find((value) => /^[A-Z][A-Z0-9.-]{0,9}$/i.test(value))?.toUpperCase()
         ?? `${receipt.title} ${receipt.summary ?? ""}`.match(/(?:\$|NASDAQ:\s*|NYSE:\s*|AMEX:\s*)([A-Z][A-Z0-9.-]{0,9})\b/)?.[1]?.toUpperCase()
         ?? null;
       if (direct && display.has(direct)) return { ticker: direct, company: display.get(direct) ?? direct, method: "structured_ticker" };
-      for (const hint of receipt.companyHints) {
-        if (/^CIK\d+$/i.test(hint)) continue;
-        const ticker = aliasMap.get(normalizeCompany(hint));
-        if (ticker) return { ticker, company: display.get(ticker) ?? hint, method: "company_hint_exact_alias" };
-      }
-      const haystack = ` ${normalizeCompany(`${receipt.title} ${receipt.summary ?? ""}`)} `;
-      const matches = new Map<string, string>();
-      for (const [alias, ticker] of usableAliases) {
-        if (!haystack.includes(` ${alias} `)) continue;
-        matches.set(ticker, alias);
-        if (matches.size > 1) break;
-      }
-      if (matches.size === 1) {
-        const ticker = [...matches.keys()][0];
-        return { ticker, company: display.get(ticker) ?? ticker, method: "unique_full_company_alias" };
-      }
-      return { ticker: null, company: null, method: matches.size > 1 ? "ambiguous_company_alias" : "unmapped" };
+      return { ticker: null, company: null, method: "structured_ticker_required_fail_closed" };
     },
   };
 }
@@ -138,7 +132,7 @@ function priority(receipt: EventReceipt) {
   return receipt.official || receipt.primarySource ? 75 : 65;
 }
 
-function receiptToEvent(receipt: EventReceipt, provider: string, resolver: ReturnType<typeof buildAliasResolver>, now: Date): Pr262SensorEvent | null {
+function receiptToEvent(receipt: EventReceipt, provider: string, resolver: ReturnType<typeof buildStructuredTickerResolver>, now: Date): Pr262SensorEvent | null {
   const observedMs = Date.parse(receipt.publishedAt);
   if (!Number.isFinite(observedMs) || observedMs > now.getTime() + FIVE_MINUTES_MS || now.getTime() - observedMs > 14 * DAY_MS) return null;
   const resolved = resolver.resolve(receipt);
@@ -164,7 +158,9 @@ function receiptToEvent(receipt: EventReceipt, provider: string, resolver: Retur
     accession: null,
     canonicalSecIndexUrl: null,
     identityMethod: "not_applicable",
-    ...(resolved.ticker ? { mappingStatus: "mapped" as const, mappingMethod: resolved.method, mappingReason: "The source supplied a ticker or exactly one full company alias matched the authoritative U.S. universe." } : {}),
+    ...(resolved.ticker
+      ? { mappingStatus: "mapped" as const, mappingMethod: resolved.method, mappingReason: "An explicit source ticker matched the authoritative U.S. universe." }
+      : { mappingStatus: "unmapped" as const, mappingMethod: resolved.method, mappingReason: "Company names and headline mentions are never used as issuer identity." }),
     queueAttempts: 0,
     queueNextAttemptAt: null,
     queueLastAttemptAt: null,
@@ -214,7 +210,17 @@ async function loadState(): Promise<{ state: CompatState; etag: string | null }>
   const current = await readVersionedTextFromR2(SENSOR_STATE_KEY);
   if (!current.found || !current.text) {
     return {
-      state: { version: 2, updatedAt: new Date(0).toISOString(), seen: [], pending: [], lastMarketWatchAt: null, cursors: { secUrgentFormIndex: 0, newsQueryIndex: 0, officialFeedIndex: 0 }, sourceHealth: {} },
+      state: {
+        version: 2,
+        updatedAt: new Date(0).toISOString(),
+        seen: [],
+        pending: [],
+        lastMarketWatchAt: null,
+        cursors: { secUrgentFormIndex: 0, newsQueryIndex: 0, officialFeedIndex: 0, directIssuerFeedIndex: 0 },
+        sourceHealth: {},
+        sensorReadiness: { version: 1, checkedAt: new Date(0).toISOString(), universeReady: false, universeEntries: 0, exposureReady: false, exposureEntries: 0 },
+        cloudflareSensor: null,
+      },
       etag: current.etag,
     };
   }
@@ -230,8 +236,21 @@ async function loadState(): Promise<{ state: CompatState; etag: string | null }>
         secUrgentFormIndex: Math.max(0, Number(object(value.cursors).secUrgentFormIndex) || 0),
         newsQueryIndex: Math.max(0, Number(object(value.cursors).newsQueryIndex) || 0),
         officialFeedIndex: Math.max(0, Number(object(value.cursors).officialFeedIndex) || 0),
+        directIssuerFeedIndex: Math.max(0, Number(object(value.cursors).directIssuerFeedIndex) || 0),
       },
       sourceHealth: object(value.sourceHealth) as Record<string, Pr262SensorSourceHealth>,
+      sensorReadiness: {
+        version: 1,
+        checkedAt: text(object(value.sensorReadiness).checkedAt) ?? new Date(0).toISOString(),
+        universeReady: object(value.sensorReadiness).universeReady === true,
+        universeEntries: Math.max(0, Number(object(value.sensorReadiness).universeEntries) || 0),
+        exposureReady: object(value.sensorReadiness).exposureReady === true,
+        exposureEntries: Math.max(0, Number(object(value.sensorReadiness).exposureEntries) || 0),
+      },
+      // This writer runs only while Railway owns source sensing. Explicitly
+      // clear a prior Cloudflare ownership marker while retaining its neutral
+      // direct-feed cursor for a future controlled cutover.
+      cloudflareSensor: null,
     },
     etag: current.etag,
   };
@@ -284,6 +303,9 @@ function secUrl(form: string | null) {
 }
 
 async function runFmpNews(fetchImpl: typeof fetch, exposure: Pr262ExposureEntry[], now: Date) {
+  if (process.env.FMP_COMMERCIAL_USE_APPROVED?.trim().toLowerCase() !== "true") {
+    return { provider: "fmp_news", status: "not_configured", recordsRead: 0, receipts: [] as EventReceipt[], error: "FMP commercial use is not approved", urls: [FMP_NEWS_URL] };
+  }
   const key = process.env.FMP_API_KEY?.trim();
   if (!key) return { provider: "fmp_news", status: "not_configured", recordsRead: 0, receipts: [] as EventReceipt[], error: "FMP_API_KEY not configured", urls: [FMP_NEWS_URL] };
   const leaders = exposure.filter((item) => item.businessQuality >= 65).slice(0, 120);
@@ -336,13 +358,41 @@ async function marketWatch(fetchImpl: typeof fetch, exposure: Pr262ExposureEntry
 export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl?: typeof fetch } = {}) {
   const now = input.now ?? new Date();
   const fetchImpl = input.fetchImpl ?? fetch;
-  const exposure = await loadPr262ExposureIndex(now);
+  let exposureError: string | null = null;
+  const exposure = await loadPr262ExposureIndex(now).catch((error): Pr262ExposureIndex => {
+    exposureError = safeError(error);
+    return {
+      version: 2,
+      valueCycleId: "not_ready",
+      builtAt: now.toISOString(),
+      valueCoverage: {
+        complete: false,
+        totalCompanies: 0,
+        companiesStored: 0,
+        completedBatches: 0,
+        totalBatches: 0,
+      },
+      entries: [],
+    };
+  });
   const universe = await loadEquityUniverse(fetchImpl, now);
-  const resolver = buildAliasResolver(universe.snapshot.entries);
+  const resolver = buildStructuredTickerResolver(universe.snapshot.entries);
   const loaded = await loadState();
   const state = loaded.state;
   const summaries: SourceSummary[] = [];
   const events: Pr262SensorEvent[] = [];
+
+  if (exposureError) {
+    summaries.push({
+      provider: "exposure_index",
+      attempted: true,
+      status: "not_ready",
+      recordsRead: 0,
+      newEvents: 0,
+      error: exposureError,
+      nextRetryAt: null,
+    });
+  }
 
   const run = async (provider: string, cadenceMs: number, urls: string[], worker: () => Promise<{ status: string; recordsRead: number; receipts?: EventReceipt[]; events?: Pr262SensorEvent[]; error?: string | null }>) => {
     const key = `v3_${provider}`;
@@ -469,6 +519,14 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
       newsQueryIndex: (state.cursors.newsQueryIndex + 1) % GOOGLE_QUERIES.length,
     },
     sourceHealth: state.sourceHealth,
+    sensorReadiness: {
+      version: 1,
+      checkedAt: now.toISOString(),
+      universeReady: pr262UniverseReadyForSensor(universe.snapshot, now),
+      universeEntries: universe.snapshot.entries.length,
+      exposureReady: exposureError === null && exposure.entries.length > 0,
+      exposureEntries: exposure.entries.length,
+    },
   };
   const written = await writeVersionedJsonToR2(SENSOR_STATE_KEY, next, loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true });
   if (written.conflict) throw new Error("pr262_v3_sensor_state_conflict");
@@ -478,6 +536,8 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
     mode: "pr262_lightweight_sensor_v3",
     checkedAt: now.toISOString(),
     sourceSummary: summaries,
+    exposureReady: exposureError === null,
+    exposureError,
     exposureCompanies: exposure.entries.length,
     newEvents: fresh.length,
     sectorFanoutEvents: fresh.filter((event) => event.mappingMethod === "deterministic_sector_fanout").length,

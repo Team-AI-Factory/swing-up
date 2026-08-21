@@ -1,5 +1,13 @@
-import { deliverSeriousSignalOutbox } from "@/lib/notifications/serious-signal-delivery";
-import { getPr262AiDailyBudgetStatus, recordPr262AiCommitteeCostFromResultKey } from "@/lib/opportunity-engine/pr262-ai-daily-cost";
+import {
+  deliverSeriousSignalOutbox,
+  processPendingSeriousSignalDeliveries,
+} from "@/lib/notifications/serious-signal-delivery";
+import {
+  getPr262AiDailyBudgetStatus,
+  recordPr262AiCommitteeCostFromResultKey,
+  releasePr262AiCommitteeBudgetReservation,
+  reservePr262AiCommitteeBudget,
+} from "@/lib/opportunity-engine/pr262-ai-daily-cost";
 import { enrichPr262SensorCompanyMappings } from "@/lib/opportunity-engine/pr262-company-directory";
 import { readPr262ChangeSensorState } from "@/lib/opportunity-engine/pr262-change-sensor";
 import { runPr262EventJob } from "@/lib/opportunity-engine/pr262-event-job";
@@ -9,8 +17,15 @@ import { promotePr262SeriousWatchOut } from "@/lib/opportunity-engine/pr262-seri
 import { recordPr262CostEffectiveness } from "@/lib/opportunity-engine/pr262-cost-effectiveness";
 
 const MAX_CYCLE_MS = 210_000;
+const REPORTING_RESERVE_MS = 15_000;
+const MIN_EVENT_START_BUDGET_MS = 45_000;
 
 type Json = Record<string, unknown>;
+type Pr262CycleInput = {
+  maxCycleMs?: number;
+  signal?: AbortSignal;
+};
+type Pr262CycleMode = "sensor_and_analysis" | "analysis_only";
 
 type AiBudgetStatus = Awaited<ReturnType<typeof getPr262AiDailyBudgetStatus>> & {
   accountingHealthy: boolean;
@@ -23,7 +38,13 @@ function dueReadyCount(state: Awaited<ReturnType<typeof readPr262ChangeSensorSta
     const retryAt = event.queueNextAttemptAt ? Date.parse(event.queueNextAttemptAt) : Number.NaN;
     return event.priority >= 80
       && Boolean(event.ticker)
-      && (event.source !== "sec" || event.mappingStatus === "mapped")
+      && event.mappingStatus === "mapped"
+      && (event.source !== "sec" || (
+        event.identityMethod === "official_sec_archive_link"
+        && Boolean(event.cik)
+        && Boolean(event.accession)
+        && Boolean(event.canonicalSecIndexUrl)
+      ))
       && (!Number.isFinite(retryAt) || retryAt <= now);
   }).length;
 }
@@ -38,6 +59,20 @@ function asJson(value: unknown): Json {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Json : {};
 }
 
+class Pr262CycleDeadlineError extends Error {
+  constructor() {
+    super("pr262_cycle_deadline_exceeded");
+    this.name = "Pr262CycleDeadlineError";
+  }
+}
+
+function composedSignal(signals: Array<AbortSignal | null | undefined>) {
+  const active = signals.filter((signal): signal is AbortSignal => Boolean(signal));
+  if (!active.length) return undefined;
+  if (active.length === 1) return active[0];
+  return AbortSignal.any(active);
+}
+
 async function safeAiBudgetStatus(): Promise<AiBudgetStatus> {
   try {
     return { ...(await getPr262AiDailyBudgetStatus()), accountingHealthy: true, accountingError: null };
@@ -45,11 +80,16 @@ async function safeAiBudgetStatus(): Promise<AiBudgetStatus> {
     return {
       allowed: false,
       spentUsd: 0,
+      reservedUsd: 0,
+      exposureUsd: 0,
       remainingUsd: 0,
       limitUsd: Number(process.env.SWING_UP_PR262_AI_DAILY_LIMIT_USD) || 10,
       warningUsd: Number(process.env.SWING_UP_PR262_AI_DAILY_WARNING_USD) || 6,
       warning: true,
-      hardFuseTripped: false,
+      hardFuseTripped: true,
+      nextReviewReservationUsd: Number(process.env.SWING_UP_PR262_AI_REVIEW_RESERVATION_USD) || 0.75,
+      reservationCheckedBeforePaidCommittee: true,
+      activeReservations: 0,
       reviewsRecorded: 0,
       unknownUsageReviews: 0,
       accountingHealthy: false,
@@ -58,21 +98,36 @@ async function safeAiBudgetStatus(): Promise<AiBudgetStatus> {
   }
 }
 
-export async function runPr262CronCycle() {
+async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, cycleSignal: AbortSignal, deadlineAtMs: number) {
   const startedAt = Date.now();
   const checkedAt = new Date().toISOString();
-  const sourceBudget = await createPr262SensorBudgetedFetch();
-  let sensor: Awaited<ReturnType<typeof runPr262LightweightSensorV3>>;
-  let budgetPersistence: unknown = null;
-  try {
-    sensor = await runPr262LightweightSensorV3({ fetchImpl: sourceBudget.fetchImpl });
-  } finally {
-    budgetPersistence = await sourceBudget.flush().catch((error) => ({
-      persisted: false,
-      error: error instanceof Error ? error.message : "sensor_budget_flush_failed",
-    }));
+  const processingDeadlineAtMs = deadlineAtMs - REPORTING_RESERVE_MS;
+  const assertCycleActive = () => {
+    if (Date.now() >= deadlineAtMs) throw new Pr262CycleDeadlineError();
+    if (cycleSignal.aborted) {
+      throw cycleSignal.reason instanceof Error ? cycleSignal.reason : new Error("pr262_cycle_aborted");
+    }
+  };
+
+  let sourceBudget: Awaited<ReturnType<typeof createPr262SensorBudgetedFetch>> | null = null;
+  let sensor: Awaited<ReturnType<typeof runPr262LightweightSensorV3>> | null = null;
+  let budgetPersistence: unknown = { persisted: false, reason: "cloudflare_sensor_owns_discovery" };
+  if (mode === "sensor_and_analysis") {
+    assertCycleActive();
+    sourceBudget = await createPr262SensorBudgetedFetch({ signal: cycleSignal });
+    try {
+      sensor = await runPr262LightweightSensorV3({ fetchImpl: sourceBudget.fetchImpl });
+    } finally {
+      budgetPersistence = await sourceBudget.flush().catch((error) => ({
+        persisted: false,
+        error: error instanceof Error ? error.message : "sensor_budget_flush_failed",
+      }));
+    }
   }
 
+  assertCycleActive();
+  // Cloudflare can exact-map many events, but Railway performs a final mapping
+  // pass so unresolved or ambiguous issuers still fail closed before analysis.
   const mapping = await enrichPr262SensorCompanyMappings().catch((error) => ({
     mapped: 0,
     directoryCompanies: 0,
@@ -80,6 +135,7 @@ export async function runPr262CronCycle() {
     error: error instanceof Error ? error.message : "mapping_failed",
   }));
 
+  assertCycleActive();
   let state = await readPr262ChangeSensorState();
   const readyAtStart = dueReadyCount(state);
   const capacity = capacityForQueue(readyAtStart);
@@ -92,114 +148,188 @@ export async function runPr262CronCycle() {
   let seriousBuys = 0;
   let seriousSells = 0;
   let seriousWatchOuts = 0;
+  let deadlineStoppedAdmissions = false;
 
-  // Alpha Vantage's free allowance is shared by the whole app. The sensor owns
-  // a small, hard-budgeted share for news/earnings discovery. During the
-  // specialist phase we remove the key from this short-lived process so quote
-  // fallback uses Yahoo first and FMP second rather than spending a second,
-  // independently-accounted Alpha allowance.
-  const alphaVantageKey = process.env.ALPHA_VANTAGE_API_KEY;
-  delete process.env.ALPHA_VANTAGE_API_KEY;
-  try {
-    for (let index = 0; index < capacity && Date.now() - startedAt < MAX_CYCLE_MS; index += 1) {
-      try {
-        const raw = await runPr262EventJob({ allowOpenAi: aiBudget.allowed && aiBudget.accountingHealthy });
-        const result = asJson(raw);
-        eventResults.push(result);
-        const status = String(result.status ?? "");
-        if (status === "idle" || status === "busy") break;
-        if (result.openAiCalled === true) {
-          aiCalls += 1;
-          let recorded: Json;
+  for (let index = 0; index < capacity; index += 1) {
+    const remainingMs = processingDeadlineAtMs - Date.now();
+    if (remainingMs < MIN_EVENT_START_BUDGET_MS || cycleSignal.aborted) {
+      deadlineStoppedAdmissions = true;
+      break;
+    }
+    let aiReservationFingerprint: string | null = null;
+    try {
+      const raw = await runPr262EventJob({
+        allowOpenAi: aiBudget.allowed && aiBudget.accountingHealthy,
+        beforeOpenAiCall: async (reservation) => {
           try {
-            recorded = asJson(await recordPr262AiCommitteeCostFromResultKey(typeof result.resultKey === "string" ? result.resultKey : null));
+            const reserved = await reservePr262AiCommitteeBudget({
+              candidateFingerprint: reservation.candidateFingerprint,
+              ticker: reservation.ticker,
+              direction: reservation.direction,
+            });
+            aiCostResults.push(asJson(reserved));
+            if (reserved.allowed) aiReservationFingerprint = reservation.candidateFingerprint;
+            return reserved.allowed;
           } catch (error) {
-            recorded = { recorded: false, error: error instanceof Error ? error.message : "ai_cost_record_failed" };
-          }
-          aiCostResults.push(recorded);
-          const safeReasons = new Set(["already_recorded"]);
-          const recordHealthy = recorded.recorded === true || (typeof recorded.reason === "string" && safeReasons.has(recorded.reason));
-          if (!recordHealthy) {
-            const latest = await safeAiBudgetStatus();
             aiBudget = {
-              ...latest,
+              ...(await safeAiBudgetStatus()),
               allowed: false,
               accountingHealthy: false,
-              accountingError: typeof recorded.error === "string"
-                ? recorded.error.slice(0, 180)
-                : `ai_cost_record_${String(recorded.reason ?? "unconfirmed")}`,
+              accountingError: error instanceof Error ? error.message.slice(0, 180) : "ai_budget_reservation_failed",
             };
-          } else {
-            aiBudget = await safeAiBudgetStatus();
+            return false;
           }
+        },
+        signal: cycleSignal,
+        deadlineAtMs: processingDeadlineAtMs,
+      });
+      assertCycleActive();
+      const result = asJson(raw);
+      eventResults.push(result);
+      const status = String(result.status ?? "");
+      if (status === "idle" || status === "busy") break;
+      if (result.ok === false) eventFailures += 1;
+      if (result.openAiCalled === true) {
+        aiCalls += 1;
+        let recorded: Json;
+        try {
+          recorded = asJson(await recordPr262AiCommitteeCostFromResultKey(typeof result.resultKey === "string" ? result.resultKey : null));
+        } catch (error) {
+          recorded = { recorded: false, error: error instanceof Error ? error.message : "ai_cost_record_failed" };
         }
-        if (result.seriousSignalFound === true && result.alertType === "buy") seriousBuys += 1;
-        if (result.seriousSignalFound === true && result.alertType === "sell") seriousSells += 1;
-
-        const watchOut = await promotePr262SeriousWatchOut(typeof result.resultKey === "string" ? result.resultKey : null)
-          .catch(() => ({ promoted: false, outboxKey: null as string | null }));
-        if (watchOut.promoted) seriousWatchOuts += 1;
-
-        const outboxKeys = [...new Set([
-          typeof result.outboxKey === "string" ? result.outboxKey : null,
-          typeof watchOut.outboxKey === "string" ? watchOut.outboxKey : null,
-        ].filter((value): value is string => Boolean(value)))];
-        for (const outboxKey of outboxKeys) {
-          const delivery = await deliverSeriousSignalOutbox(outboxKey).catch((error) => ({
-            ok: false,
-            outboxKey,
-            seriousSignal: true,
-            error: error instanceof Error ? error.message.slice(0, 200) : "serious_signal_delivery_failed",
-          }));
-          notificationResults.push(asJson(delivery));
+        aiCostResults.push(recorded);
+        const recordHealthy = recorded.recorded === true || recorded.reason === "already_recorded";
+        if (!recordHealthy) {
+          const latest = await safeAiBudgetStatus();
+          aiBudget = {
+            ...latest,
+            allowed: false,
+            accountingHealthy: false,
+            accountingError: typeof recorded.error === "string"
+              ? recorded.error.slice(0, 180)
+              : `ai_cost_record_${String(recorded.reason ?? "unconfirmed")}`,
+          };
+        } else {
+          aiBudget = await safeAiBudgetStatus();
         }
-      } catch (error) {
-        eventFailures += 1;
-        eventResults.push({ status: "event_job_error", error: error instanceof Error ? error.message.slice(0, 260) : "event_job_failed" });
+      } else if (aiReservationFingerprint) {
+        try {
+          await releasePr262AiCommitteeBudgetReservation(aiReservationFingerprint);
+          aiBudget = await safeAiBudgetStatus();
+        } catch (error) {
+          aiBudget = {
+            ...(await safeAiBudgetStatus()),
+            allowed: false,
+            accountingHealthy: false,
+            accountingError: error instanceof Error ? error.message.slice(0, 180) : "ai_budget_reservation_release_failed",
+          };
+        }
+      }
+      const watchOut = await promotePr262SeriousWatchOut(typeof result.resultKey === "string" ? result.resultKey : null)
+        .catch(() => ({ promoted: false, outboxKey: null as string | null }));
+      if (result.seriousSignalFound === true && result.alertType === "buy") seriousBuys += 1;
+      if (watchOut.promoted) seriousWatchOuts += 1;
+      else if (result.seriousSignalFound === true && result.alertType === "sell") seriousSells += 1;
+
+      const outboxKeys = [...new Set([
+        typeof result.outboxKey === "string" ? result.outboxKey : null,
+        typeof watchOut.outboxKey === "string" ? watchOut.outboxKey : null,
+      ].filter((value): value is string => Boolean(value)))];
+      for (const outboxKey of outboxKeys) {
+        if (Date.now() >= processingDeadlineAtMs || cycleSignal.aborted) {
+          deadlineStoppedAdmissions = true;
+          break;
+        }
+        const delivery = await deliverSeriousSignalOutbox(outboxKey, {
+          signal: cycleSignal,
+          deadlineAtMs: processingDeadlineAtMs,
+        }).catch((error) => ({
+          ok: false,
+          outboxKey,
+          seriousSignal: true,
+          error: error instanceof Error ? error.message.slice(0, 200) : "serious_signal_delivery_failed",
+        }));
+        notificationResults.push(asJson(delivery));
+      }
+    } catch (error) {
+      eventFailures += 1;
+      const message = error instanceof Error ? error.message.slice(0, 260) : "event_job_failed";
+      eventResults.push({ status: "event_job_error", error: message });
+      if (/deadline|aborted/i.test(message) || cycleSignal.aborted) {
+        deadlineStoppedAdmissions = true;
+        break;
       }
     }
-  } finally {
-    if (alphaVantageKey) process.env.ALPHA_VANTAGE_API_KEY = alphaVantageKey;
   }
 
+  const deliveryRecovery = processingDeadlineAtMs - Date.now() >= 30_000 && !cycleSignal.aborted
+    ? await processPendingSeriousSignalDeliveries({
+        maxJobs: 4,
+        signal: cycleSignal,
+        deadlineAtMs: processingDeadlineAtMs,
+      }).catch((error) => ({
+        ok: false,
+        error: error instanceof Error ? error.message.slice(0, 200) : "serious_signal_delivery_recovery_failed",
+      }))
+    : { ok: false, skipped: true, reason: "cycle_deadline_reserve" };
+
+  assertCycleActive();
   state = await readPr262ChangeSensorState();
-  const sourceAttempts = sensor.sourceSummary.filter((item) => item.attempted).length;
-  const sourceFailures = sensor.sourceSummary.filter((item) => item.attempted && !["connected", "partial", "not_due", "not_configured"].includes(item.status)).length;
+  const sourceSummary = sensor?.sourceSummary ?? [];
+  const sourceAttempts = sourceSummary.filter((item) => item.attempted).length;
+  const sourceFailures = sourceSummary.filter((item) => item.attempted && !["connected", "partial", "not_due", "not_configured"].includes(item.status)).length;
   const eventsProcessed = eventResults.filter((item) => Number(item.eventsProcessed) > 0).length;
   const durationMs = Date.now() - startedAt;
-  const directIssuer = sensor.sourceSummary.find((item) => item.provider === "direct_issuer_feeds");
+  const directIssuer = sourceSummary.find((item) => item.provider === "direct_issuer_feeds");
+  const cost = Date.now() < deadlineAtMs
+    ? await recordPr262CostEffectiveness({
+        checkedAt,
+        durationMs,
+        sourceAttempts,
+        sourceFailures,
+        newEvents: sensor?.newEvents ?? 0,
+        sectorFanoutEvents: sensor?.sectorFanoutEvents ?? 0,
+        pendingEvents: state.pending.length,
+        eventsProcessed,
+        eventFailures,
+        aiCalls,
+        seriousBuys,
+        seriousSells,
+        seriousWatchOuts,
+        directIssuerFeedsPolled: directIssuer?.recordsRead ?? 0,
+      }).catch((error) => ({ error: error instanceof Error ? error.message : "cost_metrics_failed" }))
+    : { skipped: true, reason: "cycle_deadline" };
 
-  const cost = await recordPr262CostEffectiveness({
-    checkedAt,
-    durationMs,
-    sourceAttempts,
-    sourceFailures,
-    newEvents: sensor.newEvents,
-    sectorFanoutEvents: sensor.sectorFanoutEvents,
-    pendingEvents: state.pending.length,
-    eventsProcessed,
-    eventFailures,
-    aiCalls,
-    seriousBuys,
-    seriousSells,
-    seriousWatchOuts,
-    directIssuerFeedsPolled: directIssuer?.recordsRead ?? 0,
-  }).catch((error) => ({ error: error instanceof Error ? error.message : "cost_metrics_failed" }));
-
+  const mappingHealthy = !("error" in mapping);
+  const notificationFailures = notificationResults.filter((result) => result.seriousSignal === true && result.ok !== true).length;
+  const recoveryStatus = asJson(deliveryRecovery);
+  const deliveryHealthy = notificationFailures === 0
+    && (recoveryStatus.skipped === true || recoveryStatus.ok === true);
+  const operationalOk = (sensor?.ok ?? true)
+    && mappingHealthy
+    && eventFailures === 0
+    && aiBudget.accountingHealthy
+    && deliveryHealthy;
   return {
-    ok: sensor.ok,
-    mode: "pr262_five_minute_cron_v3",
+    ok: operationalOk,
+    mode: mode === "analysis_only" ? "pr262_cloudflare_handoff_analysis" : "pr262_five_minute_cron_v3",
     checkedAt,
     durationMs,
-    sensor: {
+    sensor: sensor ? {
+      skipped: false,
       newEvents: sensor.newEvents,
       sectorFanoutEvents: sensor.sectorFanoutEvents,
       pendingEvents: state.pending.length,
       exposureCompanies: sensor.exposureCompanies,
-      sources: sensor.sourceSummary,
+      sources: sourceSummary,
       costPolicy: sensor.costPolicy,
-      providerBudget: sourceBudget.summary(),
+      providerBudget: sourceBudget?.summary() ?? null,
       providerBudgetPersistence: budgetPersistence,
+    } : {
+      skipped: true,
+      owner: "cloudflare_worker",
+      reason: "analysis_only_cycle_reads_existing_r2_queue",
+      pendingEvents: state.pending.length,
     },
     mapping,
     processing: {
@@ -211,13 +341,16 @@ export async function runPr262CronCycle() {
       seriousBuys,
       seriousSells,
       seriousWatchOuts,
-      deadlineMs: MAX_CYCLE_MS,
+      deadlineMs: deadlineAtMs - startedAt,
+      deadlineStoppedAdmissions,
       eventResults: eventResults.slice(0, 12),
     },
     aiCostControl: {
       ...aiBudget,
       actualTokenUsagePreferred: true,
-      unknownUsageFallbackUsd: 0.5,
+      unknownUsageFallbackUsd: 0.75,
+      incompleteUsageRetainsFullReservation: true,
+      hardDailyLimitCannotBeRaisedAboveUsd: 10,
       candidatesRemainQueuedWhenFuseBlocksAi: true,
       accountingFailureBlocksAdditionalAiOnly: true,
       results: aiCostResults.slice(-20),
@@ -225,6 +358,9 @@ export async function runPr262CronCycle() {
     notifications: {
       outboxFirst: true,
       previewDeliveryBlocked: process.env.RAILWAY_GIT_BRANCH?.trim() === "agent/combined-opportunity-engine",
+      healthy: deliveryHealthy,
+      directFailures: notificationFailures,
+      durableRecoveryConsumer: deliveryRecovery,
       results: notificationResults.slice(0, 24),
     },
     historicalPolicy: {
@@ -232,10 +368,46 @@ export async function runPr262CronCycle() {
       historicalCasesRemainLearningContext: true,
     },
     providerPolicy: {
-      alphaVantageReservedForSensorOnly: true,
-      eventQuoteFallbackOrder: ["Yahoo Finance", "Financial Modeling Prep"],
+      alphaVantageReservedForCloudflareDiscoveryAndDurablyBudgetedRailwayFallback: true,
+      eventQuoteFallbackOrder: ["Yahoo Finance", "Alpha Vantage", "Financial Modeling Prep when commercially approved"],
     },
     cost,
     safety: { publishing: false, notificationsFromUnverifiedCandidates: false, trades: false, databaseWrites: false },
   };
+}
+
+async function runPr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput = {}) {
+  const maxCycleMs = Number.isFinite(input.maxCycleMs)
+    ? Math.max(1_000, Math.min(MAX_CYCLE_MS, Math.round(Number(input.maxCycleMs))))
+    : MAX_CYCLE_MS;
+  const deadlineAtMs = Date.now() + maxCycleMs;
+  const deadlineAbort = new AbortController();
+  const deadlineTimer = setTimeout(() => deadlineAbort.abort(new Pr262CycleDeadlineError()), maxCycleMs);
+  deadlineTimer.unref?.();
+  const cycleSignal = composedSignal([input.signal, deadlineAbort.signal]) ?? deadlineAbort.signal;
+  let rejectDeadline: (reason?: unknown) => void = () => undefined;
+  const deadlinePromise = new Promise<never>((_, reject) => {
+    rejectDeadline = reject;
+  });
+  const rejectOnAbort = () => rejectDeadline(cycleSignal.reason instanceof Error ? cycleSignal.reason : new Pr262CycleDeadlineError());
+  if (cycleSignal.aborted) rejectOnAbort();
+  else cycleSignal.addEventListener("abort", rejectOnAbort, { once: true });
+  try {
+    return await Promise.race([
+      executePr262Cycle(mode, input, cycleSignal, deadlineAtMs),
+      deadlinePromise,
+    ]);
+  } finally {
+    clearTimeout(deadlineTimer);
+    cycleSignal.removeEventListener("abort", rejectOnAbort);
+  }
+}
+
+export async function runPr262CronCycle(input: Pr262CycleInput = {}) {
+  const owner = process.env.SWING_UP_PR262_SENSOR_OWNER?.trim().toLowerCase();
+  return runPr262Cycle(owner === "cloudflare_worker" ? "analysis_only" : "sensor_and_analysis", input);
+}
+
+export async function runPr262AnalysisOnlyCycle(input: Pr262CycleInput = {}) {
+  return runPr262Cycle("analysis_only", input);
 }

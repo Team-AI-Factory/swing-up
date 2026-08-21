@@ -29,8 +29,8 @@ const envCategories: EnvCategory[] = [
   {
     title: "AI provider variables",
     purpose: "Enable AI review, scoring support, and model provider calls when those services are intentionally connected.",
-    examples: ["OPENAI_API_KEY", "OPENAI_MODEL", "ANTHROPIC_API_KEY", "AI_REVIEW_ENABLED"],
-    notes: ["Keep model selection separate from provider keys.", "Use feature flags to disable AI calls without redeploying code."],
+    examples: ["OPENAI_API_KEY", "OPENAI_MODEL", "AI_COMMITTEE_ENABLED", "SWING_UP_PR262_AI_DAILY_LIMIT_USD", "SWING_UP_PR262_AI_REVIEW_RESERVATION_USD"],
+    notes: ["Keep model selection separate from provider keys.", "The PR262 rolling budget reserves capacity before every paid review and should retain its $10 production limit."],
   },
   {
     title: "Payment variables",
@@ -47,14 +47,20 @@ const envCategories: EnvCategory[] = [
   {
     title: "Notification variables",
     purpose: "Configure email, SMS, push, or webhook channels without exposing delivery credentials.",
-    examples: ["RESEND_API_KEY", "SENDGRID_API_KEY", "TWILIO_AUTH_TOKEN", "SLACK_WEBHOOK_URL"],
-    notes: ["Keep notification senders disabled in preview unless explicitly testing.", "Webhook URLs can act like passwords and should be treated as secrets."],
+    examples: ["TELEGRAM_BOT_TOKEN", "TELEGRAM_SERIOUS_SIGNAL_CHAT_ID", "SWING_UP_SERIOUS_SIGNAL_WEBHOOK_URL", "SWING_UP_SERIOUS_SIGNAL_READ_TOKEN"],
+    notes: ["Production Serious Signals require at least one configured delivery channel.", "The read-only feed token must be different from sensor, automation, cron, and publishing credentials."],
+  },
+  {
+    title: "PR262 service credentials",
+    purpose: "Give the Cloudflare sensor, Railway analysis recovery, internal operations, and read-only alert feed separate permissions.",
+    examples: ["SWING_UP_PR262_SENSOR_TOKEN", "SWING_UP_PR262_HANDOFF_SECRET", "SWING_UP_PR262_CRON_RUNTIME_TOKEN", "SWING_UP_INTERNAL_API_TOKEN"],
+    notes: ["Generate a different long random value for every credential.", "The cheap sensor credential must never authorize analysis, publishing, database writes, or alert-feed reads."],
   },
   {
     title: "Cloud/storage variables",
     purpose: "Connect file storage, object buckets, and signed upload flows.",
-    examples: ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "S3_BUCKET_NAME", "CLOUDINARY_URL"],
-    notes: ["Prefer short-lived or least-privilege credentials where supported.", "Bucket names may be non-secret, but write keys and signing secrets are sensitive."],
+    examples: ["R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET", "SWING_UP_PR262_STORAGE_PREFIX"],
+    notes: ["Prefer short-lived or least-privilege credentials where supported.", "The Cloudflare Worker receives a native R2 bucket binding; Railway uses scoped R2 credentials and the exact production prefix."],
   },
 ];
 

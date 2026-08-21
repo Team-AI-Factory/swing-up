@@ -1,10 +1,13 @@
+import crypto from "node:crypto";
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 import { readPr262ChangeSensorState, type Pr262SensorEvent } from "@/lib/opportunity-engine/pr262-change-sensor";
+import { pr262StorageKey, resolvePr262StoragePrefix } from "@/lib/opportunity-engine/pr262-storage";
 
-const VALUE_STATE_KEY = "branch-labs/pr-262/value-investing/resumable/state.json";
-const EQUITY_UNIVERSE_KEY = "branch-labs/pr-262/equity-universe/v1.json";
-const DIRECTORY_KEY = "branch-labs/pr-262/sensor/company-directory-v1.json";
-const SENSOR_STATE_KEY = "branch-labs/pr-262/sensor/state-v1.json";
+const VALUE_STATE_KEY = pr262StorageKey("value-investing/resumable/state.json");
+const EQUITY_UNIVERSE_KEY = pr262StorageKey("equity-universe/v1.json");
+const DIRECTORY_KEY = pr262StorageKey("sensor/company-directory-v1.json");
+const SENSOR_STATE_KEY = pr262StorageKey("sensor/state-v1.json");
+const VALUE_BATCH_PREFIX = `${resolvePr262StoragePrefix()}value-investing/resumable/`;
 const DIRECTORY_TTL_MS = 24 * 60 * 60 * 1000;
 const EQUITY_UNIVERSE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -23,13 +26,14 @@ export type Pr262CompanyDirectoryEntry = {
 };
 
 type Directory = {
-  version: 4;
+  version: 5;
   cycleId: string;
   updatedAt: string;
   universeRefreshedAt: string;
   batchKeys: string[];
   recordsRead: number;
   entriesWithCik: number;
+  entriesDigest: string;
   entries: Pr262CompanyDirectoryEntry[];
 };
 
@@ -74,13 +78,33 @@ function authoritativeDirectoryEntry(value: unknown): value is Pr262CompanyDirec
     && typeof entry.exchange === "string"
     && Boolean(entry.exchange.trim())
     && typeof entry.batchKey === "string"
-    && entry.batchKey.startsWith("branch-labs/pr-262/value-investing/resumable/")
+    && entry.batchKey.startsWith(VALUE_BATCH_PREFIX)
     && Number.isInteger(entry.analysisIndex)
     && Number(entry.analysisIndex) >= 0
     && typeof entry.valueCycleId === "string"
     && Boolean(entry.valueCycleId.trim())
     && typeof entry.universeRefreshedAt === "string"
     && Number.isFinite(Date.parse(entry.universeRefreshedAt));
+}
+
+function directoryEntriesDigest(entries: Pr262CompanyDirectoryEntry[]) {
+  return crypto.createHash("sha256").update(JSON.stringify(entries.map((entry) => ({
+    ticker: entry.ticker,
+    company: entry.company,
+    tradingViewSymbol: entry.tradingViewSymbol,
+    cik: entry.cik,
+    exchange: entry.exchange,
+    securityType: entry.securityType,
+    batchKey: entry.batchKey,
+    analysisIndex: entry.analysisIndex,
+    valueCycleId: entry.valueCycleId,
+    universeRefreshedAt: entry.universeRefreshedAt,
+  })))).digest("hex");
+}
+
+function validDirectoryEntries(value: unknown): value is Pr262CompanyDirectoryEntry[] {
+  if (!Array.isArray(value) || !value.length || !value.every(authoritativeDirectoryEntry)) return false;
+  return new Set(value.map((entry) => entry.ticker)).size === value.length;
 }
 
 async function readJson(key: string) {
@@ -132,8 +156,8 @@ async function buildDirectory() {
     ? state.completedBatchKeys.filter((item): item is string => typeof item === "string")
     : [];
   if (!cycleId || !keys.length) throw new Error("pr262_value_analysis_batches_unavailable");
-  if (keys.some((key) => !key.startsWith("branch-labs/pr-262/value-investing/resumable/"))) {
-    throw new Error("pr262_value_analysis_batch_key_outside_branch");
+  if (keys.some((key) => !key.startsWith(VALUE_BATCH_PREFIX))) {
+    throw new Error("pr262_value_analysis_batch_key_outside_storage_namespace");
   }
   const current = await readJson(DIRECTORY_KEY);
   const existing = object(current.value);
@@ -141,14 +165,19 @@ async function buildDirectory() {
   const directoryAgeMs = Date.now() - updatedAt;
   const existingBatchKeys = Array.isArray(existing.batchKeys) ? existing.batchKeys.filter((item): item is string => typeof item === "string") : [];
   if (
-    existing.version === 4
+    existing.version === 5
     && existing.cycleId === cycleId
     && existing.universeRefreshedAt === universeRefreshedAt
     && directoryAgeMs >= -5 * 60_000
     && directoryAgeMs < DIRECTORY_TTL_MS
     && existingBatchKeys.length === keys.length
     && existingBatchKeys.every((key, index) => key === keys[index])
-    && Array.isArray(existing.entries)
+    && Number.isInteger(existing.recordsRead)
+    && Number(existing.recordsRead) > 0
+    && validDirectoryEntries(existing.entries)
+    && Number(existing.entriesWithCik) === existing.entries.length
+    && typeof existing.entriesDigest === "string"
+    && existing.entriesDigest === directoryEntriesDigest(existing.entries)
     && existing.entries.every((entry) => authoritativeDirectoryEntry(entry)
       && entry.valueCycleId === cycleId
       && entry.universeRefreshedAt === universeRefreshedAt
@@ -203,13 +232,14 @@ async function buildDirectory() {
     throw new Error("pr262_authoritative_company_directory_empty_or_invalid");
   }
   const directory: Directory = {
-    version: 4,
+    version: 5,
     cycleId,
     updatedAt: new Date().toISOString(),
     universeRefreshedAt,
     batchKeys: keys,
     recordsRead,
     entriesWithCik: rows.filter((entry) => Boolean(entry.cik)).length,
+    entriesDigest: directoryEntriesDigest(rows),
     entries: rows,
   };
   const written = await writeVersionedJsonToR2(
@@ -223,12 +253,17 @@ async function buildDirectory() {
   const concurrentBatchKeys = Array.isArray(concurrentValue.batchKeys)
     ? concurrentValue.batchKeys.filter((item): item is string => typeof item === "string")
     : [];
-  if (concurrentValue.version === 4
+  if (concurrentValue.version === 5
     && concurrentValue.cycleId === cycleId
     && concurrentValue.universeRefreshedAt === universeRefreshedAt
     && concurrentBatchKeys.length === keys.length
     && concurrentBatchKeys.every((key, index) => key === keys[index])
-    && Array.isArray(concurrentValue.entries)
+    && Number.isInteger(concurrentValue.recordsRead)
+    && Number(concurrentValue.recordsRead) > 0
+    && validDirectoryEntries(concurrentValue.entries)
+    && Number(concurrentValue.entriesWithCik) === concurrentValue.entries.length
+    && typeof concurrentValue.entriesDigest === "string"
+    && concurrentValue.entriesDigest === directoryEntriesDigest(concurrentValue.entries)
     && concurrentValue.entries.every((entry) => authoritativeDirectoryEntry(entry)
       && entry.valueCycleId === cycleId
       && entry.universeRefreshedAt === universeRefreshedAt

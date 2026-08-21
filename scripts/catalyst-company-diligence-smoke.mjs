@@ -10,6 +10,7 @@ const cjsModule = { exports: {} };
 new Function("require", "module", "exports", output)((name) => {
   if (name === "@/lib/equity-signal/universe") return { loadEquityUniverse: async () => ({ snapshot: { entries: [] } }) };
   if (name === "@/lib/r2-warehouse") return { getR2Config: () => ({ configured: false }), writeVersionedJsonToR2: async () => ({ written: true }) };
+  if (name === "@/lib/opportunity-engine/pr262-storage") return { pr262StorageKey: (relative) => `branch-labs/pr-262/${relative}` };
   throw new Error(`Unexpected import in catalyst diligence smoke: ${name}`);
 }, cjsModule, cjsModule.exports);
 

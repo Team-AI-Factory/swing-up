@@ -8,11 +8,12 @@ import {
 import { assessStrategicOptionality } from "@/lib/opportunity-engine/strategic-optionality";
 import type { UsValueCompanyAnalysis } from "@/lib/opportunity-engine/us-value-investing-engine";
 import { readResumableUsValueState } from "@/lib/opportunity-engine/us-value-investing-resumable";
+import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 
 const BRANCH = "agent/combined-opportunity-engine" as const;
-const RELATIONSHIP_INDEX_KEY = "branch-labs/pr-262/signal-operations/strategic-relationships/index.json";
-const BACKFILL_STATE_KEY = "branch-labs/pr-262/signal-operations/strategic-relationships/backfill-state.json";
-const BACKFILL_RUN_PREFIX = "branch-labs/pr-262/signal-operations/strategic-relationships/backfill-runs";
+const RELATIONSHIP_INDEX_KEY = pr262StorageKey("signal-operations/strategic-relationships/index.json");
+const BACKFILL_STATE_KEY = pr262StorageKey("signal-operations/strategic-relationships/backfill-state.json");
+const BACKFILL_RUN_PREFIX = pr262StorageKey("signal-operations/strategic-relationships/backfill-runs");
 const SEC_AGENT = "SwingUp/1.0 support@swingup.app";
 const COMPANIES_PER_RUN = 20;
 const FILING_FORMS = new Set(["10-Q", "10-K", "20-F", "40-F"]);

@@ -9,13 +9,14 @@ import {
 import { assessStrategicOptionality } from "@/lib/opportunity-engine/strategic-optionality";
 import type { UsValueCompanyAnalysis } from "@/lib/opportunity-engine/us-value-investing-engine";
 import { readResumableUsValueState } from "@/lib/opportunity-engine/us-value-investing-resumable";
+import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 
 const BRANCH = "agent/combined-opportunity-engine" as const;
-const R2_PREFIX = "branch-labs/pr-262/signal-operations/fast-sec-buy" as const;
+const R2_PREFIX = pr262StorageKey("signal-operations/fast-sec-buy");
 const LATEST_KEY = `${R2_PREFIX}/latest.json`;
 const SEEN_PREFIX = `${R2_PREFIX}/seen`;
-const OUTBOX_PREFIX = "branch-labs/pr-262/serious-signal/outbox/fast-sec-buy" as const;
-const NORMALIZATION_PREFIX = "branch-labs/pr-262/signal-operations/long-term-normalization";
+const OUTBOX_PREFIX = pr262StorageKey("research-candidates/outbox/fast-sec-buy");
+const NORMALIZATION_PREFIX = pr262StorageKey("signal-operations/long-term-normalization");
 const SEC_AGENT = "SwingUp/1.0 support@swingup.app";
 const FAST_FORMS = ["8-K", "6-K"] as const;
 const MAX_RECEIPT_AGE_MS = 45 * 60 * 1000;
@@ -460,7 +461,7 @@ export async function runUsFastSecBuyRadar(input: { fetchImpl?: typeof fetch; no
     const outboxKey = `${OUTBOX_PREFIX}/${item.ticker.toUpperCase()}/${id}.json`;
     const seenKey = `${SEEN_PREFIX}/${receiptDay(item.filingPublishedAt)}/${item.ticker.toUpperCase()}/${id}.json`;
     try {
-      const written = await writeVersionedJsonToR2(outboxKey, { version: 1, kind: "pr262_fast_sec_serious_buy", branch: BRANCH, fingerprint: id, checkedAt, signal: item }, { createOnly: true });
+      const written = await writeVersionedJsonToR2(outboxKey, { version: 1, kind: "pr262_fast_sec_research_candidate", branch: BRANCH, fingerprint: id, checkedAt, signal: item }, { createOnly: true });
       await writeVersionedJsonToR2(seenKey, { fingerprint: id, ticker: item.ticker, filingPublishedAt: item.filingPublishedAt }, { createOnly: true }).catch(() => {});
       if (written.written) newSeriousBuys.push({ fingerprint: id, ticker: item.ticker, company: item.company, filingPublishedAt: item.filingPublishedAt, currentPrice: item.currentPrice, baseFairValue: item.baseFairValue, potentialGainPercent: item.upsideToBasePercent, firstMoverStatus: item.firstMoverStatus, outboxKey });
     } catch (error) {

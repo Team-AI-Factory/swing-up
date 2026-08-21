@@ -39,7 +39,7 @@ try {
       usage: { prompt_tokens: 123, completion_tokens: 17, total_tokens: 140, prompt_tokens_details: { cached_tokens: 40 } },
     }), { status: 200, headers: { "content-type": "application/json" } });
   };
-  const completed = await runOpenAiCommitteeProvider({ tier: "fast", confirmRun: true, dryRun: false, messages: [{ role: "user", content: "test" }] });
+  const completed = await runOpenAiCommitteeProvider({ tier: "fast", confirmRun: true, dryRun: false, messages: [{ role: "user", content: "test" }], allowedModels: [pinnedModel], maximumPromptBytes: 100_000 });
   if (!completed.ok || completed.model !== pinnedModel) throw new Error("Pinned model request did not complete.");
   if (completed.tokenUsage?.totalTokens !== 140 || completed.tokenUsage?.cachedPromptTokens !== 40) throw new Error("Actual OpenAI token usage was not captured.");
 
@@ -48,6 +48,11 @@ try {
   if (blocked.ok || blocked.status !== "model_not_allowed" || fetchCalls !== 1) throw new Error("A model outside the branch allowlist was not blocked before the API call.");
 
   process.env.OPENAI_MODEL = pinnedModel;
+  const runtimeModelBlocked = await runOpenAiCommitteeProvider({ tier: "fast", confirmRun: true, dryRun: false, messages: [{ role: "user", content: "test" }], allowedModels: ["gpt-4.1-mini"] });
+  if (runtimeModelBlocked.ok || runtimeModelBlocked.status !== "model_not_allowed" || fetchCalls !== 1) throw new Error("The PR262 runtime model ceiling did not block a deployment model mismatch.");
+  const oversizedPrompt = await runOpenAiCommitteeProvider({ tier: "fast", confirmRun: true, dryRun: false, messages: [{ role: "user", content: "x".repeat(2_000) }], allowedModels: [pinnedModel], maximumPromptBytes: 1_000 });
+  if (oversizedPrompt.ok || oversizedPrompt.status !== "prompt_too_large" || fetchCalls !== 1) throw new Error("The PR262 prompt-cost bound did not fail closed before the API call.");
+
   globalThis.fetch = async (_url, init) => new Promise((_resolve, reject) => {
     const safetyTimer = setTimeout(() => reject(new Error("timeout signal did not fire")), 1_500);
     init?.signal?.addEventListener("abort", () => {
@@ -57,6 +62,25 @@ try {
   });
   const timedOut = await runOpenAiCommitteeProvider({ tier: "fast", confirmRun: true, dryRun: false, messages: [{ role: "user", content: "test" }] });
   if (timedOut.ok || timedOut.status !== "provider_timeout") throw new Error("A stalled OpenAI request did not stop at the configured timeout.");
+
+  const cycleAbort = new AbortController();
+  let providerSawCycleAbort = false;
+  globalThis.fetch = async (_url, init) => new Promise((_resolve, reject) => {
+    init?.signal?.addEventListener("abort", () => {
+      providerSawCycleAbort = true;
+      reject(init.signal.reason);
+    }, { once: true });
+  });
+  const abortedRequest = runOpenAiCommitteeProvider({
+    tier: "fast",
+    confirmRun: true,
+    dryRun: false,
+    messages: [{ role: "user", content: "test" }],
+    signal: cycleAbort.signal,
+  });
+  cycleAbort.abort(new Error("cycle_deadline"));
+  const aborted = await abortedRequest;
+  if (aborted.ok || !providerSawCycleAbort) throw new Error("The Railway cycle abort did not cancel the paid provider request.");
 
   const startScript = await readFile(new URL("./railway-branch-start.mjs", import.meta.url), "utf8");
   for (const marker of [
@@ -70,7 +94,7 @@ try {
     if (!startScript.includes(marker)) throw new Error(`Railway branch guardrail missing: ${marker}`);
   }
 
-  console.log(JSON.stringify({ ok: true, pinnedModel, modelAllowlist: true, requestTimeout: true, actualTokenUsage: completed.tokenUsage }, null, 2));
+  console.log(JSON.stringify({ ok: true, pinnedModel, modelAllowlist: true, runtimeModelCeiling: true, promptCostBound: true, requestTimeout: true, cycleDeadlineCancelsPaidRequest: true, actualTokenUsage: completed.tokenUsage }, null, 2));
 } finally {
   globalThis.fetch = originalFetch;
   for (const key of envKeys) {

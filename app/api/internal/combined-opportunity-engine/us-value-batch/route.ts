@@ -8,11 +8,12 @@ import {
   readVersionedTextFromR2,
   writeVersionedJsonToR2,
 } from "@/lib/r2-warehouse";
+import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 
 export const dynamic = "force-dynamic";
 
 const BRANCH = "agent/combined-opportunity-engine";
-const REPORT_PREFIX = "branch-labs/pr-262/value-investing/resumable/reports";
+const REPORT_PREFIX = pr262StorageKey("value-investing/resumable/reports");
 const LATEST_REPORT_KEY = `${REPORT_PREFIX}/latest.json`;
 
 const state = globalThis as typeof globalThis & {

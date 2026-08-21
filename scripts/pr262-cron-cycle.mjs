@@ -4,15 +4,33 @@ import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 
 const PR262_BRANCH = "agent/combined-opportunity-engine";
+const PREVIEW_STORAGE_PREFIX = "branch-labs/pr-262/";
+const PRODUCTION_STORAGE_PREFIX = "production/pr262/";
+const analysisOnly = process.argv.includes("--analysis-only");
 const port = process.env.PR262_CRON_PORT || "3015";
-const token = process.env.SWING_UP_PR262_SENSOR_TOKEN?.trim()
-  || process.env.SWING_UP_AUTOMATION_TOKEN?.trim()
+const token = process.env.SWING_UP_PR262_CRON_RUNTIME_TOKEN?.trim()
   || crypto.randomBytes(32).toString("hex");
 const baseUrl = `http://127.0.0.1:${port}`;
+const branch = (process.env.RAILWAY_GIT_BRANCH || "").trim();
+const railwayEnvironment = (process.env.RAILWAY_ENVIRONMENT_NAME || "").trim().toLowerCase();
+const preview = branch === PR262_BRANCH;
+const production = !preview && (branch === "main" || railwayEnvironment === "production");
+const configuredStoragePrefix = (process.env.SWING_UP_PR262_STORAGE_PREFIX || "").trim();
+const storagePrefix = configuredStoragePrefix || (production ? PRODUCTION_STORAGE_PREFIX : PREVIEW_STORAGE_PREFIX);
+if (storagePrefix.startsWith("/")
+  || !storagePrefix.endsWith("/")
+  || storagePrefix.includes("\\")
+  || storagePrefix.slice(0, -1).split("/").some((part) => !part || part === "." || part === "..")) {
+  throw new Error("pr262_cron_storage_prefix_invalid");
+}
+if (preview && storagePrefix !== PREVIEW_STORAGE_PREFIX) throw new Error("pr262_cron_preview_storage_prefix_mismatch");
+if (production && storagePrefix.startsWith("branch-labs/")) throw new Error("pr262_cron_production_storage_prefix_is_branch_data");
 const env = {
   ...process.env,
   SWING_UP_PR262_CRON_RUNTIME_TOKEN: token,
-  SWING_UP_R2_WRITE_PREFIX: "branch-labs/pr-262/",
+  SWING_UP_PR262_STORAGE_PREFIX: storagePrefix,
+  SWING_UP_R2_WRITE_PREFIX: storagePrefix,
+  SWING_UP_PR262_SENSOR_OWNER: analysisOnly ? "cloudflare_worker" : (process.env.SWING_UP_PR262_SENSOR_OWNER?.trim() || "railway"),
   SWING_UP_PR262_EVENT_JOB_OPENAI_ENABLED: process.env.SWING_UP_PR262_EVENT_JOB_OPENAI_ENABLED?.trim() || "true",
   PUBLIC_LEDGER_TRACKING_ENABLED: "false",
   PUBLIC_TRACKING_ENABLED: "false",
@@ -79,7 +97,7 @@ try {
       "content-type": "application/json",
       "x-swing-up-pr262-cron-token": token,
     },
-    body: "{}",
+    body: JSON.stringify({ mode: analysisOnly ? "analysis_only" : "sensor_and_analysis" }),
     signal: AbortSignal.timeout(240_000),
   });
   const body = await response.text();

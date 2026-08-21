@@ -28,15 +28,19 @@ const stubs = {
       return /^[A-Z][A-Z0-9.-]{0,9}$/.test(ticker) ? ticker : null;
     },
   },
+  "@/lib/opportunity-engine/pr262-storage": {
+    pr262StorageKey: (relative, environment = process.env) => `${environment.RAILWAY_GIT_BRANCH === "main" || environment.RAILWAY_ENVIRONMENT_NAME === "production" ? "production/pr262/" : "branch-labs/pr-262/"}${relative}`,
+  },
 };
 new Function("require", "module", "exports", output)((name) => {
   if (name in stubs) return stubs[name];
   throw new Error(`Unexpected universe import: ${name}`);
 }, cjsModule, cjsModule.exports);
-const { loadEquityUniverse, resolveEquityUniverseCacheKey } = cjsModule.exports;
+const { loadEquityUniverse, resolveEquityUniverseCacheKey, validEquityUniverseSnapshot } = cjsModule.exports;
 assert.equal(resolveEquityUniverseCacheKey("agent/combined-opportunity-engine"), "branch-labs/pr-262/equity-universe/v1.json");
 assert.equal(resolveEquityUniverseCacheKey("agent/live-signal-evaluation-automation"), "branch-labs/pr-261/equity-universe/v1.json");
-assert.equal(resolveEquityUniverseCacheKey("main"), null);
+assert.equal(resolveEquityUniverseCacheKey("main"), "production/pr262/equity-universe/v1.json");
+assert.equal(resolveEquityUniverseCacheKey("", { RAILWAY_ENVIRONMENT_NAME: "production" }), "production/pr262/equity-universe/v1.json");
 
 const secPayload = JSON.stringify({
   fields: ["cik", "name", "ticker", "exchange"],
@@ -188,6 +192,17 @@ const truncatedWithNonCommonSec = await loadEquityUniverse(truncatedWithNonCommo
 assert.equal(truncatedWithNonCommonSec.cache, "cloudflare_r2_larger_fallback");
 assert.equal(truncatedWithNonCommonSec.snapshot.entries.length, 10);
 
+cachedUniverseObject = {
+  ...cachedUniverseObject,
+  refreshedAt: "2026-07-30T13:04:00.000Z",
+  entries: [{ ...cachedEntry("BAD"), name: "" }],
+  coverage: { ...cachedUniverseObject.coverage, eligibleEquities: 1, cikMapped: 1 },
+};
+assert.equal(validEquityUniverseSnapshot(cachedUniverseObject), false);
+const corruptCacheRecovered = await loadEquityUniverse(secOnlyFetch, new Date("2026-07-30T13:05:00.000Z"));
+assert.notEqual(corruptCacheRecovered.cache, "cloudflare_r2", "A fresh-looking but malformed cache must not suppress an official-source refresh.");
+assert.ok(corruptCacheRecovered.snapshot.entries.every((entry) => entry.name));
+
 assert.match(quotaSource, /quotaKey: "nasdaq_trader_equity_universe"[\s\S]{0,180}maximumCallsInWindow: 4, minimumIntervalMs: 4\.5 \* minute/);
 assert.match(quotaSource, /quotaKey: "sec_equity_universe"[\s\S]{0,180}maximumCallsInWindow: 2, minimumIntervalMs: 4\.5 \* minute/);
 assert.match(runnerSource, /const universeResult = targeted[\s\S]{0,260}: await loadEquityUniverse\(fetchImpl, now\);[\s\S]{0,1400}const \[eventResult, macroResult, historicalBootstrap\] = await Promise\.all/);
@@ -214,5 +229,6 @@ console.log(JSON.stringify({
   sourceFailuresRemainVisible: true,
   secOnlyDerivativeSiblingRejected: true,
   cachedDerivativeSiblingSanitized: true,
+  malformedFreshCacheCannotSuppressRefresh: true,
   branchSpecificCacheIsolationPreserved: true,
 }, null, 2));

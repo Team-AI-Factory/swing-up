@@ -6,6 +6,7 @@ import type {
   UsValueCompanyAnalysis,
   UsValueInvestingCycle,
 } from "@/lib/opportunity-engine/us-value-investing-engine";
+import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 
 export type HardenedUsValueInvestingCycle = UsValueInvestingCycle & {
   methodology: UsValueInvestingCycle["methodology"] & {
@@ -37,7 +38,7 @@ const state = globalThis as typeof globalThis & {
 const SAFETY_STATE = state.__swingUpValueSafetyState ??= {};
 const ELIGIBLE_EXCHANGES = new Set(["NASDAQ", "NYSE", "AMEX", "NYSEAMERICAN"]);
 const SPECIALIST_SECTOR = /\b(finance|financial|bank|insurance|real estate|reit|utility|utilities)\b/i;
-const R2_PREFIX = "branch-labs/pr-262/value-investing" as const;
+const R2_PREFIX = pr262StorageKey("value-investing");
 const LATEST_INDEX_KEY = `${R2_PREFIX}/latest/index.json`;
 const SHARD_SIZE = 500;
 const PERSIST_MS = 6 * 60 * 60 * 1000;

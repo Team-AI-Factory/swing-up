@@ -1,10 +1,11 @@
 import net from "node:net";
 import { lookup } from "node:dns/promises";
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
+import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 import type { Pr262ExposureEntry } from "@/lib/opportunity-engine/pr262-exposure-index";
 import type { Pr262SensorEvent } from "@/lib/opportunity-engine/pr262-change-sensor";
 
-const REGISTRY_KEY = "branch-labs/pr-262/sensor/direct-company-feeds-v1.json";
+const REGISTRY_KEY = pr262StorageKey("sensor/direct-company-feeds-v1.json");
 const DISCOVERY_CADENCE_MS = 30 * 60_000;
 const NO_FEED_RETRY_MS = 30 * 24 * 60 * 60_000;
 const FEED_POLL_CADENCE_MS = 60 * 60_000;
@@ -65,8 +66,20 @@ function localAddress(address: string) {
   const normalized = address.toLowerCase().split("%")[0];
   const kind = net.isIP(normalized);
   if (kind === 4) {
-    const [a, b] = normalized.split(".").map(Number);
-    return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || a >= 224;
+    const [a, b, c] = normalized.split(".").map(Number);
+    return a === 0
+      || a === 10
+      || a === 127
+      || (a === 100 && b >= 64 && b <= 127)
+      || (a === 169 && b === 254)
+      || (a === 172 && b >= 16 && b <= 31)
+      || (a === 192 && b === 0 && (c === 0 || c === 2))
+      || (a === 192 && b === 88 && c === 99)
+      || (a === 192 && b === 168)
+      || (a === 198 && (b === 18 || b === 19))
+      || (a === 198 && b === 51 && c === 100)
+      || (a === 203 && b === 0 && c === 113)
+      || a >= 224;
   }
   if (kind === 6) return normalized === "::" || normalized === "::1" || /^(?:fc|fd|fe[89ab]|ff)/.test(normalized);
   return true;
@@ -83,18 +96,33 @@ async function safePublicHttps(raw: string) {
 }
 
 async function fetchBounded(fetchImpl: typeof fetch, rawUrl: string, accept: string, timeoutMs = 10_000) {
-  const url = await safePublicHttps(rawUrl);
-  const response = await fetchImpl(url, {
-    headers: { Accept: accept, "user-agent": SEC_AGENT },
-    cache: "no-store",
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  if (!response.ok) throw new Error(`direct_feed_http_${response.status}`);
-  const declared = Number(response.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > 1_000_000) throw new Error("direct_feed_body_too_large");
-  const body = await response.text();
-  if (Buffer.byteLength(body) > 1_000_000) throw new Error("direct_feed_body_too_large");
-  return { body, finalUrl: response.url || url.toString() };
+  let current = rawUrl;
+  const deadlineAtMs = Date.now() + timeoutMs;
+  for (let redirect = 0; redirect <= 3; redirect += 1) {
+    const remainingMs = deadlineAtMs - Date.now();
+    if (remainingMs <= 0) throw new Error("direct_feed_timeout");
+    const url = await safePublicHttps(current);
+    const response = await fetchImpl(url, {
+      headers: { Accept: accept, "user-agent": SEC_AGENT },
+      cache: "no-store",
+      redirect: "manual",
+      signal: AbortSignal.timeout(remainingMs),
+    });
+    if (response.status >= 300 && response.status < 400) {
+      if (redirect >= 3) throw new Error("direct_feed_redirect_limit");
+      const location = response.headers.get("location");
+      if (!location) throw new Error("direct_feed_redirect_location_missing");
+      current = new URL(location, url).toString();
+      continue;
+    }
+    if (!response.ok) throw new Error(`direct_feed_http_${response.status}`);
+    const declared = Number(response.headers.get("content-length"));
+    if (Number.isFinite(declared) && declared > 1_000_000) throw new Error("direct_feed_body_too_large");
+    const body = await response.text();
+    if (Buffer.byteLength(body) > 1_000_000) throw new Error("direct_feed_body_too_large");
+    return { body, finalUrl: url.toString() };
+  }
+  throw new Error("direct_feed_redirect_limit");
 }
 
 function discoverFeedUrl(html: string, base: string) {

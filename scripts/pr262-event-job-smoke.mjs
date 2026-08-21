@@ -8,6 +8,10 @@ import ts from "typescript";
 
 const source = readFileSync(new URL("../lib/opportunity-engine/pr262-event-job.ts", import.meta.url), "utf8");
 assert.match(source, /FULL_SOURCE_ABSOLUTE_TIMEOUT_MS = 15_000/, "Full-source reads need a fixed wall-clock deadline");
+assert.match(source, /LEASE_MS = 5 \* 60_000/, "A crashed event job must not retain the old two-hour global lease");
+assert.match(source, /LEASE_HEARTBEAT_MS = 60_000/, "A healthy long-running event job must renew its short lease");
+assert.match(source, /deadlineAtMs/, "Event processing must accept a hard parent-cycle deadline");
+assert.match(source, /alertType === "sell"[\s\S]*?promotePr262SeriousWatchOut\(input\.resultKey\)/, "A qualifying downside risk must become one Watch Out instead of duplicate Sell and Watch Out alerts");
 assert.match(source, /request\.destroy\(new Error\("full_source_timeout"\)\)/, "The fixed deadline must terminate the pinned HTTPS request and its body stream");
 assert.doesNotMatch(source, /request\.setTimeout\(/, "A socket-inactivity timeout cannot replace the absolute full-source deadline");
 const testableSource = source.replace("async function fetchFullSource(", "export async function fetchFullSource(");
@@ -97,6 +101,8 @@ let valueRefreshCalls = 0;
 let acknowledgements = 0;
 let retryCalls = 0;
 let decisionGradeSecSource = true;
+let failHistoryAccess = false;
+let committeeFingerprint = "fingerprint-1";
 const haltProvider = {
   provider: "nasdaq_trade_halts",
   status: "connected",
@@ -117,6 +123,10 @@ const stubs = {
   "node:net": net,
   "node:stream": { Readable },
   "@/lib/branch-signal-lab": { branchProviderCallRequest: () => null },
+  "@/lib/opportunity-engine/pr262-storage": { pr262StorageKey: (relative) => `branch-labs/pr-262/${relative}` },
+  "@/lib/opportunity-engine/pr262-serious-watch-out-authority": {
+    promotePr262SeriousWatchOut: async () => ({ promoted: false, reason: "not_a_watch_out", outboxKey: null }),
+  },
   "@/lib/branch-signal-lab-policy": { providerCallBudgetDecision: () => ({ allowed: true, nextRetryAt: null, reason: "reserved" }) },
   "@/lib/equity-signal/historical-bootstrap": {
     mergeHistoricalSignals: (...groups) => [...new Map(groups.flat().map((record) => [record.id, record])).values()],
@@ -128,13 +138,15 @@ const stubs = {
   "@/lib/equity-signal/runner": {
     runEquitySignalLab: async (input) => {
       runnerCalls += 1;
-      assert.equal(input.requirePilotBeforeOpenAi, true, "Pilot must precede committee");
+      assert.ok(input.signal instanceof AbortSignal, "The paid Committee must inherit the event-job deadline signal");
+      assert.equal(input.requirePilotBeforeOpenAi, false, "Historical cases must remain optional context rather than a committee gate");
       assert.equal(input.targetedContext.universe.entries.length, 1, "Only one company may enter the runner");
       assert.equal(input.targetedContext.universe.entries[0].cik, "0001234567", "Exact CIK must survive");
       assert.equal(input.targetedContext.storedCompanyAnalysis.ticker, "EXCT", "Refreshed company must remain exact");
       assert.ok(input.targetedContext.providers.some((provider) => provider.provider === "nasdaq_trade_halts"));
-      assert.equal(input.historicalSignals.length, 5, "Pilot history must load");
-      const reserved = await input.beforeOpenAiCall({ candidateFingerprint: "fingerprint-1", checkedAt: "2026-08-11T10:00:00.000Z", ticker: "EXCT", direction: "upside" });
+      if (!failHistoryAccess) assert.ok(input.historicalSignals.length >= 5, "Available optional history should load");
+      else assert.equal(input.historicalSignals.length, 0, "Unavailable optional history must fall back to an empty context");
+      const reserved = await input.beforeOpenAiCall({ candidateFingerprint: committeeFingerprint, checkedAt: "2026-08-11T10:00:00.000Z", ticker: "EXCT", direction: "upside" });
       assert.equal(reserved, true, "Committee reservation must be granted");
       const selectedCandidate = {
         ticker: "EXCT",
@@ -145,7 +157,7 @@ const stubs = {
         relationship: "direct",
         eventHeadline: event.title,
         eventObservedAt: event.observedAt,
-        evidenceFingerprint: "fingerprint-1",
+        evidenceFingerprint: committeeFingerprint,
         primarySource: true,
         independentPublishers: 1,
         eventTruth: 100,
@@ -164,6 +176,7 @@ const stubs = {
         receipts: input.targetedContext.receipts,
         quote: {
           source: "Yahoo public chart",
+          price: 42,
           marketSession: "regular",
           actionableForSeriousSignal: true,
           observedAt: "2026-08-11T10:00:00.000Z",
@@ -178,9 +191,9 @@ const stubs = {
         actionableSignalFound: true,
         alertType: "buy",
         openAiCalled: true,
-        candidateFingerprint: "fingerprint-1",
+        candidateFingerprint: committeeFingerprint,
         selectedCandidate,
-        historicalPilot: { passed: true, independentRealEventCount: 5, observedDirectionalHitRatePercent: 80 },
+        historicalPilot: { passed: false, reportedSampleSize: 0, independentRealEventCount: 0, observedDirectionalHitRatePercent: 0 },
         tradingHaltSafety: { currentStateKnown: true },
         committee: {
           ok: true,
@@ -205,7 +218,10 @@ const stubs = {
     }),
   },
   "@/lib/r2-warehouse": {
-    readVersionedTextFromR2: async (key) => readObject(key),
+    readVersionedTextFromR2: async (key) => {
+      if (failHistoryAccess && key === historyKey) throw new Error("simulated_optional_history_store_failure");
+      return readObject(key);
+    },
     writeVersionedJsonToR2: writeObject,
   },
   "@/lib/opportunity-engine/pr262-change-sensor": {
@@ -365,6 +381,7 @@ assert.equal(first.outboxKey, "branch-labs/pr-262/serious-signal/outbox/event-jo
 assert.equal(first.costControl.companiesOpened, 1);
 assert.equal(first.costControl.fullCompanyWarehouseRebuilds, 0);
 assert.equal(first.costControl.affectedCompanyValuationRefreshes, 1);
+assert.equal(first.costControl.optionalHistoryContextPreparedBeforeCommittee, true);
 assert.equal(runnerCalls, 1);
 assert.equal(valueRefreshCalls, 1);
 assert.equal(retryCalls, 0);
@@ -373,6 +390,7 @@ assert.equal(objects.get(PR262_EVENT_JOB_KEYS.STATE_KEY).value.runs.length, 1);
 assert.equal(objects.get(historyKey).value.records.length, 6);
 assert.ok(objects.has(first.resultKey));
 assert.ok(objects.has(first.outboxKey));
+assert.equal(objects.get(first.outboxKey).value.historicalEvidenceRole, "optional_learning_context_only");
 
 const completedState = objects.get(PR262_EVENT_JOB_KEYS.STATE_KEY).value;
 objects.set(PR262_EVENT_JOB_KEYS.STATE_KEY, { value: { ...completedState, lease: null, runs: [] }, etag: `"etag-${++etagCounter}"` });
@@ -423,12 +441,37 @@ assert.equal(valueRefreshCalls, 1, "An expired unread source must be archived wi
 assert.equal(objects.get(historyKey).value.records.length, 6, "An unread discovery item must never enter historical findings");
 assert.equal(objects.get(expiredUnread.resultKey).value.report.selectedCandidate, null);
 
+decisionGradeSecSource = true;
+setSecEventIdentity("000004", "2026-08-11T10:04:00.000Z");
+committeeFingerprint = "fingerprint-history-unavailable";
+failHistoryAccess = true;
+const withoutHistory = await runPr262EventJob({ now: new Date("2026-08-11T10:05:00.000Z"), allowOpenAi: true });
+assert.equal(withoutHistory.seriousSignalFound, true, "Approved current evidence must still produce an alert when optional history storage is unavailable.");
+assert.equal(withoutHistory.historyWrite.persisted, false);
+assert.equal(withoutHistory.historyWrite.reason, "optional_history_write_failed");
+assert.equal(objects.get(withoutHistory.resultKey).value.historicalContext.available, false);
+assert.ok(objects.has(withoutHistory.outboxKey), "Optional history failure must not block the durable Serious alert outbox.");
+failHistoryAccess = false;
+committeeFingerprint = "fingerprint-1";
+
+setSecEventIdentity("000005", "2026-08-11T10:05:00.000Z");
+await assert.rejects(
+  () => runPr262EventJob({
+    now: new Date("2026-08-11T10:06:00.000Z"),
+    allowOpenAi: true,
+    deadlineAtMs: Date.now() - 1,
+  }),
+  /pr262_event_job_deadline_exceeded/,
+);
+assert.equal(objects.get(PR262_EVENT_JOB_KEYS.STATE_KEY).value.lease, null, "A deadline-aborted job must release its lease");
+
 console.log(JSON.stringify({
   ok: true,
   exactCikCompanyOnly: true,
   fullSecFilingAndExhibitRead: true,
   oneStoredCompanyOpened: true,
-  pilotBeforeCommitteeContract: true,
+  optionalHistoryContextBeforeCommittee: true,
+  missingHistoryCannotBlockApprovedCurrentEvidence: true,
   allFourteenCommitteeResultsRequiredForOutbox: true,
   idempotentR2RunAndOutbox: true,
   orphanedResultRecoveredWithoutSecondCommittee: true,
@@ -438,5 +481,7 @@ console.log(JSON.stringify({
   nonSecFullSourceSecurityCovered: true,
   validatedDnsAddressPinnedIntoTransport: true,
   fullSourceAbsoluteDeadlineEnforced: true,
+  paidCommitteeInheritsCycleDeadline: true,
   unreadSourceRetriesThenExpiresWithoutHistory: true,
+  shortRenewableLeaseAndDeadlineRecovery: true,
 }, null, 2));

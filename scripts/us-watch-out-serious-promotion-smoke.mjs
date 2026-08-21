@@ -38,4 +38,4 @@ const blocked = promoteApprovedWatchOutRules({ watchOutReview: { ...review, find
 assert.equal(blocked.seriousSignals.length, 0);
 assert.equal(blocked.blockedPromotionCandidates[0].reasons.includes("fullArticleOrOfficialContent"), true);
 
-console.log(JSON.stringify({ ok: true, p0AndP1PromoteToSerious: true, marketRulesUseCompleteMarketScan: true, eventRulesRequireFullArticle: true, noNotifications: true, certificationDisclosurePreserved: true }, null, 2));
+console.log(JSON.stringify({ ok: true, p0AndP1PromoteToSerious: true, marketRulesUseCompleteMarketScan: true, eventRulesRequireFullArticle: true, legacyPromotionDoesNotDeliverDirectly: true, finalCommitteeAuthorityRequiredForDelivery: true, certificationDisclosurePreserved: true }, null, 2));

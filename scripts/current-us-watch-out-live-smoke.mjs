@@ -87,7 +87,7 @@ async function main() {
           && report.newSeriousSignalCount <= report.seriousSignalCount
           && Array.isArray(report.newSeriousSignals)
           && report.newSeriousSignals.length === report.newSeriousSignalCount
-          && report.newSeriousSignals.every((item) => typeof item.outboxKey === "string" && item.outboxKey.startsWith("branch-labs/pr-262/serious-signal/outbox/watch-out/"))
+          && report.newSeriousSignals.every((item) => typeof item.outboxKey === "string" && item.outboxKey.startsWith("branch-labs/pr-262/research-candidates/outbox/watch-out/"))
           && report.notificationOutbox?.deliveryEnabled === false
           && report.safety?.databaseWrites === false
           && report.safety?.publishing === false

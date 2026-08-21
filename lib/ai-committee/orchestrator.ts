@@ -18,6 +18,9 @@ export type RunAiCommitteeInput = {
   maxCostUsd?: number;
   mode?: AiCommitteeMode;
   persistResult?: boolean;
+  signal?: AbortSignal;
+  allowedModels?: readonly string[];
+  maximumPromptBytes?: number;
   [TRUSTED_IN_MEMORY_EVIDENCE]?: AiCommitteeEvidencePack;
 };
 
@@ -108,6 +111,13 @@ function containsUnsafeWording(output: unknown) {
 
 function estimateAgentCost(agentCount: number, mode: AiCommitteeMode) {
   return Math.round((agentCount * (mode === "full" ? 0.08 : 0.03) + 0.05) * 100) / 100;
+}
+
+function assertCommitteeActive(signal?: AbortSignal) {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : new Error("ai_committee_aborted");
 }
 
 function selectAgents(input: RunAiCommitteeInput) {
@@ -456,6 +466,7 @@ function synthesizeCommitteeOutput(evidencePack: AiCommitteeEvidencePack, agentR
 }
 
 export async function runAiCommittee(input: RunAiCommitteeInput) {
+  assertCommitteeActive(input.signal);
   const startedAt = new Date();
   const persistResult = input.persistResult !== false;
   const trustedEvidencePack = input[TRUSTED_IN_MEMORY_EVIDENCE];
@@ -512,8 +523,9 @@ export async function runAiCommittee(input: RunAiCommitteeInput) {
     agentResults.push(...agents.map((agent) => plannedResult(agent, evidence.evidencePack!, mode)));
   } else {
     for (const agent of agents) {
+      assertCommitteeActive(input.signal);
       const prompt = buildAgentPrompt(agent, evidence.evidencePack, agentResults, mode);
-      const response = await runOpenAiCommitteeProvider({ tier: agent.modelTierPreference, confirmRun: input.confirmRun, dryRun: false, maxTokens: agent.maxOutputTokens, messages: [{ role: "system", content: prompt.system }, { role: "user", content: prompt.user }] });
+      const response = await runOpenAiCommitteeProvider({ tier: agent.modelTierPreference, confirmRun: input.confirmRun, dryRun: false, maxTokens: agent.maxOutputTokens, messages: [{ role: "system", content: prompt.system }, { role: "user", content: prompt.user }], signal: input.signal, allowedModels: input.allowedModels, maximumPromptBytes: input.maximumPromptBytes });
       if (!response.ok) {
         agentResults.push({ ...plannedResult(agent, evidence.evidencePack, mode), status: "failed", error: response.status });
         continue;
@@ -529,8 +541,9 @@ export async function runAiCommittee(input: RunAiCommitteeInput) {
     if (dryRun) {
       agentResults.push(plannedResult(finalJudge, evidence.evidencePack, mode));
     } else {
+      assertCommitteeActive(input.signal);
       const prompt = buildAgentPrompt(finalJudge, evidence.evidencePack, agentResults, mode);
-      const response = await runOpenAiCommitteeProvider({ tier: finalJudge.modelTierPreference, confirmRun: input.confirmRun, dryRun: false, maxTokens: finalJudge.maxOutputTokens, messages: [{ role: "system", content: prompt.system }, { role: "user", content: prompt.user }] });
+      const response = await runOpenAiCommitteeProvider({ tier: finalJudge.modelTierPreference, confirmRun: input.confirmRun, dryRun: false, maxTokens: finalJudge.maxOutputTokens, messages: [{ role: "system", content: prompt.system }, { role: "user", content: prompt.user }], signal: input.signal, allowedModels: input.allowedModels, maximumPromptBytes: input.maximumPromptBytes });
       if (!response.ok) {
         agentResults.push({ ...plannedResult(finalJudge, evidence.evidencePack, mode), status: "failed", error: response.status });
       } else {
@@ -541,6 +554,7 @@ export async function runAiCommittee(input: RunAiCommitteeInput) {
       }
     }
   }
+  assertCommitteeActive(input.signal);
   const committeeOutput = synthesizeCommitteeOutput(evidence.evidencePack, agentResults, estimatedCost);
   const status = dryRun ? "dry_run" : "completed";
   const effectiveProviderStatus = dryRun ? { ...providerStatus, openAiCalled: false } : providerStatus;

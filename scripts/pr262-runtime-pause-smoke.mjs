@@ -6,8 +6,10 @@ import path from "node:path";
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const read = (relativePath) => readFile(path.join(repositoryRoot, relativePath), "utf8");
 
-const [railwayRaw, packageRaw, middleware, cronLauncher, legacySensorWorker, legacyPauseLauncher, oldSensorRoute, sensorV3, historicalPolicy, watchOutAuthority] = await Promise.all([
+const [railwayRaw, railwaySensorRaw, railwayRecoveryRaw, packageRaw, middleware, cronLauncher, legacySensorWorker, legacyPauseLauncher, oldSensorRoute, sensorV3, historicalPolicy, watchOutAuthority, orchestrator] = await Promise.all([
   read("railway.json"),
+  read("railway.sensor.json"),
+  read("railway.analysis-recovery.json"),
   read("package.json"),
   read("middleware.ts"),
   read("scripts/pr262-cron-cycle.mjs"),
@@ -17,25 +19,44 @@ const [railwayRaw, packageRaw, middleware, cronLauncher, legacySensorWorker, leg
   read("lib/opportunity-engine/pr262-lightweight-sensor-v3.ts"),
   read("lib/equity-signal/pilot-serious-signal-policy.ts"),
   read("lib/opportunity-engine/pr262-serious-watch-out-authority.ts"),
+  read("lib/opportunity-engine/pr262-cron-orchestrator.ts"),
 ]);
 
 const railway = JSON.parse(railwayRaw);
+const railwaySensor = JSON.parse(railwaySensorRaw);
+const railwayRecovery = JSON.parse(railwayRecoveryRaw);
 const pkg = JSON.parse(packageRaw);
 
-assert.equal(railway.build?.builder, "RAILPACK", "PR262 must use Railway's current Railpack builder");
-assert.equal(railway.deploy?.startCommand, "npm run pr262:cron", "PR262 must run only through the bounded cron launcher");
-assert.equal(railway.deploy?.cronSchedule, "*/5 * * * *", "PR262 must use Railway's five-minute cron schedule");
-assert.equal(railway.deploy?.restartPolicyType, "NEVER", "A completed or failed cron must wait for the next schedule rather than become an always-on restart loop");
+assert.equal(railway.build?.builder, "NIXPACKS", "The repository default must continue building the persistent website");
+assert.equal(railway.deploy?.startCommand, "npx prisma migrate deploy && npm run start", "Merging PR262 must not replace the website with a cron process");
+assert.equal(railway.deploy?.cronSchedule, undefined, "The persistent website must not inherit a five-minute cron schedule");
+assert.equal(railway.deploy?.restartPolicyType, "ON_FAILURE", "The website must restart after an application failure");
+assert.equal(railwaySensor.build?.builder, "RAILPACK", "The pre-cutover Railway sensor uses Railway Railpack");
+assert.equal(railwaySensor.deploy?.startCommand, "npm run pr262:cron", "Railway must keep real five-minute sensing during Cloudflare shadow");
+assert.equal(railwaySensor.deploy?.cronSchedule, "*/5 * * * *", "Pre-cutover Railway sensing remains five-minute");
+assert.equal(railwaySensor.deploy?.restartPolicyType, "NEVER", "A completed sensor cron waits for the next schedule");
+assert.equal(railwayRecovery.deploy?.startCommand, "npm run pr262:analysis-cron", "Post-cutover recovery must never duplicate Cloudflare source scans");
+assert.equal(railwayRecovery.deploy?.cronSchedule, "7 * * * *", "Immediate event handoff is primary; the Railway cron is only an hourly recovery net");
+assert.equal(railwayRecovery.deploy?.restartPolicyType, "NEVER");
 assert.equal(pkg.scripts?.["pr262:cron"], "node scripts/pr262-cron-cycle.mjs", "Package script must enter the bounded cron launcher");
+assert.equal(pkg.scripts?.["pr262:analysis-cron"], "node scripts/pr262-cron-cycle.mjs --analysis-only", "Analysis recovery must explicitly skip local sensing");
 
 assert.match(cronLauncher, /SWING_UP_PR262_CRON_RUNTIME_TOKEN/, "Cron must create or pass a short-lived internal token");
-assert.match(cronLauncher, /SWING_UP_R2_WRITE_PREFIX:\s*"branch-labs\/pr-262\/"/, "Cron must fence all R2 writes to PR262");
+assert.match(cronLauncher, /PRODUCTION_STORAGE_PREFIX = "production\/pr262\/"/, "Production must use a clean R2 namespace");
+assert.match(cronLauncher, /SWING_UP_R2_WRITE_PREFIX:\s*storagePrefix/, "Cron must fence writes to its selected PR262 namespace");
+assert.match(cronLauncher, /analysisOnly \? "analysis_only" : "sensor_and_analysis"/, "The recovery service must select analysis-only mode");
+assert.match(cronLauncher, /SWING_UP_PR262_SENSOR_OWNER:\s*analysisOnly \? "cloudflare_worker"/, "The recovery service must declare Cloudflare as the sole source-sensor owner");
 assert.match(cronLauncher, /AbortSignal\.timeout\(240_000\)/, "Cron route call must have an absolute timeout shorter than the next five-minute schedule");
 assert.match(cronLauncher, /SIGTERM/, "Cron must shut down the temporary web app after one cycle");
+assert.match(orchestrator, /runPr262AnalysisOnlyCycle/, "Cloudflare handoff needs an exported analysis-only Railway entry point");
+assert.match(orchestrator, /owner === "cloudflare_worker" \? "analysis_only" : "sensor_and_analysis"/, "Cloudflare ownership must disable duplicate Railway source scanning");
+assert.match(orchestrator, /Pr262CycleDeadlineError/, "Railway analysis needs a hard cycle deadline");
 
 assert.match(middleware, /\/api\/health/, "Health route must remain available");
-assert.match(middleware, /\/api\/internal\/combined-opportunity-engine\/cron-v3/, "Only the V3 cron route may cross the PR262 runtime boundary");
-assert.match(middleware, /x-swing-up-pr262-cron-token/, "Cron route must require its internal token");
+assert.match(middleware, /INTERNAL_API_PATHS\.pr262Cron/, "The scoped V3 cron route may cross the PR262 runtime boundary");
+assert.match(middleware, /INTERNAL_API_PATHS\.pr262SensorHandoff/, "The HMAC Cloudflare handoff may cross the PR262 runtime boundary");
+assert.match(middleware, /INTERNAL_API_PATHS\.seriousSignalStatus/, "The protected read-only Serious Signal feed may cross the PR262 runtime boundary");
+assert.match(middleware, /internalApiScopeAuthorized/, "Every protected route must use route-scoped authorization");
 assert.match(middleware, /pr262_runtime_route_blocked/, "All other API routes must remain blocked");
 
 assert.match(legacySensorWorker, /HARD PAUSED/, "The obsolete direct sensor worker must remain disabled");
@@ -65,4 +86,4 @@ assert.match(watchOutAuthority, /committee\.agentsCompleted\s*===\s*14/, "Seriou
 assert.match(watchOutAuthority, /committee\.agentsFailed\s*===\s*0/, "Serious Watch Out must reject incomplete committee runs");
 assert.match(watchOutAuthority, /judge\.verdict\s*===\s*"positive"/, "Serious Watch Out must require a positive Final Judge");
 
-console.log("PR #262 controlled runtime smoke passed: five-minute cron enabled, legacy scanners blocked, comprehensive lightweight sensor wired, history gate disabled, and Serious Watch Out authority protected.");
+console.log("PR #262 runtime recovery smoke passed: website default restored, Railway sensing preserved through Cloudflare shadow, hourly post-cutover recovery separated, clean production namespace selected, legacy scanners blocked, history gate disabled, and Serious Watch Out authority protected.");

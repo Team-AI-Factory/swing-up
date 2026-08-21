@@ -25,6 +25,9 @@ export type AiCommitteeRunOptions = {
   dryRun?: boolean;
   messages: Array<{ role: "system" | "user" | "assistant"; content: string }>;
   maxTokens?: number;
+  signal?: AbortSignal;
+  allowedModels?: readonly string[];
+  maximumPromptBytes?: number;
 };
 
 function envFlag(name: string, defaultValue = false) {
@@ -98,11 +101,25 @@ export async function runOpenAiCommitteeProvider(options: AiCommitteeRunOptions)
   if (modelAllowlist.size > 0 && !modelAllowlist.has(model)) {
     return { ok: false as const, status: "model_not_allowed" as const, modelTier: options.tier, providerStatus: status };
   }
+  if (options.allowedModels?.length && !options.allowedModels.includes(model)) {
+    return { ok: false as const, status: "model_not_allowed" as const, modelTier: options.tier, providerStatus: status };
+  }
+  if (Number.isFinite(options.maximumPromptBytes)) {
+    const maximumPromptBytes = Math.max(1_000, Math.floor(Number(options.maximumPromptBytes)));
+    const promptBytes = new TextEncoder().encode(JSON.stringify(options.messages)).byteLength;
+    if (promptBytes > maximumPromptBytes) {
+      return { ok: false as const, status: "prompt_too_large" as const, modelTier: options.tier, providerStatus: status };
+    }
+  }
 
   console.info("AI Committee OpenAI provider run", { modelTier: options.tier, model });
 
   let response: Response;
   try {
+    const timeoutSignal = AbortSignal.timeout(status.requestTimeoutMs);
+    const signal = options.signal
+      ? AbortSignal.any([options.signal, timeoutSignal])
+      : timeoutSignal;
     response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -110,7 +127,7 @@ export async function runOpenAiCommitteeProvider(options: AiCommitteeRunOptions)
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ model, messages: options.messages, max_tokens: options.maxTokens ?? 700, temperature: 0.2 }),
-      signal: AbortSignal.timeout(status.requestTimeoutMs),
+      signal,
     });
   } catch (error) {
     const name = error instanceof Error ? error.name : "";

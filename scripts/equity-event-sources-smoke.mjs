@@ -553,6 +553,27 @@ await marketLoaded.exports.enrichCandidateQuotes(freshQuoteCandidate, async (val
 const originalProviderFetchedAt = freshQuoteCandidate[0].quote?.providerFetchedAt;
 assert.equal(freshQuoteCandidate[0].quote?.actionableForSeriousSignal, true);
 assert.equal(freshQuoteCandidate[0].quote?.cacheAgeMs, 0);
+assert.equal(freshQuoteCandidate[0].quote?.quoteAgeMs, 60_000);
+
+globalThis.__swingUpEquityQuotes?.delete("CLOS");
+const staleObservationCandidate = [{ ticker: "CLOS", direction: "upside", pricedInPenalty: 0, gatePassed: true, trackingDisposition: "qualified", quote: null, rootEventKey: "stale-market-observation" }];
+await marketLoaded.exports.enrichCandidateQuotes(staleObservationCandidate, async (value) => {
+  const ticker = new URL(String(value)).pathname.split("/").at(-1);
+  const price = ticker === "SPY" ? 600 : 30;
+  const observedAt = new Date(quoteSuccessAt.getTime() - 24 * 60 * 60_000);
+  return new Response(JSON.stringify({
+    chart: {
+      result: [{
+        meta: { regularMarketPrice: price, chartPreviousClose: price, regularMarketTime: observedAt.getTime() / 1000 },
+        timestamp: [observedAt.getTime() / 1000],
+      }],
+      error: null,
+    },
+  }), { status: 200 });
+}, quoteSuccessAt);
+assert.equal(staleObservationCandidate[0].quote?.cacheAgeMs, 0, "The provider response itself is fresh.");
+assert.equal(staleObservationCandidate[0].quote?.quoteAgeMs, 24 * 60 * 60_000);
+assert.equal(staleObservationCandidate[0].quote?.actionableForSeriousSignal, false, "A fresh fetch must not make an old market observation actionable.");
 
 const outageCalls = [];
 const staleQuoteCandidate = [{ ticker: "STAL", direction: "upside", pricedInPenalty: 0, gatePassed: true, trackingDisposition: "qualified", quote: null, rootEventKey: "stale-quote-event" }];
@@ -607,6 +628,7 @@ console.log(JSON.stringify({
   failedYahooHostsAreTriedOncePerBoundedWorkerBatch: true,
   quoteTransportFailuresAreNotMaskedAsEntitlementFailures: true,
   failedQuoteRefreshCannotResetSuccessfulFetchTime: true,
+  staleMarketObservationCannotBeMadeFreshByRefetch: true,
   quotesOlderThanFifteenMinutesAreWatchOnly: true,
   repeatedOutagesRemainBoundedWithoutRefreshingQuoteAge: true,
 }, null, 2));

@@ -8,7 +8,7 @@ function compile(url, dependencies = {}) {
   const cjsModule = { exports: {} };
   new Function("require", "module", "exports", output)((name) => {
     if (name in dependencies) return dependencies[name];
-    throw new Error(`Unexpected import in mandatory pilot smoke: ${name}`);
+    throw new Error(`Unexpected import in optional-history smoke: ${name}`);
   }, cjsModule, cjsModule.exports);
   return cjsModule.exports;
 }
@@ -71,6 +71,17 @@ const wrapper = compile(new URL("../lib/equity-signal/pilot-runner.ts", import.m
   },
 });
 
+const eventJobSource = readFileSync(new URL("../lib/opportunity-engine/pr262-event-job.ts", import.meta.url), "utf8");
+const runnerSource = readFileSync(new URL("../lib/equity-signal/runner.ts", import.meta.url), "utf8");
+const operationsSource = readFileSync(new URL("../lib/opportunity-engine/us-signal-operations.ts", import.meta.url), "utf8");
+const consistencySource = readFileSync(new URL("../lib/opportunity-engine/us-serious-signal-consistency.ts", import.meta.url), "utf8");
+assert.doesNotMatch(eventJobSource, /&&\s*pilot\.passed\s*===\s*true/);
+assert.doesNotMatch(operationsSource, /if\s*\(!pilot\.passed\)\s*continue/);
+assert.doesNotMatch(operationsSource, /&&\s*committee\.historicalPilotPassed/);
+assert.doesNotMatch(consistencySource, /mandatory Pilot 5 historical gate/);
+assert.doesNotMatch(runnerSource, /historical_comparison_required:true/, "Committee risk labels must not quietly reintroduce mandatory history.");
+assert.match(runnerSource, /historical_comparison_role:optional_context_only/);
+
 function approved(action = "buy") {
   return {
     ok: true,
@@ -89,8 +100,8 @@ function approved(action = "buy") {
 
 nextResult = approved("buy");
 const fourCases = await wrapper.runPilotEquitySignalLab({ historicalSignals: [] });
-assert.equal(fourCases.seriousSignalFound, false);
-assert.equal(fourCases.status, "candidate_needs_same_company_or_industry_pilot_history");
+assert.equal(fourCases.seriousSignalFound, true);
+assert.equal(fourCases.status, "verified_serious_buy");
 assert.equal(receivedHistory.length, 2);
 assert.deepEqual(fourCases.historicalLearning.publicHistoricalFamiliesBuilt, ["earnings_guidance", "regulatory_approval"]);
 assert.equal(fourCases.valueInvesting.methodology.newsRequiredForFoundationAlert, false);
@@ -110,4 +121,4 @@ const headlineOnly = await wrapper.runPilotEquitySignalLab({ historicalSignals: 
 assert.equal(headlineOnly.seriousSignalFound, false);
 assert.equal(headlineOnly.status, "candidate_needs_full_article_confirmation");
 
-console.log(JSON.stringify({ ok: true, historicalPeerGateMandatory: true, publicFamiliesBuilt: ["earnings_guidance", "regulatory_approval"], fourOfFivePasses: true, ownForwardOutcomeNotRequiredBeforeAlert: true, analystExpectationsCannotVetoBuy: true, headlineOnlyBlocked: true, foundationFairValueCanTriggerWithoutNews: true, foundationCatalystDiligenceRequired: true }, null, 2));
+console.log(JSON.stringify({ ok: true, historicalPeerGateMandatory: false, noHistoryCanPassCurrentEvidence: true, publicFamiliesBuilt: ["earnings_guidance", "regulatory_approval"], strongHistoryStillRecordedAsContext: true, ownForwardOutcomeNotRequiredBeforeAlert: true, analystExpectationsCannotVetoBuy: true, headlineOnlyBlocked: true, foundationFairValueCanTriggerWithoutNews: true, foundationCatalystDiligenceRequired: true }, null, 2));

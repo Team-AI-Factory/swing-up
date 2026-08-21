@@ -9,13 +9,14 @@ import {
   readVersionedTextFromR2,
   writeVersionedJsonToR2,
 } from "@/lib/r2-warehouse";
+import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 
 export const dynamic = "force-dynamic";
 
 const BRANCH = "agent/combined-opportunity-engine";
-const R2_PREFIX = "branch-labs/pr-262/serious-signal/us-watch-out";
+const R2_PREFIX = pr262StorageKey("research-candidates/us-watch-out");
 const LATEST_KEY = `${R2_PREFIX}/latest.json`;
-const OUTBOX_PREFIX = "branch-labs/pr-262/serious-signal/outbox/watch-out";
+const OUTBOX_PREFIX = pr262StorageKey("research-candidates/outbox/watch-out");
 const DAILY_MARKET_RULES = new Set([
   "liquidity_collapse_or_gap_risk",
   "volatility_regime_spike",
@@ -101,7 +102,7 @@ async function persistNewSignalOutbox(signals: Array<Record<string, unknown>>, c
     const key = `${OUTBOX_PREFIX}/${checkedAt.slice(0, 10)}/${ruleId}/${ticker}/${fingerprint}.json`;
     const payload = {
       version: 1,
-      kind: "pr262_new_serious_watch_out",
+      kind: "pr262_watch_out_research_candidate",
       branch: BRANCH,
       fingerprint,
       checkedAt,

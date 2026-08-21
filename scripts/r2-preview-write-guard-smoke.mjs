@@ -69,7 +69,7 @@ for (const marker of [
 ]) {
   if (!startScript.includes(marker)) throw new Error(`Branch startup preview guard is missing: ${marker}`);
 }
-if (startScript.includes(`"branch-labs/pr-262/"`)) throw new Error("The hard-paused PR #262 branch still has a legacy worker R2 namespace.");
+if (startScript.includes(`"branch-labs/pr-262/"`)) throw new Error("The retired legacy branch worker still has a PR #262 R2 namespace.");
 const pr262Guard = startScript.indexOf("if (branch === PR262_BRANCH)");
 const applicationLaunch = startScript.indexOf('child = launch("npm"');
 if (pr262Guard < 0 || (applicationLaunch >= 0 && pr262Guard > applicationLaunch)) throw new Error("PR #262 is not rejected before application startup.");
@@ -84,7 +84,7 @@ const pausedAttempt = spawnSync(process.execPath, [fileURLToPath(new URL("./rail
   },
   timeout: 5_000,
 });
-if (pausedAttempt.status !== 0) throw new Error(`Hard-paused PR #262 did not exit successfully (exit ${pausedAttempt.status}).`);
+if (pausedAttempt.status !== 0) throw new Error(`Retired PR #262 legacy worker did not exit successfully (exit ${pausedAttempt.status}).`);
 const pausedOutput = `${pausedAttempt.stdout ?? ""}${pausedAttempt.stderr ?? ""}`;
 if (!pausedOutput.includes("HARD PAUSED") || pausedOutput.includes("applying normal database migrations")) {
   throw new Error("PR #262 was not stopped before migrations and application startup.");
@@ -114,6 +114,6 @@ console.log(JSON.stringify({
   previewPrefixes: ["branch-labs/pr-261/", "branch-labs/pr-262/"],
   outsidePrefixMutationsBlocked: true,
   readOutsidePrefixAllowed: true,
-  pr262HardPausedBeforeStartup: true,
+  retiredLegacyPr262WorkerBlockedBeforeStartup: true,
   productionLabBranchRefusedBeforeMigrations: true,
 }, null, 2));

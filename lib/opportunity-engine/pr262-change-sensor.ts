@@ -1,8 +1,9 @@
 import crypto from "node:crypto";
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
+import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 
-const SENSOR_STATE_KEY = "branch-labs/pr-262/sensor/state-v1.json";
-const VALUE_STATE_KEY = "branch-labs/pr-262/value-investing/resumable/state.json";
+const SENSOR_STATE_KEY = pr262StorageKey("sensor/state-v1.json");
+const VALUE_STATE_KEY = pr262StorageKey("value-investing/resumable/state.json");
 const SEC_AGENT = "SwingUp/1.0 support@swingup.app";
 const TRADINGVIEW_SCAN = "https://scanner.tradingview.com/america/scan";
 const MAX_SEEN = 20_000;
@@ -82,6 +83,24 @@ type SensorCursors = {
   secUrgentFormIndex: number;
   newsQueryIndex: number;
   officialFeedIndex: number;
+  directIssuerFeedIndex: number;
+};
+
+export type Pr262SensorReadiness = {
+  version: 1;
+  checkedAt: string;
+  universeReady: boolean;
+  universeEntries: number;
+  exposureReady: boolean;
+  exposureEntries: number;
+};
+
+export type Pr262CloudflareSensorMetadata = {
+  version: 1;
+  owner: "cloudflare_worker";
+  lastScanId: string | null;
+  lastRunKey: string | null;
+  checkedAt: string | null;
 };
 
 type SensorState = {
@@ -92,6 +111,8 @@ type SensorState = {
   lastMarketWatchAt: string | null;
   cursors: SensorCursors;
   sourceHealth: Record<string, Pr262SensorSourceHealth>;
+  sensorReadiness: Pr262SensorReadiness;
+  cloudflareSensor: Pr262CloudflareSensorMetadata | null;
 };
 
 export type Pr262SensorState = SensorState;
@@ -99,7 +120,13 @@ export type Pr262SensorState = SensorState;
 function processingReady(event: Pr262SensorEvent) {
   return event.priority >= 80
     && Boolean(event.ticker)
-    && (event.source !== "sec" || event.mappingStatus === "mapped");
+    && event.mappingStatus === "mapped"
+    && (event.source !== "sec" || (
+      event.identityMethod === "official_sec_archive_link"
+      && Boolean(event.cik)
+      && Boolean(event.accession)
+      && Boolean(event.canonicalSecIndexUrl)
+    ));
 }
 
 function pendingOrder(left: Pr262SensorEvent, right: Pr262SensorEvent, nowMs: number) {
@@ -393,6 +420,9 @@ export function parseRssForPr262Sensor(
       accession: null,
       canonicalSecIndexUrl: null,
       identityMethod: "not_applicable",
+      mappingStatus: "mapped",
+      mappingMethod: "stored_watchlist_ticker",
+      mappingReason: "The ticker comes from the stored company-first valuation watchlist.",
       queueAttempts: 0,
       queueNextAttemptAt: null,
       queueLastAttemptAt: null,
@@ -533,8 +563,17 @@ function emptyState(): SensorState {
     seen: [],
     pending: [],
     lastMarketWatchAt: null,
-    cursors: { secUrgentFormIndex: 0, newsQueryIndex: 0, officialFeedIndex: 0 },
+    cursors: { secUrgentFormIndex: 0, newsQueryIndex: 0, officialFeedIndex: 0, directIssuerFeedIndex: 0 },
     sourceHealth: {},
+    sensorReadiness: {
+      version: 1,
+      checkedAt: new Date(0).toISOString(),
+      universeReady: false,
+      universeEntries: 0,
+      exposureReady: false,
+      exposureEntries: 0,
+    },
+    cloudflareSensor: null,
   };
 }
 
@@ -623,6 +662,8 @@ function migrateState(value: unknown, now: Date): SensorState {
   const fallback = emptyState();
   const cursors = object(item.cursors);
   const rawHealth = object(item.sourceHealth);
+  const rawReadiness = object(item.sensorReadiness);
+  const rawCloudflare = object(item.cloudflareSensor);
   const sourceHealth: Record<string, Pr262SensorSourceHealth> = {};
   for (const [provider, raw] of Object.entries(rawHealth)) {
     const health = normalizeHealth({ ...object(raw), provider });
@@ -641,8 +682,30 @@ function migrateState(value: unknown, now: Date): SensorState {
       secUrgentFormIndex: Math.max(0, Number(cursors.secUrgentFormIndex) || 0) % SEC_URGENT_FORMS.length,
       newsQueryIndex: Math.max(0, Number(cursors.newsQueryIndex) || 0) % NEWS_QUERIES.length,
       officialFeedIndex: Math.max(0, Number(cursors.officialFeedIndex) || 0) % OFFICIAL_FEEDS.length,
+      directIssuerFeedIndex: Math.max(0, Number(cursors.directIssuerFeedIndex) || 0),
     },
     sourceHealth,
+    sensorReadiness: {
+      version: 1,
+      checkedAt: typeof rawReadiness.checkedAt === "string" && Number.isFinite(Date.parse(rawReadiness.checkedAt))
+        ? rawReadiness.checkedAt
+        : fallback.sensorReadiness.checkedAt,
+      universeReady: rawReadiness.universeReady === true,
+      universeEntries: Math.max(0, Number(rawReadiness.universeEntries) || 0),
+      exposureReady: rawReadiness.exposureReady === true,
+      exposureEntries: Math.max(0, Number(rawReadiness.exposureEntries) || 0),
+    },
+    cloudflareSensor: rawCloudflare.version === 1 && rawCloudflare.owner === "cloudflare_worker"
+      ? {
+          version: 1,
+          owner: "cloudflare_worker",
+          lastScanId: typeof rawCloudflare.lastScanId === "string" ? rawCloudflare.lastScanId : null,
+          lastRunKey: typeof rawCloudflare.lastRunKey === "string" ? rawCloudflare.lastRunKey : null,
+          checkedAt: typeof rawCloudflare.checkedAt === "string" && Number.isFinite(Date.parse(rawCloudflare.checkedAt))
+            ? rawCloudflare.checkedAt
+            : null,
+        }
+      : null,
   };
 }
 
@@ -928,8 +991,11 @@ export async function runPr262ChangeSensor(
       officialFeedIndex: official.attemptedThisCycle && usable(official)
         ? (officialFeedIndex + 1) % OFFICIAL_FEEDS.length
         : officialFeedIndex,
+      directIssuerFeedIndex: state.cursors.directIssuerFeedIndex,
     },
     sourceHealth: nextSourceHealth,
+    sensorReadiness: state.sensorReadiness,
+    cloudflareSensor: null,
   };
   const written = await writeVersionedJsonToR2(SENSOR_STATE_KEY, next, loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true });
   if (written.conflict) throw new Error("pr262_sensor_state_conflict");

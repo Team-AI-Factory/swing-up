@@ -32,7 +32,7 @@ export type VerifiedSeriousSignalReport = {
     generalModelBuyMustRemainBelowConservativeFairValue: true;
     specialistBuyRequiresThirtyPercentMarginToSpecialistFairValue: true;
     unsupportedPharmaGeneralModelCannotPromoteSeriousBuy: true;
-    eventPilotRequiresHistoricalPilot: true;
+    eventHistoryIsOptionalContext: true;
     fullCommitteeAndFinalJudgeRequired: true;
   };
 };
@@ -59,10 +59,6 @@ function verifyBuy(signal: ActiveSeriousSignal) {
   if (!finite(base) || base <= 0) blockers.push("No usable authoritative base fair value is attached to the signal.");
   if (!signal.evidence.priceCrossChecked) blockers.push("The current price was not independently cross-checked.");
   if (!signal.evidence.secDiligenceConfirmed) blockers.push("Official SEC/company diligence did not confirm the Buy case.");
-  if (signal.source === "event_pilot" && signal.evidence.historicalPilotPassed !== true) {
-    blockers.push("The event-driven Buy did not pass the mandatory Pilot 5 historical gate.");
-  }
-
   if (finite(price) && finite(base) && price > 0 && base > 0) {
     const expected = calculatedPotential(price, base);
     if (!finite(signal.potentialPercent) || Math.abs(expected - signal.potentialPercent) > 1) {
@@ -192,7 +188,7 @@ export function verifyUsSeriousSignals(
       generalModelBuyMustRemainBelowConservativeFairValue: true,
       specialistBuyRequiresThirtyPercentMarginToSpecialistFairValue: true,
       unsupportedPharmaGeneralModelCannotPromoteSeriousBuy: true,
-      eventPilotRequiresHistoricalPilot: true,
+      eventHistoryIsOptionalContext: true,
       fullCommitteeAndFinalJudgeRequired: true,
     },
   };

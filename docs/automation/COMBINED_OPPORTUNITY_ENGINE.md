@@ -71,9 +71,13 @@ Every provisional foundation Buy, Sell, or Watch Out and every important catalys
 
 A foundation Serious Buy requires fair-value and safety gates plus SEC buy-quality confirmation. A foundation Sell requires reliable normalized valuation inputs and deterioration or an unjustified premium. A foundation Watch Out requires confirmed fundamental stress.
 
-## Historical event pilot
+## Historical event context
 
-Serious event-driven Buy or Sell requires at least five independent real leakage-safe same-company or same-industry events supporting the same direction. Same-sector history is fallback only when industry classification is unavailable. Four successful outcomes out of five satisfy the 80% Pilot-5 threshold. A usable common horizon and non-negative lower-quartile direction-adjusted result are also required. This pilot is not statistically equivalent to a 30-plus-sample certificate.
+Historical cases are optional learning and calibration context. They may refine
+ranking, ranges and confidence wording, but neither five cases, thirty cases nor
+any historical hit-rate threshold may grant or veto a Serious Signal. Current
+decision-grade evidence, exact issuer identity, quote/halt safety, causality and
+the complete Committee are the authority.
 
 Analyst expectations are optional context and cannot veto a Buy. Swing Up does not wait for its own later forward outcome before issuing a currently qualified alert; later outcomes are an immutable transparency and learning ledger and losing outcomes must never be removed or retuned away.
 
@@ -83,9 +87,13 @@ The separately certified extreme-volatility rule retains its historical-certific
 
 ## Scheduling
 
-- Fast official SEC 8-K/6-K Buy lane: default 60-second polling.
-- Broad branch cycle: approximately every five minutes.
+- Cheap central SEC/news/official/market sensing: every five minutes, with
+  provider-specific slower durable cadences where appropriate.
+- Cloudflare shadow is isolated and cannot invoke Railway analysis; after
+  cutover, Cloudflare wakes Railway only when retained queue work exists.
 - Resumable full-company valuation: persisted in 500-company R2 batches and safely resumed across timeout/redeployment.
+- Production foundation refresh: daily on its own least-privilege Railway job;
+  the exposure index is not ready until every valuation batch is complete.
 - ChatGPT condition-watch notification layer: hourly, because hourly is the fastest supported automation cadence; Railway detection and R2 recording happen independently and faster.
 
 ## Truthfulness rule

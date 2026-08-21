@@ -4,6 +4,7 @@ import {
   getR2Config,
   writeVersionedJsonToR2,
 } from "@/lib/r2-warehouse";
+import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 
 export type DiligenceGrade = "pass" | "conditional" | "blocked" | "insufficient";
 
@@ -126,7 +127,7 @@ type Namespace = "us-gaap" | "ifrs-full";
 type CachedDiligence = { expiresAt: number; value: CatalystCompanyDiligence };
 
 const SEC_FACTS_BASE = "https://data.sec.gov/api/xbrl/companyfacts";
-const R2_PREFIX = "branch-labs/pr-262/value-investing/catalyst-diligence";
+const R2_PREFIX = pr262StorageKey("value-investing/catalyst-diligence");
 const LATEST_KEY = `${R2_PREFIX}/latest.json`;
 const CACHE_MS = 12 * 60 * 60 * 1000;
 const PERSIST_MS = 6 * 60 * 60 * 1000;

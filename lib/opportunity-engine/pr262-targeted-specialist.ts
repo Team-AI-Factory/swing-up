@@ -1,10 +1,11 @@
 import crypto from "node:crypto";
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 import { readPr262ChangeSensorState, type Pr262SensorEvent } from "@/lib/opportunity-engine/pr262-change-sensor";
+import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 
-const VALUE_STATE_KEY = "branch-labs/pr-262/value-investing/resumable/state.json";
-const SPECIALIST_STATE_KEY = "branch-labs/pr-262/specialist/state-v1.json";
-const SPECIALIST_RUN_PREFIX = "branch-labs/pr-262/specialist/runs";
+const VALUE_STATE_KEY = pr262StorageKey("value-investing/resumable/state.json");
+const SPECIALIST_STATE_KEY = pr262StorageKey("specialist/state-v1.json");
+const SPECIALIST_RUN_PREFIX = pr262StorageKey("specialist/runs");
 
 type ValueItem = {
   ticker?: string;
@@ -155,7 +156,7 @@ function classify(event: Pr262SensorEvent, item: ValueItem | null, sourceText: s
     else if (positive && belowBuy) classification = "buy_candidate";
   }
 
-  if (classification !== "research_only") blockers.push("This is targeted specialist triage only; historical-analog and full committee gates still must pass before a Serious Signal.");
+  if (classification !== "research_only") blockers.push("This is targeted specialist triage only; current-evidence safety and the full Committee still must pass before a Serious Signal. Historical analogues remain optional context.");
   const confidence = Math.max(0, Math.min(95, Math.round(confidenceBase * 0.45 + quality * 0.25 + (event.priority * 0.2) + ((positive || negative) ? 10 : 0) - (risk * 0.15))));
   return {
     currentPrice,

@@ -120,6 +120,9 @@ function amzDate(d = new Date()) {
 function encodePath(path: string) {
   return path.split("/").map(encodeURIComponent).join("/");
 }
+function encodeAwsQueryValue(value: string) {
+  return encodeURIComponent(value).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+}
 function fingerprintAccessKeyId(accessKeyId: string) {
   if (!accessKeyId) return null;
   if (accessKeyId.length <= 8)
@@ -186,6 +189,7 @@ async function signedFetch(
   contentType = "application/octet-stream",
   regionOverride?: string,
   conditionalHeaders: Record<string, string> = {},
+  query: Record<string, string> = {},
 ) {
   assertR2MutationKeyAllowed(method, key);
   const c = getR2Config(regionOverride);
@@ -196,6 +200,15 @@ async function signedFetch(
   const url = new URL(
     `${c.endpoint}/${c.bucket}${key ? `/${encodePath(key)}` : ""}`,
   );
+  const canonicalQuery = Object.entries(query)
+    .filter(([, value]) => value !== "")
+    .map(([name, value]) => [encodeAwsQueryValue(name), encodeAwsQueryValue(value)] as const)
+    .sort(([leftKey, leftValue], [rightKey, rightValue]) => (
+      leftKey.localeCompare(rightKey) || leftValue.localeCompare(rightValue)
+    ))
+    .map(([name, value]) => `${name}=${value}`)
+    .join("&");
+  url.search = canonicalQuery;
   const now = amzDate();
   const date = now.slice(0, 8);
   const payloadHash = hashHex(body ? Buffer.from(body) : Buffer.alloc(0));
@@ -220,7 +233,7 @@ async function signedFetch(
   const canonical = [
     method,
     url.pathname,
-    url.searchParams.toString(),
+    canonicalQuery,
     canonicalHeaders,
     signedHeaders,
     payloadHash,
@@ -379,6 +392,68 @@ export async function readVersionedTextFromR2(r2Key: string): Promise<VersionedR
   if (res.status === 404) return { found: false, text: null, etag: null };
   if (!res.ok) throw new Error(`r2_state_read_http_${res.status}`);
   return { found: true, text: await res.text(), etag: normalizeR2Etag(res.headers.get("etag")) };
+}
+
+export type R2ObjectKeyPage = {
+  keys: string[];
+  isTruncated: boolean;
+  nextContinuationToken: string | null;
+};
+
+function decodeXmlText(value: string) {
+  return value
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+export function parseR2ObjectKeyPage(xml: string): R2ObjectKeyPage {
+  if (!/<ListBucketResult\b/i.test(xml) || !/<\/ListBucketResult>/i.test(xml)) {
+    throw new Error("r2_list_contract_invalid");
+  }
+  const keys = [...xml.matchAll(/<Key>([\s\S]*?)<\/Key>/g)]
+    .map((match) => decodeXmlText(match[1] ?? ""))
+    .filter(Boolean);
+  const truncated = xml.match(/<IsTruncated>([^<]+)<\/IsTruncated>/i)?.[1]?.trim().toLowerCase() === "true";
+  const nextContinuationToken = xml.match(/<NextContinuationToken>([\s\S]*?)<\/NextContinuationToken>/i)?.[1];
+  return {
+    keys,
+    isTruncated: truncated,
+    nextContinuationToken: nextContinuationToken ? decodeXmlText(nextContinuationToken) : null,
+  };
+}
+
+/**
+ * Lists one bounded page of private R2 object keys. This is intentionally a
+ * read-only helper: callers must opt into each following page with the opaque
+ * continuation token returned by R2.
+ */
+export async function listR2ObjectKeys(
+  prefix: string,
+  options: { limit?: number; continuationToken?: string | null } = {},
+): Promise<R2ObjectKeyPage> {
+  const normalizedPrefix = prefix.trim();
+  if (!normalizedPrefix
+    || normalizedPrefix.startsWith("/")
+    || normalizedPrefix.includes("\\")
+    || normalizedPrefix.replace(/\/$/, "").split("/").some((part) => !part || part === "." || part === "..")) {
+    throw new Error("r2_list_prefix_invalid");
+  }
+  const requestedLimit = Number(options.limit ?? 250);
+  const limit = Number.isFinite(requestedLimit)
+    ? Math.max(1, Math.min(1_000, Math.floor(requestedLimit)))
+    : 250;
+  const query: Record<string, string> = {
+    "list-type": "2",
+    prefix: normalizedPrefix,
+    "max-keys": String(limit),
+  };
+  if (options.continuationToken?.trim()) query["continuation-token"] = options.continuationToken.trim();
+  const response = await signedFetch("GET", "", undefined, "application/octet-stream", undefined, {}, query);
+  if (!response.ok) throw new Error(`r2_list_http_${response.status}`);
+  return parseR2ObjectKeyPage(await response.text());
 }
 
 export async function writeVersionedJsonToR2(

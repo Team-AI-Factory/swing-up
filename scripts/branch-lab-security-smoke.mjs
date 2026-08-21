@@ -111,7 +111,7 @@ for (const marker of [`"if-match"`, `"if-none-match"`, `res.status === 412`, `no
   if (!r2Source.includes(marker)) throw new Error(`Cloudflare R2 conditional-write guard is missing: ${marker}`);
 }
 const universeSource = await readFile(new URL("../lib/equity-signal/universe.ts", import.meta.url), "utf8");
-for (const marker of ["branch-labs/pr-261/equity-universe/v1.json", "branch-labs/pr-262/equity-universe/v1.json", "resolveEquityUniverseCacheKey"]) {
+for (const marker of ["branch-labs/pr-261/equity-universe/v1.json", `pr262StorageKey("equity-universe/v1.json"`, "resolveEquityUniverseCacheKey"]) {
   if (!universeSource.includes(marker)) throw new Error(`Branch-specific universe cache is missing: ${marker}`);
 }
 

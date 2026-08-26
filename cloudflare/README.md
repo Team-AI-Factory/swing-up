@@ -33,8 +33,10 @@ Railway analysis.
   handoff verifies its SHA-256 digest before starting analysis.
 - The handoff uses a route-scoped sensor token plus a separate HMAC secret,
   timestamp, nonce, five-minute expiry, and durable replay receipt.
-- The public Worker surface exposes only `/health`. `/status` requires its own
-  read token. There is no public manual scan endpoint.
+- Shadow temporarily exposes `/health` on `workers.dev` and protects `/status`
+  with its own read token for rollout verification. Production sets
+  `workers_dev=false`, has no public route, and can only run from its Cron
+  Trigger. There is no public manual scan endpoint.
 - The Worker has no AI, Committee, article-reading, notification, trade, payment,
   database, or publishing capability.
 
@@ -172,6 +174,24 @@ five-minute handoff.
    failure/retry, one Railway analysis handoff, and no duplicate scan or alert.
 9. Roll back by disabling the Worker cron first, then restoring Railway's sensor
    owner. Do not run both during rollback.
+
+## Monthly cost envelope
+
+- The fixed five-minute Cron creates at most 8,928 scheduled invocations in a
+  31-day month.
+- Production has no public route, so external traffic cannot multiply Worker
+  invocations.
+- Wrangler terminates a run above 10 seconds of CPU or 32 subrequests; the
+  application uses at most 16 external source calls per run.
+- Keep Workers on the standard $5 usage model, R2 Standard storage, and no R2
+  SQL/Data Catalog features. This workload is far below the included Worker and
+  R2 request allowances under normal operation.
+- Configure Cloudflare account budget alerts at $15 and $25. Cloudflare budget
+  alerts are informational rather than a hard stop, so the cron-only surface
+  and per-invocation limits are the enforceable cost controls.
+- Configure Railway compute warning at $20 and hard limit at $30. Reaching the
+  Railway hard limit intentionally stops workloads rather than exceeding the
+  owner-approved ceiling.
 
 Useful references: [Cloudflare R2 Worker bindings](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/),
 [Wrangler cron and limits](https://developers.cloudflare.com/workers/wrangler/configuration/), and

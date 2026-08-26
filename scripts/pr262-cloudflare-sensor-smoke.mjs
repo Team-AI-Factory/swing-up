@@ -213,6 +213,8 @@ assert.match(routeSource, /analysis\.ok !== true/, "A degraded Railway analysis 
 assert.match(routeSource, /cloudflare_handoff_run_contract_mismatch/, "The immutable run must be tied to the signed scan identity, state key, and timestamp.");
 assert.match(wrangler, /crons = \["\*\/5 \* \* \* \*"\]/);
 assert.match(wrangler, /cpu_ms = 10000/);
+assert.match(wrangler, /subrequests = 32/);
+assert.match(wrangler, /workers_dev = false/, "Production Worker must not expose a denial-of-wallet HTTP surface.");
 assert.match(wrangler, /SENSOR_DEPLOYMENT_MODE = "production"/);
 assert.match(wrangler, /ANALYSIS_HANDOFF_ENABLED = "true"/);
 assert.match(wrangler, /SENSOR_STATE_KEY = "production\/pr262\/sensor\/state-v1\.json"/);
@@ -221,6 +223,7 @@ assert.match(wrangler, /class_name = "SensorCoordinator"/);
 assert.match(wrangler, /\[exports\.SensorCoordinator\]/);
 assert.match(wrangler, /storage = "sqlite"/);
 assert.match(shadowWrangler, /crons = \["\*\/5 \* \* \* \*"\]/);
+assert.match(shadowWrangler, /workers_dev = true/, "Shadow needs a temporary verification surface before cutover.");
 assert.match(shadowWrangler, /SENSOR_DEPLOYMENT_MODE = "shadow"/);
 assert.match(shadowWrangler, /ANALYSIS_HANDOFF_ENABLED = "false"/);
 assert.match(shadowWrangler, /branch-labs\/pr-262\/cloudflare-shadow\/sensor\/state-v1\.json/);

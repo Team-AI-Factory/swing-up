@@ -1,7 +1,7 @@
 name = "swing-up-pr262-cheap-sensor"
 main = "pr262-sensor-worker.mjs"
 compatibility_date = "2026-08-19"
-workers_dev = true
+workers_dev = false
 
 [triggers]
 crons = ["*/5 * * * *"]

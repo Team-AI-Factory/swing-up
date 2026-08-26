@@ -2,6 +2,9 @@ import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
+import {
+  isApprovedPr262PremergeProductionRollout,
+} from "./pr262-premerge-production-rollout.mjs";
 
 const PR262_BRANCH = "agent/combined-opportunity-engine";
 const PREVIEW_STORAGE_PREFIX = "branch-labs/pr-262/";
@@ -13,8 +16,9 @@ const token = process.env.SWING_UP_PR262_CRON_RUNTIME_TOKEN?.trim()
 const baseUrl = `http://127.0.0.1:${port}`;
 const branch = (process.env.RAILWAY_GIT_BRANCH || "").trim();
 const railwayEnvironment = (process.env.RAILWAY_ENVIRONMENT_NAME || "").trim().toLowerCase();
-const preview = branch === PR262_BRANCH;
-const production = !preview && (branch === "main" || railwayEnvironment === "production");
+const approvedPremergeRollout = isApprovedPr262PremergeProductionRollout();
+const preview = branch === PR262_BRANCH && !approvedPremergeRollout;
+const production = approvedPremergeRollout || (!preview && (branch === "main" || railwayEnvironment === "production"));
 const configuredStoragePrefix = (process.env.SWING_UP_PR262_STORAGE_PREFIX || "").trim();
 const storagePrefix = configuredStoragePrefix || (production ? PRODUCTION_STORAGE_PREFIX : PREVIEW_STORAGE_PREFIX);
 if (storagePrefix.startsWith("/")
@@ -25,6 +29,13 @@ if (storagePrefix.startsWith("/")
 }
 if (preview && storagePrefix !== PREVIEW_STORAGE_PREFIX) throw new Error("pr262_cron_preview_storage_prefix_mismatch");
 if (production && storagePrefix.startsWith("branch-labs/")) throw new Error("pr262_cron_production_storage_prefix_is_branch_data");
+if (production && storagePrefix !== PRODUCTION_STORAGE_PREFIX) throw new Error("pr262_cron_production_storage_prefix_mismatch");
+
+const projectedMonthlyCostUsd = Number(process.env.SWING_UP_PR262_PROJECTED_RAILWAY_MONTHLY_COST_USD);
+if (!analysisOnly && Number.isFinite(projectedMonthlyCostUsd) && projectedMonthlyCostUsd > 30) {
+  console.log(`[pr262-cron] sensor_paused_projected_monthly_cost_usd=${projectedMonthlyCostUsd.toFixed(2)} hard_limit_usd=30`);
+  process.exit(0);
+}
 const env = {
   ...process.env,
   SWING_UP_PR262_CRON_RUNTIME_TOKEN: token,
@@ -57,7 +68,7 @@ if ((env.FMP_COMMERCIAL_USE_APPROVED || "").trim().toLowerCase() !== "true") {
 // The isolated PR preview must never notify anyone. On production/main the
 // dedicated sensor service may retain notification credentials so only a
 // committee-verified outbox item can be delivered by the notification consumer.
-if ((process.env.RAILWAY_GIT_BRANCH || "").trim() === PR262_BRANCH) {
+if (preview) {
   for (const key of [
     "TELEGRAM_BOT_TOKEN",
     "TELEGRAM_TEST_CHAT_ID",

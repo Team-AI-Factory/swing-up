@@ -6,6 +6,7 @@ import {
   type VersionedR2Object,
 } from "@/lib/r2-warehouse";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
+import { isPr262ApprovedPremergeProductionRollout } from "@/lib/opportunity-engine/pr262-runtime";
 
 const PR262_BRANCH = "agent/combined-opportunity-engine";
 const ALLOWED_KINDS = new Set([
@@ -584,7 +585,8 @@ async function processDeliveryJobKey(
   const claimed = await claimDeliveryJob(current, now, ownerId);
   if (!claimed) return responseFromJob(current.job, validated, message);
 
-  if (process.env.RAILWAY_GIT_BRANCH?.trim() === PR262_BRANCH) {
+  if (process.env.RAILWAY_GIT_BRANCH?.trim() === PR262_BRANCH
+    && !isPr262ApprovedPremergeProductionRollout()) {
     const previewJob: DeliveryJob = {
       ...claimed.job,
       updatedAt: now.toISOString(),

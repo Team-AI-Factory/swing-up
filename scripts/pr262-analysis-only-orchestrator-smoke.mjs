@@ -68,6 +68,7 @@ const stubs = {
   },
   "@/lib/opportunity-engine/pr262-serious-watch-out-authority": { promotePr262SeriousWatchOut: async () => ({ promoted: false, outboxKey: null }) },
   "@/lib/opportunity-engine/pr262-cost-effectiveness": { recordPr262CostEffectiveness: async () => ({ persisted: true }) },
+  "@/lib/opportunity-engine/pr262-runtime": { isPr262ApprovedPremergeProductionRollout: () => false },
 };
 const loaded = { exports: {} };
 new Function("require", "module", "exports", output)((name) => {

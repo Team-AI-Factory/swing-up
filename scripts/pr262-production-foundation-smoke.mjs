@@ -54,6 +54,9 @@ const stubs = {
   "@/lib/opportunity-engine/pr262-storage": {
     resolvePr262StoragePrefix: () => "production/pr262/",
   },
+  "@/lib/opportunity-engine/pr262-runtime": {
+    isPr262ApprovedPremergeProductionRollout: () => process.env.SWING_UP_PR262_PREMERGE_PRODUCTION_ROLLOUT === "true",
+  },
 };
 const loaded = { exports: {} };
 new Function("require", "module", "exports", output)((name) => stubs[name] ?? nodeRequire(name), loaded, loaded.exports);
@@ -62,6 +65,7 @@ const priorEnvironment = {
   branch: process.env.RAILWAY_GIT_BRANCH,
   environment: process.env.RAILWAY_ENVIRONMENT_NAME,
   enabled: process.env.SWING_UP_PR262_PRODUCTION_FOUNDATION_ENABLED,
+  premerge: process.env.SWING_UP_PR262_PREMERGE_PRODUCTION_ROLLOUT,
 };
 process.env.RAILWAY_GIT_BRANCH = "main";
 process.env.RAILWAY_ENVIRONMENT_NAME = "production";
@@ -100,6 +104,11 @@ try {
   process.env.RAILWAY_ENVIRONMENT_NAME = "preview";
   const preview = await loaded.exports.POST(request);
   assert.equal(preview.status, 404, "The production foundation route must fail closed on the PR branch.");
+
+  process.env.SWING_UP_PR262_PREMERGE_PRODUCTION_ROLLOUT = "true";
+  const approvedPremerge = await loaded.exports.POST(request);
+  assert.equal(approvedPremerge.status, 200, "The exact guarded PR environment may run the approved production foundation before merge.");
+  assert.equal(approvedPremerge.body.reason, "production_foundation_fresh");
 } finally {
   if (priorEnvironment.branch === undefined) delete process.env.RAILWAY_GIT_BRANCH;
   else process.env.RAILWAY_GIT_BRANCH = priorEnvironment.branch;
@@ -107,6 +116,8 @@ try {
   else process.env.RAILWAY_ENVIRONMENT_NAME = priorEnvironment.environment;
   if (priorEnvironment.enabled === undefined) delete process.env.SWING_UP_PR262_PRODUCTION_FOUNDATION_ENABLED;
   else process.env.SWING_UP_PR262_PRODUCTION_FOUNDATION_ENABLED = priorEnvironment.enabled;
+  if (priorEnvironment.premerge === undefined) delete process.env.SWING_UP_PR262_PREMERGE_PRODUCTION_ROLLOUT;
+  else process.env.SWING_UP_PR262_PREMERGE_PRODUCTION_ROLLOUT = priorEnvironment.premerge;
 }
 
 const runnerSource = readFileSync(new URL("../lib/opportunity-engine/us-value-investing-resumable.ts", import.meta.url), "utf8");
@@ -124,6 +135,7 @@ assert.equal(railwayConfig.deploy.cronSchedule, "17 2 * * *");
 console.log(JSON.stringify({
   ok: true,
   productionOnly: true,
+  exactGuardedPremergeEnvironmentAllowed: true,
   dedicatedLeastPrivilegeToken: true,
   completeUniverseRequired: true,
   foundationCannotUseAiDatabaseOrNotifications: true,

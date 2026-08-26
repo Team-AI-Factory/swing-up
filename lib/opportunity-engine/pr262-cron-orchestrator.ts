@@ -15,6 +15,7 @@ import { runPr262LightweightSensorV3 } from "@/lib/opportunity-engine/pr262-ligh
 import { createPr262SensorBudgetedFetch } from "@/lib/opportunity-engine/pr262-sensor-fetch-budget";
 import { promotePr262SeriousWatchOut } from "@/lib/opportunity-engine/pr262-serious-watch-out-authority";
 import { recordPr262CostEffectiveness } from "@/lib/opportunity-engine/pr262-cost-effectiveness";
+import { isPr262ApprovedPremergeProductionRollout } from "@/lib/opportunity-engine/pr262-runtime";
 
 const MAX_CYCLE_MS = 210_000;
 const REPORTING_RESERVE_MS = 15_000;
@@ -357,7 +358,8 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
     },
     notifications: {
       outboxFirst: true,
-      previewDeliveryBlocked: process.env.RAILWAY_GIT_BRANCH?.trim() === "agent/combined-opportunity-engine",
+      previewDeliveryBlocked: process.env.RAILWAY_GIT_BRANCH?.trim() === "agent/combined-opportunity-engine"
+        && !isPr262ApprovedPremergeProductionRollout(),
       healthy: deliveryHealthy,
       directFailures: notificationFailures,
       durableRecoveryConsumer: deliveryRecovery,

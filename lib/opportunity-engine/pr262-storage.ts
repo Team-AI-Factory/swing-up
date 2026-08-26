@@ -1,6 +1,11 @@
+import {
+  isPr262ApprovedPremergeProductionRollout,
+  PR262_ROLLOUT_RUNTIME,
+} from "@/lib/opportunity-engine/pr262-runtime";
+
 const PREVIEW_PREFIX = "branch-labs/pr-262/";
-const PRODUCTION_PREFIX = "production/pr262/";
-const PR262_BRANCH = "agent/combined-opportunity-engine";
+const PRODUCTION_PREFIX = PR262_ROLLOUT_RUNTIME.productionStoragePrefix;
+const PR262_BRANCH = PR262_ROLLOUT_RUNTIME.branch;
 
 type StorageEnvironment = Record<string, string | undefined>;
 
@@ -21,6 +26,7 @@ function isPreviewBranch(environment: StorageEnvironment) {
 }
 
 function isProductionRuntime(environment: StorageEnvironment) {
+  if (isPr262ApprovedPremergeProductionRollout(environment)) return true;
   if (isPreviewBranch(environment)) return false;
   const railwayEnvironment = (environment.RAILWAY_ENVIRONMENT_NAME ?? "").trim().toLowerCase();
   const branch = (environment.RAILWAY_GIT_BRANCH ?? "").trim().toLowerCase();
@@ -34,8 +40,12 @@ export function resolvePr262StoragePrefix(environment: StorageEnvironment = proc
     ? normalizePrefix(configured)
     : isProductionRuntime(environment) ? PRODUCTION_PREFIX : PREVIEW_PREFIX;
 
-  if (isPreviewBranch(environment) && prefix !== PREVIEW_PREFIX) {
+  const approvedPremergeRollout = isPr262ApprovedPremergeProductionRollout(environment);
+  if (isPreviewBranch(environment) && !approvedPremergeRollout && prefix !== PREVIEW_PREFIX) {
     throw new Error("pr262_preview_storage_prefix_mismatch");
+  }
+  if (!isProductionRuntime(environment) && prefix === PRODUCTION_PREFIX) {
+    throw new Error("pr262_nonproduction_storage_prefix_mismatch");
   }
   if (isProductionRuntime(environment) && prefix !== PRODUCTION_PREFIX) {
     throw new Error("pr262_production_storage_prefix_mismatch");

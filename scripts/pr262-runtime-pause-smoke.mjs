@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -51,9 +52,11 @@ assert.match(cronLauncher, /SIGTERM/, "Cron must shut down the temporary web app
 assert.match(orchestrator, /runPr262AnalysisOnlyCycle/, "Cloudflare handoff needs an exported analysis-only Railway entry point");
 assert.match(orchestrator, /owner === "cloudflare_worker" \? "analysis_only" : "sensor_and_analysis"/, "Cloudflare ownership must disable duplicate Railway source scanning");
 assert.match(orchestrator, /Pr262CycleDeadlineError/, "Railway analysis needs a hard cycle deadline");
+assert.match(cronLauncher, /projectedMonthlyCostUsd > 30/, "The Railway sensor must pause when projected monthly cost exceeds $30");
 
 assert.match(middleware, /\/api\/health/, "Health route must remain available");
 assert.match(middleware, /INTERNAL_API_PATHS\.pr262Cron/, "The scoped V3 cron route may cross the PR262 runtime boundary");
+assert.match(middleware, /approvedPremergeRollout && path === INTERNAL_API_PATHS\.pr262ProductionFoundation/, "The foundation route may cross the PR boundary only under the exact pre-merge rollout gate");
 assert.match(middleware, /INTERNAL_API_PATHS\.pr262SensorHandoff/, "The HMAC Cloudflare handoff may cross the PR262 runtime boundary");
 assert.match(middleware, /INTERNAL_API_PATHS\.seriousSignalStatus/, "The protected read-only Serious Signal feed may cross the PR262 runtime boundary");
 assert.match(middleware, /internalApiScopeAuthorized/, "Every protected route must use route-scoped authorization");
@@ -62,6 +65,19 @@ assert.match(middleware, /pr262_runtime_route_blocked/, "All other API routes mu
 assert.match(legacySensorWorker, /HARD PAUSED/, "The obsolete direct sensor worker must remain disabled");
 assert.match(legacyPauseLauncher, /HARD PAUSED/, "The obsolete hard-pause launcher remains inert and must not be the Railway entry point");
 assert.match(oldSensorRoute, /PR262_RUNTIME_HARD_PAUSED = true/, "The old public change-sensor route must remain disabled");
+
+const projectedCostPause = spawnSync(process.execPath, [fileURLToPath(new URL("./pr262-cron-cycle.mjs", import.meta.url))], {
+  encoding: "utf8",
+  env: {
+    ...process.env,
+    RAILWAY_GIT_BRANCH: "agent/combined-opportunity-engine",
+    RAILWAY_ENVIRONMENT_NAME: "swing-up-pr-262",
+    SWING_UP_PR262_PROJECTED_RAILWAY_MONTHLY_COST_USD: "30.01",
+  },
+  timeout: 5_000,
+});
+assert.equal(projectedCostPause.status, 0, "The over-budget sensor must pause successfully without triggering restart churn.");
+assert.match(`${projectedCostPause.stdout ?? ""}${projectedCostPause.stderr ?? ""}`, /sensor_paused_projected_monthly_cost_usd=30\.01/);
 
 for (const expected of [
   /fetchOfficialFeeds/,

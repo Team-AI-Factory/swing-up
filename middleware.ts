@@ -4,6 +4,7 @@ import {
   internalApiScopeAuthorized,
   requiredInternalApiScope,
 } from "@/lib/internal-api-auth";
+import { isPr262ApprovedPremergeProductionRollout } from "@/lib/opportunity-engine/pr262-runtime";
 
 const PR262_BRANCH = "agent/combined-opportunity-engine";
 
@@ -28,8 +29,10 @@ export function middleware(request: NextRequest) {
   if (path === "/api/health" && request.method === "GET") return NextResponse.next();
 
   if (branch === PR262_BRANCH) {
+    const approvedPremergeRollout = isPr262ApprovedPremergeProductionRollout();
     const branchAllowed = (
       (path === INTERNAL_API_PATHS.pr262Cron && scope === "cron_runtime")
+      || (approvedPremergeRollout && path === INTERNAL_API_PATHS.pr262ProductionFoundation && scope === "foundation_runtime")
       || (path === INTERNAL_API_PATHS.pr262SensorHandoff && scope === "sensor_handoff")
       || (path === INTERNAL_API_PATHS.seriousSignalStatus && scope === "serious_signal_read")
     );

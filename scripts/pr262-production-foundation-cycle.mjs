@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
+import { isApprovedPr262PremergeProductionRollout } from "./pr262-premerge-production-rollout.mjs";
 
 const PR262_BRANCH = "agent/combined-opportunity-engine";
 const PRODUCTION_STORAGE_PREFIX = "production/pr262/";
@@ -12,7 +13,9 @@ const token = process.env.SWING_UP_PR262_FOUNDATION_RUNTIME_TOKEN?.trim()
 const baseUrl = `http://127.0.0.1:${port}`;
 const branch = process.env.RAILWAY_GIT_BRANCH?.trim() || "";
 const railwayEnvironment = process.env.RAILWAY_ENVIRONMENT_NAME?.trim().toLowerCase() || "";
-if (branch === PR262_BRANCH || (branch !== "main" && railwayEnvironment !== "production")) {
+const approvedPremergeRollout = isApprovedPr262PremergeProductionRollout();
+if ((branch === PR262_BRANCH && !approvedPremergeRollout)
+  || (branch !== PR262_BRANCH && branch !== "main" && railwayEnvironment !== "production")) {
   throw new Error("pr262_production_foundation_runtime_required");
 }
 

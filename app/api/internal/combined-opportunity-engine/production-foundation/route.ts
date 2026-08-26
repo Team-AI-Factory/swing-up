@@ -6,6 +6,7 @@ import {
   runResumableUsValueBatch,
 } from "@/lib/opportunity-engine/us-value-investing-resumable";
 import { resolvePr262StoragePrefix } from "@/lib/opportunity-engine/pr262-storage";
+import { isPr262ApprovedPremergeProductionRollout } from "@/lib/opportunity-engine/pr262-runtime";
 
 export const dynamic = "force-dynamic";
 
@@ -20,7 +21,9 @@ function productionEnabled() {
   if (process.env.SWING_UP_PR262_PRODUCTION_FOUNDATION_ENABLED?.trim().toLowerCase() !== "true") return false;
   const branch = process.env.RAILWAY_GIT_BRANCH?.trim() ?? "";
   const environment = process.env.RAILWAY_ENVIRONMENT_NAME?.trim().toLowerCase() ?? "";
-  if (branch === PR262_BRANCH || (branch !== "main" && environment !== "production")) return false;
+  if (branch === PR262_BRANCH) {
+    if (!isPr262ApprovedPremergeProductionRollout()) return false;
+  } else if (branch !== "main" && environment !== "production") return false;
   return resolvePr262StoragePrefix() === "production/pr262/";
 }
 

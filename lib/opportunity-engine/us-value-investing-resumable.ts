@@ -17,9 +17,10 @@ import { pr262StorageKey, resolvePr262StoragePrefix } from "@/lib/opportunity-en
 
 const PR262_BRANCH = "agent/combined-opportunity-engine";
 const STORAGE_PREFIX = resolvePr262StoragePrefix();
-const RUNTIME_BRANCH = process.env.RAILWAY_GIT_BRANCH?.trim()
-  || (STORAGE_PREFIX.startsWith("production/pr262/") ? "main" : PR262_BRANCH);
 const PRODUCTION_R2_WRITES = STORAGE_PREFIX.startsWith("production/pr262/");
+const RUNTIME_BRANCH = PRODUCTION_R2_WRITES
+  ? "main"
+  : process.env.RAILWAY_GIT_BRANCH?.trim() || PR262_BRANCH;
 const R2_PREFIX = pr262StorageKey("value-investing/resumable");
 const STATE_KEY = `${R2_PREFIX}/state.json`;
 const LATEST_SUMMARY_KEY = `${R2_PREFIX}/latest/index.json`;

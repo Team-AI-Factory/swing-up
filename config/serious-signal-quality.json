@@ -1,0 +1,87 @@
+{
+  "version": 4,
+  "branchOnly": true,
+  "protectedBranch": "main",
+  "marketScope": "US listed common stocks and ADRs only",
+  "nonUsScanningEnabled": false,
+  "maxIterationAttempts": 3,
+  "maxSameFailureWithoutGain": 3,
+  "minimumConsistentValidatedSignals": 3,
+  "minimumUsefulValidatedSignalRate": 0.67,
+  "maxOpenAiCommitteeRunsPer24Hours": 3,
+  "duplicateEvidenceCooldownHours": 12,
+  "livePollingIntervalSeconds": 300,
+  "technicalFailureRetrySeconds": 60,
+  "minimumInputCompleteness": 100,
+  "minimumIndependentReceipts": 2,
+  "minimumProfitPotentialScore": 60,
+  "minimumEvidenceConfidenceScore": 60,
+  "seriousBuySellPilot": {
+    "minimumIndependentRealHistoricalEvents": 5,
+    "minimumObservedDirectionalSuccessPercent": 80,
+    "allowSameCompanyHistory": true,
+    "allowSameIndustryPeerHistory": true,
+    "sameSectorFallbackOnlyWhenIndustryUnavailable": true,
+    "requireSameDirection": true,
+    "requireLeakageSafeHistory": true,
+    "requireUsableHistoricalHorizon": true,
+    "requireNonNegativeLowerQuartileOutcome": true,
+    "statisticallyEquivalentToThirtySamples": false,
+    "analystExpectationsCanVetoBuy": false,
+    "waitForSwingUpForwardOutcomeBeforeAlert": false
+  },
+  "companyFirstValueInvesting": {
+    "enabled": true,
+    "style": "conservative_intrinsic_value_margin_of_safety",
+    "analyzeWholeUsPrimaryListingUniverse": true,
+    "analystTargetUsedAsFairValue": false,
+    "newsRequiredForFoundationAlert": false,
+    "fullFundamentalRefreshMinutes": 15,
+    "fullWarehousePersistenceHours": 6,
+    "valuationMethods": [
+      "earnings_power",
+      "owner_earnings_free_cash_flow",
+      "graham_earnings_and_book_value"
+    ],
+    "minimumIndependentValuationMethodsForSeriousAlert": 2,
+    "seriousBuyMinimumFairValueUpsidePercent": 40,
+    "minimumBuyMarginOfSafetyPercent": 25,
+    "seriousBuyMinimumBusinessQuality": 75,
+    "seriousBuyMaximumRisk": 45,
+    "seriousBuyMinimumFairValueConfidence": 75,
+    "seriousSellMinimumPremiumPercent": 50,
+    "highQualityCompanySellPremiumPercent": 75,
+    "qualityPriceWatchlistEnabled": true,
+    "r2Prefix": "branch-labs/pr-262/value-investing/"
+  },
+  "articleEvidencePolicy": {
+    "headlineAloneCanPromoteSeriousSignal": false,
+    "fullArticleOrDetailedOfficialContentRequired": true,
+    "adaptiveMinimumPagesPerScan": 12,
+    "adaptiveMaximumPagesPerScan": 20,
+    "maximumBytesPerPage": 300000,
+    "successfulPageCacheHours": 6,
+    "discoveryReceiptLimitPerScan": 500
+  },
+  "watchOutPolicy": {
+    "activeCertifiedRuleIds": [
+      "extreme_120_session_drawdown_volatility"
+    ],
+    "approvedSeriousP0AndP1Rules": 16,
+    "newRulesPromotionMode": "serious_internal_evidence_triggered_not_historically_certified",
+    "heldRuleIds": [
+      "crowded_short_or_squeeze",
+      "rate_inflation_or_commodity_sensitivity_break",
+      "extreme_valuation_with_momentum_reversal"
+    ]
+  },
+  "requireLiveInputProvenance": true,
+  "requireLivePriceAtAlert": true,
+  "allowMockFallback": false,
+  "allowNeutralFallback": false,
+  "allowFixturePerformanceResults": false,
+  "requireRealHttpResponsesForPerformanceResults": true,
+  "allowAutoMerge": false,
+  "allowNotificationsDuringTests": false,
+  "allowPublishingDuringTests": false
+}

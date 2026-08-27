@@ -120,11 +120,43 @@ function amzDate(d = new Date()) {
 function encodePath(path: string) {
   return path.split("/").map(encodeURIComponent).join("/");
 }
+function encodeAwsQueryValue(value: string) {
+  return encodeURIComponent(value).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+}
 function fingerprintAccessKeyId(accessKeyId: string) {
   if (!accessKeyId) return null;
   if (accessKeyId.length <= 8)
     return `${accessKeyId.slice(0, 1)}***${accessKeyId.slice(-1)}`;
   return `${accessKeyId.slice(0, 4)}***${accessKeyId.slice(-4)}`;
+}
+
+const R2_MUTATION_METHODS = new Set(["DELETE", "PATCH", "POST", "PUT"]);
+const R2_REQUEST_TIMEOUT_MS = 20_000;
+
+export function normalizeR2WritePrefix(value: string | null | undefined) {
+  const prefix = value?.trim() ?? "";
+  if (!prefix) return null;
+  if (
+    prefix.startsWith("/") ||
+    !prefix.endsWith("/") ||
+    prefix.includes("\\") ||
+    prefix.slice(0, -1).split("/").some((part) => part === "" || part === "." || part === "..")
+  ) {
+    throw new Error("r2_write_prefix_invalid");
+  }
+  return prefix;
+}
+
+export function assertR2MutationKeyAllowed(
+  method: string,
+  key: string,
+  configuredPrefix: string | null | undefined = process.env.SWING_UP_R2_WRITE_PREFIX,
+) {
+  if (!R2_MUTATION_METHODS.has(method.toUpperCase())) return;
+  const prefix = normalizeR2WritePrefix(configuredPrefix);
+  if (prefix && (!key || !key.startsWith(prefix))) {
+    throw new Error("r2_mutation_outside_write_prefix");
+  }
 }
 
 
@@ -156,7 +188,10 @@ async function signedFetch(
   body?: Buffer | string,
   contentType = "application/octet-stream",
   regionOverride?: string,
+  conditionalHeaders: Record<string, string> = {},
+  query: Record<string, string> = {},
 ) {
+  assertR2MutationKeyAllowed(method, key);
   const c = getR2Config(regionOverride);
   if (!c.configured)
     throw new Error(
@@ -165,6 +200,15 @@ async function signedFetch(
   const url = new URL(
     `${c.endpoint}/${c.bucket}${key ? `/${encodePath(key)}` : ""}`,
   );
+  const canonicalQuery = Object.entries(query)
+    .filter(([, value]) => value !== "")
+    .map(([name, value]) => [encodeAwsQueryValue(name), encodeAwsQueryValue(value)] as const)
+    .sort(([leftKey, leftValue], [rightKey, rightValue]) => (
+      leftKey.localeCompare(rightKey) || leftValue.localeCompare(rightValue)
+    ))
+    .map(([name, value]) => `${name}=${value}`)
+    .join("&");
+  url.search = canonicalQuery;
   const now = amzDate();
   const date = now.slice(0, 8);
   const payloadHash = hashHex(body ? Buffer.from(body) : Buffer.alloc(0));
@@ -174,6 +218,13 @@ async function signedFetch(
     "x-amz-date": now,
   };
   if (body) headers["content-type"] = contentType;
+  for (const [rawName, rawValue] of Object.entries(conditionalHeaders)) {
+    const name = rawName.trim().toLowerCase();
+    if (!new Set(["if-match", "if-none-match", "if-modified-since", "if-unmodified-since"]).has(name)) {
+      throw new Error("R2 conditional header is not allowed");
+    }
+    headers[name] = rawValue.trim();
+  }
   const signedHeaders = Object.keys(headers).sort().join(";");
   const canonicalHeaders = Object.keys(headers)
     .sort()
@@ -182,7 +233,7 @@ async function signedFetch(
   const canonical = [
     method,
     url.pathname,
-    url.searchParams.toString(),
+    canonicalQuery,
     canonicalHeaders,
     signedHeaders,
     payloadHash,
@@ -208,6 +259,7 @@ async function signedFetch(
     headers,
     body: body as BodyInit | undefined,
     cache: "no-store",
+    signal: AbortSignal.timeout(R2_REQUEST_TIMEOUT_MS),
   });
 }
 export function computeContentHash(payload: unknown) {
@@ -316,6 +368,114 @@ export async function readRawDataFromR2(r2Key: string) {
   const res = await signedFetch("GET", r2Key);
   if (!res.ok) throw new Error(`R2 read failed with status ${res.status}`);
   return res.text();
+}
+
+export type VersionedR2Object = {
+  found: boolean;
+  text: string | null;
+  etag: string | null;
+};
+
+// R2's S3 conditional PutObject API expects the HTTP form of an ETag, including
+// double quotes. Some fetch/proxy implementations expose the response ETag
+// without those quotes, so canonicalize it before reusing it in If-Match.
+export function normalizeR2Etag(value: string | null | undefined) {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  const strong = trimmed.replace(/^W\//i, "");
+  if (strong.startsWith('"') && strong.endsWith('"')) return strong;
+  return `"${strong.replace(/^"|"$/g, "")}"`;
+}
+
+export async function readVersionedTextFromR2(r2Key: string): Promise<VersionedR2Object> {
+  const res = await signedFetch("GET", r2Key);
+  if (res.status === 404) return { found: false, text: null, etag: null };
+  if (!res.ok) throw new Error(`r2_state_read_http_${res.status}`);
+  return { found: true, text: await res.text(), etag: normalizeR2Etag(res.headers.get("etag")) };
+}
+
+export type R2ObjectKeyPage = {
+  keys: string[];
+  isTruncated: boolean;
+  nextContinuationToken: string | null;
+};
+
+function decodeXmlText(value: string) {
+  return value
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+export function parseR2ObjectKeyPage(xml: string): R2ObjectKeyPage {
+  if (!/<ListBucketResult\b/i.test(xml) || !/<\/ListBucketResult>/i.test(xml)) {
+    throw new Error("r2_list_contract_invalid");
+  }
+  const keys = [...xml.matchAll(/<Key>([\s\S]*?)<\/Key>/g)]
+    .map((match) => decodeXmlText(match[1] ?? ""))
+    .filter(Boolean);
+  const truncated = xml.match(/<IsTruncated>([^<]+)<\/IsTruncated>/i)?.[1]?.trim().toLowerCase() === "true";
+  const nextContinuationToken = xml.match(/<NextContinuationToken>([\s\S]*?)<\/NextContinuationToken>/i)?.[1];
+  return {
+    keys,
+    isTruncated: truncated,
+    nextContinuationToken: nextContinuationToken ? decodeXmlText(nextContinuationToken) : null,
+  };
+}
+
+/**
+ * Lists one bounded page of private R2 object keys. This is intentionally a
+ * read-only helper: callers must opt into each following page with the opaque
+ * continuation token returned by R2.
+ */
+export async function listR2ObjectKeys(
+  prefix: string,
+  options: { limit?: number; continuationToken?: string | null } = {},
+): Promise<R2ObjectKeyPage> {
+  const normalizedPrefix = prefix.trim();
+  if (!normalizedPrefix
+    || normalizedPrefix.startsWith("/")
+    || normalizedPrefix.includes("\\")
+    || normalizedPrefix.replace(/\/$/, "").split("/").some((part) => !part || part === "." || part === "..")) {
+    throw new Error("r2_list_prefix_invalid");
+  }
+  const requestedLimit = Number(options.limit ?? 250);
+  const limit = Number.isFinite(requestedLimit)
+    ? Math.max(1, Math.min(1_000, Math.floor(requestedLimit)))
+    : 250;
+  const query: Record<string, string> = {
+    "list-type": "2",
+    prefix: normalizedPrefix,
+    "max-keys": String(limit),
+  };
+  if (options.continuationToken?.trim()) query["continuation-token"] = options.continuationToken.trim();
+  const response = await signedFetch("GET", "", undefined, "application/octet-stream", undefined, {}, query);
+  if (!response.ok) throw new Error(`r2_list_http_${response.status}`);
+  return parseR2ObjectKeyPage(await response.text());
+}
+
+export async function writeVersionedJsonToR2(
+  r2Key: string,
+  payload: unknown,
+  options: { expectedEtag?: string | null; createOnly?: boolean } = {},
+) {
+  if (options.expectedEtag && options.createOnly) throw new Error("r2_state_invalid_write_condition");
+  const condition: Record<string, string> = {};
+  if (options.expectedEtag) condition["if-match"] = normalizeR2Etag(options.expectedEtag) ?? options.expectedEtag;
+  else if (options.createOnly) condition["if-none-match"] = "*";
+  const body = `${JSON.stringify(redactSecrets(payload), null, 2)}\n`;
+  const res = await signedFetch("PUT", r2Key, body, "application/json", undefined, condition);
+  if (res.status === 412) return { written: false, conflict: true, etag: null };
+  if (!res.ok) throw new Error(`r2_state_write_http_${res.status}`);
+  let etag = normalizeR2Etag(res.headers.get("etag"));
+  if (!etag) {
+    const verified = await readVersionedTextFromR2(r2Key);
+    if (!verified.found || !verified.etag) throw new Error("r2_state_write_missing_etag");
+    etag = verified.etag;
+  }
+  return { written: true, conflict: false, etag };
 }
 async function put(
   r2Key: string,
@@ -579,7 +739,8 @@ export async function checkR2Health(confirmWrite = false): Promise<R2Health> {
     }
     const health: R2Health = { ...base, connected: true, canRead: true };
     if (confirmWrite) {
-      const testKey = `logs/r2-health/${Date.now()}-${crypto.randomUUID()}.json`;
+      const writePrefix = normalizeR2WritePrefix(process.env.SWING_UP_R2_WRITE_PREFIX) ?? "";
+      const testKey = `${writePrefix}logs/r2-health/${Date.now()}-${crypto.randomUUID()}.json`;
       health.testObjectKey = testKey;
       const body = JSON.stringify({
         service: "swing-up",

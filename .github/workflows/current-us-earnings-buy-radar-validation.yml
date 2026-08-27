@@ -1,0 +1,54 @@
+name: Current US Earnings Buy Radar Validation
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  validate:
+    name: Validate direct SEC earnings Buy radar
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.head_ref == 'agent/combined-opportunity-engine'
+    steps:
+      - name: Check out isolated branch
+        uses: actions/checkout@v4
+      - name: Refuse main branch execution
+        shell: bash
+        run: |
+          branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          test "${branch}" != "main"
+          test "${branch}" = "agent/combined-opportunity-engine"
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit --fund=false
+      - name: Typecheck and build
+        run: |
+          npm run typecheck
+          npm run build
+      - name: Verify earnings Buy policy in source
+        shell: bash
+        run: |
+          grep -q 'directNewsQueueDependency: false' lib/opportunity-engine/us-earnings-buy-radar.ts
+          grep -q 'analystExpectationsCanVetoBuy: false' lib/opportunity-engine/us-earnings-buy-radar.ts
+          grep -q 'fiveYearNormalizationRequiredForSeriousBuy: true' lib/opportunity-engine/us-earnings-buy-radar.ts
+          grep -q 'currentPriceMustRemainBelowConservativeValue: true' lib/opportunity-engine/us-earnings-buy-radar.ts
+          grep -q 'earningsHeadlineAloneCanTriggerBuy: false' lib/opportunity-engine/us-earnings-buy-radar.ts
+      - name: Manual live check of Railway deployment and fresh direct earnings radar
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          COMBINED_ENGINE_RAILWAY_URL: https://swing-up-swing-up-pr-262.up.railway.app
+          EXPECTED_BRANCH_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+          CURRENT_US_EARNINGS_BUY_RADAR_REPORT_PATH: artifacts/current-us-earnings-buy-radar-report.json
+        run: node scripts/current-us-earnings-buy-radar-live-smoke.mjs
+      - name: Upload current earnings Buy radar report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: current-us-earnings-buy-radar-report
+          path: artifacts/current-us-earnings-buy-radar-report.json
+          if-no-files-found: warn
+          retention-days: 30

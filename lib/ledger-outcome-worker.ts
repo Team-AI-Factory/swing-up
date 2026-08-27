@@ -31,7 +31,16 @@ function normalizeOutcome(outcome: string): LedgerOutcomeStatus {
   return "tracking";
 }
 
-export async function createSnapshotFromAlert(input: { alertId?: unknown; price?: unknown; capturedAt?: unknown }) {
+export async function createSnapshotFromAlert(input: {
+  alertId?: unknown;
+  price?: unknown;
+  capturedAt?: unknown;
+  provider?: unknown;
+  providerAssetId?: unknown;
+  currency?: unknown;
+  sourceUrl?: unknown;
+  dataQuality?: unknown;
+}) {
   const warnings: string[] = [];
   const alertId = typeof input.alertId === "string" ? input.alertId.trim() : "";
   if (!alertId) return { ok: false, result: "needs_more_data", error: "alertId is required.", warnings };
@@ -44,15 +53,24 @@ export async function createSnapshotFromAlert(input: { alertId?: unknown; price?
 
   const suppliedPrice = numberValue(input.price);
   const capturedAt = typeof input.capturedAt === "string" && !Number.isNaN(Date.parse(input.capturedAt)) ? new Date(input.capturedAt) : new Date();
-  const existing = await prisma.priceSnapshot.findFirst({ where: { ticker: alert.ticker }, orderBy: { capturedAt: "asc" } });
+  const provider = typeof input.provider === "string" && input.provider.trim() ? input.provider.trim() : "manual";
+  const providerAssetId = typeof input.providerAssetId === "string" && input.providerAssetId.trim() ? input.providerAssetId.trim() : null;
+  const currency = typeof input.currency === "string" && input.currency.trim() ? input.currency.trim().toUpperCase() : "USD";
+  const sourceUrl = typeof input.sourceUrl === "string" && input.sourceUrl.trim() ? input.sourceUrl.trim() : null;
+  const dataQuality = input.dataQuality === "live" ? "live" : "unverified";
+  const existing = await prisma.priceSnapshot.findFirst({ where: { alertId: alert.id, provider }, orderBy: { capturedAt: "asc" } });
 
   if (suppliedPrice == null) {
     warnings.push("No live price provider or explicit price was available; no fake snapshot was created.");
     return { ok: true, result: "needs_more_data", alertId: alert.id, ticker: alert.ticker, snapshot: existing, warnings };
   }
 
-  const snapshot = existing ?? await prisma.priceSnapshot.create({ data: { ticker: alert.ticker, price: new Prisma.Decimal(suppliedPrice), capturedAt } });
-  const latestSnapshot = existing ? await prisma.priceSnapshot.create({ data: { ticker: alert.ticker, price: new Prisma.Decimal(suppliedPrice), capturedAt } }) : snapshot;
+  const latestSnapshot = await prisma.priceSnapshot.upsert({
+    where: { alertId_provider_capturedAt: { alertId: alert.id, provider, capturedAt } },
+    create: { alertId: alert.id, ticker: alert.ticker, price: new Prisma.Decimal(suppliedPrice), capturedAt, provider, providerAssetId, currency, sourceUrl, dataQuality },
+    update: { price: new Prisma.Decimal(suppliedPrice), providerAssetId, currency, sourceUrl, dataQuality },
+  });
+  const snapshot = existing ?? latestSnapshot;
 
   return { ok: true, result: existing ? "updated_latest_price" : "created_first_snapshot", alertId: alert.id, ticker: alert.ticker, snapshot, latestSnapshot, warnings };
 }
@@ -71,7 +89,7 @@ export async function updateLedgerOutcome(input: { ledgerId?: unknown; alertId?:
   const warnings: string[] = [];
   if (!ticker) warnings.push("Ledger entry has no ticker, so price snapshots cannot be matched.");
 
-  const snapshots = ticker ? await prisma.priceSnapshot.findMany({ where: { ticker }, orderBy: { capturedAt: "asc" } }) : [];
+  const snapshots = ticker ? await prisma.priceSnapshot.findMany({ where: { alertId: ledger.alertId ?? undefined, ticker, dataQuality: "live" }, orderBy: { capturedAt: "asc" } }) : [];
   const priceAtAlert = numberValue(entry.priceAtAlert) ?? numberValue(snapshots[0]?.price);
   const publishedAt = ledger.alert?.publishedAt ?? ledger.createdAt;
 

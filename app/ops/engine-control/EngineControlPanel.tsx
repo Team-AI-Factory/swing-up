@@ -1007,7 +1007,7 @@ export default function EngineControlPanel() {
 
   function headers() {
     return secret.trim()
-      ? { ...SAFE_HEADERS, "x-internal-api-secret": secret.trim() }
+      ? { ...SAFE_HEADERS, "x-swing-up-internal-token": secret.trim() }
       : SAFE_HEADERS;
   }
 

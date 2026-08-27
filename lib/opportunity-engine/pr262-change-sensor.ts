@@ -147,8 +147,24 @@ function pendingOrder(left: Pr262SensorEvent, right: Pr262SensorEvent, nowMs: nu
 
 export function partitionPr262PendingEvents(events: Pr262SensorEvent[], now: Date) {
   const deduped = [...events.reduce((map, event) => {
-    const current = map.get(event.id);
-    if (!current || event.priority > current.priority || event.queueAttempts > current.queueAttempts) map.set(event.id, event);
+    // Older sensor versions included the live price and minute in market-event
+    // IDs. Collapse those legacy duplicates by their actual meaning so a normal
+    // state write repairs the queue without deleting R2 data by hand.
+    const observedDay = event.observedAt.slice(0, 10);
+    const semanticKey = event.source === "market_price"
+      && event.sourceProvider === "tradingview_quality_watchlist_v3"
+      && event.ticker
+      && event.kind
+      && /^\d{4}-\d{2}-\d{2}$/.test(observedDay)
+      ? `market:${event.ticker}:${event.kind}:${observedDay}`
+      : `id:${event.id}`;
+    const current = map.get(semanticKey);
+    if (!current
+      || event.priority > current.priority
+      || event.queueAttempts > current.queueAttempts
+      || (event.priority === current.priority
+        && event.queueAttempts === current.queueAttempts
+        && event.observedAt > current.observedAt)) map.set(semanticKey, event);
     return map;
   }, new Map<string, Pr262SensorEvent>()).values()];
   const nowMs = now.getTime();

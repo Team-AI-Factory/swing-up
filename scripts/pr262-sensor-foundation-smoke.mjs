@@ -427,6 +427,32 @@ const olderUntouched = { ...mappedDueRetry, id: "sec:older-untouched", priority:
 const freshUntouched = { ...olderUntouched, id: "sec:fresh-untouched", observedAt: new Date(now.getTime() - 60_000).toISOString() };
 const freshPriorityQueue = sensor.partitionPr262PendingEvents([olderUntouched, freshUntouched], now);
 assert.deepEqual(freshPriorityQueue.map((item) => item.id), [freshUntouched.id, olderUntouched.id], "Untouched equal-priority filings must be newest-first");
+const legacyMarketEvent = {
+  ...mappedDueRetry,
+  id: "v3-market:legacy-minute-one",
+  source: "market_price",
+  sourceProvider: "tradingview_quality_watchlist_v3",
+  kind: "strong_buy_price_crossed",
+  observedAt: "2026-08-20T09:00:00.000Z",
+  queueAttempts: 0,
+  queueNextAttemptAt: null,
+};
+const repeatedLegacyMarketEvent = {
+  ...legacyMarketEvent,
+  id: "v3-market:legacy-minute-two",
+  observedAt: "2026-08-20T09:05:00.000Z",
+};
+const nextDayMarketEvent = {
+  ...legacyMarketEvent,
+  id: "v3-market:next-day",
+  observedAt: "2026-08-21T09:00:00.000Z",
+};
+const compactedMarketQueue = sensor.partitionPr262PendingEvents([legacyMarketEvent, repeatedLegacyMarketEvent, nextDayMarketEvent], now);
+assert.deepEqual(
+  compactedMarketQueue.map((item) => item.id),
+  [nextDayMarketEvent.id, repeatedLegacyMarketEvent.id],
+  "Legacy minute-level market events must compact to one ticker/reason entry per day while preserving a new day.",
+);
 
 putObject(universeKey, {
   version: 1,
@@ -472,6 +498,7 @@ console.log(JSON.stringify({
   mappedRetriesProtectedFromUnmappedQueueFloods: true,
   unresolvedQueuePartitionExpiresAfterOneDay: true,
   freshEqualPriorityFilingsRunNewestFirst: true,
+  legacyMarketQueueCompactsWithoutDeletion: true,
   maximumSecFeedCallsPerCycle: 2,
   quietCycleAiCalls: 0,
   quietCycleDeepAnalysisCalls: 0,

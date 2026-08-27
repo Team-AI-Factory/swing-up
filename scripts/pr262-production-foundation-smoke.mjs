@@ -123,6 +123,7 @@ try {
 const runnerSource = readFileSync(new URL("../lib/opportunity-engine/us-value-investing-resumable.ts", import.meta.url), "utf8");
 const launcherSource = readFileSync(new URL("./pr262-production-foundation-cycle.mjs", import.meta.url), "utf8");
 const railwayConfig = JSON.parse(readFileSync(new URL("../railway.foundation.json", import.meta.url), "utf8"));
+const oneShotRailwayConfig = JSON.parse(readFileSync(new URL("../railway.foundation-once.json", import.meta.url), "utf8"));
 assert.match(runnerSource, /input\.requireCompleteUniverse && !raw\.ok/);
 assert.match(runnerSource, /if \(!input\.foundationOnly\)/);
 for (const secret of ["DATABASE_URL", "OPENAI_API_KEY", "TELEGRAM_BOT_TOKEN", "SWING_UP_SERIOUS_SIGNAL_WEBHOOK_URL"]) {
@@ -130,6 +131,9 @@ for (const secret of ["DATABASE_URL", "OPENAI_API_KEY", "TELEGRAM_BOT_TOKEN", "S
 }
 assert.match(launcherSource, /MAX_BATCH_ROUNDS = 10/);
 assert.equal(railwayConfig.deploy.startCommand, "npm run pr262:production-foundation");
+assert.equal(oneShotRailwayConfig.deploy.startCommand, "npm run pr262:production-foundation");
+assert.equal(oneShotRailwayConfig.deploy.restartPolicyType, "NEVER");
+assert.equal("cronSchedule" in oneShotRailwayConfig.deploy, false, "The bootstrap config must run once immediately instead of waiting for cron.");
 assert.equal(railwayConfig.deploy.cronSchedule, "17 2 * * *");
 
 console.log(JSON.stringify({

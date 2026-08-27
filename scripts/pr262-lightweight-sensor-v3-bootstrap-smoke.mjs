@@ -11,12 +11,15 @@ const output = ts.transpileModule(source, {
 
 let stateWritten = null;
 let persistedSensorState = null;
+let persistedSensorCadence = null;
+let sensorStateWrites = 0;
+let sensorCadenceWrites = 0;
 let universeLoads = 0;
 let exposureAvailable = false;
 const emptyProvider = async () => ({ status: "connected", recordsRead: 0, receipts: [], error: null });
 const mappingProbeProvider = async () => ({
   status: "connected",
-  recordsRead: 2,
+  recordsRead: 3,
   receipts: [
     {
       id: "company-name-only",
@@ -32,6 +35,21 @@ const mappingProbeProvider = async () => ({
       symbolHints: [],
       companyHints: ["Safe Corporation"],
       rawEventType: "guidance",
+    },
+    {
+      id: "routine-low-priority-item",
+      title: "Safe Corporation posts a routine community update",
+      summary: "No material company or market change was announced.",
+      url: "https://example.test/routine-low-priority-item",
+      publisher: "Example",
+      publishedAt: "2026-08-20T08:59:00.000Z",
+      channel: "gdelt",
+      official: false,
+      primarySource: false,
+      scheduled: false,
+      symbolHints: ["SAFE"],
+      companyHints: [],
+      rawEventType: "community_update",
     },
     {
       id: "structured-ticker",
@@ -88,13 +106,22 @@ const stubs = {
     },
   },
   "@/lib/r2-warehouse": {
-    readVersionedTextFromR2: async (key) => key.endsWith("sensor/state-v1.json") && persistedSensorState
-      ? { found: true, text: JSON.stringify(persistedSensorState), etag: "sensor-state-etag" }
-      : { found: false, text: null, etag: null },
+    readVersionedTextFromR2: async (key) => {
+      if (key.endsWith("sensor/state-v1.json") && persistedSensorState) return { found: true, text: JSON.stringify(persistedSensorState), etag: "sensor-state-etag" };
+      if (key.endsWith("sensor/cadence-v1.json") && persistedSensorCadence) return { found: true, text: JSON.stringify(persistedSensorCadence), etag: "sensor-cadence-etag" };
+      return { found: false, text: null, etag: null };
+    },
     writeVersionedJsonToR2: async (key, value) => {
-      stateWritten = { key, value };
-      if (key.endsWith("sensor/state-v1.json")) persistedSensorState = structuredClone(value);
-      return { written: true, conflict: false, etag: "sensor-state-etag" };
+      if (key.endsWith("sensor/state-v1.json")) {
+        stateWritten = { key, value };
+        persistedSensorState = structuredClone(value);
+        sensorStateWrites += 1;
+      }
+      if (key.endsWith("sensor/cadence-v1.json")) {
+        persistedSensorCadence = structuredClone(value);
+        sensorCadenceWrites += 1;
+      }
+      return { written: true, conflict: false, etag: key.endsWith("cadence-v1.json") ? "sensor-cadence-etag" : "sensor-state-etag" };
     },
   },
   "@/lib/opportunity-engine/pr262-storage": {
@@ -166,6 +193,9 @@ assert.equal(companyNameOnly.ticker, null, "Company-name prose must remain unres
 assert.equal(companyNameOnly.mappingStatus, "unmapped");
 assert.equal(structuredTicker.ticker, "SAFE", "An explicit structured ticker may map through the authoritative universe.");
 assert.equal(structuredTicker.mappingStatus, "mapped");
+assert.equal(stateWritten.value.pending.some((event) => event.title.includes("routine community update")), false, "Routine low-priority discoveries must not be written to the durable R2 queue.");
+assert.equal(sensorStateWrites, 1);
+assert.equal(sensorCadenceWrites, 1);
 exposureAvailable = true;
 await loaded.exports.runPr262LightweightSensorV3({
   now: new Date("2026-08-20T09:05:00.000Z"),
@@ -185,6 +215,11 @@ const repeatedSameDay = await loaded.exports.runPr262LightweightSensorV3({
 const repeatedMarketEvents = stateWritten.value.pending.filter((event) => event.sourceProvider === "tradingview_quality_watchlist_v3");
 assert.equal(repeatedMarketEvents.length, 1, "A lower price five minutes later must reuse the same daily threshold event instead of growing the queue.");
 assert.equal(repeatedSameDay.newEvents, 0, "Repeated same-day market observations must not count as new work.");
+assert.equal(repeatedSameDay.r2Persistence.queueWritten, false, "A quiet scan must not rewrite the full R2 queue.");
+assert.equal(repeatedSameDay.r2Persistence.cadenceWritten, true, "A quiet scan must retain only its compact cadence and health checkpoint.");
+assert.equal(repeatedSameDay.r2Persistence.unimportantEventsPersisted, 0);
+assert.equal(sensorStateWrites, 2, "Only the initial important findings and first market threshold may rewrite the full queue.");
+assert.equal(sensorCadenceWrites, 3, "Each scan retains a small scheduling checkpoint so provider cadences remain safe after restart.");
 
 console.log(JSON.stringify({
   ok: true,
@@ -194,6 +229,8 @@ console.log(JSON.stringify({
   sameDayMarketThresholdsDeduplicated: true,
   companyNameMappingFailsClosed: true,
   structuredTickerMappingRetained: true,
-  productionSensorStatePersisted: true,
+  importantProductionSensorStatePersisted: true,
+  quietScanDoesNotRewriteFullQueue: true,
+  unimportantDiscoveriesNotPersisted: true,
   partialOrStaleUniverseCannotCertifyCoverage: true,
 }, null, 2));

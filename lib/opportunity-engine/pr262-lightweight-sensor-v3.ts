@@ -36,12 +36,14 @@ import {
 } from "@/lib/opportunity-engine/pr262-exposure-index";
 
 const SENSOR_STATE_KEY = pr262StorageKey("sensor/state-v1.json");
+const SENSOR_CADENCE_KEY = pr262StorageKey("sensor/cadence-v1.json");
 const SEC_AGENT = "SwingUp/1.0 support@swingup.app";
 const TRADINGVIEW_SCAN = "https://scanner.tradingview.com/america/scan";
 const FMP_NEWS_URL = "https://financialmodelingprep.com/stable/news/stock";
 const FDA_MEDWATCH_RSS_URL = "https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/medwatch/rss.xml";
 const MAX_SEEN = 20_000;
 const MAX_FRESH = 500;
+const MIN_IMPORTANT_PRIORITY = 80;
 const FIVE_MINUTES_MS = 5 * 60_000;
 const FIFTEEN_MINUTES_MS = 15 * 60_000;
 const THIRTY_MINUTES_MS = 30 * 60_000;
@@ -68,6 +70,15 @@ type CompatState = {
   sourceHealth: Record<string, Pr262SensorSourceHealth>;
   sensorReadiness: Pr262SensorReadiness;
   cloudflareSensor: null;
+};
+
+type SensorCadenceState = {
+  version: 1;
+  updatedAt: string;
+  lastMarketWatchAt: string | null;
+  cursors: CompatState["cursors"];
+  sourceHealth: CompatState["sourceHealth"];
+  sensorReadiness: CompatState["sensorReadiness"];
 };
 
 type SourceSummary = {
@@ -206,53 +217,81 @@ function fanOut(event: Pr262SensorEvent, exposure: Pr262ExposureEntry[]) {
     }));
 }
 
-async function loadState(): Promise<{ state: CompatState; etag: string | null }> {
-  const current = await readVersionedTextFromR2(SENSOR_STATE_KEY);
-  if (!current.found || !current.text) {
-    return {
-      state: {
-        version: 2,
-        updatedAt: new Date(0).toISOString(),
-        seen: [],
-        pending: [],
-        lastMarketWatchAt: null,
-        cursors: { secUrgentFormIndex: 0, newsQueryIndex: 0, officialFeedIndex: 0, directIssuerFeedIndex: 0 },
-        sourceHealth: {},
-        sensorReadiness: { version: 1, checkedAt: new Date(0).toISOString(), universeReady: false, universeEntries: 0, exposureReady: false, exposureEntries: 0 },
-        cloudflareSensor: null,
-      },
-      etag: current.etag,
-    };
-  }
-  const value = object(JSON.parse(current.text));
+function emptyState(): CompatState {
   return {
-    state: {
-      version: 2,
-      updatedAt: text(value.updatedAt) ?? new Date(0).toISOString(),
-      seen: Array.isArray(value.seen) ? value.seen.filter((item): item is string => typeof item === "string").slice(-MAX_SEEN) : [],
-      pending: Array.isArray(value.pending) ? value.pending as Pr262SensorEvent[] : [],
-      lastMarketWatchAt: text(value.lastMarketWatchAt),
-      cursors: {
-        secUrgentFormIndex: Math.max(0, Number(object(value.cursors).secUrgentFormIndex) || 0),
-        newsQueryIndex: Math.max(0, Number(object(value.cursors).newsQueryIndex) || 0),
-        officialFeedIndex: Math.max(0, Number(object(value.cursors).officialFeedIndex) || 0),
-        directIssuerFeedIndex: Math.max(0, Number(object(value.cursors).directIssuerFeedIndex) || 0),
-      },
-      sourceHealth: object(value.sourceHealth) as Record<string, Pr262SensorSourceHealth>,
-      sensorReadiness: {
-        version: 1,
-        checkedAt: text(object(value.sensorReadiness).checkedAt) ?? new Date(0).toISOString(),
-        universeReady: object(value.sensorReadiness).universeReady === true,
-        universeEntries: Math.max(0, Number(object(value.sensorReadiness).universeEntries) || 0),
-        exposureReady: object(value.sensorReadiness).exposureReady === true,
-        exposureEntries: Math.max(0, Number(object(value.sensorReadiness).exposureEntries) || 0),
-      },
-      // This writer runs only while Railway owns source sensing. Explicitly
-      // clear a prior Cloudflare ownership marker while retaining its neutral
-      // direct-feed cursor for a future controlled cutover.
-      cloudflareSensor: null,
+    version: 2,
+    updatedAt: new Date(0).toISOString(),
+    seen: [],
+    pending: [],
+    lastMarketWatchAt: null,
+    cursors: { secUrgentFormIndex: 0, newsQueryIndex: 0, officialFeedIndex: 0, directIssuerFeedIndex: 0 },
+    sourceHealth: {},
+    sensorReadiness: { version: 1, checkedAt: new Date(0).toISOString(), universeReady: false, universeEntries: 0, exposureReady: false, exposureEntries: 0 },
+    cloudflareSensor: null,
+  };
+}
+
+function overlayCadence(state: CompatState, value: Json): CompatState {
+  if (value.version !== 1) return state;
+  const cursors = object(value.cursors);
+  const readiness = object(value.sensorReadiness);
+  return {
+    ...state,
+    updatedAt: text(value.updatedAt) ?? state.updatedAt,
+    lastMarketWatchAt: text(value.lastMarketWatchAt) ?? state.lastMarketWatchAt,
+    cursors: {
+      secUrgentFormIndex: Math.max(0, Number(cursors.secUrgentFormIndex) || 0),
+      newsQueryIndex: Math.max(0, Number(cursors.newsQueryIndex) || 0),
+      officialFeedIndex: Math.max(0, Number(cursors.officialFeedIndex) || 0),
+      directIssuerFeedIndex: Math.max(0, Number(cursors.directIssuerFeedIndex) || 0),
     },
-    etag: current.etag,
+    sourceHealth: object(value.sourceHealth) as Record<string, Pr262SensorSourceHealth>,
+    sensorReadiness: {
+      version: 1,
+      checkedAt: text(readiness.checkedAt) ?? state.sensorReadiness.checkedAt,
+      universeReady: readiness.universeReady === true,
+      universeEntries: Math.max(0, Number(readiness.universeEntries) || 0),
+      exposureReady: readiness.exposureReady === true,
+      exposureEntries: Math.max(0, Number(readiness.exposureEntries) || 0),
+    },
+  };
+}
+
+async function loadState(): Promise<{ state: CompatState; stateEtag: string | null; cadenceEtag: string | null }> {
+  const [current, cadence] = await Promise.all([
+    readVersionedTextFromR2(SENSOR_STATE_KEY),
+    readVersionedTextFromR2(SENSOR_CADENCE_KEY),
+  ]);
+  const fallback = emptyState();
+  const value = current.found && current.text ? object(JSON.parse(current.text)) : {};
+  const queueState: CompatState = current.found && current.text ? {
+    ...fallback,
+    updatedAt: text(value.updatedAt) ?? fallback.updatedAt,
+    seen: Array.isArray(value.seen) ? value.seen.filter((item): item is string => typeof item === "string").slice(-MAX_SEEN) : [],
+    pending: Array.isArray(value.pending) ? value.pending as Pr262SensorEvent[] : [],
+    lastMarketWatchAt: text(value.lastMarketWatchAt),
+    cursors: {
+      secUrgentFormIndex: Math.max(0, Number(object(value.cursors).secUrgentFormIndex) || 0),
+      newsQueryIndex: Math.max(0, Number(object(value.cursors).newsQueryIndex) || 0),
+      officialFeedIndex: Math.max(0, Number(object(value.cursors).officialFeedIndex) || 0),
+      directIssuerFeedIndex: Math.max(0, Number(object(value.cursors).directIssuerFeedIndex) || 0),
+    },
+    sourceHealth: object(value.sourceHealth) as Record<string, Pr262SensorSourceHealth>,
+    sensorReadiness: {
+      version: 1,
+      checkedAt: text(object(value.sensorReadiness).checkedAt) ?? fallback.sensorReadiness.checkedAt,
+      universeReady: object(value.sensorReadiness).universeReady === true,
+      universeEntries: Math.max(0, Number(object(value.sensorReadiness).universeEntries) || 0),
+      exposureReady: object(value.sensorReadiness).exposureReady === true,
+      exposureEntries: Math.max(0, Number(object(value.sensorReadiness).exposureEntries) || 0),
+    },
+    cloudflareSensor: null,
+  } : fallback;
+  const cadenceValue = cadence.found && cadence.text ? object(JSON.parse(cadence.text)) : {};
+  return {
+    state: overlayCadence(queueState, cadenceValue),
+    stateEtag: current.etag,
+    cadenceEtag: cadence.etag,
   };
 }
 
@@ -505,9 +544,13 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
   const deduped = [...[...events, ...fanout].reduce((map, event) => {
     const current = map.get(event.id); if (!current || event.priority > current.priority) map.set(event.id, event); return map;
   }, new Map<string, Pr262SensorEvent>()).values()];
-  const known = new Set([...state.seen, ...state.pending.map((event) => event.id)]);
-  const fresh = deduped.filter((event) => !known.has(event.id)).sort((left, right) => right.priority - left.priority || right.observedAt.localeCompare(left.observedAt)).slice(0, MAX_FRESH);
-  const pending = partitionPr262PendingEvents([...state.pending, ...fresh], now);
+  const importantPending = state.pending.filter((event) => event.priority >= MIN_IMPORTANT_PRIORITY);
+  const known = new Set([...state.seen, ...importantPending.map((event) => event.id)]);
+  const fresh = deduped
+    .filter((event) => event.priority >= MIN_IMPORTANT_PRIORITY && !known.has(event.id))
+    .sort((left, right) => right.priority - left.priority || right.observedAt.localeCompare(left.observedAt))
+    .slice(0, MAX_FRESH);
+  const pending = partitionPr262PendingEvents([...importantPending, ...fresh], now);
   const retained = new Set(pending.map((event) => event.id));
   for (const event of fresh) if (retained.has(event.id)) known.add(event.id);
 
@@ -532,8 +575,31 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
       exposureEntries: exposure.entries.length,
     },
   };
-  const written = await writeVersionedJsonToR2(SENSOR_STATE_KEY, next, loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true });
-  if (written.conflict) throw new Error("pr262_v3_sensor_state_conflict");
+  const queueChanged = JSON.stringify({ seen: state.seen, pending: state.pending })
+    !== JSON.stringify({ seen: next.seen, pending: next.pending });
+  let queuePersistence: { written: boolean; reason: string | null } = {
+    written: false,
+    reason: "no_new_important_event_or_queue_change",
+  };
+  if (queueChanged) {
+    const written = await writeVersionedJsonToR2(SENSOR_STATE_KEY, next, loaded.stateEtag ? { expectedEtag: loaded.stateEtag } : { createOnly: true });
+    if (written.conflict) throw new Error("pr262_v3_sensor_state_conflict");
+    queuePersistence = { written: true, reason: null };
+  }
+  const cadence: SensorCadenceState = {
+    version: 1,
+    updatedAt: next.updatedAt,
+    lastMarketWatchAt: next.lastMarketWatchAt,
+    cursors: next.cursors,
+    sourceHealth: next.sourceHealth,
+    sensorReadiness: next.sensorReadiness,
+  };
+  const cadenceWritten = await writeVersionedJsonToR2(
+    SENSOR_CADENCE_KEY,
+    cadence,
+    loaded.cadenceEtag ? { expectedEtag: loaded.cadenceEtag } : { createOnly: true },
+  );
+  if (cadenceWritten.conflict) throw new Error("pr262_v3_sensor_cadence_conflict");
 
   return {
     ok: summaries.some((item) => item.status === "connected" || item.status === "partial"),
@@ -546,6 +612,14 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
     newEvents: fresh.length,
     sectorFanoutEvents: fresh.filter((event) => event.mappingMethod === "deterministic_sector_fanout").length,
     pendingEventCount: pending.length,
+    r2Persistence: {
+      queueKey: SENSOR_STATE_KEY,
+      queueWritten: queuePersistence.written,
+      queueWriteReason: queuePersistence.reason,
+      cadenceKey: SENSOR_CADENCE_KEY,
+      cadenceWritten: true,
+      unimportantEventsPersisted: 0,
+    },
     costPolicy: {
       aiCalls: 0,
       fullArticleReads: 0,

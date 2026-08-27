@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   code:
-    name: Deterministic code, Worker, and recovery gates
+    name: Deterministic code, Railway, and recovery gates
     if: github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 35
@@ -54,9 +54,6 @@ jobs:
           npm run lint
           npm run build
 
-      - name: Validate Cloudflare bundles without deployment
-        run: npm run check:pr262-cloudflare-bundle
-
       - name: Certify storage, auth, queue, delivery, and visible feed contracts
         run: |
           npm run smoke:pr262-storage-namespace
@@ -69,7 +66,6 @@ jobs:
           npm run smoke:pr262-route-auth
           npm run smoke:r2-prefix-list
           npm run smoke:serious-signal-delivery
-          npm run smoke:pr262-cloudflare-sensor
           npm run smoke:pr262-live-serious-signal-surface
 
       - name: Certify current-evidence Serious Signal authority

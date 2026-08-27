@@ -3,6 +3,7 @@ import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-wareho
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 
 const SENSOR_STATE_KEY = pr262StorageKey("sensor/state-v1.json");
+const SENSOR_CADENCE_KEY = pr262StorageKey("sensor/cadence-v1.json");
 const VALUE_STATE_KEY = pr262StorageKey("value-investing/resumable/state.json");
 const SEC_AGENT = "SwingUp/1.0 support@swingup.app";
 const TRADINGVIEW_SCAN = "https://scanner.tradingview.com/america/scan";
@@ -725,10 +726,54 @@ function migrateState(value: unknown, now: Date): SensorState {
   };
 }
 
+function overlayCadence(state: SensorState, value: unknown): SensorState {
+  const item = object(value);
+  if (item.version !== 1) return state;
+  const cursors = object(item.cursors);
+  const rawHealth = object(item.sourceHealth);
+  const rawReadiness = object(item.sensorReadiness);
+  const sourceHealth: Record<string, Pr262SensorSourceHealth> = {};
+  for (const [provider, raw] of Object.entries(rawHealth)) {
+    const normalized = normalizeHealth({ ...object(raw), provider });
+    if (normalized) sourceHealth[provider] = normalized;
+  }
+  return {
+    ...state,
+    updatedAt: typeof item.updatedAt === "string" && Number.isFinite(Date.parse(item.updatedAt))
+      ? item.updatedAt
+      : state.updatedAt,
+    lastMarketWatchAt: typeof item.lastMarketWatchAt === "string" ? item.lastMarketWatchAt : state.lastMarketWatchAt,
+    cursors: {
+      secUrgentFormIndex: Math.max(0, Number(cursors.secUrgentFormIndex) || 0) % SEC_URGENT_FORMS.length,
+      newsQueryIndex: Math.max(0, Number(cursors.newsQueryIndex) || 0) % NEWS_QUERIES.length,
+      officialFeedIndex: Math.max(0, Number(cursors.officialFeedIndex) || 0) % OFFICIAL_FEEDS.length,
+      directIssuerFeedIndex: Math.max(0, Number(cursors.directIssuerFeedIndex) || 0),
+    },
+    sourceHealth,
+    sensorReadiness: {
+      version: 1,
+      checkedAt: typeof rawReadiness.checkedAt === "string" && Number.isFinite(Date.parse(rawReadiness.checkedAt))
+        ? rawReadiness.checkedAt
+        : state.sensorReadiness.checkedAt,
+      universeReady: rawReadiness.universeReady === true,
+      universeEntries: Math.max(0, Number(rawReadiness.universeEntries) || 0),
+      exposureReady: rawReadiness.exposureReady === true,
+      exposureEntries: Math.max(0, Number(rawReadiness.exposureEntries) || 0),
+    },
+    cloudflareSensor: null,
+  };
+}
+
 async function loadSensorState(now = new Date()): Promise<{ state: SensorState; etag: string | null }> {
-  const current = await readVersionedTextFromR2(SENSOR_STATE_KEY);
-  if (!current.found || !current.text) return { state: emptyState(), etag: null };
-  return { state: migrateState(JSON.parse(current.text), now), etag: current.etag };
+  const [current, cadence] = await Promise.all([
+    readVersionedTextFromR2(SENSOR_STATE_KEY),
+    readVersionedTextFromR2(SENSOR_CADENCE_KEY),
+  ]);
+  const queueState = current.found && current.text ? migrateState(JSON.parse(current.text), now) : emptyState();
+  const state = cadence.found && cadence.text
+    ? overlayCadence(queueState, JSON.parse(cadence.text))
+    : queueState;
+  return { state, etag: current.etag };
 }
 
 function failureStatus(error: unknown): { status: "temporarily_unavailable" | "rate_limited" | "failed"; error: string } {

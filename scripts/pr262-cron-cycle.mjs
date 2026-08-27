@@ -41,7 +41,7 @@ const env = {
   SWING_UP_PR262_CRON_RUNTIME_TOKEN: token,
   SWING_UP_PR262_STORAGE_PREFIX: storagePrefix,
   SWING_UP_R2_WRITE_PREFIX: storagePrefix,
-  SWING_UP_PR262_SENSOR_OWNER: analysisOnly ? "cloudflare_worker" : (process.env.SWING_UP_PR262_SENSOR_OWNER?.trim() || "railway"),
+  SWING_UP_PR262_SENSOR_OWNER: analysisOnly ? "railway_analysis_recovery" : "railway",
   SWING_UP_PR262_EVENT_JOB_OPENAI_ENABLED: process.env.SWING_UP_PR262_EVENT_JOB_OPENAI_ENABLED?.trim() || "true",
   PUBLIC_LEDGER_TRACKING_ENABLED: "false",
   PUBLIC_TRACKING_ENABLED: "false",

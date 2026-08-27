@@ -103,6 +103,7 @@ let retryCalls = 0;
 let decisionGradeSecSource = true;
 let failHistoryAccess = false;
 let committeeFingerprint = "fingerprint-1";
+let runnerResultMode = "serious";
 const haltProvider = {
   provider: "nasdaq_trade_halts",
   status: "connected",
@@ -146,6 +147,22 @@ const stubs = {
       assert.ok(input.targetedContext.providers.some((provider) => provider.provider === "nasdaq_trade_halts"));
       if (!failHistoryAccess) assert.ok(input.historicalSignals.length >= 5, "Available optional history should load");
       else assert.equal(input.historicalSignals.length, 0, "Unavailable optional history must fall back to an empty context");
+      if (runnerResultMode === "no_signal") {
+        return {
+          ok: true,
+          checkedAt: "2026-08-11T10:04:30.000Z",
+          status: "no_qualified_signal",
+          seriousSignalFound: false,
+          actionableSignalFound: false,
+          alertType: null,
+          openAiCalled: false,
+          candidateFingerprint: null,
+          selectedCandidate: null,
+          historicalPilot: null,
+          tradingHaltSafety: { currentStateKnown: true },
+          committee: null,
+        };
+      }
       const reserved = await input.beforeOpenAiCall({ candidateFingerprint: committeeFingerprint, checkedAt: "2026-08-11T10:00:00.000Z", ticker: "EXCT", direction: "upside" });
       assert.equal(reserved, true, "Committee reservation must be granted");
       const selectedCandidate = {
@@ -439,9 +456,24 @@ assert.equal(expiredUnread.outboxKey, null);
 assert.equal(runnerCalls, 1, "An expired unread source must be archived without analysis");
 assert.equal(valueRefreshCalls, 1, "An expired unread source must be archived without valuation work");
 assert.equal(objects.get(historyKey).value.records.length, 6, "An unread discovery item must never enter historical findings");
-assert.equal(objects.get(expiredUnread.resultKey).value.report.selectedCandidate, null);
+assert.equal(expiredUnread.resultKey, null, "An expired unimportant discovery must not create a full immutable R2 result.");
+assert.equal(expiredUnread.r2Persistence.detailedResultWritten, false);
+assert.equal(objects.get(PR262_EVENT_JOB_KEYS.STATE_KEY).value.runs.find((run) => run.eventId === event.id).resultKey, null, "The compact idempotency ledger is enough to prevent repeat work.");
 
 decisionGradeSecSource = true;
+runnerResultMode = "no_signal";
+setSecEventIdentity("000006", "2026-08-11T10:04:15.000Z");
+const detailedRunCountBeforeQuietAnalysis = [...objects.keys()].filter((key) => key.startsWith(PR262_EVENT_JOB_KEYS.RUN_PREFIX)).length;
+const valueRefreshCountBeforeQuietAnalysis = [...objects.keys()].filter((key) => key.includes("/value-investing/event-refresh/")).length;
+const routineNoSignal = await runPr262EventJob({ now: new Date("2026-08-11T10:04:30.000Z"), allowOpenAi: true });
+assert.equal(routineNoSignal.status, "no_qualified_signal");
+assert.equal(routineNoSignal.resultKey, null, "A routine no-signal analysis must not write a full result object.");
+assert.equal(routineNoSignal.r2Persistence.detailedResultWritten, false);
+assert.equal(routineNoSignal.r2Persistence.companyRefreshWritten, false, "A routine valuation refresh must stay in memory unless it supports an important finding.");
+assert.equal([...objects.keys()].filter((key) => key.startsWith(PR262_EVENT_JOB_KEYS.RUN_PREFIX)).length, detailedRunCountBeforeQuietAnalysis);
+assert.equal([...objects.keys()].filter((key) => key.includes("/value-investing/event-refresh/")).length, valueRefreshCountBeforeQuietAnalysis);
+runnerResultMode = "serious";
+
 setSecEventIdentity("000004", "2026-08-11T10:04:00.000Z");
 committeeFingerprint = "fingerprint-history-unavailable";
 failHistoryAccess = true;
@@ -483,5 +515,7 @@ console.log(JSON.stringify({
   fullSourceAbsoluteDeadlineEnforced: true,
   paidCommitteeInheritsCycleDeadline: true,
   unreadSourceRetriesThenExpiresWithoutHistory: true,
+  routineNoSignalSkipsDetailedR2Writes: true,
+  routineCompanyRefreshStaysInMemory: true,
   shortRenewableLeaseAndDeadlineRecovery: true,
 }, null, 2));

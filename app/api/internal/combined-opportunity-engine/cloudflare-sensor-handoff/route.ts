@@ -11,6 +11,7 @@ import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-wareho
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
+const PR262_CLOUDFLARE_HANDOFF_RETIRED = true;
 
 type Json = Record<string, unknown>;
 type Receipt = {
@@ -151,6 +152,9 @@ function beginAnalysis(claim: Awaited<ReturnType<typeof claimReceipt>>) {
 }
 
 export async function POST(request: NextRequest) {
+  if (PR262_CLOUDFLARE_HANDOFF_RETIRED) {
+    return NextResponse.json({ ok: false, error: "not_found" }, { status: 404, headers: { "cache-control": "no-store" } });
+  }
   if (!internalApiScopeAuthorized(request.headers, "sensor_handoff")) {
     return NextResponse.json({ ok: false, error: "not_found" }, { status: 404, headers: { "cache-control": "no-store" } });
   }

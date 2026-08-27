@@ -160,6 +160,10 @@ function sensorStateKey() {
   return pr262StorageKey("sensor/state-v1.json");
 }
 
+function sensorCadenceKey() {
+  return pr262StorageKey("sensor/cadence-v1.json");
+}
+
 function blankChannelState(): DeliveryChannelState {
   return {
     status: "pending",
@@ -1009,11 +1013,16 @@ async function readStatusFeedPointers(start: Date, now: Date) {
 
 async function liveSensorStatus(now: Date) {
   try {
-    const stored = await readVersionedTextFromR2(sensorStateKey());
-    if (!stored.found || !stored.text) {
+    const [stored, storedCadence] = await Promise.all([
+      readVersionedTextFromR2(sensorStateKey()),
+      readVersionedTextFromR2(sensorCadenceKey()),
+    ]);
+    if ((!stored.found || !stored.text) && (!storedCadence.found || !storedCadence.text)) {
       return { verifiedLive: false, coverageVerified: false, stateFound: false, owner: null, lastScanAt: null, ageMinutes: null, reason: "sensor_state_missing", coverageReason: "sensor_state_missing", sourceStatusCounts: {}, criticalSources: {}, readiness: null };
     }
-    const state = object(JSON.parse(stored.text));
+    let state = stored.found && stored.text
+      ? object(JSON.parse(stored.text))
+      : { version: 2, updatedAt: new Date(0).toISOString(), sourceHealth: {}, sensorReadiness: {}, cloudflareSensor: null };
     if (state.version !== 2) {
       return { verifiedLive: false, coverageVerified: false, stateFound: true, owner: null, lastScanAt: null, ageMinutes: null, reason: "sensor_state_contract_invalid", coverageReason: "sensor_state_contract_invalid", sourceStatusCounts: {}, criticalSources: {}, readiness: null };
     }
@@ -1021,6 +1030,17 @@ async function liveSensorStatus(now: Date) {
     const cloudflareOwner = text(cloudflare.owner, 64);
     if (cloudflareOwner && cloudflareOwner !== "cloudflare_worker") {
       return { verifiedLive: false, coverageVerified: false, stateFound: true, owner: null, lastScanAt: null, ageMinutes: null, reason: "sensor_owner_invalid", coverageReason: "sensor_owner_invalid", sourceStatusCounts: {}, criticalSources: {}, readiness: null };
+    }
+    if (!cloudflareOwner && storedCadence.found && storedCadence.text) {
+      const cadence = object(JSON.parse(storedCadence.text));
+      if (cadence.version === 1) {
+        state = {
+          ...state,
+          updatedAt: cadence.updatedAt ?? state.updatedAt,
+          sourceHealth: cadence.sourceHealth ?? state.sourceHealth,
+          sensorReadiness: cadence.sensorReadiness ?? state.sensorReadiness,
+        };
+      }
     }
     const sourceHealth = object(state.sourceHealth);
     const readinessRaw = object(state.sensorReadiness);

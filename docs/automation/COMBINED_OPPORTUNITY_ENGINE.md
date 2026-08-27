@@ -2,7 +2,13 @@
 
 ## Binding scope
 
-This branch is `agent/combined-opportunity-engine` for draft PR #262 only. It must remain isolated from PR #261 and `main`. It scans only active U.S.-listed common stocks and ADRs. Persistent branch state belongs only under the Cloudflare R2 prefix `branch-labs/pr-262/`. No production publishing, user notifications, trades, PostgreSQL writes, production migrations, Railway Volume fallback, secret changes, auto-merge, or merge to `main` are allowed from this branch.
+This work was developed on `agent/combined-opportunity-engine` for PR #262. It
+scans only active U.S.-listed common stocks and ADRs. Preview state belongs
+under `branch-labs/pr-262/`; approved production jobs are fenced to
+`production/pr262/`. The user has approved Railway + R2, an end-to-end Serious
+Signal delivery test, and a normal merge/deploy after the exact final commit
+passes every gate. No trades, PostgreSQL writes from jobs, Railway Volume
+fallback, unverified notifications, or auto-merge are allowed.
 
 ## Primary objective
 
@@ -89,8 +95,8 @@ The separately certified extreme-volatility rule retains its historical-certific
 
 - Cheap central SEC/news/official/market sensing: every five minutes, with
   provider-specific slower durable cadences where appropriate.
-- Cloudflare shadow is isolated and cannot invoke Railway analysis; after
-  cutover, Cloudflare wakes Railway only when retained queue work exists.
+- Railway is the sole sensor owner. Quiet scans retain only compact cadence and
+  safety state; only new important queue work triggers detailed R2 persistence.
 - Resumable full-company valuation: persisted in 500-company R2 batches and safely resumed across timeout/redeployment.
 - Production foundation refresh: daily on its own least-privilege Railway job;
   the exposure index is not ready until every valuation batch is complete.

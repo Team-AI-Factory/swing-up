@@ -233,11 +233,18 @@ try {
 
   await write(sensorKey, {
     version: 2,
-    updatedAt: later.toISOString(),
+    updatedAt: new Date(later.getTime() - 30 * 60_000).toISOString(),
     sourceHealth: {},
   }, { expectedEtag: objects.get(sensorKey).etag });
+  const cadenceKey = `${prefix}sensor/cadence-v1.json`;
+  await write(cadenceKey, {
+    version: 1,
+    updatedAt: later.toISOString(),
+    sourceHealth: {},
+    sensorReadiness: { version: 1, checkedAt: later.toISOString(), universeReady: false, universeEntries: 0, exposureReady: false, exposureEntries: 0 },
+  }, { createOnly: true });
   const verifiedRailwayQuietCycle = await getSeriousSignalStatus({ now: later, hours: 48 });
-  assert.equal(verifiedRailwayQuietCycle.sensor.verifiedLive, true, "A completed quiet Railway cycle must remain visible even when every source is not due.");
+  assert.equal(verifiedRailwayQuietCycle.sensor.verifiedLive, true, "A completed quiet Railway cycle must remain visible through its compact cadence object without rewriting the full queue.");
   assert.equal(verifiedRailwayQuietCycle.sensor.coverageVerified, false, "A fresh clock alone must not certify an empty market result.");
   assert.equal(verifiedRailwayQuietCycle.emptyResultVerified, false);
   assert.equal(verifiedRailwayQuietCycle.sensor.owner, "railway");

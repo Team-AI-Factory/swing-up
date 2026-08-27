@@ -14,9 +14,10 @@ let deliveryRecoveryCalls = 0;
 let mappingHealthy = true;
 let deliveryHealthy = true;
 let eventMode = "idle";
+let allowSensorRun = false;
 const state = {
   pending: [{
-    id: "cloudflare:queued-1",
+    id: "railway:queued-1",
     priority: 95,
     ticker: "SAFE",
     source: "company_news",
@@ -56,6 +57,10 @@ const stubs = {
         eventMode = "idle";
         throw new Error("pr262_event_full_source_incomplete; next_retry_at=2026-08-27T07:53:02.028Z");
       }
+      if (eventMode === "rolling_quota_deferred") {
+        eventMode = "idle";
+        throw new Error("pr262_full_source_rolling_quota_guard; next_retry_at=2026-08-28T02:22:47.870Z");
+      }
       if (eventMode === "broken") {
         eventMode = "idle";
         throw new Error("unexpected_event_processing_failure");
@@ -66,14 +71,12 @@ const stubs = {
   "@/lib/opportunity-engine/pr262-lightweight-sensor-v3": {
     runPr262LightweightSensorV3: async () => {
       sensorCalls += 1;
-      throw new Error("analysis_only_must_not_scan_sources");
+      if (!allowSensorRun) throw new Error("analysis_only_must_not_scan_sources");
+      return { ok: true, newEvents: 0, sectorFanoutEvents: 0, exposureCompanies: 1, sourceSummary: [], costPolicy: {}, r2Persistence: { queueWritten: false } };
     },
   },
   "@/lib/opportunity-engine/pr262-sensor-fetch-budget": {
-    createPr262SensorBudgetedFetch: async () => {
-      sensorCalls += 1;
-      throw new Error("analysis_only_must_not_create_sensor_budget");
-    },
+    createPr262SensorBudgetedFetch: async () => ({ fetchImpl: async () => { throw new Error("unexpected_fetch"); }, flush: async () => ({ persisted: true }), summary: () => ({ calls: 0 }) }),
   },
   "@/lib/opportunity-engine/pr262-serious-watch-out-authority": { promotePr262SeriousWatchOut: async () => ({ promoted: false, outboxKey: null }) },
   "@/lib/opportunity-engine/pr262-cost-effectiveness": { recordPr262CostEffectiveness: async () => ({ persisted: true }) },
@@ -87,9 +90,9 @@ new Function("require", "module", "exports", output)((name) => {
 
 const result = await loaded.exports.runPr262AnalysisOnlyCycle({ maxCycleMs: 90_000 });
 assert.equal(result.ok, true);
-assert.equal(result.mode, "pr262_cloudflare_handoff_analysis");
+assert.equal(result.mode, "pr262_railway_analysis_recovery");
 assert.equal(result.sensor.skipped, true);
-assert.equal(result.sensor.owner, "cloudflare_worker");
+assert.equal(result.sensor.owner, "railway_sensor");
 assert.equal(sensorCalls, 0);
 assert.equal(mappingCalls, 1);
 assert.equal(eventCalls, 1);
@@ -101,6 +104,13 @@ assert.equal(deferredEvidence.ok, true, "A durably scheduled evidence retry is h
 assert.equal(deferredEvidence.processing.eventFailures, 0);
 assert.equal(deferredEvidence.processing.eventDeferrals, 1);
 assert.equal(deferredEvidence.processing.eventResults[0].status, "event_job_deferred");
+
+eventMode = "rolling_quota_deferred";
+const deferredRollingQuota = await loaded.exports.runPr262AnalysisOnlyCycle({ maxCycleMs: 90_000 });
+assert.equal(deferredRollingQuota.ok, true, "A durable rolling provider-quota retry is healthy queue progress, not a crashed cron job.");
+assert.equal(deferredRollingQuota.processing.eventFailures, 0);
+assert.equal(deferredRollingQuota.processing.eventDeferrals, 1);
+assert.equal(deferredRollingQuota.processing.eventResults[0].status, "event_job_deferred");
 
 eventMode = "broken";
 const brokenEvent = await loaded.exports.runPr262AnalysisOnlyCycle({ maxCycleMs: 90_000 });
@@ -122,21 +132,24 @@ deliveryHealthy = true;
 
 const priorOwner = process.env.SWING_UP_PR262_SENSOR_OWNER;
 process.env.SWING_UP_PR262_SENSOR_OWNER = "cloudflare_worker";
+allowSensorRun = true;
+const sensorCallsBeforeDefault = sensorCalls;
 const guardedDefault = await loaded.exports.runPr262CronCycle({ maxCycleMs: 90_000 });
 if (priorOwner === undefined) delete process.env.SWING_UP_PR262_SENSOR_OWNER;
 else process.env.SWING_UP_PR262_SENSOR_OWNER = priorOwner;
-assert.equal(guardedDefault.mode, "pr262_cloudflare_handoff_analysis");
-assert.equal(sensorCalls, 0, "Cloudflare ownership must prevent duplicate Railway source scans");
+assert.equal(guardedDefault.mode, "pr262_five_minute_cron_v3");
+assert.equal(sensorCalls, sensorCallsBeforeDefault + 1, "A stale Cloudflare owner variable must not disable the approved Railway sensor.");
 
 console.log(JSON.stringify({
   ok: true,
-  cloudflareQueueAnalyzedByRailway: true,
+  railwayQueueAnalyzedByRailway: true,
   localSourceSensingSkipped: true,
   finalIssuerMappingStillRuns: true,
   durableDeliveryRecoveryRunsOnIdleCycle: true,
-  dualSensorOwnershipPrevented: true,
+  staleCloudflareOwnerCannotDisableRailway: true,
   degradedAnalysisCannotReportSuccess: true,
   degradedDeliveryCannotReportSuccess: true,
   scheduledEvidenceDeferralRemainsHealthy: true,
+  scheduledRollingQuotaDeferralRemainsHealthy: true,
   unexpectedEventFailureRemainsUnhealthy: true,
 }, null, 2));

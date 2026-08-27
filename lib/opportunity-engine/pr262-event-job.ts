@@ -725,9 +725,9 @@ async function refreshAffectedCompany(input: {
   const immutableKey = valueRefreshKey(input.event.id, ticker);
   const latestKey = `${VALUE_REFRESH_PREFIX}/${ticker}/latest.json`;
   const existing = await readVersionedTextFromR2(immutableKey);
-  let persisted: { payload: Json; analysis: UsValueCompanyAnalysis };
+  let prepared: { payload: Json; analysis: UsValueCompanyAnalysis };
   if (existing.found && existing.text) {
-    persisted = validatedValueRefresh(JSON.parse(existing.text), input.event.id, ticker);
+    prepared = validatedValueRefresh(JSON.parse(existing.text), input.event.id, ticker);
   } else {
     await input.beforeFetch();
     const analysis = await refreshUsValueCompany({
@@ -748,22 +748,32 @@ async function refreshAffectedCompany(input: {
       analysis,
       safety: { databaseWrites: false, publishing: false, notifications: false, trades: false },
     };
-    const created = await writeVersionedJsonToR2(immutableKey, payload, { createOnly: true });
+    prepared = validatedValueRefresh(payload, input.event.id, ticker);
+  }
+  return { analysis: prepared.analysis, payload: prepared.payload, immutableKey, latestKey, recovered: existing.found };
+}
+
+async function persistAffectedCompanyRefresh(refresh: Awaited<ReturnType<typeof refreshAffectedCompany>>) {
+  let persisted = { payload: refresh.payload, analysis: refresh.analysis };
+  let recovered = refresh.recovered;
+  if (!refresh.recovered) {
+    const created = await writeVersionedJsonToR2(refresh.immutableKey, refresh.payload, { createOnly: true });
     if (created.conflict) {
-      const concurrent = await readVersionedTextFromR2(immutableKey);
+      const concurrent = await readVersionedTextFromR2(refresh.immutableKey);
       if (!concurrent.found || !concurrent.text) throw new Error("pr262_event_value_refresh_conflict_read_failed");
-      persisted = validatedValueRefresh(JSON.parse(concurrent.text), input.event.id, ticker);
-    } else {
-      persisted = validatedValueRefresh(payload, input.event.id, ticker);
+      persisted = validatedValueRefresh(JSON.parse(concurrent.text), String(refresh.payload.eventId), String(refresh.payload.ticker));
+      recovered = true;
     }
   }
+  const refreshedAt = text(persisted.payload.refreshedAt);
+  if (!refreshedAt) throw new Error("pr262_event_value_refresh_timestamp_missing");
   await writeMonotonicLatest(
-    latestKey,
+    refresh.latestKey,
     persisted.payload,
-    text(persisted.payload.refreshedAt) ?? input.now.toISOString(),
+    refreshedAt,
     (value) => text(value.refreshedAt),
   );
-  return { analysis: persisted.analysis, immutableKey, latestKey, recovered: existing.found };
+  return { analysis: persisted.analysis, immutableKey: refresh.immutableKey, latestKey: refresh.latestKey, recovered };
 }
 
 function isHistoricalRecord(value: unknown): value is HistoricalSignalRecord {
@@ -839,6 +849,13 @@ function trackedFinding(report: Json): HistoricalSignalRecord | null {
   };
 }
 
+function detailedResultRequired(report: Json) {
+  return report.seriousSignalFound === true
+    || report.actionableSignalFound === true
+    || report.openAiCalled === true
+    || trackedFinding(report) !== null;
+}
+
 async function persistTrackedFinding(report: Json, now: Date) {
   const addition = trackedFinding(report);
   if (!addition) return { persisted: false, reason: "no_qualified_finding" };
@@ -898,7 +915,7 @@ function committeeApproved(report: Json, pointer: Json) {
     && output.overallRecommendation === "approve";
 }
 
-function stateRun(eventId: string, resultKey: string, report: Json) {
+function stateRun(eventId: string, resultKey: string | null, report: Json) {
   return {
     eventId,
     resultKey,
@@ -917,7 +934,7 @@ function stateRun(eventId: string, resultKey: string, report: Json) {
   };
 }
 
-async function completeState(eventId: string, ownerId: string, resultKey: string, report: Json, now: Date) {
+async function completeState(eventId: string, ownerId: string, resultKey: string | null, report: Json, now: Date) {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const loaded = await loadState(now);
     if (loaded.state.runs.some((run) => run.eventId === eventId)) return;
@@ -1264,6 +1281,51 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
     if (retryableReport(report, retryClassificationAllowsAi) && eventAgeMs <= 7 * 24 * 60 * 60_000) {
       throw new RetryAtError(committeeRetryAt, `pr262_event_report_retry:${text(report.status) ?? "unknown"}`);
     }
+    const costControl = {
+      companiesOpened: 1,
+      fullCompanyWarehouseRebuilds: 0,
+      broadEventFeedPolls: 0,
+      affectedCompanyValuationRefreshes: companyRefresh ? 1 : 0,
+      maximumCommitteeCallsPer24Hours: MAX_COMMITTEE_CALLS_PER_DAY,
+      optionalHistoryContextPreparedBeforeCommittee: history.available,
+      optionalHistoryContextRequiredForCommittee: false,
+      durableProviderBudgets: true,
+    };
+    if (!detailedResultRequired(report)) {
+      await renewLease(event.id, ownerId, clock());
+      await stopHeartbeat();
+      await completeState(event.id, ownerId, null, report, clock());
+      await acknowledgePr262PendingSensorEvent(event.id).catch(() => null);
+      return {
+        ok: true,
+        mode: "pr262_targeted_event_job",
+        status: text(report.status) ?? "completed",
+        checkedAt: text(report.checkedAt) ?? now.toISOString(),
+        eventsProcessed: 1,
+        recoveredPersistedResult: false,
+        ticker: resolved.directoryEntry.ticker,
+        cik: resolved.directoryEntry.cik,
+        sourceDecisionGrade: source.decisionGrade,
+        openAiCalled: false,
+        seriousSignalFound: false,
+        actionableSignalFound: false,
+        alertType: report.alertType ?? null,
+        resultKey: null,
+        outboxKey: null,
+        historyWrite: { persisted: false, reason: "no_qualified_finding" },
+        r2Persistence: {
+          detailedResultWritten: false,
+          companyRefreshWritten: false,
+          reason: "no_new_important_finding_or_change",
+        },
+        costControl,
+        safety: { databaseWrites: false, publishing: false, notifications: false, trades: false },
+      };
+    }
+
+    const persistedCompanyRefresh = companyRefresh
+      ? await persistAffectedCompanyRefresh(companyRefresh)
+      : null;
     const resultPayload = {
       version: 1,
       kind: "pr262_targeted_event_job_result",
@@ -1277,11 +1339,11 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       },
       sourceDecisionGrade: source.decisionGrade,
       sourceDiagnostics: source.diagnostics,
-      companyRefresh: companyRefresh ? {
-        immutableKey: companyRefresh.immutableKey,
-        latestKey: companyRefresh.latestKey,
-        recovered: companyRefresh.recovered,
-        analysis: companyRefresh.analysis,
+      companyRefresh: persistedCompanyRefresh ? {
+        immutableKey: persistedCompanyRefresh.immutableKey,
+        latestKey: persistedCompanyRefresh.latestKey,
+        recovered: persistedCompanyRefresh.recovered,
+        analysis: persistedCompanyRefresh.analysis,
       } : null,
       historicalContext: {
         requiredForSeriousSignal: false,
@@ -1318,16 +1380,12 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       resultKey,
       outboxKey: finalized.outboxKey,
       historyWrite: finalized.historyWrite,
-      costControl: {
-        companiesOpened: 1,
-        fullCompanyWarehouseRebuilds: 0,
-        broadEventFeedPolls: 0,
-        affectedCompanyValuationRefreshes: companyRefresh ? 1 : 0,
-        maximumCommitteeCallsPer24Hours: MAX_COMMITTEE_CALLS_PER_DAY,
-        optionalHistoryContextPreparedBeforeCommittee: history.available,
-        optionalHistoryContextRequiredForCommittee: false,
-        durableProviderBudgets: true,
+      r2Persistence: {
+        detailedResultWritten: true,
+        companyRefreshWritten: Boolean(persistedCompanyRefresh),
+        reason: "important_finding_or_paid_committee_audit",
       },
+      costControl,
       safety: { databaseWrites: false, publishing: false, notifications: false, trades: false },
     };
   } catch (error) {

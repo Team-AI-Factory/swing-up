@@ -112,7 +112,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
 
   let sourceBudget: Awaited<ReturnType<typeof createPr262SensorBudgetedFetch>> | null = null;
   let sensor: Awaited<ReturnType<typeof runPr262LightweightSensorV3>> | null = null;
-  let budgetPersistence: unknown = { persisted: false, reason: "cloudflare_sensor_owns_discovery" };
+  let budgetPersistence: unknown = { persisted: false, reason: "railway_analysis_recovery_skips_discovery" };
   if (mode === "sensor_and_analysis") {
     assertCycleActive();
     sourceBudget = await createPr262SensorBudgetedFetch({ signal: cycleSignal });
@@ -127,8 +127,8 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
   }
 
   assertCycleActive();
-  // Cloudflare can exact-map many events, but Railway performs a final mapping
-  // pass so unresolved or ambiguous issuers still fail closed before analysis.
+  // Railway performs a final mapping pass so unresolved or ambiguous issuers
+  // still fail closed before analysis.
   const mapping = await enrichPr262SensorCompanyMappings().catch((error) => ({
     mapped: 0,
     directoryCompanies: 0,
@@ -255,7 +255,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
       }
     } catch (error) {
       const message = error instanceof Error ? error.message.slice(0, 260) : "event_job_failed";
-      const retryableEvidenceDeferral = /^pr262_event_full_source_incomplete; next_retry_at=/.test(message);
+      const retryableEvidenceDeferral = /^(?:pr262_event_full_source_incomplete|pr262_full_source_rolling_quota_guard); next_retry_at=/.test(message);
       if (retryableEvidenceDeferral) eventDeferrals += 1;
       else eventFailures += 1;
       eventResults.push({
@@ -288,7 +288,28 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
   const eventsProcessed = eventResults.filter((item) => Number(item.eventsProcessed) > 0).length;
   const durationMs = Date.now() - startedAt;
   const directIssuer = sourceSummary.find((item) => item.provider === "direct_issuer_feeds");
-  const cost = Date.now() < deadlineAtMs
+  const materialCostActivity = sourceFailures > 0
+    || (sensor?.newEvents ?? 0) > 0
+    || eventsProcessed > 0
+    || eventFailures > 0
+    || aiCalls > 0
+    || seriousBuys > 0
+    || seriousSells > 0
+    || seriousWatchOuts > 0
+    || "error" in mapping;
+  if (!materialCostActivity) {
+    console.log(JSON.stringify({
+      kind: "pr262_quiet_cycle",
+      checkedAt,
+      durationMs,
+      pendingEvents: state.pending.length,
+      eventDeferrals,
+      r2MetricsWrite: false,
+    }));
+  }
+  const cost = Date.now() >= deadlineAtMs
+    ? { skipped: true, reason: "cycle_deadline" }
+    : materialCostActivity
     ? await recordPr262CostEffectiveness({
         checkedAt,
         durationMs,
@@ -305,7 +326,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
         seriousWatchOuts,
         directIssuerFeedsPolled: directIssuer?.recordsRead ?? 0,
       }).catch((error) => ({ error: error instanceof Error ? error.message : "cost_metrics_failed" }))
-    : { skipped: true, reason: "cycle_deadline" };
+    : { persisted: false, reason: "quiet_cycle_logged_to_railway_only" };
 
   const mappingHealthy = !("error" in mapping);
   const notificationFailures = notificationResults.filter((result) => result.seriousSignal === true && result.ok !== true).length;
@@ -319,7 +340,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
     && deliveryHealthy;
   return {
     ok: operationalOk,
-    mode: mode === "analysis_only" ? "pr262_cloudflare_handoff_analysis" : "pr262_five_minute_cron_v3",
+    mode: mode === "analysis_only" ? "pr262_railway_analysis_recovery" : "pr262_five_minute_cron_v3",
     checkedAt,
     durationMs,
     sensor: sensor ? {
@@ -334,8 +355,8 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
       providerBudgetPersistence: budgetPersistence,
     } : {
       skipped: true,
-      owner: "cloudflare_worker",
-      reason: "analysis_only_cycle_reads_existing_r2_queue",
+      owner: "railway_sensor",
+      reason: "railway_analysis_recovery_reads_existing_r2_queue",
       pendingEvents: state.pending.length,
     },
     mapping,
@@ -377,7 +398,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
       historicalCasesRemainLearningContext: true,
     },
     providerPolicy: {
-      alphaVantageReservedForCloudflareDiscoveryAndDurablyBudgetedRailwayFallback: true,
+      alphaVantageDiscoveryAndRailwayFallbackAreDurablyBudgeted: true,
       eventQuoteFallbackOrder: ["Yahoo Finance", "Alpha Vantage", "Financial Modeling Prep when commercially approved"],
     },
     cost,
@@ -413,8 +434,7 @@ async function runPr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput = {}) 
 }
 
 export async function runPr262CronCycle(input: Pr262CycleInput = {}) {
-  const owner = process.env.SWING_UP_PR262_SENSOR_OWNER?.trim().toLowerCase();
-  return runPr262Cycle(owner === "cloudflare_worker" ? "analysis_only" : "sensor_and_analysis", input);
+  return runPr262Cycle("sensor_and_analysis", input);
 }
 
 export async function runPr262AnalysisOnlyCycle(input: Pr262CycleInput = {}) {

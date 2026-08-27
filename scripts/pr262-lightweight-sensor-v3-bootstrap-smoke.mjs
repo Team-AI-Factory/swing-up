@@ -10,7 +10,9 @@ const output = ts.transpileModule(source, {
 }).outputText;
 
 let stateWritten = null;
+let persistedSensorState = null;
 let universeLoads = 0;
+let exposureAvailable = false;
 const emptyProvider = async () => ({ status: "connected", recordsRead: 0, receipts: [], error: null });
 const mappingProbeProvider = async () => ({
   status: "connected",
@@ -86,9 +88,12 @@ const stubs = {
     },
   },
   "@/lib/r2-warehouse": {
-    readVersionedTextFromR2: async () => ({ found: false, text: null, etag: null }),
+    readVersionedTextFromR2: async (key) => key.endsWith("sensor/state-v1.json") && persistedSensorState
+      ? { found: true, text: JSON.stringify(persistedSensorState), etag: "sensor-state-etag" }
+      : { found: false, text: null, etag: null },
     writeVersionedJsonToR2: async (key, value) => {
       stateWritten = { key, value };
+      if (key.endsWith("sensor/state-v1.json")) persistedSensorState = structuredClone(value);
       return { written: true, conflict: false, etag: "sensor-state-etag" };
     },
   },
@@ -105,7 +110,14 @@ const stubs = {
   },
   "@/lib/opportunity-engine/pr262-exposure-index": {
     loadPr262ExposureIndex: async () => {
-      throw new Error("pr262_exposure_value_cycle_missing");
+      if (!exposureAvailable) throw new Error("pr262_exposure_value_cycle_missing");
+      return {
+        version: 2,
+        valueCycleId: "cycle-1",
+        builtAt: "2026-08-20T08:55:00.000Z",
+        valueCoverage: { complete: true, totalCompanies: 1, companiesStored: 1, completedBatches: 1, totalBatches: 1 },
+        entries: [{ ticker: "SAFE", tradingViewSymbol: "NASDAQ:SAFE", company: "Safe Corporation", cik: "0000000001", buyBelowPrice: 20, strongBuyBelowPrice: 15, trimAbovePrice: 40, businessQuality: 80, marketCap: 1_000_000_000 }],
+      };
     },
   },
 };
@@ -130,7 +142,9 @@ assert.equal(loaded.exports.pr262UniverseReadyForSensor({ ...completeUniverse, c
 assert.equal(loaded.exports.pr262UniverseReadyForSensor({ ...completeUniverse, refreshedAt: "2026-08-18T00:00:00.000Z" }, now), false);
 const result = await loaded.exports.runPr262LightweightSensorV3({
   now,
-  fetchImpl: async () => ({ ok: true, status: 200, text: async () => "<feed></feed>" }),
+  fetchImpl: async (request, init) => init?.method === "POST"
+    ? { ok: true, status: 200, json: async () => ({ data: [{ s: "NASDAQ:SAFE", d: ["SAFE", "Safe Corporation", 10, -6, 1_000_000, 4] }] }) }
+    : { ok: true, status: 200, text: async () => "<feed></feed>" },
 });
 
 assert.equal(result.ok, true, "Connected central sources must keep first-run sensing live.");
@@ -152,12 +166,32 @@ assert.equal(companyNameOnly.ticker, null, "Company-name prose must remain unres
 assert.equal(companyNameOnly.mappingStatus, "unmapped");
 assert.equal(structuredTicker.ticker, "SAFE", "An explicit structured ticker may map through the authoritative universe.");
 assert.equal(structuredTicker.mappingStatus, "mapped");
+exposureAvailable = true;
+await loaded.exports.runPr262LightweightSensorV3({
+  now: new Date("2026-08-20T09:05:00.000Z"),
+  fetchImpl: async (request, init) => init?.method === "POST"
+    ? { ok: true, status: 200, json: async () => ({ data: [{ s: "NASDAQ:SAFE", d: ["SAFE", "Safe Corporation", 10, -6, 1_000_000, 4] }] }) }
+    : { ok: true, status: 200, text: async () => "<feed></feed>" },
+});
+const firstMarketEvent = stateWritten.value.pending.find((event) => event.sourceProvider === "tradingview_quality_watchlist_v3");
+assert.ok(firstMarketEvent, "The first threshold observation must enter the durable queue.");
+
+const repeatedSameDay = await loaded.exports.runPr262LightweightSensorV3({
+  now: new Date("2026-08-20T09:10:00.000Z"),
+  fetchImpl: async (request, init) => init?.method === "POST"
+    ? { ok: true, status: 200, json: async () => ({ data: [{ s: "NASDAQ:SAFE", d: ["SAFE", "Safe Corporation", 9.5, -7, 1_200_000, 5] }] }) }
+    : { ok: true, status: 200, text: async () => "<feed></feed>" },
+});
+const repeatedMarketEvents = stateWritten.value.pending.filter((event) => event.sourceProvider === "tradingview_quality_watchlist_v3");
+assert.equal(repeatedMarketEvents.length, 1, "A lower price five minutes later must reuse the same daily threshold event instead of growing the queue.");
+assert.equal(repeatedSameDay.newEvents, 0, "Repeated same-day market observations must not count as new work.");
 
 console.log(JSON.stringify({
   ok: true,
   cleanNamespaceScansImmediately: true,
   baselineAbsenceReportedHonestly: true,
   valuationDependentLanesFailClosed: true,
+  sameDayMarketThresholdsDeduplicated: true,
   companyNameMappingFailsClosed: true,
   structuredTickerMappingRetained: true,
   productionSensorStatePersisted: true,

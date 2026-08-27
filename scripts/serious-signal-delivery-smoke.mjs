@@ -115,11 +115,21 @@ delete process.env.RAILWAY_GIT_BRANCH;
 delete process.env.TELEGRAM_BOT_TOKEN;
 delete process.env.TELEGRAM_SERIOUS_SIGNAL_CHAT_ID;
 delete process.env.SWING_UP_SERIOUS_SIGNAL_WEBHOOK_URL;
+delete process.env.SWING_UP_PR262_EXTERNAL_NOTIFICATIONS_ENABLED;
+delete process.env.SWING_UP_PR262_DELIVERY_TEST_EXTERNAL_ENABLED;
 process.env.RAILWAY_GIT_BRANCH = "main";
 process.env.SWING_UP_SERIOUS_SIGNAL_DELIVERY_MAX_ATTEMPTS = "3";
 
 try {
   const start = new Date("2026-08-19T10:00:00.000Z");
+  process.env.TELEGRAM_BOT_TOKEN = "inherited-invalid-token";
+  process.env.TELEGRAM_SERIOUS_SIGNAL_CHAT_ID = "inherited-chat";
+  process.env.SWING_UP_SERIOUS_SIGNAL_WEBHOOK_URL = "https://inherited.example.test/swing-up";
+  let unexpectedInheritedExternalCalls = 0;
+  globalThis.fetch = async () => {
+    unexpectedInheritedExternalCalls += 1;
+    return new Response("unexpected", { status: 500 });
+  };
   const webOnlyOutboxKey = `${prefix}serious-signal/outbox/event-job/buy/WEB/fingerprint.json`;
   await write(webOnlyOutboxKey, validOutbox("WEB", start.toISOString()), { createOnly: true });
   const webOnly = await deliverSeriousSignalOutbox(webOnlyOutboxKey, { now: start, ownerId: "web-feed-only" });
@@ -127,8 +137,12 @@ try {
   assert.equal(webOnly.deliveryStatus, "delivered");
   assert.ok(webOnly.channels.some((channel) => channel.channel === "web_feed" && channel.sent));
   assert.ok(webOnly.channels.filter((channel) => channel.channel !== "web_feed").every((channel) => !channel.configured));
+  assert.equal(unexpectedInheritedExternalCalls, 0, "Inherited external credentials must be ignored without the explicit opt-in.");
   assert.equal(webOnly.exactlyOnceExternallyGuaranteed, false);
 
+  delete process.env.TELEGRAM_BOT_TOKEN;
+  delete process.env.TELEGRAM_SERIOUS_SIGNAL_CHAT_ID;
+  process.env.SWING_UP_PR262_EXTERNAL_NOTIFICATIONS_ENABLED = "true";
   process.env.SWING_UP_SERIOUS_SIGNAL_WEBHOOK_URL = "https://alerts.example.test/swing-up";
   const outboxKey = `${prefix}serious-signal/outbox/event-job/buy/SAFE/fingerprint.json`;
   await write(outboxKey, validOutbox("SAFE", start.toISOString()), { createOnly: true });
@@ -186,6 +200,7 @@ try {
   assert.ok(feedIndex.pointers.length <= 500, "The live feed index must remain strictly bounded.");
 
   process.env.SWING_UP_PR262_APPROVED_DELIVERY_TEST = "true";
+  process.env.SWING_UP_PR262_DELIVERY_TEST_EXTERNAL_ENABLED = "true";
   process.env.TELEGRAM_BOT_TOKEN = "test-bot-token";
   process.env.TELEGRAM_TEST_CHAT_ID = "test-chat-only";
   process.env.TELEGRAM_SERIOUS_SIGNAL_CHAT_ID = "must-not-be-used";
@@ -236,6 +251,7 @@ try {
     .some(([key, stored]) => key.startsWith(`${prefix}serious-signal/delivery-test/receipts/web_feed/`)
       && stored.payload.outboxKey === deliveryTestKey), "The isolated web-feed proof must leave a durable test receipt.");
   delete process.env.SWING_UP_PR262_APPROVED_DELIVERY_TEST;
+  delete process.env.SWING_UP_PR262_DELIVERY_TEST_EXTERNAL_ENABLED;
   delete process.env.TELEGRAM_BOT_TOKEN;
   delete process.env.TELEGRAM_TEST_CHAT_ID;
   delete process.env.TELEGRAM_SERIOUS_SIGNAL_CHAT_ID;
@@ -380,6 +396,7 @@ try {
 console.log(JSON.stringify({
   ok: true,
   authenticatedR2FeedIsPrimary: true,
+  inheritedExternalCredentialsRequireExplicitOptIn: true,
   concurrentClaimPreventsDuplicateSend: true,
   webhookIdempotencyKeyIncluded: true,
   durableRetryConsumer: true,

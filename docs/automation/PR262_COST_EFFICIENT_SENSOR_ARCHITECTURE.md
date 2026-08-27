@@ -115,14 +115,15 @@ still cause a duplicate. A notification expires after 30 minutes by default
 (and is hard-capped at two hours) so recovery never presents an old quote as
 current. The authenticated web feed retains 48 hours of history.
 
-Target channels:
+Delivery channels:
 
-- immediate Telegram or another webhook-capable phone channel;
-- a sanitized read-only Serious Signal feed for hourly ChatGPT monitoring/summary.
+- required immediate authenticated R2-backed Serious Signal feed;
+- optional, explicit-opt-in Telegram or HTTPS webhook add-ons;
+- optional hourly ChatGPT monitoring/summary over the same sanitized feed.
 
 Native Web Push and email are optional future channels, not hidden fallbacks or
 merge requirements. The implemented web/app surface is the authenticated live
-feed plus Telegram/HTTPS webhook delivery.
+feed; Telegram/HTTPS webhook delivery remains disabled unless explicitly opted in.
 
 No raw candidate or unfinished committee result may be delivered as a Serious Signal.
 

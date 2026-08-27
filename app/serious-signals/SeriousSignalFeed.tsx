@@ -17,7 +17,7 @@ type LiveAlert = {
     status: string;
     attempts?: number;
     nextAttemptAt?: string | null;
-    channels?: { telegram?: string; webhook?: string };
+    channels?: { webFeed?: string; telegram?: string; webhook?: string };
   };
 };
 

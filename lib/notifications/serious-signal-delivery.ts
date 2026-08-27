@@ -277,7 +277,7 @@ function messageFor(input: ReturnType<typeof validatedOutbox>) {
       "Swing Up — DELIVERY TEST",
       "NOT A MARKET SIGNAL",
       "",
-      "This checks the real Railway → R2 outbox → Telegram test-channel path.",
+      "This checks the real Railway → authenticated R2 delivery-feed path.",
       "No company, price, recommendation, or trading claim is being made.",
       "",
       "The test must create one durable receipt and suppress a duplicate send.",
@@ -545,15 +545,28 @@ function telegramChatId(testOnly: boolean) {
   return (testOnly ? process.env.TELEGRAM_TEST_CHAT_ID : process.env.TELEGRAM_SERIOUS_SIGNAL_CHAT_ID)?.trim() || null;
 }
 
+function externalNotificationsEnabled(testOnly: boolean) {
+  const value = testOnly
+    ? process.env.SWING_UP_PR262_DELIVERY_TEST_EXTERNAL_ENABLED
+    : process.env.SWING_UP_PR262_EXTERNAL_NOTIFICATIONS_ENABLED;
+  return value?.trim().toLowerCase() === "true";
+}
+
 function telegramConfigured(testOnly = false) {
-  return Boolean(process.env.TELEGRAM_BOT_TOKEN?.trim() && telegramChatId(testOnly));
+  return externalNotificationsEnabled(testOnly)
+    && Boolean(process.env.TELEGRAM_BOT_TOKEN?.trim() && telegramChatId(testOnly));
 }
 
 function webhookConfigured(testOnly = false) {
-  return !testOnly && Boolean(process.env.SWING_UP_SERIOUS_SIGNAL_WEBHOOK_URL?.trim());
+  return !testOnly
+    && externalNotificationsEnabled(false)
+    && Boolean(process.env.SWING_UP_SERIOUS_SIGNAL_WEBHOOK_URL?.trim());
 }
 
 async function sendTelegram(outboxKey: string, message: string, testOnly: boolean, signal?: AbortSignal): Promise<ChannelResult> {
+  if (!externalNotificationsEnabled(testOnly)) {
+    return { channel: "telegram", configured: false, sent: false, status: "not_configured", error: null };
+  }
   const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
   const chatId = telegramChatId(testOnly);
   if (!token || !chatId) return { channel: "telegram", configured: false, sent: false, status: "not_configured", error: null };
@@ -588,7 +601,9 @@ async function sendTelegram(outboxKey: string, message: string, testOnly: boolea
 }
 
 async function sendWebhook(outboxKey: string, payload: Json, testOnly: boolean, signal?: AbortSignal): Promise<ChannelResult> {
-  if (testOnly) return { channel: "webhook", configured: false, sent: false, status: "not_configured", error: null };
+  if (testOnly || !externalNotificationsEnabled(false)) {
+    return { channel: "webhook", configured: false, sent: false, status: "not_configured", error: null };
+  }
   const raw = process.env.SWING_UP_SERIOUS_SIGNAL_WEBHOOK_URL?.trim();
   if (!raw) return { channel: "webhook", configured: false, sent: false, status: "not_configured", error: null };
   let url: URL;

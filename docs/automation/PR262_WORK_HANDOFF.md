@@ -81,15 +81,15 @@ Do not rely on a branch-wide blocker as the only security control for a dangerou
 
 A Serious Signal must be written exactly once to a durable outbox before delivery.
 
-Immediate delivery uses Telegram and/or an HTTPS webhook. The authenticated
-`/serious-signals` web/app surface reads a sanitized rolling 48-hour feed.
+Required immediate delivery is the authenticated `/serious-signals` web/app
+surface backed by the sanitized rolling 48-hour R2 feed. Telegram and HTTPS
+webhooks are optional, explicit-opt-in add-ons and are not merge requirements.
 Native Web Push and email may be added later when their providers and permission
 flows are selected; they are not part of this merge gate.
 
-ChatGPT monitoring should use the same sanitized read-only Serious Signal feed
-and may run hourly; it is not the immediate-delivery channel. Outbound retries
-are at-least-once and expire after 30 minutes by default so an old quote is not
-presented as a fresh alert.
+ChatGPT monitoring may use the same sanitized read-only Serious Signal feed and
+run hourly. Optional outbound retries are at-least-once and expire after 30
+minutes by default so an old quote is not presented as a fresh alert.
 
 ## Cost requirement
 

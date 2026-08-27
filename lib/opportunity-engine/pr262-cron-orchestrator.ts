@@ -145,6 +145,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
   const aiCostResults: Json[] = [];
   let aiBudget = await safeAiBudgetStatus();
   let eventFailures = 0;
+  let eventDeferrals = 0;
   let aiCalls = 0;
   let seriousBuys = 0;
   let seriousSells = 0;
@@ -253,9 +254,14 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
         notificationResults.push(asJson(delivery));
       }
     } catch (error) {
-      eventFailures += 1;
       const message = error instanceof Error ? error.message.slice(0, 260) : "event_job_failed";
-      eventResults.push({ status: "event_job_error", error: message });
+      const retryableEvidenceDeferral = /^pr262_event_full_source_incomplete; next_retry_at=/.test(message);
+      if (retryableEvidenceDeferral) eventDeferrals += 1;
+      else eventFailures += 1;
+      eventResults.push({
+        status: retryableEvidenceDeferral ? "event_job_deferred" : "event_job_error",
+        error: message,
+      });
       if (/deadline|aborted/i.test(message) || cycleSignal.aborted) {
         deadlineStoppedAdmissions = true;
         break;
@@ -338,6 +344,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
       capacity,
       eventsProcessed,
       eventFailures,
+      eventDeferrals,
       aiCalls,
       seriousBuys,
       seriousSells,

@@ -13,6 +13,7 @@ let eventCalls = 0;
 let deliveryRecoveryCalls = 0;
 let mappingHealthy = true;
 let deliveryHealthy = true;
+let eventMode = "idle";
 const state = {
   pending: [{
     id: "cloudflare:queued-1",
@@ -51,6 +52,14 @@ const stubs = {
       assert.ok(input.signal instanceof AbortSignal);
       assert.ok(input.deadlineAtMs > Date.now());
       assert.equal(typeof input.beforeOpenAiCall, "function", "Railway must pass the durable dollar reservation hook before paid analysis.");
+      if (eventMode === "evidence_deferred") {
+        eventMode = "idle";
+        throw new Error("pr262_event_full_source_incomplete; next_retry_at=2026-08-27T07:53:02.028Z");
+      }
+      if (eventMode === "broken") {
+        eventMode = "idle";
+        throw new Error("unexpected_event_processing_failure");
+      }
       return { ok: true, status: "idle", eventsProcessed: 0 };
     },
   },
@@ -86,6 +95,20 @@ assert.equal(mappingCalls, 1);
 assert.equal(eventCalls, 1);
 assert.equal(deliveryRecoveryCalls, 1);
 
+eventMode = "evidence_deferred";
+const deferredEvidence = await loaded.exports.runPr262AnalysisOnlyCycle({ maxCycleMs: 90_000 });
+assert.equal(deferredEvidence.ok, true, "A durably scheduled evidence retry is healthy queue progress, not a crashed cron job.");
+assert.equal(deferredEvidence.processing.eventFailures, 0);
+assert.equal(deferredEvidence.processing.eventDeferrals, 1);
+assert.equal(deferredEvidence.processing.eventResults[0].status, "event_job_deferred");
+
+eventMode = "broken";
+const brokenEvent = await loaded.exports.runPr262AnalysisOnlyCycle({ maxCycleMs: 90_000 });
+assert.equal(brokenEvent.ok, false, "An unexpected event-processing failure must still fail the cron job.");
+assert.equal(brokenEvent.processing.eventFailures, 1);
+assert.equal(brokenEvent.processing.eventDeferrals, 0);
+eventMode = "idle";
+
 mappingHealthy = false;
 const degraded = await loaded.exports.runPr262AnalysisOnlyCycle({ maxCycleMs: 90_000 });
 assert.equal(degraded.ok, false, "A failed final issuer-mapping pass must not be acknowledged as a successful analysis cycle.");
@@ -114,4 +137,6 @@ console.log(JSON.stringify({
   dualSensorOwnershipPrevented: true,
   degradedAnalysisCannotReportSuccess: true,
   degradedDeliveryCannotReportSuccess: true,
+  scheduledEvidenceDeferralRemainsHealthy: true,
+  unexpectedEventFailureRemainsUnhealthy: true,
 }, null, 2));

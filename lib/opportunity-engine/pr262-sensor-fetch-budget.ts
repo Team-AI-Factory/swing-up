@@ -126,6 +126,7 @@ export async function createPr262SensorBudgetedFetch(input: { now?: Date; fetchI
   let loaded = await load(now);
   let state = loaded.state;
   const blocked: Array<{ provider: string; reason: string; nextEligibleAt: string | null }> = [];
+  let reservationTail: Promise<void> = Promise.resolve();
 
   const reserveBeforeNetwork = async (policy: Policy, currentMs: number) => {
     for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -168,7 +169,12 @@ export async function createPr262SensorBudgetedFetch(input: { now?: Date; fetchI
       : init?.signal;
     if (!policy) return rawFetch(request, { ...init, signal });
     const currentMs = Date.now();
-    await reserveBeforeNetwork(policy, currentMs);
+    // Source reads run concurrently, but their compact R2 budget ledger is one
+    // shared document. Serialize only this short reservation step so parallel
+    // providers do not exhaust CAS retries by colliding with one another.
+    const reservation = reservationTail.then(() => reserveBeforeNetwork(policy, currentMs));
+    reservationTail = reservation.then(() => undefined, () => undefined);
+    await reservation;
     return rawFetch(request, { ...init, signal });
   };
 

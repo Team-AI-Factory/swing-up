@@ -20,6 +20,7 @@ import {
   acknowledgePr262PendingSensorEvent,
   readNextPr262PendingSensorEvent,
   retryPr262PendingSensorEvent,
+  type Pr262PendingSensorEventMutation,
   type Pr262SensorEvent,
 } from "@/lib/opportunity-engine/pr262-change-sensor";
 import {
@@ -84,7 +85,24 @@ export type Pr262EventJobInput = {
   clock?: () => Date;
   signal?: AbortSignal;
   deadlineAtMs?: number;
+  excludedEventIds?: readonly string[];
+  queueMutationSink?: (mutation: Pr262PendingSensorEventMutation) => void;
 };
+
+async function persistQueueMutation(
+  mutation: Pr262PendingSensorEventMutation,
+  sink?: (mutation: Pr262PendingSensorEventMutation) => void,
+) {
+  if (sink) {
+    sink(mutation);
+    return;
+  }
+  if (mutation.action === "acknowledge") {
+    await acknowledgePr262PendingSensorEvent(mutation.eventId);
+    return;
+  }
+  await retryPr262PendingSensorEvent(mutation);
+}
 
 function object(value: unknown): Json {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Json : {};
@@ -926,11 +944,6 @@ function stateRun(eventId: string, resultKey: string | null, report: Json) {
     alertType: report.alertType ?? null,
     openAiCalled: report.openAiCalled === true,
     candidateFingerprint: report.candidateFingerprint ?? null,
-    selectedCandidate: report.selectedCandidate ?? null,
-    rankedCandidates: [],
-    historicalPilot: report.historicalPilot ?? null,
-    tradingHaltSafety: report.tradingHaltSafety ?? null,
-    committee: report.committee ?? null,
   };
 }
 
@@ -980,6 +993,7 @@ async function finalizePersistedResult(input: {
   now: Date;
   clock: () => Date;
   stopHeartbeat: () => Promise<void>;
+  queueMutationSink?: (mutation: Pr262PendingSensorEventMutation) => void;
 }) {
   const validated = validatedResultPayload(input.payload, input.eventId, input.resultKey);
   const report = validated.report;
@@ -1044,7 +1058,10 @@ async function finalizePersistedResult(input: {
   await renewLease(input.eventId, input.ownerId, input.clock());
   await input.stopHeartbeat();
   await completeState(input.eventId, input.ownerId, input.resultKey, report, input.clock());
-  await acknowledgePr262PendingSensorEvent(input.eventId).catch(() => null);
+  await persistQueueMutation(
+    { action: "acknowledge", eventId: input.eventId },
+    input.queueMutationSink,
+  ).catch(() => null);
   return { report, checkedAt, historyWrite, outboxKey, pointer };
 }
 
@@ -1077,13 +1094,20 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
   const now = input.now ?? clock();
   const fetchImpl = input.fetchImpl ?? fetch;
   const allowOpenAi = input.allowOpenAi ?? process.env.SWING_UP_PR262_EVENT_JOB_OPENAI_ENABLED === "true";
-  const event = await readNextPr262PendingSensorEvent({ now, minimumPriority: 80 });
+  const event = await readNextPr262PendingSensorEvent({
+    now,
+    minimumPriority: 80,
+    excludedEventIds: input.excludedEventIds,
+  });
   if (!event) {
     return { ok: true, mode: "pr262_targeted_event_job", status: "idle", checkedAt: now.toISOString(), eventsProcessed: 0, aiCalls: 0 };
   }
   const claim = await claimEvent(event.id, now);
   if (claim.status === "already_completed") {
-    await acknowledgePr262PendingSensorEvent(event.id).catch(() => null);
+    await persistQueueMutation(
+      { action: "acknowledge", eventId: event.id },
+      input.queueMutationSink,
+    ).catch(() => null);
     return { ok: true, mode: "pr262_targeted_event_job", status: "already_completed", checkedAt: now.toISOString(), eventsProcessed: 0, prior: claim.prior };
   }
   if (claim.status === "busy" || !claim.ownerId) {
@@ -1132,7 +1156,16 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
     const recovered = await readExistingResult(resultKey, event.id);
     if (recovered) {
       assertJobActive();
-      const finalized = await finalizePersistedResult({ eventId: event.id, ownerId, resultKey, payload: recovered.payload, now, clock, stopHeartbeat });
+      const finalized = await finalizePersistedResult({
+        eventId: event.id,
+        ownerId,
+        resultKey,
+        payload: recovered.payload,
+        now,
+        clock,
+        stopHeartbeat,
+        queueMutationSink: input.queueMutationSink,
+      });
       return {
         ok: true,
         mode: "pr262_targeted_event_job",
@@ -1295,7 +1328,10 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       await renewLease(event.id, ownerId, clock());
       await stopHeartbeat();
       await completeState(event.id, ownerId, null, report, clock());
-      await acknowledgePr262PendingSensorEvent(event.id).catch(() => null);
+      await persistQueueMutation(
+        { action: "acknowledge", eventId: event.id },
+        input.queueMutationSink,
+      ).catch(() => null);
       return {
         ok: true,
         mode: "pr262_targeted_event_job",
@@ -1362,7 +1398,16 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       : validatedResultPayload(resultPayload, event.id, resultKey);
     if (!persisted) throw new Error("pr262_event_result_conflict_read_failed");
     assertJobActive();
-    const finalized = await finalizePersistedResult({ eventId: event.id, ownerId, resultKey, payload: persisted.payload, now, clock, stopHeartbeat });
+    const finalized = await finalizePersistedResult({
+      eventId: event.id,
+      ownerId,
+      resultKey,
+      payload: persisted.payload,
+      now,
+      clock,
+      stopHeartbeat,
+      queueMutationSink: input.queueMutationSink,
+    });
     return {
       ok: true,
       mode: "pr262_targeted_event_job",
@@ -1399,7 +1444,13 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
     const nextRetryAt = new Date(Number.isFinite(requestedRetryAt) && requestedRetryAt > now.getTime()
       ? requestedRetryAt
       : now.getTime() + retryDelay(event)).toISOString();
-    await retryPr262PendingSensorEvent({ eventId: event.id, error: message, nextRetryAt, attemptedAt: now }).catch(() => null);
+    await persistQueueMutation({
+      action: "retry",
+      eventId: event.id,
+      error: message,
+      nextRetryAt,
+      attemptedAt: now,
+    }, input.queueMutationSink).catch(() => null);
     throw new Error(`${message}; next_retry_at=${nextRetryAt}`);
   } finally {
     if (deadlineTimer) clearTimeout(deadlineTimer);

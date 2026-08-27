@@ -15,7 +15,12 @@ new Function("require", "module", "exports", output)((specifier) => {
   return nodeRequire(specifier);
 }, loaded, loaded.exports);
 
-const { listR2ObjectKeys, parseR2ObjectKeyPage } = loaded.exports;
+const {
+  decodeVersionedR2Text,
+  encodeVersionedJsonForR2,
+  listR2ObjectKeys,
+  parseR2ObjectKeyPage,
+} = loaded.exports;
 const parsed = parseR2ObjectKeyPage(`<?xml version="1.0"?><ListBucketResult><IsTruncated>true</IsTruncated><Contents><Key>production/a&amp;b.json</Key></Contents><NextContinuationToken>opaque&amp;token</NextContinuationToken></ListBucketResult>`);
 assert.deepEqual(parsed.keys, ["production/a&b.json"]);
 assert.equal(parsed.isTruncated, true);
@@ -25,6 +30,25 @@ assert.throws(
   /r2_list_contract_invalid/,
   "An HTTP 200 with the wrong R2 schema must not look like an empty key page.",
 );
+
+const largeQueue = {
+  version: 2,
+  pending: Array.from({ length: 250 }, (_, index) => ({
+    id: `important-event-${index}`,
+    title: "Material issuer change requiring bounded analysis",
+    reason: "New official evidence changed the retained important-event queue.",
+  })),
+};
+const compressedQueue = encodeVersionedJsonForR2("production/pr262/sensor/state-v1.json", largeQueue);
+assert.equal(compressedQueue.compressed, true);
+assert.equal(compressedQueue.contentType, "application/gzip");
+assert.ok(compressedQueue.body.length < compressedQueue.uncompressedBytes / 4);
+assert.deepEqual(JSON.parse(decodeVersionedR2Text(compressedQueue.body)), largeQueue);
+
+const externalFinding = encodeVersionedJsonForR2("production/pr262/serious-signal/delivery-v2/feed/example.json", largeQueue);
+assert.equal(externalFinding.compressed, false, "User-facing finding objects must remain ordinary JSON.");
+assert.equal(externalFinding.contentType, "application/json");
+assert.deepEqual(JSON.parse(decodeVersionedR2Text(externalFinding.body)), largeQueue);
 
 Object.assign(process.env, {
   R2_BUCKET: "private-bucket",
@@ -65,4 +89,6 @@ console.log(JSON.stringify({
   continuationTokenPreserved: true,
   unsafePrefixRejected: true,
   successfulHttpWithWrongSchemaRejected: true,
+  largeInternalRuntimeStateCompressed: true,
+  legacyAndUserFacingJsonRemainReadable: true,
 }, null, 2));

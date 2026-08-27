@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { prisma } from "@/lib/db/client";
 import { redactSecrets } from "@/lib/redact-secrets";
 
@@ -364,10 +365,40 @@ export async function objectExistsInR2(r2Key: string) {
   if (!res.ok) throw new Error(`R2 head failed with status ${res.status}`);
   return true;
 }
+
+const PR262_COMPRESSED_VERSIONED_STATE_SUFFIXES = [
+  "/sensor/state-v1.json",
+  "/sensor/provider-budgets-v1.json",
+  "/sensor/direct-company-feeds-v1.json",
+  "/event-job/runtime/provider-budgets-v1.json",
+  "/event-job/runtime/committee-budgets-v1.json",
+] as const;
+const PR262_COMPRESSION_MINIMUM_BYTES = 16 * 1024;
+
+export function decodeVersionedR2Text(body: Buffer) {
+  const gzip = body.length >= 2 && body[0] === 0x1f && body[1] === 0x8b;
+  return (gzip ? gunzipSync(body) : body).toString("utf8");
+}
+
+export function encodeVersionedJsonForR2(r2Key: string, payload: unknown) {
+  const compactPr262State = r2Key.startsWith("production/pr262/")
+    || r2Key.startsWith("branch-labs/pr-262/");
+  const plain = Buffer.from(`${JSON.stringify(redactSecrets(payload), null, compactPr262State ? undefined : 2)}\n`);
+  const internalRuntimeState = compactPr262State
+    && PR262_COMPRESSED_VERSIONED_STATE_SUFFIXES.some((suffix) => r2Key.endsWith(suffix));
+  const compressed = internalRuntimeState && plain.length >= PR262_COMPRESSION_MINIMUM_BYTES;
+  return {
+    body: compressed ? gzipSync(plain, { level: 6 }) : plain,
+    contentType: compressed ? "application/gzip" : "application/json",
+    compressed,
+    uncompressedBytes: plain.length,
+  };
+}
+
 export async function readRawDataFromR2(r2Key: string) {
   const res = await signedFetch("GET", r2Key);
   if (!res.ok) throw new Error(`R2 read failed with status ${res.status}`);
-  return res.text();
+  return decodeVersionedR2Text(Buffer.from(await res.arrayBuffer()));
 }
 
 export type VersionedR2Object = {
@@ -391,7 +422,8 @@ export async function readVersionedTextFromR2(r2Key: string): Promise<VersionedR
   const res = await signedFetch("GET", r2Key);
   if (res.status === 404) return { found: false, text: null, etag: null };
   if (!res.ok) throw new Error(`r2_state_read_http_${res.status}`);
-  return { found: true, text: await res.text(), etag: normalizeR2Etag(res.headers.get("etag")) };
+  const text = decodeVersionedR2Text(Buffer.from(await res.arrayBuffer()));
+  return { found: true, text, etag: normalizeR2Etag(res.headers.get("etag")) };
 }
 
 export type R2ObjectKeyPage = {
@@ -465,16 +497,17 @@ export async function writeVersionedJsonToR2(
   const condition: Record<string, string> = {};
   if (options.expectedEtag) condition["if-match"] = normalizeR2Etag(options.expectedEtag) ?? options.expectedEtag;
   else if (options.createOnly) condition["if-none-match"] = "*";
-  const redacted = redactSecrets(payload);
   const compactPr262State = r2Key.startsWith("production/pr262/")
     || r2Key.startsWith("branch-labs/pr-262/");
-  const body = `${JSON.stringify(redacted, null, compactPr262State ? undefined : 2)}\n`;
-  const res = await signedFetch("PUT", r2Key, body, "application/json", undefined, condition);
+  const encoded = encodeVersionedJsonForR2(r2Key, payload);
+  const res = await signedFetch("PUT", r2Key, encoded.body, encoded.contentType, undefined, condition);
   if (process.env.SWING_UP_PR262_R2_WRITE_TELEMETRY?.trim().toLowerCase() === "true"
     && compactPr262State) {
     console.log(`[pr262-r2-write] ${JSON.stringify({
       key: r2Key,
-      bytes: Buffer.byteLength(body),
+      bytes: encoded.body.length,
+      uncompressedBytes: encoded.uncompressedBytes,
+      compressed: encoded.compressed,
       status: res.status,
       conflict: res.status === 412,
     })}`);

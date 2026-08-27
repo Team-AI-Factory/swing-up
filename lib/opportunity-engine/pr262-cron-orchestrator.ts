@@ -64,6 +64,11 @@ function asJson(value: unknown): Json {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Json : {};
 }
 
+function isScheduledEventDeferral(message: string) {
+  if (!/; next_retry_at=\d{4}-\d{2}-\d{2}T/.test(message)) return false;
+  return /^(?:pr262_event_full_source_incomplete|pr262_event_report_retry:[^;]+|[a-z0-9_]+_(?:rolling_quota_guard|cadence_guard)|The operation was aborted due to timeout); next_retry_at=/.test(message);
+}
+
 class Pr262CycleDeadlineError extends Error {
   constructor() {
     super("pr262_cycle_deadline_exceeded");
@@ -266,7 +271,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
       }
     } catch (error) {
       const message = error instanceof Error ? error.message.slice(0, 260) : "event_job_failed";
-      const retryableEvidenceDeferral = /^(?:pr262_event_full_source_incomplete|pr262_event_report_retry:[^;]+|[a-z0-9_]+_(?:rolling_quota_guard|cadence_guard)); next_retry_at=/.test(message);
+      const retryableEvidenceDeferral = isScheduledEventDeferral(message);
       if (retryableEvidenceDeferral) eventDeferrals += 1;
       else eventFailures += 1;
       eventResults.push({

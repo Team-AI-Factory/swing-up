@@ -74,6 +74,10 @@ const stubs = {
         eventMode = "idle";
         throw new Error("tradingview_targeted_value_rolling_quota_guard; next_retry_at=2026-08-28T02:23:01.827Z");
       }
+      if (eventMode === "network_timeout_deferred") {
+        eventMode = "idle";
+        throw new Error("The operation was aborted due to timeout; next_retry_at=2026-08-27T10:42:26.025Z");
+      }
       if (eventMode === "broken") {
         eventMode = "idle";
         throw new Error("unexpected_event_processing_failure");
@@ -137,6 +141,13 @@ assert.equal(deferredTargetedQuota.processing.eventFailures, 0);
 assert.equal(deferredTargetedQuota.processing.eventDeferrals, 1);
 assert.equal(deferredTargetedQuota.processing.eventResults[0].status, "event_job_deferred");
 
+eventMode = "network_timeout_deferred";
+const deferredNetworkTimeout = await loaded.exports.runPr262AnalysisOnlyCycle({ maxCycleMs: 90_000 });
+assert.equal(deferredNetworkTimeout.ok, true, "A network timeout already placed back on the durable queue must not fail the whole cycle.");
+assert.equal(deferredNetworkTimeout.processing.eventFailures, 0);
+assert.equal(deferredNetworkTimeout.processing.eventDeferrals, 1);
+assert.equal(deferredNetworkTimeout.processing.eventResults[0].status, "event_job_deferred");
+
 eventMode = "broken";
 const brokenEvent = await loaded.exports.runPr262AnalysisOnlyCycle({ maxCycleMs: 90_000 });
 assert.equal(brokenEvent.ok, false, "An unexpected event-processing failure must still fail the cron job.");
@@ -185,6 +196,7 @@ console.log(JSON.stringify({
   scheduledEvidenceDeferralRemainsHealthy: true,
   scheduledRollingQuotaDeferralRemainsHealthy: true,
   scheduledTargetedQuotaDeferralRemainsHealthy: true,
+  scheduledNetworkTimeoutDeferralRemainsHealthy: true,
   unexpectedEventFailureRemainsUnhealthy: true,
   queueOutcomesPersistOncePerCycle: true,
 }, null, 2));

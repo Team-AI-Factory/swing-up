@@ -32,6 +32,9 @@ import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 import { promotePr262SeriousWatchOut } from "@/lib/opportunity-engine/pr262-serious-watch-out-authority";
 
 const STATE_KEY = pr262StorageKey("event-job/state-v1.json");
+const LEASE_KEY = pr262StorageKey("event-job/runtime/lease-v1.json");
+const PROVIDER_BUDGET_KEY = pr262StorageKey("event-job/runtime/provider-budgets-v1.json");
+const COMMITTEE_BUDGET_KEY = pr262StorageKey("event-job/runtime/committee-budgets-v1.json");
 const LATEST_KEY = pr262StorageKey("event-job/latest.json");
 const RUN_PREFIX = pr262StorageKey("event-job/runs");
 const OUTBOX_PREFIX = pr262StorageKey("serious-signal/outbox/event-job");
@@ -74,6 +77,9 @@ type EventJobState = {
   providerReservations: ProviderReservation[];
   runs: Json[];
 };
+type EventJobLeaseState = { version: 1; updatedAt: string; lease: EventLease | null };
+type EventJobProviderBudgetState = { version: 1; updatedAt: string; reservations: ProviderReservation[] };
+type EventJobCommitteeBudgetState = { version: 1; updatedAt: string; reservations: CommitteeReservation[] };
 
 export type Pr262EventJobInput = {
   now?: Date;
@@ -201,11 +207,109 @@ async function loadState(now: Date) {
   return { state: normalizeState(JSON.parse(current.text), now), etag: current.etag };
 }
 
+function activeLease(value: unknown, now: Date) {
+  const item = object(value);
+  const lease = object(item.lease);
+  return typeof lease.eventId === "string"
+    && typeof lease.ownerId === "string"
+    && typeof lease.acquiredAt === "string"
+    && typeof lease.expiresAt === "string"
+    && Date.parse(lease.expiresAt) > now.getTime()
+    ? lease as EventLease
+    : null;
+}
+
+async function loadLeaseState(now: Date) {
+  const current = await readVersionedTextFromR2(LEASE_KEY);
+  if (current.found && current.text) {
+    const item = object(JSON.parse(current.text));
+    return {
+      state: { version: 1, updatedAt: text(item.updatedAt) ?? new Date(0).toISOString(), lease: activeLease(item, now) } as EventJobLeaseState,
+      etag: current.etag,
+    };
+  }
+  const legacy = await loadState(now);
+  return {
+    state: { version: 1, updatedAt: legacy.state.updatedAt, lease: legacy.state.lease } as EventJobLeaseState,
+    etag: current.etag,
+  };
+}
+
+async function loadProviderBudgetState(now: Date) {
+  const current = await readVersionedTextFromR2(PROVIDER_BUDGET_KEY);
+  if (current.found && current.text) {
+    const item = object(JSON.parse(current.text));
+    const reservations = Array.isArray(item.reservations)
+      ? normalizeState({ providerReservations: item.reservations }, now).providerReservations
+      : [];
+    return {
+      state: { version: 1, updatedAt: text(item.updatedAt) ?? new Date(0).toISOString(), reservations } as EventJobProviderBudgetState,
+      etag: current.etag,
+    };
+  }
+  const legacy = await loadState(now);
+  return {
+    state: { version: 1, updatedAt: legacy.state.updatedAt, reservations: legacy.state.providerReservations } as EventJobProviderBudgetState,
+    etag: current.etag,
+  };
+}
+
+async function loadCommitteeBudgetState(now: Date) {
+  const current = await readVersionedTextFromR2(COMMITTEE_BUDGET_KEY);
+  if (current.found && current.text) {
+    const item = object(JSON.parse(current.text));
+    const reservations = Array.isArray(item.reservations)
+      ? normalizeState({ committeeReservations: item.reservations }, now).committeeReservations
+      : [];
+    return {
+      state: { version: 1, updatedAt: text(item.updatedAt) ?? new Date(0).toISOString(), reservations } as EventJobCommitteeBudgetState,
+      etag: current.etag,
+    };
+  }
+  const legacy = await loadState(now);
+  return {
+    state: { version: 1, updatedAt: legacy.state.updatedAt, reservations: legacy.state.committeeReservations } as EventJobCommitteeBudgetState,
+    etag: current.etag,
+  };
+}
+
+async function preserveLegacyRuntimeBudgets(state: EventJobState, now: Date) {
+  const [providerState, committeeState] = await Promise.all([
+    readVersionedTextFromR2(PROVIDER_BUDGET_KEY),
+    readVersionedTextFromR2(COMMITTEE_BUDGET_KEY),
+  ]);
+  const writes: Promise<unknown>[] = [];
+  if (!providerState.found) {
+    writes.push(writeVersionedJsonToR2(PROVIDER_BUDGET_KEY, {
+      version: 1,
+      updatedAt: now.toISOString(),
+      reservations: state.providerReservations,
+    } satisfies EventJobProviderBudgetState, { createOnly: true }));
+  }
+  if (!committeeState.found) {
+    writes.push(writeVersionedJsonToR2(COMMITTEE_BUDGET_KEY, {
+      version: 1,
+      updatedAt: now.toISOString(),
+      reservations: state.committeeReservations,
+    } satisfies EventJobCommitteeBudgetState, { createOnly: true }));
+  }
+  await Promise.all(writes);
+}
+
+async function assertLeaseOwned(eventId: string, ownerId: string, now: Date) {
+  const loaded = await loadLeaseState(now);
+  if (loaded.state.lease?.eventId !== eventId || loaded.state.lease.ownerId !== ownerId) {
+    throw new Error("pr262_event_job_lease_lost");
+  }
+  return loaded;
+}
+
 async function claimEvent(eventId: string, now: Date) {
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const loaded = await loadState(now);
-    const prior = loaded.state.runs.find((run) => run.eventId === eventId);
+    const runs = await loadState(now);
+    const prior = runs.state.runs.find((run) => run.eventId === eventId);
     if (prior) return { status: "already_completed" as const, prior, ownerId: null };
+    const loaded = await loadLeaseState(now);
     if (loaded.state.lease) return { status: "busy" as const, prior: null, ownerId: null, lease: loaded.state.lease };
     const ownerId = crypto.randomUUID();
     const lease: EventLease = {
@@ -214,9 +318,9 @@ async function claimEvent(eventId: string, now: Date) {
       acquiredAt: now.toISOString(),
       expiresAt: new Date(now.getTime() + LEASE_MS).toISOString(),
     };
-    const next: EventJobState = { ...loaded.state, updatedAt: now.toISOString(), lease };
+    const next: EventJobLeaseState = { version: 1, updatedAt: now.toISOString(), lease };
     const written = await writeVersionedJsonToR2(
-      STATE_KEY,
+      LEASE_KEY,
       next,
       loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true },
     );
@@ -227,10 +331,10 @@ async function claimEvent(eventId: string, now: Date) {
 
 async function releaseLease(eventId: string, ownerId: string, now: Date) {
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const loaded = await loadState(now);
+    const loaded = await loadLeaseState(now);
     if (!loaded.state.lease || loaded.state.lease.eventId !== eventId || loaded.state.lease.ownerId !== ownerId) return;
-    const next: EventJobState = { ...loaded.state, updatedAt: now.toISOString(), lease: null };
-    const written = await writeVersionedJsonToR2(STATE_KEY, next, loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true });
+    const next: EventJobLeaseState = { version: 1, updatedAt: now.toISOString(), lease: null };
+    const written = await writeVersionedJsonToR2(LEASE_KEY, next, loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true });
     if (!written.conflict) return;
   }
   throw new Error("pr262_event_job_release_conflict");
@@ -238,16 +342,16 @@ async function releaseLease(eventId: string, ownerId: string, now: Date) {
 
 async function renewLease(eventId: string, ownerId: string, now: Date) {
   for (let attempt = 0; attempt < 5; attempt += 1) {
-    const loaded = await loadState(now);
+    const loaded = await loadLeaseState(now);
     if (!loaded.state.lease || loaded.state.lease.eventId !== eventId || loaded.state.lease.ownerId !== ownerId) {
       throw new Error("pr262_event_job_lease_lost");
     }
-    const next: EventJobState = {
-      ...loaded.state,
+    const next: EventJobLeaseState = {
+      version: 1,
       updatedAt: now.toISOString(),
       lease: { ...loaded.state.lease, expiresAt: new Date(now.getTime() + LEASE_MS).toISOString() },
     };
-    const written = await writeVersionedJsonToR2(STATE_KEY, next, loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true });
+    const written = await writeVersionedJsonToR2(LEASE_KEY, next, loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true });
     if (!written.conflict) return;
   }
   throw new Error("pr262_event_job_renew_conflict");
@@ -288,11 +392,9 @@ async function reserveProviderCall(input: {
   request: EquityProviderCallRequest;
 }) {
   for (let attempt = 0; attempt < 5; attempt += 1) {
-    const loaded = await loadState(input.now);
-    if (loaded.state.lease?.eventId !== input.eventId || loaded.state.lease.ownerId !== input.ownerId) {
-      throw new Error("pr262_event_job_lease_lost");
-    }
-    const decision = providerCallBudgetDecision(loaded.state.providerReservations, input.request, input.now.getTime());
+    await assertLeaseOwned(input.eventId, input.ownerId, input.now);
+    const loaded = await loadProviderBudgetState(input.now);
+    const decision = providerCallBudgetDecision(loaded.state.reservations, input.request, input.now.getTime());
     if (!decision.allowed) {
       throw new ProviderBudgetError(decision.nextRetryAt, `${input.request.provider}_${decision.reason}`);
     }
@@ -306,15 +408,14 @@ async function reserveProviderCall(input: {
       minimumIntervalMs: input.request.minimumIntervalMs,
       reservationUnits: input.request.reservationUnits,
     };
-    const retained = loaded.state.providerReservations.filter((item) =>
+    const retained = loaded.state.reservations.filter((item) =>
       input.now.getTime() - Date.parse(item.reservedAt) < PROVIDER_RESERVATION_RETENTION_MS);
-    const next: EventJobState = {
-      ...loaded.state,
+    const next: EventJobProviderBudgetState = {
+      version: 1,
       updatedAt: input.now.toISOString(),
-      lease: { ...loaded.state.lease, expiresAt: new Date(input.now.getTime() + LEASE_MS).toISOString() },
-      providerReservations: [...retained, reservation],
+      reservations: [...retained, reservation],
     };
-    const written = await writeVersionedJsonToR2(STATE_KEY, next, loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true });
+    const written = await writeVersionedJsonToR2(PROVIDER_BUDGET_KEY, next, loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true });
     if (!written.conflict) return;
   }
   throw new Error("pr262_event_job_provider_reservation_conflict");
@@ -327,9 +428,13 @@ async function reserveCommitteeCall(input: {
   reservation: { candidateFingerprint: string; ticker: string; direction: "upside" | "downside" };
 }) {
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const loaded = await loadState(input.now);
-    if (loaded.state.lease?.eventId !== input.eventId || loaded.state.lease.ownerId !== input.ownerId) return { allowed: false as const, nextRetryAt: null };
-    const recent = loaded.state.committeeReservations.filter((item) => input.now.getTime() - Date.parse(item.reservedAt) < COMMITTEE_WINDOW_MS);
+    try {
+      await assertLeaseOwned(input.eventId, input.ownerId, input.now);
+    } catch {
+      return { allowed: false as const, nextRetryAt: null };
+    }
+    const loaded = await loadCommitteeBudgetState(input.now);
+    const recent = loaded.state.reservations.filter((item) => input.now.getTime() - Date.parse(item.reservedAt) < COMMITTEE_WINDOW_MS);
     const sameEvidence = recent.find((item) => item.candidateFingerprint === input.reservation.candidateFingerprint
       && input.now.getTime() - Date.parse(item.reservedAt) < EVIDENCE_REVIEW_COOLDOWN_MS);
     if (sameEvidence) {
@@ -339,13 +444,12 @@ async function reserveCommitteeCall(input: {
       const oldest = [...recent].sort((left, right) => Date.parse(left.reservedAt) - Date.parse(right.reservedAt))[0];
       return { allowed: false as const, nextRetryAt: new Date(Date.parse(oldest.reservedAt) + COMMITTEE_WINDOW_MS).toISOString() };
     }
-    const next: EventJobState = {
-      ...loaded.state,
+    const next: EventJobCommitteeBudgetState = {
+      version: 1,
       updatedAt: input.now.toISOString(),
-      lease: { ...loaded.state.lease, expiresAt: new Date(input.now.getTime() + LEASE_MS).toISOString() },
-      committeeReservations: [...recent, { eventId: input.eventId, reservedAt: input.now.toISOString(), ...input.reservation }],
+      reservations: [...recent, { eventId: input.eventId, reservedAt: input.now.toISOString(), ...input.reservation }],
     };
-    const written = await writeVersionedJsonToR2(STATE_KEY, next, loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true });
+    const written = await writeVersionedJsonToR2(COMMITTEE_BUDGET_KEY, next, loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true });
     if (!written.conflict) return { allowed: true as const, nextRetryAt: null };
   }
   return { allowed: false as const, nextRetryAt: null };
@@ -969,16 +1073,22 @@ function stateRun(eventId: string, resultKey: string | null, report: Json) {
 async function completeState(eventId: string, ownerId: string, resultKey: string | null, report: Json, now: Date) {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const loaded = await loadState(now);
-    if (loaded.state.runs.some((run) => run.eventId === eventId)) return;
-    if (loaded.state.lease?.eventId !== eventId || loaded.state.lease.ownerId !== ownerId) throw new Error("pr262_event_job_lease_lost");
-    const next: EventJobState = {
-      ...loaded.state,
+    if (loaded.state.runs.some((run) => run.eventId === eventId)) {
+      await releaseLease(eventId, ownerId, now);
+      return;
+    }
+    await assertLeaseOwned(eventId, ownerId, now);
+    await preserveLegacyRuntimeBudgets(loaded.state, now);
+    const next = {
+      version: 1 as const,
       updatedAt: now.toISOString(),
-      lease: null,
       runs: [...loaded.state.runs, stateRun(eventId, resultKey, report)].slice(-MAX_STATE_RUNS),
     };
     const written = await writeVersionedJsonToR2(STATE_KEY, next, loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true });
-    if (!written.conflict) return;
+    if (!written.conflict) {
+      await releaseLease(eventId, ownerId, now);
+      return;
+    }
   }
   throw new Error("pr262_event_job_complete_conflict");
 }
@@ -1344,9 +1454,8 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       durableProviderBudgets: true,
     };
     if (!detailedResultRequired(report)) {
-      await renewLease(event.id, ownerId, clock());
       await stopHeartbeat();
-      await completeState(event.id, ownerId, null, report, clock());
+      await releaseLease(event.id, ownerId, clock());
       await persistQueueMutation(
         { action: "acknowledge", eventId: event.id },
         input.queueMutationSink,
@@ -1371,6 +1480,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
         r2Persistence: {
           detailedResultWritten: false,
           companyRefreshWritten: false,
+          operationalLedgerWritten: false,
           reason: "no_new_important_finding_or_change",
         },
         costControl,
@@ -1478,4 +1588,13 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
   }
 }
 
-export const PR262_EVENT_JOB_KEYS = { STATE_KEY, LATEST_KEY, RUN_PREFIX, OUTBOX_PREFIX, HISTORY_KEY } as const;
+export const PR262_EVENT_JOB_KEYS = {
+  STATE_KEY,
+  LEASE_KEY,
+  PROVIDER_BUDGET_KEY,
+  COMMITTEE_BUDGET_KEY,
+  LATEST_KEY,
+  RUN_PREFIX,
+  OUTBOX_PREFIX,
+  HISTORY_KEY,
+} as const;

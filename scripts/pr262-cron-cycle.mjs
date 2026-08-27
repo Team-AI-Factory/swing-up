@@ -10,7 +10,8 @@ const PR262_BRANCH = "agent/combined-opportunity-engine";
 const PREVIEW_STORAGE_PREFIX = "branch-labs/pr-262/";
 const PRODUCTION_STORAGE_PREFIX = "production/pr262/";
 const analysisOnly = process.argv.includes("--analysis-only");
-const deliveryTest = process.argv.includes("--delivery-test");
+const deliveryTest = process.argv.includes("--delivery-test")
+  || process.env.SWING_UP_PR262_RUN_DELIVERY_TEST_ONCE?.trim().toLowerCase() === "true";
 if (analysisOnly && deliveryTest) throw new Error("pr262_cron_mode_conflict");
 const port = process.env.PR262_CRON_PORT || "3015";
 const cronToken = process.env.SWING_UP_PR262_CRON_RUNTIME_TOKEN?.trim()

@@ -58,6 +58,7 @@ assert.match(orchestrator, /Pr262CycleDeadlineError/, "Railway analysis needs a 
 assert.match(cronLauncher, /projectedMonthlyCostUsd > 30/, "The Railway sensor must pause when projected monthly cost exceeds $30");
 assert.match(cronLauncher, /approvedPremergeRollout[\s\S]*SWING_UP_PR262_APPROVED_DELIVERY_TEST/, "The delivery proof must require the exact pre-merge production gate and a separate approval flag");
 assert.match(cronLauncher, /SWING_UP_PR262_DELIVERY_TEST_RUN_ID/, "The delivery proof needs a stable run ID so an accidental second cron cannot send twice");
+assert.match(cronLauncher, /SWING_UP_PR262_RUN_DELIVERY_TEST_ONCE/, "Railway's config-as-code start command must have an exact-gated one-time delivery-test switch");
 assert.match(cronLauncher, /delete env\.TELEGRAM_SERIOUS_SIGNAL_CHAT_ID/);
 assert.match(cronLauncher, /delete env\.SWING_UP_SERIOUS_SIGNAL_WEBHOOK_URL/);
 

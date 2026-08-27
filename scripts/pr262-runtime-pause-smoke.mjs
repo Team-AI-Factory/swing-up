@@ -79,6 +79,7 @@ assert.match(deliveryTestRoute, /serious-signal\/delivery-test\/outbox/);
 assert.match(deliveryTestRoute, /seriousSignalFeedExcluded:\s*true/);
 assert.match(deliveryTestRoute, /liveWebhookDisabled:\s*true/);
 assert.match(deliveryTestRoute, /duplicateSuppressed/);
+assert.match(deliveryTestRoute, /channelDiagnostics/);
 
 const projectedCostPause = spawnSync(process.execPath, [fileURLToPath(new URL("./pr262-cron-cycle.mjs", import.meta.url))], {
   encoding: "utf8",

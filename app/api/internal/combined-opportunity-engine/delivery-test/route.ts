@@ -120,6 +120,14 @@ export async function POST(request: NextRequest) {
       && second.channels.every((channel) => !channel.sent);
     const firstInvocationProvedExternalSend = created.written ? firstTelegramSent : true;
     const passed = deliveryReachedTerminal && duplicateSuppressed && firstInvocationProvedExternalSend;
+    const channelDiagnostics = first.channels.map((channel) => ({
+      channel: channel.channel,
+      configured: channel.configured,
+      sent: channel.sent,
+      status: channel.status,
+      responseStatus: channel.responseStatus ?? null,
+      error: channel.error?.replace(/bot[^/\s]+/gi, "bot[redacted]").slice(0, 120) ?? null,
+    }));
 
     const audit = {
       version: 1,
@@ -132,13 +140,35 @@ export async function POST(request: NextRequest) {
       deliveryStatus: first.deliveryStatus,
       duplicateStatus: second.deliveryStatus,
       duplicateSuppressed,
+      channelDiagnostics,
       seriousSignalFeedExcluded: true,
       liveWebhookDisabled: true,
       destination: "telegram_test_chat",
       deployedCommit: process.env.RAILWAY_GIT_COMMIT_SHA?.trim() || null,
     };
     await writeVersionedJsonToR2(auditKey, audit, { createOnly: true });
-    if (!passed) throw new Error("pr262_delivery_test_contract_failed");
+    console.log(`[pr262-delivery-test] ${JSON.stringify({
+      runId,
+      passed,
+      firstInvocationCreatedOutbox: created.written,
+      deliveryStatus: first.deliveryStatus,
+      duplicateStatus: second.deliveryStatus,
+      duplicateSuppressed,
+      channelDiagnostics,
+    })}`);
+    if (!passed) {
+      return NextResponse.json({
+        ok: false,
+        mode: "pr262_serious_signal_delivery_test",
+        runId,
+        testOnly: true,
+        error: "pr262_delivery_test_contract_failed",
+        deliveryStatus: first.deliveryStatus,
+        duplicateStatus: second.deliveryStatus,
+        duplicateSuppressed,
+        channelDiagnostics,
+      }, { status: 503 });
+    }
 
     return NextResponse.json({
       ok: true,

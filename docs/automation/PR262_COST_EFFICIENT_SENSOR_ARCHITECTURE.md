@@ -158,6 +158,13 @@ logged in Railway rather than copied into R2. Detailed result, latest-result,
 history, company-refresh, outbox, and delivery objects are written only for a
 meaningful finding/change or a paid audit record.
 
+Large private queue and reservation checkpoints are gzip-compressed before
+Railway sends them to R2, and readers transparently accept both the legacy
+plain JSON objects and the compressed replacements. User-facing Serious Signal
+feed/outbox objects remain ordinary JSON. This keeps the durable important-event
+queue without retransmitting its full uncompressed history on every material
+queue mutation.
+
 The event-analysis hot path follows the same rule. Its durable completion
 ledger contains only compact pointers for important findings and paid audit
 records; routine no-signal outcomes, expired unread discoveries, and scheduled

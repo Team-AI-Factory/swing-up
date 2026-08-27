@@ -486,6 +486,28 @@ assert.ok(objects.has(withoutHistory.outboxKey), "Optional history failure must 
 failHistoryAccess = false;
 committeeFingerprint = "fingerprint-1";
 
+const stateBeforeLegacyCompaction = objects.get(PR262_EVENT_JOB_KEYS.STATE_KEY).value;
+objects.set(PR262_EVENT_JOB_KEYS.STATE_KEY, {
+  value: {
+    ...stateBeforeLegacyCompaction,
+    runs: [...stateBeforeLegacyCompaction.runs, {
+      eventId: "legacy:oversized-run",
+      resultKey: null,
+      checkedAt: "2026-08-11T09:00:00.000Z",
+      status: "no_qualified_signal",
+      seriousSignalFound: false,
+      actionableSignalFound: false,
+      alertType: null,
+      openAiCalled: false,
+      candidateFingerprint: null,
+      selectedCandidate: { oversizedLegacyEvidence: "x".repeat(100_000) },
+      historicalPilot: { oversizedLegacyHistory: "x".repeat(100_000) },
+      committee: { oversizedLegacyCommittee: "x".repeat(100_000) },
+    }],
+  },
+  etag: `"etag-${++etagCounter}"`,
+});
+
 setSecEventIdentity("000005", "2026-08-11T10:05:00.000Z");
 await assert.rejects(
   () => runPr262EventJob({
@@ -496,6 +518,11 @@ await assert.rejects(
   /pr262_event_job_deadline_exceeded/,
 );
 assert.equal(objects.get(PR262_EVENT_JOB_KEYS.STATE_KEY).value.lease, null, "A deadline-aborted job must release its lease");
+const compactedLegacyRun = objects.get(PR262_EVENT_JOB_KEYS.STATE_KEY).value.runs.find((run) => run.eventId === "legacy:oversized-run");
+assert.ok(compactedLegacyRun, "Legacy idempotency must be retained while its oversized evidence is removed.");
+assert.equal("selectedCandidate" in compactedLegacyRun, false);
+assert.equal("historicalPilot" in compactedLegacyRun, false);
+assert.equal("committee" in compactedLegacyRun, false);
 
 console.log(JSON.stringify({
   ok: true,
@@ -518,4 +545,5 @@ console.log(JSON.stringify({
   routineNoSignalSkipsDetailedR2Writes: true,
   routineCompanyRefreshStaysInMemory: true,
   shortRenewableLeaseAndDeadlineRecovery: true,
+  legacyEventLedgerCompactedWithoutLosingIdempotency: true,
 }, null, 2));

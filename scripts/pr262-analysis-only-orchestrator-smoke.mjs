@@ -70,6 +70,10 @@ const stubs = {
         eventMode = "idle";
         throw new Error("pr262_full_source_rolling_quota_guard; next_retry_at=2026-08-28T02:22:47.870Z");
       }
+      if (eventMode === "targeted_quota_deferred") {
+        eventMode = "idle";
+        throw new Error("tradingview_targeted_value_rolling_quota_guard; next_retry_at=2026-08-28T02:23:01.827Z");
+      }
       if (eventMode === "broken") {
         eventMode = "idle";
         throw new Error("unexpected_event_processing_failure");
@@ -126,6 +130,13 @@ assert.equal(deferredRollingQuota.processing.eventFailures, 0);
 assert.equal(deferredRollingQuota.processing.eventDeferrals, 1);
 assert.equal(deferredRollingQuota.processing.eventResults[0].status, "event_job_deferred");
 
+eventMode = "targeted_quota_deferred";
+const deferredTargetedQuota = await loaded.exports.runPr262AnalysisOnlyCycle({ maxCycleMs: 90_000 });
+assert.equal(deferredTargetedQuota.ok, true, "A targeted provider quota guard is a scheduled retry, not a failed cycle.");
+assert.equal(deferredTargetedQuota.processing.eventFailures, 0);
+assert.equal(deferredTargetedQuota.processing.eventDeferrals, 1);
+assert.equal(deferredTargetedQuota.processing.eventResults[0].status, "event_job_deferred");
+
 eventMode = "broken";
 const brokenEvent = await loaded.exports.runPr262AnalysisOnlyCycle({ maxCycleMs: 90_000 });
 assert.equal(brokenEvent.ok, false, "An unexpected event-processing failure must still fail the cron job.");
@@ -173,6 +184,7 @@ console.log(JSON.stringify({
   degradedDeliveryCannotReportSuccess: true,
   scheduledEvidenceDeferralRemainsHealthy: true,
   scheduledRollingQuotaDeferralRemainsHealthy: true,
+  scheduledTargetedQuotaDeferralRemainsHealthy: true,
   unexpectedEventFailureRemainsUnhealthy: true,
   queueOutcomesPersistOncePerCycle: true,
 }, null, 2));

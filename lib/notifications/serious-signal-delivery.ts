@@ -32,7 +32,7 @@ const STATUS_FEED_INDEX_CAPACITY = 500;
 const LIVE_SENSOR_MAX_AGE_MS = 20 * 60_000;
 
 type Json = Record<string, unknown>;
-type DeliveryChannel = "telegram" | "webhook";
+type DeliveryChannel = "web_feed" | "telegram" | "webhook";
 type DeliveryJobStatus =
   | "pending"
   | "sending"
@@ -343,7 +343,11 @@ function parseJob(value: unknown, expectedOutboxKey: string): DeliveryJob {
     nextAttemptAt: text(raw.nextAttemptAt),
     lastError: text(raw.lastError),
     lease,
-    channels: { telegram: channel("telegram"), webhook: channel("webhook") },
+    channels: {
+      web_feed: channel("web_feed"),
+      telegram: channel("telegram"),
+      webhook: channel("webhook"),
+    },
     guarantee: "at_least_once_with_claim_receipt_and_webhook_idempotency_key",
   };
 }
@@ -420,10 +424,7 @@ async function writeFeedPointer(validated: ReturnType<typeof validatedOutbox>, k
 async function ensureDeliveryJob(validated: ReturnType<typeof validatedOutbox>, now: Date) {
   const key = jobKey(validated.outboxKey);
   const existing = await loadJob(key, validated.outboxKey);
-  if (existing) {
-    if (!validated.testOnly) await writeFeedPointer(validated, key);
-    return existing;
-  }
+  if (existing) return existing;
   const initial: DeliveryJob = {
     version: 2,
     kind: "serious_signal_delivery_job",
@@ -435,13 +436,16 @@ async function ensureDeliveryJob(validated: ReturnType<typeof validatedOutbox>, 
     nextAttemptAt: now.toISOString(),
     lastError: null,
     lease: null,
-    channels: { telegram: blankChannelState(), webhook: blankChannelState() },
+    channels: {
+      web_feed: blankChannelState(),
+      telegram: blankChannelState(),
+      webhook: blankChannelState(),
+    },
     guarantee: "at_least_once_with_claim_receipt_and_webhook_idempotency_key",
   };
   await writeVersionedJsonToR2(key, initial, { createOnly: true });
   const loaded = await loadJob(key, validated.outboxKey);
   if (!loaded) throw new Error("serious_signal_delivery_job_create_read_failed");
-  if (!validated.testOnly) await writeFeedPointer(validated, key);
   return loaded;
 }
 
@@ -499,6 +503,42 @@ async function recordDelivery(input: {
   };
   const written = await writeVersionedJsonToR2(input.key, payload, { createOnly: true });
   if (written.conflict && !await alreadyDelivered(input.key)) throw new Error("serious_signal_delivery_receipt_conflict");
+}
+
+function webFeedConfigured() {
+  return true;
+}
+
+async function sendWebFeed(
+  validated: ReturnType<typeof validatedOutbox>,
+  deliveryJobKey: string,
+): Promise<ChannelResult> {
+  const key = receiptKey(validated.outboxKey, "web_feed");
+  if (await alreadyDelivered(key)) {
+    return { channel: "web_feed", configured: true, sent: false, status: "already_delivered", error: null };
+  }
+  try {
+    // Real findings use the bounded authenticated /serious-signals feed. A
+    // labelled delivery test receives a durable receipt in its isolated test
+    // namespace but can never create a live feed pointer.
+    if (!validated.testOnly) await writeFeedPointer(validated, deliveryJobKey);
+    await recordDelivery({
+      key,
+      outboxKey: validated.outboxKey,
+      channel: "web_feed",
+      destination: validated.testOnly ? "authenticated_test_feed" : "authenticated_serious_signals_feed",
+      responseStatus: 200,
+    });
+    return { channel: "web_feed", configured: true, sent: true, status: "sent", error: null, responseStatus: 200 };
+  } catch (error) {
+    return {
+      channel: "web_feed",
+      configured: true,
+      sent: false,
+      status: "failed",
+      error: error instanceof Error ? error.message.slice(0, 160) : "web_feed_delivery_failed",
+    };
+  }
 }
 
 function telegramChatId(testOnly: boolean) {
@@ -599,8 +639,12 @@ function responseFromJob(
   message: string,
   channelResults: ChannelResult[] = [],
 ) {
+  const primaryDelivered = ["sent", "already_delivered"].includes(job.channels.web_feed.status);
   return {
-    ok: job.status === "delivered",
+    // The authenticated R2-backed feed is the required production delivery
+    // path. Optional external channels may retry without hiding a finding or
+    // turning a healthy recovery cycle into a failure.
+    ok: primaryDelivered,
     outboxKey: validated.outboxKey,
     seriousSignal: !validated.testOnly,
     deliveryTest: validated.testOnly,
@@ -643,12 +687,14 @@ async function processDeliveryJobKey(
       lastError: "serious_signal_delivery_preview_blocked",
       lease: null,
       channels: {
+        web_feed: { ...claimed.job.channels.web_feed, status: "preview_blocked", error: null },
         telegram: { ...claimed.job.channels.telegram, status: "preview_blocked", error: null },
         webhook: { ...claimed.job.channels.webhook, status: "preview_blocked", error: null },
       },
     };
     const persisted = await persistClaimedJob(claimed, previewJob);
     return responseFromJob(persisted.job, validated, message, [
+      { channel: "web_feed", configured: webFeedConfigured(), sent: false, status: "preview_blocked", error: null },
       { channel: "telegram", configured: telegramConfigured(validated.testOnly), sent: false, status: "preview_blocked", error: null },
       { channel: "webhook", configured: webhookConfigured(validated.testOnly), sent: false, status: "preview_blocked", error: null },
     ]);
@@ -679,7 +725,9 @@ async function processDeliveryJobKey(
     return responseFromJob(persisted.job, validated, message);
   }
 
-  const configured = telegramConfigured(validated.testOnly) || webhookConfigured(validated.testOnly);
+  const configured = webFeedConfigured()
+    || telegramConfigured(validated.testOnly)
+    || webhookConfigured(validated.testOnly);
   if (!configured) {
     const blocked: DeliveryJob = {
       ...claimed.job,
@@ -689,12 +737,14 @@ async function processDeliveryJobKey(
       lastError: "serious_signal_delivery_no_channel_configured",
       lease: null,
       channels: {
+        web_feed: { ...claimed.job.channels.web_feed, status: "not_configured", error: null },
         telegram: { ...claimed.job.channels.telegram, status: "not_configured", error: null },
         webhook: { ...claimed.job.channels.webhook, status: "not_configured", error: null },
       },
     };
     const persisted = await persistClaimedJob(claimed, blocked);
     return responseFromJob(persisted.job, validated, message, [
+      { channel: "web_feed", configured: false, sent: false, status: "not_configured", error: null },
       { channel: "telegram", configured: false, sent: false, status: "not_configured", error: null },
       { channel: "webhook", configured: false, sent: false, status: "not_configured", error: null },
     ]);
@@ -715,6 +765,7 @@ async function processDeliveryJobKey(
   let persisted = claimed;
   const results: ChannelResult[] = [];
   const channelSenders: Array<[DeliveryChannel, () => Promise<ChannelResult>]> = [
+    ["web_feed", () => sendWebFeed(validated, key)],
     ["telegram", () => sendTelegram(outboxKey, message, validated.testOnly, options.signal)],
     ["webhook", () => sendWebhook(outboxKey, notificationPayload, validated.testOnly, options.signal)],
   ];
@@ -735,17 +786,26 @@ async function processDeliveryJobKey(
     persisted = await persistClaimedJob(persisted, updated);
   }
 
-  const configuredStates = (["telegram", "webhook"] as DeliveryChannel[])
-    .filter((channel) => channel === "telegram"
-      ? telegramConfigured(validated.testOnly)
-      : webhookConfigured(validated.testOnly))
+  const configuredStates = (["web_feed", "telegram", "webhook"] as DeliveryChannel[])
+    .filter((channel) => channel === "web_feed"
+      ? webFeedConfigured()
+      : channel === "telegram"
+        ? telegramConfigured(validated.testOnly)
+        : webhookConfigured(validated.testOnly))
     .map((channel) => persisted.job.channels[channel]);
   const failures = configuredStates.filter((channel) => channel.status === "failed");
   const allDelivered = configuredStates.length > 0 && configuredStates.every((channel) => channel.status === "sent" || channel.status === "already_delivered");
+  const primaryDelivered = ["sent", "already_delivered"].includes(persisted.job.channels.web_feed.status);
   const attempts = persisted.job.attempts + (results.some((result) => result.configured && result.status !== "already_delivered") ? 1 : 0);
   const maxAttempts = integerEnvironment("SWING_UP_SERIOUS_SIGNAL_DELIVERY_MAX_ATTEMPTS", DEFAULT_MAX_ATTEMPTS, 1, 20);
-  const status: DeliveryJobStatus = allDelivered ? "delivered" : attempts >= maxAttempts ? "dead_letter" : "retry_scheduled";
-  const lastError = failures.map((failure) => failure.error).filter(Boolean).join("; ") || (allDelivered ? null : "serious_signal_delivery_incomplete");
+  const status: DeliveryJobStatus = allDelivered || (primaryDelivered && attempts >= maxAttempts)
+    ? "delivered"
+    : attempts >= maxAttempts
+      ? "dead_letter"
+      : "retry_scheduled";
+  const lastError = status === "delivered"
+    ? null
+    : failures.map((failure) => failure.error).filter(Boolean).join("; ") || "serious_signal_delivery_incomplete";
   const finalized: DeliveryJob = {
     ...persisted.job,
     updatedAt: now.toISOString(),
@@ -1202,6 +1262,7 @@ export async function getSeriousSignalStatus(options: { hours?: number; limit?: 
           attempts: job.attempts,
           nextAttemptAt: job.nextAttemptAt,
           channels: {
+            webFeed: job.channels.web_feed.status,
             telegram: job.channels.telegram.status,
             webhook: job.channels.webhook.status,
           },

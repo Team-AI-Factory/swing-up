@@ -120,16 +120,18 @@ process.env.SWING_UP_SERIOUS_SIGNAL_DELIVERY_MAX_ATTEMPTS = "3";
 
 try {
   const start = new Date("2026-08-19T10:00:00.000Z");
-  const outboxKey = `${prefix}serious-signal/outbox/event-job/buy/SAFE/fingerprint.json`;
-  await write(outboxKey, validOutbox("SAFE", start.toISOString()), { createOnly: true });
-
-  const noChannel = await deliverSeriousSignalOutbox(outboxKey, { now: start, ownerId: "no-channel" });
-  assert.equal(noChannel.ok, false, "No configured channel must be a visible failure.");
-  assert.equal(noChannel.deliveryStatus, "blocked_no_channel");
-  assert.equal(noChannel.lastError, "serious_signal_delivery_no_channel_configured");
-  assert.equal(noChannel.exactlyOnceExternallyGuaranteed, false);
+  const webOnlyOutboxKey = `${prefix}serious-signal/outbox/event-job/buy/WEB/fingerprint.json`;
+  await write(webOnlyOutboxKey, validOutbox("WEB", start.toISOString()), { createOnly: true });
+  const webOnly = await deliverSeriousSignalOutbox(webOnlyOutboxKey, { now: start, ownerId: "web-feed-only" });
+  assert.equal(webOnly.ok, true, "The authenticated R2 feed must be the always-available primary channel.");
+  assert.equal(webOnly.deliveryStatus, "delivered");
+  assert.ok(webOnly.channels.some((channel) => channel.channel === "web_feed" && channel.sent));
+  assert.ok(webOnly.channels.filter((channel) => channel.channel !== "web_feed").every((channel) => !channel.configured));
+  assert.equal(webOnly.exactlyOnceExternallyGuaranteed, false);
 
   process.env.SWING_UP_SERIOUS_SIGNAL_WEBHOOK_URL = "https://alerts.example.test/swing-up";
+  const outboxKey = `${prefix}serious-signal/outbox/event-job/buy/SAFE/fingerprint.json`;
+  await write(outboxKey, validOutbox("SAFE", start.toISOString()), { createOnly: true });
   let webhookCalls = 0;
   let webhookIdempotencyKey = null;
   globalThis.fetch = async (_url, init) => {
@@ -168,8 +170,8 @@ try {
   assert.ok(retried.maximumJobStateReadsPerCycle <= 100, "Job scanning must remain strictly bounded.");
 
   const status = await getSeriousSignalStatus({ now: new Date(afterRecheck.getTime() + 3 * 60_000), hours: 48 });
-  assert.equal(status.summary.total, 2);
-  assert.equal(status.summary.buy, 2);
+  assert.equal(status.summary.total, 3);
+  assert.equal(status.summary.buy, 3);
   assert.equal(status.feedSource, "bounded_feed_index");
   assert.equal(status.sensor.verifiedLive, false, "An alert store alone must not pretend the scanner is live.");
   assert.equal(status.emptyResultVerified, false);
@@ -218,6 +220,7 @@ try {
   assert.equal(deliveryTestFirst.ok, true);
   assert.equal(deliveryTestFirst.deliveryTest, true);
   assert.equal(deliveryTestFirst.seriousSignal, false, "A delivery test must never be represented as a market signal.");
+  assert.ok(deliveryTestFirst.channels.some((channel) => channel.channel === "web_feed" && channel.sent), "The isolated R2 delivery receipt must be written exactly once.");
   assert.equal(deliveryTestTelegramCalls, 1, "The test outbox must reach the Telegram test channel exactly once.");
   assert.equal(deliveryTestWebhookCalls, 0, "A delivery test must never call the live webhook.");
   assert.equal(deliveryTestChat, "test-chat-only", "The live Telegram chat must never receive a delivery test.");
@@ -229,6 +232,9 @@ try {
   assert.ok([...objects.entries()]
     .filter(([key]) => key.startsWith(`${prefix}serious-signal/delivery-v2/feed/`))
     .every(([, stored]) => stored.payload.outboxKey !== deliveryTestKey), "A test outbox must not create a live feed pointer.");
+  assert.ok([...objects.entries()]
+    .some(([key, stored]) => key.startsWith(`${prefix}serious-signal/delivery-test/receipts/web_feed/`)
+      && stored.payload.outboxKey === deliveryTestKey), "The isolated web-feed proof must leave a durable test receipt.");
   delete process.env.SWING_UP_PR262_APPROVED_DELIVERY_TEST;
   delete process.env.TELEGRAM_BOT_TOKEN;
   delete process.env.TELEGRAM_TEST_CHAT_ID;
@@ -373,7 +379,7 @@ try {
 
 console.log(JSON.stringify({
   ok: true,
-  noChannelFailsClosed: true,
+  authenticatedR2FeedIsPrimary: true,
   concurrentClaimPreventsDuplicateSend: true,
   webhookIdempotencyKeyIncluded: true,
   durableRetryConsumer: true,

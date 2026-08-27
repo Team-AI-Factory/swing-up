@@ -111,15 +111,16 @@ export async function POST(request: NextRequest) {
     if (first.outboxKey === null || second.outboxKey === null) {
       throw new Error("pr262_delivery_test_outbox_missing");
     }
+    const firstWebFeedSent = first.channels.some((channel) => channel.channel === "web_feed" && channel.sent);
     const firstTelegramSent = first.channels.some((channel) => channel.channel === "telegram" && channel.sent);
-    const deliveryReachedTerminal = first.ok && first.deliveryTest === true && first.seriousSignal === false;
+    const deliveryReachedPrimary = first.ok && first.deliveryTest === true && first.seriousSignal === false;
     const duplicateSuppressed = second.ok
       && second.deliveryTest === true
       && second.seriousSignal === false
       && second.attempts === first.attempts
       && second.channels.every((channel) => !channel.sent);
-    const firstInvocationProvedExternalSend = created.written ? firstTelegramSent : true;
-    const passed = deliveryReachedTerminal && duplicateSuppressed && firstInvocationProvedExternalSend;
+    const firstInvocationProvedWebFeed = created.written ? firstWebFeedSent : true;
+    const passed = deliveryReachedPrimary && duplicateSuppressed && firstInvocationProvedWebFeed;
     const channelDiagnostics = first.channels.map((channel) => ({
       channel: channel.channel,
       configured: channel.configured,
@@ -136,6 +137,7 @@ export async function POST(request: NextRequest) {
       checkedAt: new Date().toISOString(),
       passed,
       firstInvocationCreatedOutbox: created.written,
+      firstInvocationWebFeedSent: firstWebFeedSent,
       firstInvocationTelegramSent: firstTelegramSent,
       deliveryStatus: first.deliveryStatus,
       duplicateStatus: second.deliveryStatus,
@@ -143,7 +145,7 @@ export async function POST(request: NextRequest) {
       channelDiagnostics,
       seriousSignalFeedExcluded: true,
       liveWebhookDisabled: true,
-      destination: "telegram_test_chat",
+      destination: "authenticated_delivery_test_feed",
       deployedCommit: process.env.RAILWAY_GIT_COMMIT_SHA?.trim() || null,
     };
     await writeVersionedJsonToR2(auditKey, audit, { createOnly: true });
@@ -151,6 +153,7 @@ export async function POST(request: NextRequest) {
       runId,
       passed,
       firstInvocationCreatedOutbox: created.written,
+      firstInvocationWebFeedSent: firstWebFeedSent,
       deliveryStatus: first.deliveryStatus,
       duplicateStatus: second.deliveryStatus,
       duplicateSuppressed,
@@ -175,6 +178,8 @@ export async function POST(request: NextRequest) {
       mode: "pr262_serious_signal_delivery_test",
       runId,
       testOnly: true,
+      deliveryMode: "authenticated_r2_feed",
+      firstInvocationWebFeedSent: firstWebFeedSent,
       firstInvocationTelegramSent: firstTelegramSent,
       deliveryStatus: first.deliveryStatus,
       duplicateSuppressed,

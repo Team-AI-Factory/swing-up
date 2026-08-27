@@ -33,6 +33,7 @@ export function middleware(request: NextRequest) {
     const branchAllowed = (
       (path === INTERNAL_API_PATHS.pr262Cron && scope === "cron_runtime")
       || (approvedPremergeRollout && path === INTERNAL_API_PATHS.pr262ProductionFoundation && scope === "foundation_runtime")
+      || (approvedPremergeRollout && path === INTERNAL_API_PATHS.pr262DeliveryTest && scope === "delivery_test_runtime")
       || (path === INTERNAL_API_PATHS.pr262SensorHandoff && scope === "sensor_handoff")
       || (path === INTERNAL_API_PATHS.seriousSignalStatus && scope === "serious_signal_read")
     );

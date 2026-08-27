@@ -7,7 +7,7 @@ import path from "node:path";
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const read = (relativePath) => readFile(path.join(repositoryRoot, relativePath), "utf8");
 
-const [railwayRaw, railwaySensorRaw, railwayRecoveryRaw, packageRaw, middleware, cronLauncher, legacySensorWorker, legacyPauseLauncher, oldSensorRoute, retiredCloudflareHandoff, sensorV3, historicalPolicy, watchOutAuthority, orchestrator] = await Promise.all([
+const [railwayRaw, railwaySensorRaw, railwayRecoveryRaw, packageRaw, middleware, cronLauncher, legacySensorWorker, legacyPauseLauncher, oldSensorRoute, retiredCloudflareHandoff, deliveryTestRoute, sensorV3, historicalPolicy, watchOutAuthority, orchestrator] = await Promise.all([
   read("railway.json"),
   read("railway.sensor.json"),
   read("railway.analysis-recovery.json"),
@@ -18,6 +18,7 @@ const [railwayRaw, railwaySensorRaw, railwayRecoveryRaw, packageRaw, middleware,
   read("scripts/railway-pr262-cost-pause-start.mjs"),
   read("app/api/internal/combined-opportunity-engine/change-sensor/route.ts"),
   read("app/api/internal/combined-opportunity-engine/cloudflare-sensor-handoff/route.ts"),
+  read("app/api/internal/combined-opportunity-engine/delivery-test/route.ts"),
   read("lib/opportunity-engine/pr262-lightweight-sensor-v3.ts"),
   read("lib/equity-signal/pilot-serious-signal-policy.ts"),
   read("lib/opportunity-engine/pr262-serious-watch-out-authority.ts"),
@@ -42,22 +43,28 @@ assert.equal(railwayRecovery.deploy?.cronSchedule, "7 * * * *", "The Railway ana
 assert.equal(railwayRecovery.deploy?.restartPolicyType, "NEVER");
 assert.equal(pkg.scripts?.["pr262:cron"], "node scripts/pr262-cron-cycle.mjs", "Package script must enter the bounded cron launcher");
 assert.equal(pkg.scripts?.["pr262:analysis-cron"], "node scripts/pr262-cron-cycle.mjs --analysis-only", "Analysis recovery must explicitly skip local sensing");
+assert.equal(pkg.scripts?.["pr262:delivery-test"], "node scripts/pr262-cron-cycle.mjs --delivery-test", "The real delivery proof must use the guarded one-cycle launcher");
 
 assert.match(cronLauncher, /SWING_UP_PR262_CRON_RUNTIME_TOKEN/, "Cron must create or pass a short-lived internal token");
 assert.match(cronLauncher, /PRODUCTION_STORAGE_PREFIX = "production\/pr262\/"/, "Production must use a clean R2 namespace");
 assert.match(cronLauncher, /SWING_UP_R2_WRITE_PREFIX:\s*storagePrefix/, "Cron must fence writes to its selected PR262 namespace");
 assert.match(cronLauncher, /analysisOnly \? "analysis_only" : "sensor_and_analysis"/, "The recovery service must select analysis-only mode");
-assert.match(cronLauncher, /SWING_UP_PR262_SENSOR_OWNER:\s*analysisOnly \? "railway_analysis_recovery"/, "The recovery service must identify itself without claiming the source-sensor role");
+assert.match(cronLauncher, /SWING_UP_PR262_SENSOR_OWNER:[\s\S]*analysisOnly \? "railway_analysis_recovery"/, "The recovery service must identify itself without claiming the source-sensor role");
 assert.match(cronLauncher, /AbortSignal\.timeout\(240_000\)/, "Cron route call must have an absolute timeout shorter than the next five-minute schedule");
 assert.match(cronLauncher, /SIGTERM/, "Cron must shut down the temporary web app after one cycle");
 assert.match(orchestrator, /runPr262AnalysisOnlyCycle/, "The hourly Railway recovery service needs an exported analysis-only entry point");
 assert.match(orchestrator, /return runPr262Cycle\("sensor_and_analysis", input\)/, "A stale Cloudflare variable must not disable the approved Railway sensor");
 assert.match(orchestrator, /Pr262CycleDeadlineError/, "Railway analysis needs a hard cycle deadline");
 assert.match(cronLauncher, /projectedMonthlyCostUsd > 30/, "The Railway sensor must pause when projected monthly cost exceeds $30");
+assert.match(cronLauncher, /approvedPremergeRollout[\s\S]*SWING_UP_PR262_APPROVED_DELIVERY_TEST/, "The delivery proof must require the exact pre-merge production gate and a separate approval flag");
+assert.match(cronLauncher, /SWING_UP_PR262_DELIVERY_TEST_RUN_ID/, "The delivery proof needs a stable run ID so an accidental second cron cannot send twice");
+assert.match(cronLauncher, /delete env\.TELEGRAM_SERIOUS_SIGNAL_CHAT_ID/);
+assert.match(cronLauncher, /delete env\.SWING_UP_SERIOUS_SIGNAL_WEBHOOK_URL/);
 
 assert.match(middleware, /\/api\/health/, "Health route must remain available");
 assert.match(middleware, /INTERNAL_API_PATHS\.pr262Cron/, "The scoped V3 cron route may cross the PR262 runtime boundary");
 assert.match(middleware, /approvedPremergeRollout && path === INTERNAL_API_PATHS\.pr262ProductionFoundation/, "The foundation route may cross the PR boundary only under the exact pre-merge rollout gate");
+assert.match(middleware, /approvedPremergeRollout && path === INTERNAL_API_PATHS\.pr262DeliveryTest/, "The delivery test may cross the PR boundary only under the exact pre-merge rollout gate");
 assert.match(middleware, /INTERNAL_API_PATHS\.seriousSignalStatus/, "The protected read-only Serious Signal feed may cross the PR262 runtime boundary");
 assert.match(middleware, /internalApiScopeAuthorized/, "Every protected route must use route-scoped authorization");
 assert.match(middleware, /pr262_runtime_route_blocked/, "All other API routes must remain blocked");
@@ -66,6 +73,11 @@ assert.match(legacySensorWorker, /HARD PAUSED/, "The obsolete direct sensor work
 assert.match(legacyPauseLauncher, /HARD PAUSED/, "The obsolete hard-pause launcher remains inert and must not be the Railway entry point");
 assert.match(oldSensorRoute, /PR262_RUNTIME_HARD_PAUSED = true/, "The old public change-sensor route must remain disabled");
 assert.match(retiredCloudflareHandoff, /PR262_CLOUDFLARE_HANDOFF_RETIRED = true/, "The retired Cloudflare Worker handoff must fail closed");
+assert.match(deliveryTestRoute, /pr262_serious_signal_delivery_test/);
+assert.match(deliveryTestRoute, /serious-signal\/delivery-test\/outbox/);
+assert.match(deliveryTestRoute, /seriousSignalFeedExcluded:\s*true/);
+assert.match(deliveryTestRoute, /liveWebhookDisabled:\s*true/);
+assert.match(deliveryTestRoute, /duplicateSuppressed/);
 
 const projectedCostPause = spawnSync(process.execPath, [fileURLToPath(new URL("./pr262-cron-cycle.mjs", import.meta.url))], {
   encoding: "utf8",

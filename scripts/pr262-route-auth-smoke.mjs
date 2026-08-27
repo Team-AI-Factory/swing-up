@@ -19,6 +19,7 @@ const environment = {
   SWING_UP_PR262_CRON_RUNTIME_TOKEN: "cron-only-secret",
   SWING_UP_PR262_SENSOR_TOKEN: "sensor-only-secret",
   SWING_UP_PR262_FOUNDATION_RUNTIME_TOKEN: "foundation-only-secret",
+  SWING_UP_PR262_DELIVERY_TEST_RUNTIME_TOKEN: "delivery-test-only-secret",
   SWING_UP_AUTOMATION_TOKEN: "automation-only-secret",
   SWING_UP_INTERNAL_API_TOKEN: "master-internal-secret",
   SWING_UP_SERIOUS_SIGNAL_READ_TOKEN: "read-only-secret",
@@ -27,6 +28,7 @@ const environment = {
 assert.equal(requiredInternalApiScope(INTERNAL_API_PATHS.pr262Cron, "POST"), "cron_runtime");
 assert.equal(requiredInternalApiScope(INTERNAL_API_PATHS.pr262SensorHandoff, "POST"), "sensor_handoff");
 assert.equal(requiredInternalApiScope(INTERNAL_API_PATHS.pr262ProductionFoundation, "POST"), "foundation_runtime");
+assert.equal(requiredInternalApiScope(INTERNAL_API_PATHS.pr262DeliveryTest, "POST"), "delivery_test_runtime");
 assert.equal(requiredInternalApiScope(INTERNAL_API_PATHS.seriousSignalStatus, "GET"), "serious_signal_read");
 assert.equal(requiredInternalApiScope("/api/internal/publish-approved-alert", "POST"), "high_privilege");
 assert.equal(requiredInternalApiScope("/api/internal/combined-opportunity-engine/global-scan", "POST"), "automation");
@@ -67,7 +69,7 @@ for (const file of routeFiles(combinedRoot)) {
 
 const sensorHeaders = new Headers({ "x-swing-up-pr262-sensor-token": environment.SWING_UP_PR262_SENSOR_TOKEN });
 assert.equal(internalApiScopeAuthorized(sensorHeaders, "sensor_handoff", environment), true);
-for (const forbidden of ["cron_runtime", "foundation_runtime", "automation", "high_privilege", "serious_signal_read"]) {
+for (const forbidden of ["cron_runtime", "foundation_runtime", "delivery_test_runtime", "automation", "high_privilege", "serious_signal_read"]) {
   assert.equal(internalApiScopeAuthorized(sensorHeaders, forbidden, environment), false, `Sensor token crossed into ${forbidden}.`);
 }
 
@@ -78,8 +80,14 @@ assert.equal(internalApiScopeAuthorized(cronHeaders, "high_privilege", environme
 
 const foundationHeaders = new Headers({ "x-swing-up-pr262-foundation-token": environment.SWING_UP_PR262_FOUNDATION_RUNTIME_TOKEN });
 assert.equal(internalApiScopeAuthorized(foundationHeaders, "foundation_runtime", environment), true);
-for (const forbidden of ["cron_runtime", "sensor_handoff", "automation", "high_privilege", "serious_signal_read"]) {
+for (const forbidden of ["cron_runtime", "sensor_handoff", "delivery_test_runtime", "automation", "high_privilege", "serious_signal_read"]) {
   assert.equal(internalApiScopeAuthorized(foundationHeaders, forbidden, environment), false, `Foundation token crossed into ${forbidden}.`);
+}
+
+const deliveryTestHeaders = new Headers({ "x-swing-up-pr262-delivery-test-token": environment.SWING_UP_PR262_DELIVERY_TEST_RUNTIME_TOKEN });
+assert.equal(internalApiScopeAuthorized(deliveryTestHeaders, "delivery_test_runtime", environment), true);
+for (const forbidden of ["cron_runtime", "sensor_handoff", "foundation_runtime", "automation", "high_privilege", "serious_signal_read"]) {
+  assert.equal(internalApiScopeAuthorized(deliveryTestHeaders, forbidden, environment), false, `Delivery-test token crossed into ${forbidden}.`);
 }
 
 const automationHeaders = new Headers({ authorization: `Bearer ${environment.SWING_UP_AUTOMATION_TOKEN}` });
@@ -93,7 +101,7 @@ assert.equal(internalApiScopeAuthorized(readHeaders, "automation", environment),
 assert.equal(internalApiScopeAuthorized(readHeaders, "high_privilege", environment), false);
 
 const masterHeaders = new Headers({ authorization: `Bearer ${environment.SWING_UP_INTERNAL_API_TOKEN}` });
-for (const scope of ["cron_runtime", "sensor_handoff", "foundation_runtime", "automation", "high_privilege", "serious_signal_read"]) {
+for (const scope of ["cron_runtime", "sensor_handoff", "foundation_runtime", "delivery_test_runtime", "automation", "high_privilege", "serious_signal_read"]) {
   assert.equal(internalApiScopeAuthorized(masterHeaders, scope, environment), true, `Master token failed ${scope}.`);
 }
 assert.equal(internalApiScopeAuthorized(new Headers(), "high_privilege", environment), false);
@@ -102,12 +110,16 @@ assert.equal(internalApiScopeAuthorized(new Headers({ authorization: "Bearer gue
 const middleware = await readFile(new URL("../middleware.ts", import.meta.url), "utf8");
 const cronLauncher = await readFile(new URL("./pr262-cron-cycle.mjs", import.meta.url), "utf8");
 const foundationRoute = await readFile(new URL("../app/api/internal/combined-opportunity-engine/production-foundation/route.ts", import.meta.url), "utf8");
+const deliveryTestRoute = await readFile(new URL("../app/api/internal/combined-opportunity-engine/delivery-test/route.ts", import.meta.url), "utf8");
 assert.match(middleware, /requiredInternalApiScope/);
 assert.match(middleware, /internalApiScopeAuthorized/);
 assert.doesNotMatch(middleware, /expectedInternalTokens/, "Middleware must never pool unlike-privilege tokens.");
-assert.match(cronLauncher, /const token = process\.env\.SWING_UP_PR262_CRON_RUNTIME_TOKEN/);
+assert.match(cronLauncher, /const cronToken = process\.env\.SWING_UP_PR262_CRON_RUNTIME_TOKEN/);
 assert.doesNotMatch(cronLauncher, /const token = process\.env\.SWING_UP_PR262_SENSOR_TOKEN/, "Cron must not reuse the cheap-sensor token.");
 assert.match(foundationRoute, /internalApiScopeAuthorized\(request\.headers, "foundation_runtime"\)/, "The production foundation route must enforce its scope even if middleware is bypassed.");
+assert.match(deliveryTestRoute, /internalApiScopeAuthorized\(request\.headers, "delivery_test_runtime"\)/, "The delivery-test route must enforce its dedicated scope even if middleware is bypassed.");
+assert.match(cronLauncher, /SWING_UP_PR262_DELIVERY_TEST_RUNTIME_TOKEN/);
+assert.match(cronLauncher, /x-swing-up-pr262-delivery-test-token/);
 
 console.log(JSON.stringify({
   ok: true,
@@ -120,4 +132,5 @@ console.log(JSON.stringify({
   everyPr262EngineRouteScoped: true,
   everyChangedHighPrivilegeRouteScoped: true,
   productionFoundationChecksScopeInRoute: true,
+  deliveryTestTokenLimitedToDeliveryProof: true,
 }, null, 2));

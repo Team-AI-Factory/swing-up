@@ -17,6 +17,7 @@
     "db:seed": "node prisma/seed.mjs",
     "pr262:cron": "node scripts/pr262-cron-cycle.mjs",
     "pr262:analysis-cron": "node scripts/pr262-cron-cycle.mjs --analysis-only",
+    "pr262:delivery-test": "node scripts/pr262-cron-cycle.mjs --delivery-test",
     "pr262:production-foundation": "node scripts/pr262-production-foundation-cycle.mjs",
     "smoke:routes": "node scripts/smoke-routes.mjs",
     "smoke:production": "node scripts/production-smoke.mjs",

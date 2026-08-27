@@ -2,6 +2,7 @@ export type InternalApiScope =
   | "cron_runtime"
   | "sensor_handoff"
   | "foundation_runtime"
+  | "delivery_test_runtime"
   | "automation"
   | "high_privilege"
   | "serious_signal_read";
@@ -12,6 +13,7 @@ const SERIOUS_SIGNAL_STATUS_PATH = "/api/internal/serious-signal-status";
 const PR262_CRON_PATH = "/api/internal/combined-opportunity-engine/cron-v3";
 const PR262_SENSOR_HANDOFF_PATH = "/api/internal/combined-opportunity-engine/cloudflare-sensor-handoff";
 const PR262_PRODUCTION_FOUNDATION_PATH = "/api/internal/combined-opportunity-engine/production-foundation";
+const PR262_DELIVERY_TEST_PATH = "/api/internal/combined-opportunity-engine/delivery-test";
 const COMBINED_ENGINE_PREFIX = "/api/internal/combined-opportunity-engine";
 
 const HIGH_PRIVILEGE_PATHS = [
@@ -39,6 +41,7 @@ export function requiredInternalApiScope(path: string, method: string): Internal
   if (path === PR262_CRON_PATH && normalizedMethod === "POST") return "cron_runtime";
   if (path === PR262_SENSOR_HANDOFF_PATH && normalizedMethod === "POST") return "sensor_handoff";
   if (path === PR262_PRODUCTION_FOUNDATION_PATH && normalizedMethod === "POST") return "foundation_runtime";
+  if (path === PR262_DELIVERY_TEST_PATH && normalizedMethod === "POST") return "delivery_test_runtime";
   if (HIGH_PRIVILEGE_PATHS.some((prefix) => pathMatches(path, prefix))) return "high_privilege";
   if (pathMatches(path, COMBINED_ENGINE_PREFIX)) return "automation";
   return null;
@@ -95,6 +98,12 @@ export function internalApiScopeAuthorized(
       configured(environment, "SWING_UP_PR262_FOUNDATION_RUNTIME_TOKEN"),
     );
   }
+  if (scope === "delivery_test_runtime") {
+    return safeEqual(
+      headers.get("x-swing-up-pr262-delivery-test-token")?.trim(),
+      configured(environment, "SWING_UP_PR262_DELIVERY_TEST_RUNTIME_TOKEN"),
+    );
+  }
   if (scope === "automation") {
     const supplied = headers.get("x-swing-up-automation-token")?.trim() || suppliedBearer;
     return safeEqual(supplied, configured(environment, "SWING_UP_AUTOMATION_TOKEN"));
@@ -111,4 +120,5 @@ export const INTERNAL_API_PATHS = {
   pr262Cron: PR262_CRON_PATH,
   pr262SensorHandoff: PR262_SENSOR_HANDOFF_PATH,
   pr262ProductionFoundation: PR262_PRODUCTION_FOUNDATION_PATH,
+  pr262DeliveryTest: PR262_DELIVERY_TEST_PATH,
 } as const;

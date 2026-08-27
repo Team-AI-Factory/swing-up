@@ -183,6 +183,57 @@ try {
   assert.equal(feedIndex.kind, "serious_signal_status_feed_index");
   assert.ok(feedIndex.pointers.length <= 500, "The live feed index must remain strictly bounded.");
 
+  process.env.SWING_UP_PR262_APPROVED_DELIVERY_TEST = "true";
+  process.env.TELEGRAM_BOT_TOKEN = "test-bot-token";
+  process.env.TELEGRAM_TEST_CHAT_ID = "test-chat-only";
+  process.env.TELEGRAM_SERIOUS_SIGNAL_CHAT_ID = "must-not-be-used";
+  let deliveryTestTelegramCalls = 0;
+  let deliveryTestWebhookCalls = 0;
+  let deliveryTestMessage = null;
+  let deliveryTestChat = null;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).startsWith("https://api.telegram.org/")) {
+      deliveryTestTelegramCalls += 1;
+      const payload = JSON.parse(String(init.body));
+      deliveryTestMessage = payload.text;
+      deliveryTestChat = payload.chat_id;
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    deliveryTestWebhookCalls += 1;
+    return new Response("unexpected webhook", { status: 500 });
+  };
+  const deliveryTestKey = `${prefix}serious-signal/delivery-test/outbox/railway-test-run-001.json`;
+  await write(deliveryTestKey, validOutbox("TEST", afterRecheck.toISOString(), {
+    kind: "pr262_serious_signal_delivery_test",
+    testOnly: true,
+  }), { createOnly: true });
+  const deliveryTestFirst = await deliverSeriousSignalOutbox(deliveryTestKey, {
+    now: afterRecheck,
+    ownerId: "delivery-test-first",
+  });
+  const deliveryTestSecond = await deliverSeriousSignalOutbox(deliveryTestKey, {
+    now: afterRecheck,
+    ownerId: "delivery-test-duplicate-check",
+  });
+  assert.equal(deliveryTestFirst.ok, true);
+  assert.equal(deliveryTestFirst.deliveryTest, true);
+  assert.equal(deliveryTestFirst.seriousSignal, false, "A delivery test must never be represented as a market signal.");
+  assert.equal(deliveryTestTelegramCalls, 1, "The test outbox must reach the Telegram test channel exactly once.");
+  assert.equal(deliveryTestWebhookCalls, 0, "A delivery test must never call the live webhook.");
+  assert.equal(deliveryTestChat, "test-chat-only", "The live Telegram chat must never receive a delivery test.");
+  assert.match(deliveryTestMessage, /^Swing Up — DELIVERY TEST\nNOT A MARKET SIGNAL/);
+  assert.equal(deliveryTestSecond.ok, true);
+  assert.equal(deliveryTestSecond.channels.length, 0, "The terminal delivery job must suppress a duplicate external call.");
+  assert.equal(deliveryTestSecond.attempts, deliveryTestFirst.attempts);
+  assert.ok(!feedIndex.pointers.some((pointer) => pointer.outboxKey === deliveryTestKey), "A test outbox must not enter the real Serious Signals feed.");
+  assert.ok([...objects.entries()]
+    .filter(([key]) => key.startsWith(`${prefix}serious-signal/delivery-v2/feed/`))
+    .every(([, stored]) => stored.payload.outboxKey !== deliveryTestKey), "A test outbox must not create a live feed pointer.");
+  delete process.env.SWING_UP_PR262_APPROVED_DELIVERY_TEST;
+  delete process.env.TELEGRAM_BOT_TOKEN;
+  delete process.env.TELEGRAM_TEST_CHAT_ID;
+  delete process.env.TELEGRAM_SERIOUS_SIGNAL_CHAT_ID;
+
   const invalidKey = `${prefix}serious-signal/outbox/event-job/buy/BAD/fingerprint.json`;
   await write(invalidKey, validOutbox("BAD", start.toISOString(), {
     committee: { agentsCompleted: 13, agentsFailed: 1, finalJudge: { verdict: "positive", confidence: 99 }, output: { overallRecommendation: "approve" } },
@@ -339,4 +390,6 @@ console.log(JSON.stringify({
   railwayWriteCannotImpersonateCloudflareHeartbeat: true,
   truncatedFeedCannotCertifyEmptyWindow: true,
   externalGuaranteeAccuratelyAtLeastOnce: true,
+  deliveryTestUsesTestChatExactlyOnce: true,
+  deliveryTestCannotEnterSeriousSignalFeed: true,
 }, null, 2));

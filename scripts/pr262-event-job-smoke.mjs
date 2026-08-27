@@ -76,6 +76,7 @@ const historicalRecords = Array.from({ length: 5 }, (_, index) => ({
 }));
 
 const objects = new Map();
+const writes = [];
 let etagCounter = 0;
 const historyKey = "branch-labs/pr-262/serious-signal/equity-history-v1.json";
 objects.set(historyKey, { value: { version: 1, records: historicalRecords, updatedAt: "2026-08-11T00:00:00.000Z" }, etag: '"seed"' });
@@ -93,6 +94,7 @@ async function writeObject(key, payload, options = {}) {
   if (options.expectedEtag && current?.etag !== options.expectedEtag) return { written: false, conflict: true, etag: null };
   const etag = `"etag-${++etagCounter}"`;
   objects.set(key, { value: structuredClone(payload), etag });
+  writes.push({ key, payload: structuredClone(payload) });
   return { written: true, conflict: false, etag };
 }
 
@@ -267,8 +269,9 @@ const stubs = {
     }),
   },
   "@/lib/opportunity-engine/us-value-investing-engine": {
-    refreshUsValueCompany: async ({ ticker, now }) => {
+    refreshUsValueCompany: async ({ ticker, now, beforeFetch }) => {
       valueRefreshCalls += 1;
+      await beforeFetch?.();
       return { ...analysis, ticker, observedAt: now.toISOString(), currentPrice: 41 };
     },
   },
@@ -404,6 +407,14 @@ assert.equal(valueRefreshCalls, 1);
 assert.equal(retryCalls, 0);
 assert.equal(acknowledgements, 1);
 assert.equal(objects.get(PR262_EVENT_JOB_KEYS.STATE_KEY).value.runs.length, 1);
+assert.deepEqual(
+  Object.keys(objects.get(PR262_EVENT_JOB_KEYS.STATE_KEY).value).sort(),
+  ["runs", "updatedAt", "version"],
+  "The durable completion ledger must not carry volatile leases or provider budgets.",
+);
+assert.equal(objects.get(PR262_EVENT_JOB_KEYS.LEASE_KEY).value.lease, null, "The small runtime lease must be released after completion.");
+assert.equal(objects.get(PR262_EVENT_JOB_KEYS.PROVIDER_BUDGET_KEY).value.reservations.length, 1, "Provider reservations must be durable without rewriting the completion ledger.");
+assert.equal(objects.get(PR262_EVENT_JOB_KEYS.COMMITTEE_BUDGET_KEY).value.reservations.length, 1, "Paid-call reservations must remain durable in their own compact object.");
 assert.equal(objects.get(historyKey).value.records.length, 6);
 assert.ok(objects.has(first.resultKey));
 assert.ok(objects.has(first.outboxKey));
@@ -449,6 +460,7 @@ assert.equal(valueRefreshCalls, 1, "A fresh unread source must not refresh valua
 assert.equal(retryCalls, 1, "A fresh unread source must remain retryable");
 
 setSecEventIdentity("000003", "2026-08-01T10:00:00.000Z");
+const stateWritesBeforeExpiredUnread = writes.filter((write) => write.key === PR262_EVENT_JOB_KEYS.STATE_KEY).length;
 const expiredUnread = await runPr262EventJob({ now: new Date("2026-08-11T10:04:00.000Z"), allowOpenAi: true });
 assert.equal(expiredUnread.status, "source_evidence_expired_unread");
 assert.equal(expiredUnread.seriousSignalFound, false);
@@ -458,13 +470,15 @@ assert.equal(valueRefreshCalls, 1, "An expired unread source must be archived wi
 assert.equal(objects.get(historyKey).value.records.length, 6, "An unread discovery item must never enter historical findings");
 assert.equal(expiredUnread.resultKey, null, "An expired unimportant discovery must not create a full immutable R2 result.");
 assert.equal(expiredUnread.r2Persistence.detailedResultWritten, false);
-assert.equal(objects.get(PR262_EVENT_JOB_KEYS.STATE_KEY).value.runs.find((run) => run.eventId === event.id).resultKey, null, "The compact idempotency ledger is enough to prevent repeat work.");
+assert.equal(expiredUnread.r2Persistence.operationalLedgerWritten, false);
+assert.equal(writes.filter((write) => write.key === PR262_EVENT_JOB_KEYS.STATE_KEY).length, stateWritesBeforeExpiredUnread, "An expired unimportant discovery must not rewrite the completion ledger.");
 
 decisionGradeSecSource = true;
 runnerResultMode = "no_signal";
 setSecEventIdentity("000006", "2026-08-11T10:04:15.000Z");
 const detailedRunCountBeforeQuietAnalysis = [...objects.keys()].filter((key) => key.startsWith(PR262_EVENT_JOB_KEYS.RUN_PREFIX)).length;
 const valueRefreshCountBeforeQuietAnalysis = [...objects.keys()].filter((key) => key.includes("/value-investing/event-refresh/")).length;
+const stateWritesBeforeQuietAnalysis = writes.filter((write) => write.key === PR262_EVENT_JOB_KEYS.STATE_KEY).length;
 const routineNoSignal = await runPr262EventJob({ now: new Date("2026-08-11T10:04:30.000Z"), allowOpenAi: true });
 assert.equal(routineNoSignal.status, "no_qualified_signal");
 assert.equal(routineNoSignal.resultKey, null, "A routine no-signal analysis must not write a full result object.");
@@ -472,6 +486,7 @@ assert.equal(routineNoSignal.r2Persistence.detailedResultWritten, false);
 assert.equal(routineNoSignal.r2Persistence.companyRefreshWritten, false, "A routine valuation refresh must stay in memory unless it supports an important finding.");
 assert.equal([...objects.keys()].filter((key) => key.startsWith(PR262_EVENT_JOB_KEYS.RUN_PREFIX)).length, detailedRunCountBeforeQuietAnalysis);
 assert.equal([...objects.keys()].filter((key) => key.includes("/value-investing/event-refresh/")).length, valueRefreshCountBeforeQuietAnalysis);
+assert.equal(writes.filter((write) => write.key === PR262_EVENT_JOB_KEYS.STATE_KEY).length, stateWritesBeforeQuietAnalysis, "Routine no-signal analysis must not rewrite the completion ledger.");
 runnerResultMode = "serious";
 
 setSecEventIdentity("000004", "2026-08-11T10:04:00.000Z");
@@ -487,9 +502,15 @@ failHistoryAccess = false;
 committeeFingerprint = "fingerprint-1";
 
 const stateBeforeLegacyCompaction = objects.get(PR262_EVENT_JOB_KEYS.STATE_KEY).value;
+const legacyProviderReservations = objects.get(PR262_EVENT_JOB_KEYS.PROVIDER_BUDGET_KEY).value.reservations;
+const legacyCommitteeReservations = objects.get(PR262_EVENT_JOB_KEYS.COMMITTEE_BUDGET_KEY).value.reservations;
+objects.delete(PR262_EVENT_JOB_KEYS.PROVIDER_BUDGET_KEY);
+objects.delete(PR262_EVENT_JOB_KEYS.COMMITTEE_BUDGET_KEY);
 objects.set(PR262_EVENT_JOB_KEYS.STATE_KEY, {
   value: {
     ...stateBeforeLegacyCompaction,
+    providerReservations: legacyProviderReservations,
+    committeeReservations: legacyCommitteeReservations,
     runs: [...stateBeforeLegacyCompaction.runs, {
       eventId: "legacy:oversized-run",
       resultKey: null,
@@ -517,12 +538,20 @@ await assert.rejects(
   }),
   /pr262_event_job_deadline_exceeded/,
 );
-assert.equal(objects.get(PR262_EVENT_JOB_KEYS.STATE_KEY).value.lease, null, "A deadline-aborted job must release its lease");
+assert.equal(objects.get(PR262_EVENT_JOB_KEYS.LEASE_KEY).value.lease, null, "A deadline-aborted job must release its small runtime lease");
+
+committeeFingerprint = "fingerprint-legacy-compaction";
+setSecEventIdentity("000007", "2026-08-11T10:06:00.000Z");
+await runPr262EventJob({ now: new Date("2026-08-11T10:07:00.000Z"), allowOpenAi: true });
 const compactedLegacyRun = objects.get(PR262_EVENT_JOB_KEYS.STATE_KEY).value.runs.find((run) => run.eventId === "legacy:oversized-run");
 assert.ok(compactedLegacyRun, "Legacy idempotency must be retained while its oversized evidence is removed.");
 assert.equal("selectedCandidate" in compactedLegacyRun, false);
 assert.equal("historicalPilot" in compactedLegacyRun, false);
 assert.equal("committee" in compactedLegacyRun, false);
+assert.equal("providerReservations" in objects.get(PR262_EVENT_JOB_KEYS.STATE_KEY).value, false, "Migrated provider budgets must leave the finding ledger.");
+assert.equal("committeeReservations" in objects.get(PR262_EVENT_JOB_KEYS.STATE_KEY).value, false, "Migrated Committee budgets must leave the finding ledger.");
+assert.ok(objects.get(PR262_EVENT_JOB_KEYS.PROVIDER_BUDGET_KEY).value.reservations.length >= legacyProviderReservations.length, "Legacy provider reservations must survive the runtime-state split.");
+assert.ok(objects.get(PR262_EVENT_JOB_KEYS.COMMITTEE_BUDGET_KEY).value.reservations.length >= legacyCommitteeReservations.length, "Legacy Committee reservations must survive the runtime-state split.");
 
 console.log(JSON.stringify({
   ok: true,
@@ -543,6 +572,7 @@ console.log(JSON.stringify({
   paidCommitteeInheritsCycleDeadline: true,
   unreadSourceRetriesThenExpiresWithoutHistory: true,
   routineNoSignalSkipsDetailedR2Writes: true,
+  volatileEventRuntimeStateSplitFromFindingLedger: true,
   routineCompanyRefreshStaysInMemory: true,
   shortRenewableLeaseAndDeadlineRecovery: true,
   legacyEventLedgerCompactedWithoutLosingIdempotency: true,

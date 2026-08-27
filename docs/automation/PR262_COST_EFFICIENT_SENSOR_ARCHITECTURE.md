@@ -158,6 +158,16 @@ logged in Railway rather than copied into R2. Detailed result, latest-result,
 history, company-refresh, outbox, and delivery objects are written only for a
 meaningful finding/change or a paid audit record.
 
+The event-analysis hot path follows the same rule. Its durable completion
+ledger contains only compact pointers for important findings and paid audit
+records; routine no-signal outcomes, expired unread discoveries, and scheduled
+retries do not rewrite it. Volatile leases, provider reservations, and
+Committee reservations live in separate small runtime objects so a safety
+checkpoint cannot resend the historical completion ledger. Queue outcomes are
+batched once per cycle. A provider timeout that already has a durable
+`next_retry_at` remains healthy deferred work rather than failing the entire
+five-minute job.
+
 ## Merge blockers
 
 PR #262 is not merge-ready until all of these are true:

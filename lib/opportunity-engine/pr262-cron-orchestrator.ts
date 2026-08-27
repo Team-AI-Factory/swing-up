@@ -266,7 +266,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
       }
     } catch (error) {
       const message = error instanceof Error ? error.message.slice(0, 260) : "event_job_failed";
-      const retryableEvidenceDeferral = /^(?:pr262_event_full_source_incomplete|pr262_full_source_rolling_quota_guard); next_retry_at=/.test(message);
+      const retryableEvidenceDeferral = /^(?:pr262_event_full_source_incomplete|pr262_event_report_retry:[^;]+|[a-z0-9_]+_(?:rolling_quota_guard|cadence_guard)); next_retry_at=/.test(message);
       if (retryableEvidenceDeferral) eventDeferrals += 1;
       else eventFailures += 1;
       eventResults.push({

@@ -132,6 +132,23 @@ function emptyState(): EventJobState {
   return { version: 1, updatedAt: new Date(0).toISOString(), lease: null, committeeReservations: [], providerReservations: [], runs: [] };
 }
 
+function compactCompletedRun(value: unknown): Json | null {
+  const run = object(value);
+  const eventId = text(run.eventId);
+  if (!eventId) return null;
+  return {
+    eventId,
+    resultKey: text(run.resultKey),
+    checkedAt: text(run.checkedAt),
+    status: text(run.status),
+    seriousSignalFound: run.seriousSignalFound === true,
+    actionableSignalFound: run.actionableSignalFound === true,
+    alertType: run.alertType === "buy" || run.alertType === "sell" ? run.alertType : null,
+    openAiCalled: run.openAiCalled === true,
+    candidateFingerprint: text(run.candidateFingerprint),
+  };
+}
+
 function normalizeState(value: unknown, now: Date): EventJobState {
   const item = object(value);
   const rawLease = object(item.lease);
@@ -172,7 +189,9 @@ function normalizeState(value: unknown, now: Date): EventJobState {
     lease,
     committeeReservations: reservations,
     providerReservations,
-    runs: Array.isArray(item.runs) ? item.runs.map(object).filter((run) => Object.keys(run).length > 0).slice(-MAX_STATE_RUNS) : [],
+    runs: Array.isArray(item.runs)
+      ? item.runs.map(compactCompletedRun).filter((run): run is Json => Boolean(run)).slice(-MAX_STATE_RUNS)
+      : [],
   };
 }
 
@@ -934,7 +953,7 @@ function committeeApproved(report: Json, pointer: Json) {
 }
 
 function stateRun(eventId: string, resultKey: string | null, report: Json) {
-  return {
+  return compactCompletedRun({
     eventId,
     resultKey,
     checkedAt: report.checkedAt,
@@ -944,7 +963,7 @@ function stateRun(eventId: string, resultKey: string | null, report: Json) {
     alertType: report.alertType ?? null,
     openAiCalled: report.openAiCalled === true,
     candidateFingerprint: report.candidateFingerprint ?? null,
-  };
+  })!;
 }
 
 async function completeState(eventId: string, ownerId: string, resultKey: string | null, report: Json, now: Date) {

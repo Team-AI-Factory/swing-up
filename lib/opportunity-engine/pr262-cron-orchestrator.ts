@@ -9,7 +9,11 @@ import {
   reservePr262AiCommitteeBudget,
 } from "@/lib/opportunity-engine/pr262-ai-daily-cost";
 import { enrichPr262SensorCompanyMappings } from "@/lib/opportunity-engine/pr262-company-directory";
-import { readPr262ChangeSensorState } from "@/lib/opportunity-engine/pr262-change-sensor";
+import {
+  applyPr262PendingSensorEventMutations,
+  readPr262ChangeSensorState,
+  type Pr262PendingSensorEventMutation,
+} from "@/lib/opportunity-engine/pr262-change-sensor";
 import { runPr262EventJob } from "@/lib/opportunity-engine/pr262-event-job";
 import { runPr262LightweightSensorV3 } from "@/lib/opportunity-engine/pr262-lightweight-sensor-v3";
 import { createPr262SensorBudgetedFetch } from "@/lib/opportunity-engine/pr262-sensor-fetch-budget";
@@ -151,6 +155,8 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
   let seriousSells = 0;
   let seriousWatchOuts = 0;
   let deadlineStoppedAdmissions = false;
+  const queueMutations: Pr262PendingSensorEventMutation[] = [];
+  const excludedEventIds = new Set<string>();
 
   for (let index = 0; index < capacity; index += 1) {
     const remainingMs = processingDeadlineAtMs - Date.now();
@@ -162,6 +168,11 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
     try {
       const raw = await runPr262EventJob({
         allowOpenAi: aiBudget.allowed && aiBudget.accountingHealthy,
+        excludedEventIds: [...excludedEventIds],
+        queueMutationSink: (mutation) => {
+          queueMutations.push(mutation);
+          excludedEventIds.add(mutation.eventId);
+        },
         beforeOpenAiCall: async (reservation) => {
           try {
             const reserved = await reservePr262AiCommitteeBudget({
@@ -269,6 +280,28 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
     }
   }
 
+  let queuePersistence: Json = {
+    written: false,
+    writes: 0,
+    acknowledged: 0,
+    retried: 0,
+    reason: "no_event_queue_changes",
+  };
+  let queuePersistenceHealthy = true;
+  if (queueMutations.length > 0) {
+    try {
+      queuePersistence = asJson(await applyPr262PendingSensorEventMutations(queueMutations));
+    } catch (error) {
+      queuePersistenceHealthy = false;
+      queuePersistence = {
+        written: false,
+        writes: 0,
+        mutationCount: queueMutations.length,
+        error: error instanceof Error ? error.message.slice(0, 200) : "event_queue_batch_write_failed",
+      };
+    }
+  }
+
   const deliveryRecovery = processingDeadlineAtMs - Date.now() >= 30_000 && !cycleSignal.aborted
     ? await processPendingSeriousSignalDeliveries({
         maxJobs: 4,
@@ -336,6 +369,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
   const operationalOk = (sensor?.ok ?? true)
     && mappingHealthy
     && eventFailures === 0
+    && queuePersistenceHealthy
     && aiBudget.accountingHealthy
     && deliveryHealthy;
   return {
@@ -366,6 +400,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
       eventsProcessed,
       eventFailures,
       eventDeferrals,
+      queuePersistence,
       aiCalls,
       seriousBuys,
       seriousSells,

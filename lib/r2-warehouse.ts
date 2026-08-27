@@ -465,8 +465,20 @@ export async function writeVersionedJsonToR2(
   const condition: Record<string, string> = {};
   if (options.expectedEtag) condition["if-match"] = normalizeR2Etag(options.expectedEtag) ?? options.expectedEtag;
   else if (options.createOnly) condition["if-none-match"] = "*";
-  const body = `${JSON.stringify(redactSecrets(payload), null, 2)}\n`;
+  const redacted = redactSecrets(payload);
+  const compactPr262State = r2Key.startsWith("production/pr262/")
+    || r2Key.startsWith("branch-labs/pr-262/");
+  const body = `${JSON.stringify(redacted, null, compactPr262State ? undefined : 2)}\n`;
   const res = await signedFetch("PUT", r2Key, body, "application/json", undefined, condition);
+  if (process.env.SWING_UP_PR262_R2_WRITE_TELEMETRY?.trim().toLowerCase() === "true"
+    && compactPr262State) {
+    console.log(`[pr262-r2-write] ${JSON.stringify({
+      key: r2Key,
+      bytes: Buffer.byteLength(body),
+      status: res.status,
+      conflict: res.status === 412,
+    })}`);
+  }
   if (res.status === 412) return { written: false, conflict: true, etag: null };
   if (!res.ok) throw new Error(`r2_state_write_http_${res.status}`);
   let etag = normalizeR2Etag(res.headers.get("etag"));

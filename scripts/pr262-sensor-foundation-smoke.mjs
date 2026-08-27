@@ -396,6 +396,39 @@ assert.equal(afterAcknowledgement.cloudflareSensor.owner, "cloudflare_worker");
 assert.equal(afterAcknowledgement.cloudflareSensor.lastRunKey, "branch-labs/pr-262/cloudflare-shadow/sensor/runs/test.json");
 assert.equal(afterAcknowledgement.sensorReadiness.universeReady, true);
 
+const batchMappedBase = {
+  ...parsed.events[0],
+  source: "company_news",
+  sourceProvider: "batch_test_news",
+  ticker: "TWST",
+  company: "Twist Bioscience Corporation",
+  tradingViewSymbol: "NASDAQ:TWST",
+  mappingStatus: "mapped",
+  mappingMethod: "structured_ticker_exact",
+  cik: null,
+  form: null,
+  accession: null,
+  canonicalSecIndexUrl: null,
+  identityMethod: "not_applicable",
+};
+const batchAcknowledged = { ...batchMappedBase, id: "sec:batch-acknowledged", queueAttempts: 0 };
+const batchRetried = { ...batchMappedBase, id: "sec:batch-retried", queueAttempts: 1 };
+putObject(sensorStateKey, { ...afterAcknowledgement, pending: [batchAcknowledged, batchRetried] });
+const revisionBeforeBatch = revision;
+const batchRetryAt = new Date(now.getTime() + 45 * 60_000).toISOString();
+const batchMutation = await sensor.applyPr262PendingSensorEventMutations([
+  { action: "acknowledge", eventId: batchAcknowledged.id },
+  { action: "retry", eventId: batchRetried.id, error: "bounded retry", nextRetryAt: batchRetryAt, attemptedAt: now },
+]);
+assert.equal(batchMutation.writes, 1, "A cycle must checkpoint all queue outcomes with one R2 upload.");
+assert.equal(revision, revisionBeforeBatch + 1, "Acknowledgements and retries must not rewrite the full queue once per event.");
+assert.equal(batchMutation.acknowledged, 1);
+assert.equal(batchMutation.retried, 1);
+const afterBatchMutation = await sensor.readPr262ChangeSensorState();
+assert.deepEqual(afterBatchMutation.pending.map((event) => event.id), [batchRetried.id]);
+assert.equal(afterBatchMutation.pending[0].queueAttempts, 2);
+assert.equal(afterBatchMutation.pending[0].queueNextAttemptAt, batchRetryAt);
+
 const mappedDueRetry = {
   ...parsed.events[0],
   id: "sec:mapped-due-retry",

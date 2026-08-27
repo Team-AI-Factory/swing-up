@@ -43,8 +43,9 @@ if (production && storagePrefix.startsWith("branch-labs/")) throw new Error("pr2
 if (production && storagePrefix !== PRODUCTION_STORAGE_PREFIX) throw new Error("pr262_cron_production_storage_prefix_mismatch");
 
 const projectedMonthlyCostUsd = Number(process.env.SWING_UP_PR262_PROJECTED_RAILWAY_MONTHLY_COST_USD);
-if (!analysisOnly && !deliveryTest && Number.isFinite(projectedMonthlyCostUsd) && projectedMonthlyCostUsd > 30) {
-  console.log(`[pr262-cron] sensor_paused_projected_monthly_cost_usd=${projectedMonthlyCostUsd.toFixed(2)} hard_limit_usd=30`);
+if (!deliveryTest && Number.isFinite(projectedMonthlyCostUsd) && projectedMonthlyCostUsd > 30) {
+  const pausedRole = analysisOnly ? "analysis_recovery" : "sensor";
+  console.log(`[pr262-cron] ${pausedRole}_paused_projected_monthly_cost_usd=${projectedMonthlyCostUsd.toFixed(2)} hard_limit_usd=30`);
   process.exit(0);
 }
 const env = {

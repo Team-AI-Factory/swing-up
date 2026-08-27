@@ -11,6 +11,7 @@ let sensorCalls = 0;
 let mappingCalls = 0;
 let eventCalls = 0;
 let deliveryRecoveryCalls = 0;
+let queueBatchCalls = 0;
 let mappingHealthy = true;
 let deliveryHealthy = true;
 let eventMode = "idle";
@@ -46,7 +47,15 @@ const stubs = {
         : { mapped: 0, directoryCompanies: 0, directoryUpdatedAt: null, error: "directory_unavailable" };
     },
   },
-  "@/lib/opportunity-engine/pr262-change-sensor": { readPr262ChangeSensorState: async () => structuredClone(state) },
+  "@/lib/opportunity-engine/pr262-change-sensor": {
+    readPr262ChangeSensorState: async () => structuredClone(state),
+    applyPr262PendingSensorEventMutations: async (mutations) => {
+      queueBatchCalls += 1;
+      const acknowledged = new Set(mutations.filter((item) => item.action === "acknowledge").map((item) => item.eventId));
+      state.pending = state.pending.filter((event) => !acknowledged.has(event.id));
+      return { written: true, writes: 1, acknowledged: acknowledged.size, retried: 0, pendingCount: state.pending.length };
+    },
+  },
   "@/lib/opportunity-engine/pr262-event-job": {
     runPr262EventJob: async (input) => {
       eventCalls += 1;
@@ -64,6 +73,11 @@ const stubs = {
       if (eventMode === "broken") {
         eventMode = "idle";
         throw new Error("unexpected_event_processing_failure");
+      }
+      if (eventMode === "processed") {
+        eventMode = "idle";
+        input.queueMutationSink({ action: "acknowledge", eventId: state.pending[0].id });
+        return { ok: true, status: "completed", eventsProcessed: 1 };
       }
       return { ok: true, status: "idle", eventsProcessed: 0 };
     },
@@ -140,6 +154,14 @@ else process.env.SWING_UP_PR262_SENSOR_OWNER = priorOwner;
 assert.equal(guardedDefault.mode, "pr262_five_minute_cron_v3");
 assert.equal(sensorCalls, sensorCallsBeforeDefault + 1, "A stale Cloudflare owner variable must not disable the approved Railway sensor.");
 
+eventMode = "processed";
+const batchCallsBefore = queueBatchCalls;
+const batchedQueueProgress = await loaded.exports.runPr262AnalysisOnlyCycle({ maxCycleMs: 90_000 });
+assert.equal(batchedQueueProgress.ok, true);
+assert.equal(queueBatchCalls, batchCallsBefore + 1, "One cycle must flush its event outcomes through one queue batch.");
+assert.equal(batchedQueueProgress.processing.queuePersistence.writes, 1);
+assert.equal(state.pending.length, 0);
+
 console.log(JSON.stringify({
   ok: true,
   railwayQueueAnalyzedByRailway: true,
@@ -152,4 +174,5 @@ console.log(JSON.stringify({
   scheduledEvidenceDeferralRemainsHealthy: true,
   scheduledRollingQuotaDeferralRemainsHealthy: true,
   unexpectedEventFailureRemainsUnhealthy: true,
+  queueOutcomesPersistOncePerCycle: true,
 }, null, 2));

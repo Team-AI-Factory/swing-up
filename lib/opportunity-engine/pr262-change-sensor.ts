@@ -80,6 +80,16 @@ export type Pr262SensorEvent = {
   queueLastError: string | null;
 };
 
+export type Pr262PendingSensorEventMutation =
+  | { action: "acknowledge"; eventId: string }
+  | {
+      action: "retry";
+      eventId: string;
+      error: string;
+      nextRetryAt: string;
+      attemptedAt?: Date;
+    };
+
 type SensorCursors = {
   secUrgentFormIndex: number;
   newsQueryIndex: number;
@@ -1107,32 +1117,80 @@ export async function readPr262ChangeSensorState() {
 export async function readNextPr262PendingSensorEvent(input: {
   now?: Date;
   minimumPriority?: number;
+  excludedEventIds?: readonly string[];
 } = {}) {
   const now = input.now ?? new Date();
   const state = (await loadSensorState(now)).state;
   const nowMs = now.getTime();
   const minimumPriority = Math.max(0, Math.min(100, input.minimumPriority ?? 80));
+  const excludedEventIds = new Set(input.excludedEventIds ?? []);
   return state.pending.find((event) => {
     const retryAt = event.queueNextAttemptAt ? Date.parse(event.queueNextAttemptAt) : Number.NaN;
     const retryDue = !Number.isFinite(retryAt) || retryAt <= nowMs;
-    return event.priority >= minimumPriority && processingReady(event) && retryDue;
+    return !excludedEventIds.has(event.id)
+      && event.priority >= minimumPriority
+      && processingReady(event)
+      && retryDue;
   }) ?? null;
 }
 
+export async function applyPr262PendingSensorEventMutations(
+  mutations: readonly Pr262PendingSensorEventMutation[],
+) {
+  const normalized = new Map<string, Pr262PendingSensorEventMutation>();
+  for (const mutation of mutations) {
+    const eventId = mutation.eventId.trim();
+    if (!eventId) throw new Error("pr262_sensor_event_id_required");
+    if (mutation.action === "retry" && !Number.isFinite(Date.parse(mutation.nextRetryAt))) {
+      throw new Error("pr262_sensor_retry_time_invalid");
+    }
+    normalized.set(eventId, { ...mutation, eventId });
+  }
+  if (!normalized.size) {
+    const state = (await loadSensorState()).state;
+    return { written: false, writes: 0, acknowledged: 0, retried: 0, pendingCount: state.pending.length };
+  }
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const loaded = await loadSensorState();
+    let acknowledged = 0;
+    let retried = 0;
+    const pending = loaded.state.pending.flatMap((event): Pr262SensorEvent[] => {
+      const mutation = normalized.get(event.id);
+      if (!mutation) return [event];
+      if (mutation.action === "acknowledge") {
+        acknowledged += 1;
+        return [];
+      }
+      retried += 1;
+      const attemptedAt = mutation.attemptedAt ?? new Date();
+      return [{
+        ...event,
+        queueAttempts: event.queueAttempts + 1,
+        queueNextAttemptAt: new Date(Date.parse(mutation.nextRetryAt)).toISOString(),
+        queueLastAttemptAt: attemptedAt.toISOString(),
+        queueLastError: mutation.error.replace(/\s+/g, " ").trim().slice(0, 240) || "event_processing_failed",
+      }];
+    });
+    if (acknowledged === 0 && retried === 0) {
+      return { written: false, writes: 0, acknowledged, retried, pendingCount: pending.length };
+    }
+    const next: SensorState = { ...loaded.state, updatedAt: new Date().toISOString(), pending };
+    const written = await writeVersionedJsonToR2(
+      SENSOR_STATE_KEY,
+      next,
+      loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true },
+    );
+    if (!written.conflict) {
+      return { written: true, writes: 1, acknowledged, retried, pendingCount: pending.length };
+    }
+  }
+  throw new Error("pr262_sensor_batch_state_conflict");
+}
+
 export async function acknowledgePr262PendingSensorEvent(eventId: string) {
-  const id = eventId.trim();
-  if (!id) throw new Error("pr262_sensor_event_id_required");
-  const loaded = await loadSensorState();
-  const pending = loaded.state.pending.filter((event) => event.id !== id);
-  if (pending.length === loaded.state.pending.length) return { acknowledged: false, pendingCount: pending.length };
-  const next: SensorState = { ...loaded.state, updatedAt: new Date().toISOString(), pending };
-  const written = await writeVersionedJsonToR2(
-    SENSOR_STATE_KEY,
-    next,
-    loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true },
-  );
-  if (written.conflict) throw new Error("pr262_sensor_ack_state_conflict");
-  return { acknowledged: true, pendingCount: pending.length };
+  const result = await applyPr262PendingSensorEventMutations([{ action: "acknowledge", eventId }]);
+  return { acknowledged: result.acknowledged > 0, pendingCount: result.pendingCount };
 }
 
 export async function retryPr262PendingSensorEvent(input: {
@@ -1141,31 +1199,10 @@ export async function retryPr262PendingSensorEvent(input: {
   nextRetryAt: string;
   attemptedAt?: Date;
 }) {
-  const id = input.eventId.trim();
-  const retryAt = Date.parse(input.nextRetryAt);
-  if (!id) throw new Error("pr262_sensor_event_id_required");
-  if (!Number.isFinite(retryAt)) throw new Error("pr262_sensor_retry_time_invalid");
-  const attemptedAt = input.attemptedAt ?? new Date();
-  const loaded = await loadSensorState();
-  let updated = false;
-  const pending = loaded.state.pending.map((event) => {
-    if (event.id !== id) return event;
-    updated = true;
-    return {
-      ...event,
-      queueAttempts: event.queueAttempts + 1,
-      queueNextAttemptAt: new Date(retryAt).toISOString(),
-      queueLastAttemptAt: attemptedAt.toISOString(),
-      queueLastError: input.error.replace(/\s+/g, " ").trim().slice(0, 240) || "event_processing_failed",
-    };
-  });
-  if (!updated) return { retried: false, pendingCount: pending.length };
-  const next: SensorState = { ...loaded.state, updatedAt: attemptedAt.toISOString(), pending };
-  const written = await writeVersionedJsonToR2(
-    SENSOR_STATE_KEY,
-    next,
-    loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true },
-  );
-  if (written.conflict) throw new Error("pr262_sensor_retry_state_conflict");
-  return { retried: true, pendingCount: pending.length, nextRetryAt: new Date(retryAt).toISOString() };
+  const result = await applyPr262PendingSensorEventMutations([{ action: "retry", ...input }]);
+  return {
+    retried: result.retried > 0,
+    pendingCount: result.pendingCount,
+    nextRetryAt: new Date(Date.parse(input.nextRetryAt)).toISOString(),
+  };
 }

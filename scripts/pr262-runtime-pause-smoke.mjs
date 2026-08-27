@@ -94,6 +94,19 @@ const projectedCostPause = spawnSync(process.execPath, [fileURLToPath(new URL(".
 assert.equal(projectedCostPause.status, 0, "The over-budget sensor must pause successfully without triggering restart churn.");
 assert.match(`${projectedCostPause.stdout ?? ""}${projectedCostPause.stderr ?? ""}`, /sensor_paused_projected_monthly_cost_usd=30\.01/);
 
+const projectedRecoveryPause = spawnSync(process.execPath, [fileURLToPath(new URL("./pr262-cron-cycle.mjs", import.meta.url)), "--analysis-only"], {
+  encoding: "utf8",
+  env: {
+    ...process.env,
+    RAILWAY_GIT_BRANCH: "main",
+    RAILWAY_ENVIRONMENT_NAME: "production",
+    SWING_UP_PR262_PROJECTED_RAILWAY_MONTHLY_COST_USD: "30.01",
+  },
+  timeout: 5_000,
+});
+assert.equal(projectedRecoveryPause.status, 0, "The over-budget recovery net must pause before it can rewrite queue state.");
+assert.match(`${projectedRecoveryPause.stdout ?? ""}${projectedRecoveryPause.stderr ?? ""}`, /analysis_recovery_paused_projected_monthly_cost_usd=30\.01/);
+
 for (const expected of [
   /fetchOfficialFeeds/,
   /fetchGdeltDiscovery/,

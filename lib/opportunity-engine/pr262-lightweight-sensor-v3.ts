@@ -55,6 +55,7 @@ const TWELVE_HOURS_MS = 12 * 60 * 60_000;
 const DAY_MS = 24 * 60 * 60_000;
 const UNIVERSE_READINESS_MAX_AGE_MS = 30 * 60 * 60_000;
 const URGENT_SEC_FORMS = ["8-K", "6-K", "424B5"] as const;
+const SERIOUS_SEC_FORMS = new Set(["8-K", "6-K", "424B5", "424B3", "10-Q", "10-K"]);
 const GOOGLE_QUERIES = [
   '(earnings OR guidance OR acquisition OR merger OR "contract award" OR recall OR investigation OR offering) (NASDAQ OR NYSE OR company)',
   '("press release" OR "investor relations" OR "company announcement" OR buyback OR dividend) (NASDAQ OR NYSE)',
@@ -207,7 +208,8 @@ function canEnterIssuerEvidenceQueue(event: Pr262SensorEvent) {
     return Boolean(event.cik)
       && Boolean(event.accession)
       && Boolean(event.canonicalSecIndexUrl)
-      && event.identityMethod === "official_sec_archive_link";
+      && event.identityMethod === "official_sec_archive_link"
+      && SERIOUS_SEC_FORMS.has(String(event.form ?? "").toUpperCase());
   }
   return Boolean(event.ticker);
 }
@@ -654,6 +656,7 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
   // authenticated Watchlist instead. This also retires legacy price-only backlog
   // during the next normal state write.
   const importantPending = state.pending.filter((event) => event.priority >= MIN_IMPORTANT_PRIORITY && !researchOnlyPriceEvent(event));
+  const actionablePending = importantPending.filter(canEnterIssuerEvidenceQueue);
   const legacyNonActionable = importantPending.filter((event) => !canEnterIssuerEvidenceQueue(event));
   const known = new Set([...state.seen, ...importantPending.map((event) => event.id)]);
   const unseen = deduped
@@ -675,7 +678,7 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
       && !researchOnlyPriceEvent(event)
       && canEnterIssuerEvidenceQueue(event))
     .slice(0, MAX_FRESH);
-  const pending = partitionPr262PendingEvents([...importantPending, ...fresh], now);
+  const pending = partitionPr262PendingEvents([...actionablePending, ...fresh], now);
   const retained = new Set(pending.map((event) => event.id));
   for (const event of contextualSectorFanouts) known.add(event.id);
   for (const event of priceResearchEvents) known.add(event.id);

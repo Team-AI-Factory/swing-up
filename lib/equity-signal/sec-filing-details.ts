@@ -42,6 +42,10 @@ export type ReserveSecFilingDetailAccessions = (
   requests: SecFilingDetailAccessRequest[],
 ) => Promise<SecFilingDetailAccessDecision[]>;
 
+export type SecFilingDetailSelectionOptions = {
+  priorityReceiptIds?: readonly string[];
+};
+
 type SkipReason = "non_sec" | "scheduled" | "unsupported_form" | "invalid_date" | "stale" | "invalid_url" | "duplicate_accession" | "cached" | "failure_cooldown" | "retry_not_due" | "run_limit";
 type DetailFailure = "index_http_error" | "index_payload_too_large" | "index_request_failed" | "primary_document_not_found" | "document_http_error" | "document_payload_too_large" | "document_request_failed" | "document_text_empty" | "event_exhibit_not_found" | "exhibit_http_error" | "exhibit_payload_too_large" | "exhibit_request_failed" | "exhibit_text_empty" | "provider_budget_not_due";
 
@@ -117,6 +121,8 @@ export type SecFilingDetailsResult = {
     };
     skipped: Record<SkipReason, number>;
     items: SecFilingDetailDiagnostic[];
+    priorityReceiptIds: string[];
+    prioritySelectedReceiptIds: string[];
   };
   policy: {
     maximumFilingsPerRun: number;
@@ -136,6 +142,7 @@ export type SecFilingDetailsResult = {
     budgetRetryFallbackMinutes: number;
     serializedRequests: true;
     maximumRequestsPerNewAccession: 3;
+    targetedReceiptPriority: true;
     cachedReplayBehavior: "restores_one_accession_receipt_without_duplicate_evidence";
     maximumTextCharacters: number;
     factualContentOnly: true;
@@ -235,18 +242,26 @@ function compareByRecency(left: EligibleReceipt, right: EligibleReceipt) {
     || left.receipt.id.localeCompare(right.receipt.id);
 }
 
-function boundEligibleQueue(items: EligibleReceipt[]) {
-  if (items.length <= MAX_ELIGIBLE_QUEUE_ENTRIES) return [...items].sort(compareEligible);
-  const reservedPerForm = Math.floor(MAX_ELIGIBLE_QUEUE_ENTRIES / FORM_ROTATION.length);
+function boundEligibleQueue(items: EligibleReceipt[], priorityFilingKeys = new Set<string>()) {
+  const prioritized = items
+    .filter((item) => priorityFilingKeys.has(item.filingKey))
+    .sort(compareByRecency)
+    .slice(0, MAX_ELIGIBLE_QUEUE_ENTRIES);
+  const prioritizedFilingKeys = new Set(prioritized.map((item) => item.filingKey));
+  const ordinary = items.filter((item) => !prioritizedFilingKeys.has(item.filingKey));
+  const ordinaryCapacity = MAX_ELIGIBLE_QUEUE_ENTRIES - prioritized.length;
+  if (ordinary.length <= ordinaryCapacity) return [...prioritized, ...ordinary].sort(compareEligible);
+
+  const reservedPerForm = Math.floor(ordinaryCapacity / FORM_ROTATION.length);
   const retained: EligibleReceipt[] = [];
   const overflow: EligibleReceipt[] = [];
   for (const form of FORM_ROTATION) {
-    const formItems = items.filter((item) => item.form === form).sort(compareByRecency);
+    const formItems = ordinary.filter((item) => item.form === form).sort(compareByRecency);
     retained.push(...formItems.slice(0, reservedPerForm));
     overflow.push(...formItems.slice(reservedPerForm));
   }
-  retained.push(...overflow.sort(compareByRecency).slice(0, MAX_ELIGIBLE_QUEUE_ENTRIES - retained.length));
-  return retained.sort(compareEligible);
+  retained.push(...overflow.sort(compareByRecency).slice(0, ordinaryCapacity - retained.length));
+  return [...prioritized, ...retained].sort(compareEligible);
 }
 
 function compareWithinForm(left: EligibleReceipt, right: EligibleReceipt, nowMs: number) {
@@ -273,18 +288,27 @@ function selectNextCandidate(candidates: EligibleReceipt[], nowMs: number) {
   return [...candidates].sort((left, right) => compareWithinForm(left, right, nowMs))[0] ?? null;
 }
 
-function selectNextCandidates(candidates: EligibleReceipt[], nowMs: number) {
+function selectNextCandidates(candidates: EligibleReceipt[], nowMs: number, priorityReceiptIds = new Set<string>()) {
   const remaining = [...candidates];
   const selected: EligibleReceipt[] = [];
-  // Reserve one slot for a newly published, time-sensitive filing before
-  // draining the aged fairness queue. Without this lane, a continuous backlog
-  // of old 8-K or 6-K rows can delay a just-filed market-moving event for hours.
+  // A targeted event job must read its exact current accession before the
+  // process-wide fairness queue. Otherwise carried-forward filings can consume
+  // both slots and make fresh issuer evidence look temporarily unavailable.
+  const targeted = remaining
+    .filter((item) => priorityReceiptIds.has(item.receipt.id))
+    .sort(compareByRecency)[0] ?? null;
+  if (targeted) {
+    selected.push(targeted);
+    remaining.splice(remaining.findIndex((item) => item.filingKey === targeted.filingKey), 1);
+  }
+  // Reserve one remaining slot for a newly published, time-sensitive filing
+  // before draining the aged fairness queue.
   const fresh = remaining
     .filter((item) => FRESH_PRIORITY_FORMS.has(item.form)
       && nowMs - item.publishedAtMs >= -MAX_FUTURE_SKEW_MS
       && nowMs - item.publishedAtMs < FRESH_PRIORITY_AGE_MS)
     .sort(compareByRecency)[0] ?? null;
-  if (fresh) {
+  if (fresh && selected.length < MAX_NEW_FILINGS_PER_RUN) {
     selected.push(fresh);
     remaining.splice(remaining.findIndex((item) => item.filingKey === fresh.filingKey), 1);
   }
@@ -525,7 +549,7 @@ function deferDetailRetry(indexUrl: string, requestedRetryAfterMs: number | null
   pruneState(nowMs);
 }
 
-function eligibleReceipts(receipts: EventReceipt[], now: Date) {
+function eligibleReceipts(receipts: EventReceipt[], now: Date, priorityReceiptIds = new Set<string>()) {
   const skipped = skipRecord();
   const eligibleByFiling = new Map<string, EligibleReceipt>();
   for (const receipt of receipts) {
@@ -562,7 +586,14 @@ function eligibleReceipts(receipts: EventReceipt[], now: Date) {
     const existing = eligibleByFiling.get(key);
     if (existing) {
       skipped.duplicate_accession += 1;
-      if (compareEligible(item, existing) < 0) eligibleByFiling.set(key, item);
+      const itemPrioritized = priorityReceiptIds.has(item.receipt.id);
+      const existingPrioritized = priorityReceiptIds.has(existing.receipt.id);
+      if (
+        (itemPrioritized && !existingPrioritized)
+        || (itemPrioritized === existingPrioritized && compareEligible(item, existing) < 0)
+      ) {
+        eligibleByFiling.set(key, item);
+      }
       continue;
     }
     eligibleByFiling.set(key, item);
@@ -577,15 +608,29 @@ export async function enrichSecFilingDetails(
   fetchImpl: typeof fetch,
   now: Date,
   reserveAccessions?: ReserveSecFilingDetailAccessions,
+  options: SecFilingDetailSelectionOptions = {},
 ): Promise<SecFilingDetailsResult> {
   pruneState(now.getTime());
-  const selection = eligibleReceipts(receipts, now);
+  const priorityReceiptIds = [...new Set(options.priorityReceiptIds ?? [])];
+  const priorityReceiptIdSet = new Set(priorityReceiptIds);
+  const selection = eligibleReceipts(receipts, now, priorityReceiptIdSet);
+  const priorityFilingKeys = new Set(
+    selection.eligible
+      .filter((eligible) => priorityReceiptIdSet.has(eligible.receipt.id))
+      .map((eligible) => eligible.filingKey),
+  );
   const currentFilingKeys = new Set(selection.eligible.map((eligible) => eligible.filingKey));
   for (const eligible of selection.eligible) {
     const queued = eligibleReceiptQueue.get(eligible.filingKey);
-    if (!queued || compareEligible(eligible, queued) < 0) eligibleReceiptQueue.set(eligible.filingKey, eligible);
+    if (
+      priorityFilingKeys.has(eligible.filingKey)
+      || !queued
+      || compareEligible(eligible, queued) < 0
+    ) {
+      eligibleReceiptQueue.set(eligible.filingKey, eligible);
+    }
   }
-  const boundedUnionEligible = boundEligibleQueue([...eligibleReceiptQueue.values()]);
+  const boundedUnionEligible = boundEligibleQueue([...eligibleReceiptQueue.values()], priorityFilingKeys);
   const retainedFilingKeys = new Set(boundedUnionEligible.map((eligible) => eligible.filingKey));
   for (const eligible of eligibleReceiptQueue.values()) {
     if (!retainedFilingKeys.has(eligible.filingKey)) eligibleReceiptQueue.delete(eligible.filingKey);
@@ -640,7 +685,7 @@ export async function enrichSecFilingDetails(
     truncated: detail.truncated,
     errorCategory: detail.eventExhibitMissing ? "event_exhibit_not_found" : null,
   }));
-  const selected = selectNextCandidates(fetchCandidates, now.getTime());
+  const selected = selectNextCandidates(fetchCandidates, now.getTime(), priorityReceiptIdSet);
   selection.skipped.run_limit = Math.max(0, fetchCandidates.length - selected.length);
   const fetchedDetails: SecFilingDetail[] = [];
   const fetchedDiagnostics: SecFilingDetailDiagnostic[] = [];
@@ -845,6 +890,10 @@ export async function enrichSecFilingDetails(
       },
       skipped: selection.skipped,
       items,
+      priorityReceiptIds,
+      prioritySelectedReceiptIds: selected
+        .filter((item) => priorityReceiptIdSet.has(item.receipt.id))
+        .map((item) => item.receipt.id),
     },
     policy: {
       maximumFilingsPerRun: MAX_NEW_FILINGS_PER_RUN,
@@ -864,6 +913,7 @@ export async function enrichSecFilingDetails(
       budgetRetryFallbackMinutes: BUDGET_RETRY_FALLBACK_MS / 60_000,
       serializedRequests: true,
       maximumRequestsPerNewAccession: 3,
+      targetedReceiptPriority: true,
       cachedReplayBehavior: "restores_one_accession_receipt_without_duplicate_evidence",
       maximumTextCharacters: SEC_FILING_TEXT_MAX_CHARS,
       factualContentOnly: true,

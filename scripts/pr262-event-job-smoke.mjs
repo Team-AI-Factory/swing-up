@@ -165,6 +165,7 @@ let runnerResultMode = "serious";
 let targetedValueBudgetAllowed = true;
 let lastStoredCompanyAnalysis = null;
 let expectEmptyStoredCompanyAnalysis = false;
+let lastSecDetailOptions = null;
 const haltProvider = {
   provider: "nasdaq_trade_halts",
   status: "connected",
@@ -295,16 +296,26 @@ const stubs = {
     },
   },
   "@/lib/equity-signal/sec-filing-details": {
-    enrichSecFilingDetails: async (receipts) => ({
-      provider: { provider: "sec_filing_details", status: "connected", checkedAt: "2026-08-11T10:00:00.000Z", nextRetryAt: null, sourceUrls: [receipts[0].url], recordsRead: 1, error: null, entitlementVerified: true, cached: false },
-      details: decisionGradeSecSource ? [
-        { receipt: { ...receipts[0], id: "different-accession" }, form: "8-K", indexUrl: "https://www.sec.gov/other", primaryDocumentUrl: null, exhibitDocumentUrl: null, exhibitDocumentType: null, eventExhibitMissing: false, documentsFetched: 1, text: "Unrelated cached filing text ".repeat(20), textLength: 560, truncated: false, fetchedAt: "2026-08-11T10:00:00.000Z" },
-        { receipt: receipts[0], form: "8-K", indexUrl: receipts[0].url, primaryDocumentUrl: `${receipts[0].url}/primary`, exhibitDocumentUrl: `${receipts[0].url}/exhibit-99-1`, exhibitDocumentType: "EX-99.1", eventExhibitMissing: false, documentsFetched: 2, text: "Decision-grade filing text ".repeat(20), textLength: 540, truncated: false, fetchedAt: "2026-08-11T10:00:00.000Z" },
-      ] : [
-        { receipt: { ...receipts[0], id: "different-accession" }, form: "8-K", indexUrl: "https://www.sec.gov/other", primaryDocumentUrl: null, exhibitDocumentUrl: null, exhibitDocumentType: null, eventExhibitMissing: false, documentsFetched: 1, text: "Unrelated cached filing text ".repeat(20), textLength: 560, truncated: false, fetchedAt: "2026-08-11T10:00:00.000Z" },
-      ],
-      diagnostics: { selected: 1, enriched: 1, failed: 0 },
-    }),
+    enrichSecFilingDetails: async (receipts, _fetchImpl, _now, _reserveAccessions, options) => {
+      lastSecDetailOptions = structuredClone(options);
+      const unsupported = receipts[0].rawEventType === "4";
+      return {
+        provider: { provider: "sec_filing_details", status: unsupported ? "not_due" : "connected", checkedAt: "2026-08-11T10:00:00.000Z", nextRetryAt: null, sourceUrls: [receipts[0].url], recordsRead: decisionGradeSecSource ? 1 : 0, error: null, entitlementVerified: decisionGradeSecSource, cached: false },
+        details: decisionGradeSecSource ? [
+          { receipt: { ...receipts[0], id: "different-accession" }, form: "8-K", indexUrl: "https://www.sec.gov/other", primaryDocumentUrl: null, exhibitDocumentUrl: null, exhibitDocumentType: null, eventExhibitMissing: false, documentsFetched: 1, text: "Unrelated cached filing text ".repeat(20), textLength: 560, truncated: false, fetchedAt: "2026-08-11T10:00:00.000Z" },
+          { receipt: receipts[0], form: "8-K", indexUrl: receipts[0].url, primaryDocumentUrl: `${receipts[0].url}/primary`, exhibitDocumentUrl: `${receipts[0].url}/exhibit-99-1`, exhibitDocumentType: "EX-99.1", eventExhibitMissing: false, documentsFetched: 2, text: "Decision-grade filing text ".repeat(20), textLength: 540, truncated: false, fetchedAt: "2026-08-11T10:00:00.000Z" },
+        ] : [
+          { receipt: { ...receipts[0], id: "different-accession" }, form: "8-K", indexUrl: "https://www.sec.gov/other", primaryDocumentUrl: null, exhibitDocumentUrl: null, exhibitDocumentType: null, eventExhibitMissing: false, documentsFetched: 1, text: "Unrelated cached filing text ".repeat(20), textLength: 560, truncated: false, fetchedAt: "2026-08-11T10:00:00.000Z" },
+        ],
+        diagnostics: {
+          selected: unsupported ? 0 : 1,
+          enriched: decisionGradeSecSource ? 1 : 0,
+          failed: 0,
+          items: decisionGradeSecSource ? [{ receiptId: receipts[0].id, errorCategory: null }] : [],
+          skipped: { unsupported_form: unsupported ? 1 : 0, invalid_url: 0, invalid_date: 0, stale: 0, failure_cooldown: 0, retry_not_due: 0, run_limit: 0 },
+        },
+      };
+    },
   },
   "@/lib/r2-warehouse": {
     readVersionedTextFromR2: async (key) => {
@@ -509,6 +520,7 @@ assert.equal(unrelatedPage.providers[0].error, "full_source_issuer_or_event_unco
 
 const first = await runPr262EventJob({ now: new Date("2026-08-11T10:00:00.000Z"), allowOpenAi: true });
 assert.equal(first.ok, true);
+assert.deepEqual(lastSecDetailOptions?.priorityReceiptIds, [event.id], "The exact current SEC accession must be prioritized over process-wide filing backlog.");
 assert.equal(first.eventsProcessed, 1);
 assert.equal(first.seriousSignalFound, true);
 assert.equal(first.outboxKey, "branch-labs/pr-262/serious-signal/outbox/event-job/buy/EXCT/fingerprint-1.json");
@@ -573,6 +585,17 @@ await assert.rejects(
 assert.equal(runnerCalls, 1, "A fresh unread source must not reach analysis or history");
 assert.equal(valueRefreshCalls, 1, "A fresh unread source must not refresh valuation");
 assert.equal(retryCalls, 1, "A fresh unread source must remain retryable");
+
+const retriesBeforeUnsupportedForm = retryCalls;
+setSecEventIdentity("000009", "2026-08-11T10:03:30.000Z");
+event.form = "4";
+event.kind = "4";
+const unsupportedForm = await runPr262EventJob({ now: new Date("2026-08-11T10:03:45.000Z"), allowOpenAi: true });
+assert.equal(unsupportedForm.status, "source_evidence_rejected_unread");
+assert.equal(unsupportedForm.seriousSignalFound, false);
+assert.equal(retryCalls, retriesBeforeUnsupportedForm, "A structurally unsupported SEC form must be retired instead of backlogged forever.");
+event.form = "8-K";
+event.kind = "8-K";
 
 setSecEventIdentity("000003", "2026-08-01T10:00:00.000Z");
 const stateWritesBeforeExpiredUnread = writes.filter((write) => write.key === PR262_EVENT_JOB_KEYS.STATE_KEY).length;
@@ -729,6 +752,8 @@ console.log(JSON.stringify({
   fullSourceAbsoluteDeadlineEnforced: true,
   paidCommitteeInheritsCycleDeadline: true,
   unreadSourceRetriesThenExpiresWithoutHistory: true,
+  unsupportedSecFormsRetireWithoutRetryBacklog: true,
+  exactCurrentSecAccessionPrioritized: true,
   routineNoSignalSkipsDetailedR2Writes: true,
   volatileEventRuntimeStateSplitFromFindingLedger: true,
   routineCompanyRefreshStaysInMemory: true,

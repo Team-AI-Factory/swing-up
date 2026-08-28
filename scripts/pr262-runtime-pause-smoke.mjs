@@ -62,6 +62,23 @@ assert.match(cronLauncher, /SWING_UP_PR262_RUN_DELIVERY_TEST_ONCE/, "Railway's c
 assert.match(cronLauncher, /delete env\.TELEGRAM_SERIOUS_SIGNAL_CHAT_ID/);
 assert.match(cronLauncher, /delete env\.SWING_UP_SERIOUS_SIGNAL_WEBHOOK_URL/);
 
+const genericPreviewSkip = spawnSync(process.execPath, [fileURLToPath(new URL("./pr262-cron-cycle.mjs", import.meta.url))], {
+  encoding: "utf8",
+  env: {
+    ...process.env,
+    RAILWAY_GIT_BRANCH: "codex/unrelated-pull-request",
+    RAILWAY_ENVIRONMENT_NAME: "swing-up-pr-999",
+    SWING_UP_PR262_STORAGE_PREFIX: "branch-labs/pr-262/",
+  },
+  timeout: 5_000,
+});
+assert.equal(genericPreviewSkip.status, 0, "An ordinary pull-request preview must exit cleanly without running production sensing.");
+assert.match(
+  `${genericPreviewSkip.stdout ?? ""}${genericPreviewSkip.stderr ?? ""}`,
+  /preview_runtime_skipped branch=codex\/unrelated-pull-request reason=non_pr262_branch/,
+  "An ordinary pull-request preview must visibly prove that provider polling and queue processing were skipped.",
+);
+
 assert.match(middleware, /\/api\/health/, "Health route must remain available");
 assert.match(middleware, /INTERNAL_API_PATHS\.pr262Cron/, "The scoped V3 cron route may cross the PR262 runtime boundary");
 assert.match(middleware, /approvedPremergeRollout && path === INTERNAL_API_PATHS\.pr262ProductionFoundation/, "The foundation route may cross the PR boundary only under the exact pre-merge rollout gate");

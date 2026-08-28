@@ -1,0 +1,46 @@
+name: US Sector Specialist Valuation Validation
+
+on:
+  push:
+    branches:
+      - "agent/pr262-sector-specialist-valuations"
+  pull_request:
+    branches:
+      - "agent/combined-opportunity-engine"
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit --fund=false
+
+      - name: Typecheck whole application
+        run: npm run typecheck
+
+      - name: Lint specialist models and validation
+        run: npx eslint --no-ignore lib/opportunity-engine/us-sector-specialist-valuation.ts lib/opportunity-engine/us-sector-specialist-intelligence.ts lib/opportunity-engine/us-sector-specialist-decision-guard.ts scripts/us-sector-specialist-valuation-smoke.mjs scripts/us-sector-specialist-intelligence-smoke.mjs scripts/us-sector-specialist-decision-guard-smoke.mjs --max-warnings=0
+
+      - name: Validate bank, financial, insurer, REIT and utility base models
+        run: node scripts/us-sector-specialist-valuation-smoke.mjs
+
+      - name: Validate evidence, market-movement, scenario and adversarial intelligence
+        run: node scripts/us-sector-specialist-intelligence-smoke.mjs
+
+      - name: Validate primary-source provenance and adaptive movement fail-closed guard
+        run: node scripts/us-sector-specialist-decision-guard-smoke.mjs

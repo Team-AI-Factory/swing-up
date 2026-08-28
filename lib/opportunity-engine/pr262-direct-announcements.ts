@@ -6,13 +6,13 @@ import type { Pr262ExposureEntry } from "@/lib/opportunity-engine/pr262-exposure
 import type { Pr262SensorEvent } from "@/lib/opportunity-engine/pr262-change-sensor";
 
 const REGISTRY_KEY = pr262StorageKey("sensor/direct-company-feeds-v1.json");
-const DISCOVERY_CADENCE_MS = 30 * 60_000;
+const DISCOVERY_CADENCE_MS = 60 * 60_000;
 const NO_FEED_RETRY_MS = 24 * 60 * 60_000;
 const TRANSIENT_DISCOVERY_RETRY_MS = 60 * 60_000;
 const FEED_POLL_CADENCE_MS = 60 * 60_000;
-// Three discoveries every 30 minutes stays below the shared 190/day SEC
-// submissions ceiling at a fifteen-minute sensor cadence and leaves headroom.
-const MAX_DISCOVERIES_PER_CYCLE = 3;
+// Two prioritized discoveries every hour combine with the 15-minute urgent
+// and hourly broad SEC feeds for 168 calls/day, below the shared 190/day fuse.
+const MAX_DISCOVERIES_PER_CYCLE = 2;
 const DISCOVERY_CONCURRENCY = 1;
 const MAX_FEEDS_POLLED_PER_CYCLE = 20;
 const SEC_AGENT = "SwingUp/1.0 support@swingup.app";

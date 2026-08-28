@@ -275,7 +275,7 @@ const stubs = {
             },
             alertReadiness: "watch_only",
           }],
-          blockers: ["No current event passed the strict event-first gate."],
+          blockers: ["No current event passed the strict event-first gate.", "x".repeat(1_000)],
           committee: null,
         };
       }
@@ -685,7 +685,10 @@ assert.equal(routineNoSignal.analysisDiagnostics.funnel.realEventReceipts, 1);
 assert.equal(routineNoSignal.analysisDiagnostics.funnel.candidatesPassingEventFirstGate, 0);
 assert.equal(routineNoSignal.analysisDiagnostics.topNearMiss.ticker, "EXCT");
 assert.deepEqual(routineNoSignal.analysisDiagnostics.topNearMiss.failedGateChecks, ["materialEvent"]);
-assert.deepEqual(routineNoSignal.analysisDiagnostics.blockers, ["No current event passed the strict event-first gate."]);
+assert.deepEqual(routineNoSignal.analysisDiagnostics.blockers, [
+  "No current event passed the strict event-first gate.",
+  "x".repeat(300),
+], "Compact production diagnostics must bound every blocker string.");
 assert.equal([...objects.keys()].filter((key) => key.startsWith(PR262_EVENT_JOB_KEYS.RUN_PREFIX)).length, detailedRunCountBeforeQuietAnalysis);
 assert.equal([...objects.keys()].filter((key) => key.includes("/value-investing/event-refresh/")).length, valueRefreshCountBeforeQuietAnalysis);
 assert.equal(writes.filter((write) => write.key === PR262_EVENT_JOB_KEYS.STATE_KEY).length, stateWritesBeforeQuietAnalysis, "Routine no-signal analysis must not rewrite the completion ledger.");

@@ -64,7 +64,7 @@ const stubs = {
       assert.equal(typeof input.beforeOpenAiCall, "function", "Railway must pass the durable dollar reservation hook before paid analysis.");
       if (eventMode === "evidence_deferred") {
         eventMode = "idle";
-        throw new Error("pr262_event_full_source_incomplete; next_retry_at=2026-08-27T07:53:02.028Z");
+        throw new Error("pr262_event_full_source_incomplete:temporary_source_failure; next_retry_at=2026-08-27T07:53:02.028Z");
       }
       if (eventMode === "rolling_quota_deferred") {
         eventMode = "idle";

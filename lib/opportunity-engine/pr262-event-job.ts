@@ -5,6 +5,7 @@ import net, { type LookupFunction } from "node:net";
 import { Readable } from "node:stream";
 import { branchProviderCallRequest } from "@/lib/branch-signal-lab";
 import { providerCallBudgetDecision, type ProviderBudgetReservation } from "@/lib/branch-signal-lab-policy";
+import { PERMISSION_GATE_KEYS } from "@/lib/equity-signal/analysis";
 import { mergeHistoricalSignals } from "@/lib/equity-signal/historical-bootstrap";
 import type { HistoricalSignalRecord } from "@/lib/equity-signal/historical-analogs";
 import { fetchNasdaqTradeHalts, mergeSecFilingDetails } from "@/lib/equity-signal/event-sources";
@@ -1201,6 +1202,61 @@ function detailedResultRequired(report: Json) {
     || trackedFinding(report) !== null;
 }
 
+function finiteDiagnosticNumber(value: unknown) {
+  const parsed = typeof value === "number"
+    ? value
+    : typeof value === "string" && value.trim() ? Number(value) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function compactAnalysisDiagnostics(report: Json) {
+  const funnel = object(report.candidateFunnel);
+  const ranked = Array.isArray(report.rankedCandidates) ? report.rankedCandidates.map(object) : [];
+  const top = ranked[0] ?? {};
+  const gateChecks = object(top.gateChecks);
+  const topTicker = text(top.ticker)?.toUpperCase() ?? null;
+  return {
+    status: text(report.status),
+    qualityScore: finiteDiagnosticNumber(report.qualityScore),
+    funnel: {
+      realEventReceipts: finiteDiagnosticNumber(funnel.realEventReceipts),
+      mappedRelationships: finiteDiagnosticNumber(funnel.mappedRelationships),
+      eventClusters: finiteDiagnosticNumber(funnel.eventClusters),
+      directCandidates: finiteDiagnosticNumber(funnel.directCandidates),
+      knockOnCandidates: finiteDiagnosticNumber(funnel.knockOnCandidates),
+      candidatesPassingEventFirstGate: finiteDiagnosticNumber(funnel.candidatesPassingEventFirstGate),
+      candidatesWithMarketQuote: finiteDiagnosticNumber(funnel.candidatesWithMarketQuote),
+      candidatesSkippedBecauseRecentlyReviewed: finiteDiagnosticNumber(funnel.candidatesSkippedBecauseRecentlyReviewed),
+      unreviewedCandidatesAvailable: finiteDiagnosticNumber(funnel.unreviewedCandidatesAvailable),
+      committeeCandidates: finiteDiagnosticNumber(funnel.committeeCandidates),
+    },
+    topNearMiss: topTicker ? {
+      ticker: topTicker,
+      direction: text(top.direction),
+      eventFamily: text(top.eventFamily),
+      score: finiteDiagnosticNumber(top.score),
+      eventTruth: finiteDiagnosticNumber(top.eventTruth),
+      mappingConfidence: finiteDiagnosticNumber(top.mappingConfidence),
+      materiality: finiteDiagnosticNumber(top.materiality),
+      transmissionConfidence: finiteDiagnosticNumber(top.transmissionConfidence),
+      evidenceIndependence: finiteDiagnosticNumber(top.evidenceIndependence),
+      contradictionPenalty: finiteDiagnosticNumber(top.contradictionPenalty),
+      pricedInPenalty: finiteDiagnosticNumber(top.pricedInPenalty),
+      gatePassed: top.gatePassed === true,
+      failedGateChecks: PERMISSION_GATE_KEYS
+        .filter((name) => gateChecks[name] !== true),
+      alertReadiness: text(top.alertReadiness),
+    } : null,
+    blockers: Array.isArray(report.blockers)
+      ? report.blockers
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim().slice(0, 300))
+        .filter(Boolean)
+        .slice(0, 5)
+      : [],
+  };
+}
+
 async function persistTrackedFinding(report: Json, now: Date) {
   const addition = trackedFinding(report);
   if (!addition) return { persisted: false, reason: "no_qualified_finding" };
@@ -1513,6 +1569,8 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
         seriousSignalFound: finalized.report.seriousSignalFound === true,
         actionableSignalFound: finalized.report.actionableSignalFound === true,
         alertType: finalized.report.alertType ?? null,
+
+        analysisDiagnostics: compactAnalysisDiagnostics(finalized.report),
         resultKey,
         outboxKey: finalized.outboxKey,
         historyWrite: finalized.historyWrite,
@@ -1731,6 +1789,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
         seriousSignalFound: false,
         actionableSignalFound: false,
         alertType: report.alertType ?? null,
+        analysisDiagnostics: compactAnalysisDiagnostics(report),
         resultKey: null,
         outboxKey: null,
         historyWrite: { persisted: false, reason: "no_qualified_finding" },
@@ -1814,6 +1873,8 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       seriousSignalFound: finalized.report.seriousSignalFound === true,
       actionableSignalFound: finalized.report.actionableSignalFound === true,
       alertType: finalized.report.alertType ?? null,
+
+      analysisDiagnostics: compactAnalysisDiagnostics(finalized.report),
       resultKey,
       outboxKey: finalized.outboxKey,
       historyWrite: finalized.historyWrite,

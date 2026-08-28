@@ -873,7 +873,7 @@ function canonicalRootEventIdentity(cluster: MappedEvent[], eventMagnitude: Even
   return canonicalEquityEventIdentity(anchor);
 }
 
-const PERMISSION_GATE_KEYS = [
+export const PERMISSION_GATE_KEYS = [
   "verifiedEventTruth",
   "reliableTickerMapping",
   "materialEvent",

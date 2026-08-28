@@ -18,6 +18,7 @@ export type Pr262ExposureEntry = {
   sector: string | null;
   industry: string | null;
   marketCap: number | null;
+  currentPrice: number | null;
   businessQuality: number;
   risk: number;
   buyBelowPrice: number | null;
@@ -208,6 +209,7 @@ export async function loadPr262ExposureIndex(now = new Date()): Promise<Pr262Exp
           sector: text(analysis.sector),
           industry: text(analysis.industry),
           marketCap: finite(analysis.marketCap),
+          currentPrice: finite(analysis.currentPrice),
           businessQuality: finite(scores.businessQuality) ?? 0,
           risk: finite(scores.risk) ?? 100,
           buyBelowPrice: finite(fairValue.buyBelowPrice),

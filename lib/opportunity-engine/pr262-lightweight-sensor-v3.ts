@@ -532,8 +532,20 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
     }
   } else summaries.push({ provider: "macro", attempted: false, status: "not_due", recordsRead: 0, newEvents: 0, error: null, nextRetryAt: null });
 
+  let directAnnouncementMonitoring = {
+    registeredFeeds: 0,
+    feedsPolled: 0,
+    feedSuccesses: 0,
+    discoveriesAttempted: 0,
+  };
   try {
     const direct = await runPr262DirectAnnouncementMonitor({ exposure: exposure.entries, now, fetchImpl });
+    directAnnouncementMonitoring = {
+      registeredFeeds: direct.registeredFeeds,
+      feedsPolled: direct.feedsPolled,
+      feedSuccesses: direct.feedSuccesses,
+      discoveriesAttempted: direct.discoveriesAttempted,
+    };
     events.push(...direct.events);
     summaries.push({ provider: "direct_issuer_feeds", attempted: direct.feedsPolled > 0 || direct.discoveriesAttempted > 0, status: direct.feedSuccesses === direct.feedsPolled ? "connected" : direct.feedSuccesses > 0 ? "partial" : direct.feedsPolled ? "temporarily_unavailable" : "not_due", recordsRead: direct.feedsPolled, newEvents: direct.events.length, error: null, nextRetryAt: null });
   } catch (error) {
@@ -546,12 +558,18 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
   }, new Map<string, Pr262SensorEvent>()).values()];
   const importantPending = state.pending.filter((event) => event.priority >= MIN_IMPORTANT_PRIORITY);
   const known = new Set([...state.seen, ...importantPending.map((event) => event.id)]);
-  const fresh = deduped
+  const unseen = deduped
     .filter((event) => event.priority >= MIN_IMPORTANT_PRIORITY && !known.has(event.id))
-    .sort((left, right) => right.priority - left.priority || right.observedAt.localeCompare(left.observedAt))
+    .sort((left, right) => right.priority - left.priority || right.observedAt.localeCompare(left.observedAt));
+  const contextualSectorFanouts = unseen
+    .filter((event) => event.mappingMethod === "deterministic_sector_fanout")
+    .slice(0, MAX_FRESH);
+  const fresh = unseen
+    .filter((event) => event.mappingMethod !== "deterministic_sector_fanout")
     .slice(0, MAX_FRESH);
   const pending = partitionPr262PendingEvents([...importantPending, ...fresh], now);
   const retained = new Set(pending.map((event) => event.id));
+  for (const event of contextualSectorFanouts) known.add(event.id);
   for (const event of fresh) if (retained.has(event.id)) known.add(event.id);
 
   const next: CompatState = {
@@ -610,7 +628,9 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
     exposureError,
     exposureCompanies: exposure.entries.length,
     newEvents: fresh.length,
-    sectorFanoutEvents: fresh.filter((event) => event.mappingMethod === "deterministic_sector_fanout").length,
+    sectorFanoutEvents: contextualSectorFanouts.length,
+    contextOnlySectorFanoutEvents: contextualSectorFanouts.length,
+    directAnnouncementMonitoring,
     pendingEventCount: pending.length,
     r2Persistence: {
       queueKey: SENSOR_STATE_KEY,

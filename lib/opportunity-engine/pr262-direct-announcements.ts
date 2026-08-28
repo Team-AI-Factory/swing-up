@@ -7,9 +7,9 @@ import type { Pr262SensorEvent } from "@/lib/opportunity-engine/pr262-change-sen
 
 const REGISTRY_KEY = pr262StorageKey("sensor/direct-company-feeds-v1.json");
 const DISCOVERY_CADENCE_MS = 30 * 60_000;
-const NO_FEED_RETRY_MS = 7 * 24 * 60 * 60_000;
+const NO_FEED_RETRY_MS = 24 * 60 * 60_000;
 const FEED_POLL_CADENCE_MS = 60 * 60_000;
-const MAX_DISCOVERIES_PER_CYCLE = 12;
+const MAX_DISCOVERIES_PER_CYCLE = 24;
 const DISCOVERY_CONCURRENCY = 4;
 const MAX_FEEDS_POLLED_PER_CYCLE = 20;
 const SEC_AGENT = "SwingUp/1.0 support@swingup.app";
@@ -261,7 +261,19 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
   const lastDiscoveryMs = registry.lastDiscoveryCycleAt ? Date.parse(registry.lastDiscoveryCycleAt) : 0;
   let discovered = 0;
   if (!Number.isFinite(lastDiscoveryMs) || now.getTime() - lastDiscoveryMs >= DISCOVERY_CADENCE_MS) {
-    const candidates = input.exposure.filter((company) => company.cik).sort((left, right) => right.businessQuality - left.businessQuality || (right.marketCap ?? 0) - (left.marketCap ?? 0));
+    const candidates = input.exposure.filter((company) => company.cik).sort((left, right) => {
+      const watchlistRank = (company: Pr262ExposureEntry) => {
+        const price = company.currentPrice;
+        if (price === null) return 2;
+        if (company.strongBuyBelowPrice !== null && price <= company.strongBuyBelowPrice) return 0;
+        if ((company.buyBelowPrice !== null && price <= company.buyBelowPrice)
+          || (company.trimAbovePrice !== null && price >= company.trimAbovePrice)) return 1;
+        return 2;
+      };
+      return watchlistRank(left) - watchlistRank(right)
+        || right.businessQuality - left.businessQuality
+        || (right.marketCap ?? 0) - (left.marketCap ?? 0);
+    });
     if (candidates.length) {
       let cursor = registry.discoveryCursor % candidates.length;
       let inspected = 0;

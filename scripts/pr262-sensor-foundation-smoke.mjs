@@ -465,6 +465,15 @@ assert.equal(sensor.partitionPr262PendingEvents([expiredMapped], now).length, 0,
 const secondaryNews = { ...freshUntouched, id: "news:secondary", source: "company_news", priority: 100 };
 const officialSec = { ...olderUntouched, id: "sec:official-first", source: "sec", priority: 80 };
 assert.equal(sensor.partitionPr262PendingEvents([secondaryNews, officialSec], now)[0].id, officialSec.id, "Fresh SEC and issuer evidence must be analyzed before secondary news noise.");
+const retriedSecondaryNews = { ...secondaryNews, id: "news:retried-secondary", queueAttempts: 3, queueNextAttemptAt: now.toISOString() };
+assert.equal(sensor.partitionPr262PendingEvents([retriedSecondaryNews, officialSec], now)[0].id, officialSec.id, "A noisy retry must never jump ahead of fresh SEC evidence.");
+const contextualFanout = {
+  ...officialSec,
+  id: "official:macro-fanout:SAFE",
+  source: "official",
+  mappingMethod: "deterministic_sector_fanout",
+};
+assert.equal(sensor.partitionPr262PendingEvents([contextualFanout, officialSec], now).some((item) => item.id === contextualFanout.id), false, "Broad sector fan-out belongs in context telemetry, not the issuer evidence queue.");
 const legacyMarketEvent = {
   ...mappedDueRetry,
   id: "v3-market:legacy-minute-one",

@@ -17,6 +17,7 @@ assert.doesNotMatch(source, /request\.setTimeout\(/, "A socket-inactivity timeou
 assert.match(source, /FULL_SOURCE_CACHE_PREFIX/, "Decision-grade full-source work must be reusable across retries.");
 assert.match(source, /FULL_SOURCE_RETRY_COOLDOWN_MS = 2 \* 60 \* 60_000/, "Temporary full-source failures must retry before they are stale.");
 assert.match(source, /if \(options\.all\)[\s\S]*callback\(null, \[\{ address, family \}\]\)/, "Pinned HTTPS lookup must support Node's all-address callback contract.");
+assert.doesNotMatch(source, /event\.queueAttempts\s*>=\s*2/, "Retry count alone must never turn a transient evidence failure into a permanent rejection.");
 const testableSource = source
   .replace("async function fetchFullSource(", "export async function fetchFullSource(")
   .replace("async function readCachedFullSource(", "export async function readCachedFullSource(")

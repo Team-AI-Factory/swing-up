@@ -141,6 +141,14 @@ function processingReady(event: Pr262SensorEvent) {
     ));
 }
 
+function contextOnlyEvent(event: Pr262SensorEvent) {
+  // A broad macro/sector observation can be useful research context, but it
+  // cannot prove an issuer-specific causal event. Sending these synthetic
+  // fan-outs through the full-source/Committee queue only consumes evidence
+  // budget and can never satisfy the exact-issuer gate.
+  return event.mappingMethod === "deterministic_sector_fanout";
+}
+
 function pendingOrder(left: Pr262SensorEvent, right: Pr262SensorEvent, nowMs: number) {
   const retryRank = (event: Pr262SensorEvent) => {
     const retryAt = event.queueNextAttemptAt ? Date.parse(event.queueNextAttemptAt) : Number.NaN;
@@ -157,8 +165,12 @@ function pendingOrder(left: Pr262SensorEvent, right: Pr262SensorEvent, nowMs: nu
       : event.source === "company_news"
         ? 2
         : 3;
-  return leftRank - rightRank
-    || evidenceRank(left) - evidenceRank(right)
+  const leftEvidenceRank = evidenceRank(left);
+  const rightEvidenceRank = evidenceRank(right);
+  const directIssuerRank = (event: Pr262SensorEvent) => (event.sourceProvider ?? "").startsWith("issuer_ir_") ? 0 : 1;
+  return leftEvidenceRank - rightEvidenceRank
+    || directIssuerRank(left) - directIssuerRank(right)
+    || leftRank - rightRank
     || right.priority - left.priority
     || (leftRank === 2
       ? right.observedAt.localeCompare(left.observedAt)
@@ -166,7 +178,7 @@ function pendingOrder(left: Pr262SensorEvent, right: Pr262SensorEvent, nowMs: nu
 }
 
 export function partitionPr262PendingEvents(events: Pr262SensorEvent[], now: Date) {
-  const deduped = [...events.reduce((map, event) => {
+  const deduped = [...events.filter((event) => !contextOnlyEvent(event)).reduce((map, event) => {
     // Older sensor versions included the live price and minute in market-event
     // IDs. Collapse those legacy duplicates by their actual meaning so a normal
     // state write repairs the queue without deleting R2 data by hand.

@@ -30,6 +30,7 @@ assert.equal(requiredInternalApiScope(INTERNAL_API_PATHS.pr262SensorHandoff, "PO
 assert.equal(requiredInternalApiScope(INTERNAL_API_PATHS.pr262ProductionFoundation, "POST"), "foundation_runtime");
 assert.equal(requiredInternalApiScope(INTERNAL_API_PATHS.pr262DeliveryTest, "POST"), "delivery_test_runtime");
 assert.equal(requiredInternalApiScope(INTERNAL_API_PATHS.seriousSignalStatus, "GET"), "serious_signal_read");
+assert.equal(requiredInternalApiScope(INTERNAL_API_PATHS.valuationWatchlistStatus, "GET"), "serious_signal_read");
 assert.equal(requiredInternalApiScope("/api/internal/publish-approved-alert", "POST"), "high_privilege");
 assert.equal(requiredInternalApiScope("/api/internal/combined-opportunity-engine/global-scan", "POST"), "automation");
 assert.equal(requiredInternalApiScope("/api/health", "GET"), null);

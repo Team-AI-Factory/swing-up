@@ -147,6 +147,10 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
 
   assertCycleActive();
   let state = await readPr262ChangeSensorState();
+  const pendingAtStart = state.pending.length;
+  const mappedAtStart = state.pending.filter((event) => event.mappingStatus === "mapped" && Boolean(event.ticker)).length;
+  const priorityEligibleAtStart = state.pending.filter((event) => event.priority >= 80).length;
+  const officialOrSecAtStart = state.pending.filter((event) => event.source === "sec" || event.source === "official").length;
   const readyAtStart = dueReadyCount(state);
   const capacity = capacityForQueue(readyAtStart);
   const eventResults: Json[] = [];
@@ -377,6 +381,24 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
     && queuePersistenceHealthy
     && aiBudget.accountingHealthy
     && deliveryHealthy;
+  const funnel = {
+    discoveredPendingAtStart: pendingAtStart,
+    mappedAtStart,
+    priorityEligibleAtStart,
+    officialOrSecAtStart,
+    dueForAnalysisAtStart: readyAtStart,
+    admittedThisCycle: eventResults.length,
+    decisionGradeEvidence: eventResults.filter((result) => result.sourceDecisionGrade === true).length,
+    analyzedThisCycle: eventsProcessed,
+    paidCommitteeReviews: aiCalls,
+    committeeApproved: seriousBuys + seriousSells + seriousWatchOuts,
+    deferredForRetry: eventDeferrals,
+    failed: eventFailures,
+    pendingAtEnd: state.pending.length,
+    deferralReasons: [...new Set(eventResults
+      .filter((result) => result.status === "event_job_deferred")
+      .map((result) => String(result.error ?? "unknown").split("; next_retry_at=")[0].slice(0, 180)))].slice(0, 12),
+  };
   return {
     ok: operationalOk,
     mode: mode === "analysis_only" ? "pr262_railway_analysis_recovery" : "pr262_five_minute_cron_v3",
@@ -405,6 +427,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
       eventsProcessed,
       eventFailures,
       eventDeferrals,
+      funnel,
       queuePersistence,
       aiCalls,
       seriousBuys,

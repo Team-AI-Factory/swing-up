@@ -42,6 +42,10 @@ export type ReserveSecFilingDetailAccessions = (
   requests: SecFilingDetailAccessRequest[],
 ) => Promise<SecFilingDetailAccessDecision[]>;
 
+export type SecFilingDetailSelectionOptions = {
+  priorityReceiptIds?: readonly string[];
+};
+
 type SkipReason = "non_sec" | "scheduled" | "unsupported_form" | "invalid_date" | "stale" | "invalid_url" | "duplicate_accession" | "cached" | "failure_cooldown" | "retry_not_due" | "run_limit";
 type DetailFailure = "index_http_error" | "index_payload_too_large" | "index_request_failed" | "primary_document_not_found" | "document_http_error" | "document_payload_too_large" | "document_request_failed" | "document_text_empty" | "event_exhibit_not_found" | "exhibit_http_error" | "exhibit_payload_too_large" | "exhibit_request_failed" | "exhibit_text_empty" | "provider_budget_not_due";
 
@@ -117,6 +121,8 @@ export type SecFilingDetailsResult = {
     };
     skipped: Record<SkipReason, number>;
     items: SecFilingDetailDiagnostic[];
+    priorityReceiptIds: string[];
+    prioritySelectedReceiptIds: string[];
   };
   policy: {
     maximumFilingsPerRun: number;
@@ -136,6 +142,7 @@ export type SecFilingDetailsResult = {
     budgetRetryFallbackMinutes: number;
     serializedRequests: true;
     maximumRequestsPerNewAccession: 3;
+    targetedReceiptPriority: true;
     cachedReplayBehavior: "restores_one_accession_receipt_without_duplicate_evidence";
     maximumTextCharacters: number;
     factualContentOnly: true;
@@ -273,18 +280,27 @@ function selectNextCandidate(candidates: EligibleReceipt[], nowMs: number) {
   return [...candidates].sort((left, right) => compareWithinForm(left, right, nowMs))[0] ?? null;
 }
 
-function selectNextCandidates(candidates: EligibleReceipt[], nowMs: number) {
+function selectNextCandidates(candidates: EligibleReceipt[], nowMs: number, priorityReceiptIds = new Set<string>()) {
   const remaining = [...candidates];
   const selected: EligibleReceipt[] = [];
-  // Reserve one slot for a newly published, time-sensitive filing before
-  // draining the aged fairness queue. Without this lane, a continuous backlog
-  // of old 8-K or 6-K rows can delay a just-filed market-moving event for hours.
+  // A targeted event job must read its exact current accession before the
+  // process-wide fairness queue. Otherwise carried-forward filings can consume
+  // both slots and make fresh issuer evidence look temporarily unavailable.
+  const targeted = remaining
+    .filter((item) => priorityReceiptIds.has(item.receipt.id))
+    .sort(compareByRecency)[0] ?? null;
+  if (targeted) {
+    selected.push(targeted);
+    remaining.splice(remaining.findIndex((item) => item.filingKey === targeted.filingKey), 1);
+  }
+  // Reserve one remaining slot for a newly published, time-sensitive filing
+  // before draining the aged fairness queue.
   const fresh = remaining
     .filter((item) => FRESH_PRIORITY_FORMS.has(item.form)
       && nowMs - item.publishedAtMs >= -MAX_FUTURE_SKEW_MS
       && nowMs - item.publishedAtMs < FRESH_PRIORITY_AGE_MS)
     .sort(compareByRecency)[0] ?? null;
-  if (fresh) {
+  if (fresh && selected.length < MAX_NEW_FILINGS_PER_RUN) {
     selected.push(fresh);
     remaining.splice(remaining.findIndex((item) => item.filingKey === fresh.filingKey), 1);
   }
@@ -577,6 +593,7 @@ export async function enrichSecFilingDetails(
   fetchImpl: typeof fetch,
   now: Date,
   reserveAccessions?: ReserveSecFilingDetailAccessions,
+  options: SecFilingDetailSelectionOptions = {},
 ): Promise<SecFilingDetailsResult> {
   pruneState(now.getTime());
   const selection = eligibleReceipts(receipts, now);
@@ -640,7 +657,9 @@ export async function enrichSecFilingDetails(
     truncated: detail.truncated,
     errorCategory: detail.eventExhibitMissing ? "event_exhibit_not_found" : null,
   }));
-  const selected = selectNextCandidates(fetchCandidates, now.getTime());
+  const priorityReceiptIds = [...new Set(options.priorityReceiptIds ?? [])];
+  const priorityReceiptIdSet = new Set(priorityReceiptIds);
+  const selected = selectNextCandidates(fetchCandidates, now.getTime(), priorityReceiptIdSet);
   selection.skipped.run_limit = Math.max(0, fetchCandidates.length - selected.length);
   const fetchedDetails: SecFilingDetail[] = [];
   const fetchedDiagnostics: SecFilingDetailDiagnostic[] = [];
@@ -845,6 +864,10 @@ export async function enrichSecFilingDetails(
       },
       skipped: selection.skipped,
       items,
+      priorityReceiptIds,
+      prioritySelectedReceiptIds: selected
+        .filter((item) => priorityReceiptIdSet.has(item.receipt.id))
+        .map((item) => item.receipt.id),
     },
     policy: {
       maximumFilingsPerRun: MAX_NEW_FILINGS_PER_RUN,
@@ -864,6 +887,7 @@ export async function enrichSecFilingDetails(
       budgetRetryFallbackMinutes: BUDGET_RETRY_FALLBACK_MS / 60_000,
       serializedRequests: true,
       maximumRequestsPerNewAccession: 3,
+      targetedReceiptPriority: true,
       cachedReplayBehavior: "restores_one_accession_receipt_without_duplicate_evidence",
       maximumTextCharacters: SEC_FILING_TEXT_MAX_CHARS,
       factualContentOnly: true,

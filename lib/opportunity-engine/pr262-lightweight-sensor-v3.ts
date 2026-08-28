@@ -595,9 +595,12 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
     feedsPolled: 0,
     feedSuccesses: 0,
     discoveriesAttempted: 0,
+    secSubmissionsChecked: 0,
+    secFilingsFound: 0,
     companiesKnown: 0,
     investorWebsitesFound: 0,
     feedlessCompanies: 0,
+    transientDiscoveryBacklog: 0,
     discoveryErrors: [] as string[],
   };
   try {
@@ -607,28 +610,34 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
       feedsPolled: direct.feedsPolled,
       feedSuccesses: direct.feedSuccesses,
       discoveriesAttempted: direct.discoveriesAttempted,
+      secSubmissionsChecked: direct.secSubmissionsChecked,
+      secFilingsFound: direct.secFilingsFound,
       companiesKnown: direct.companiesKnown,
       investorWebsitesFound: direct.investorWebsitesFound,
       feedlessCompanies: direct.feedlessCompanies,
+      transientDiscoveryBacklog: direct.transientDiscoveryBacklog,
       discoveryErrors: direct.discoveryErrors,
     };
     events.push(...direct.events);
-    const directStatus = direct.registeredFeeds === 0
-      ? "not_ready"
-      : direct.feedSuccesses === direct.feedsPolled
-        ? "connected"
-        : direct.feedSuccesses > 0
-          ? "partial"
-          : direct.feedsPolled
-            ? "temporarily_unavailable"
-            : "not_due";
+    const directStatus = direct.secSubmissionsChecked > 0
+      || (direct.feedsPolled > 0 && direct.feedSuccesses === direct.feedsPolled)
+      ? "connected"
+      : direct.feedSuccesses > 0
+        ? "partial"
+        : direct.feedsPolled
+          ? "temporarily_unavailable"
+          : direct.registeredFeeds > 0
+            ? "not_due"
+            : "not_ready";
     summaries.push({
       provider: "direct_issuer_feeds",
       attempted: direct.feedsPolled > 0 || direct.discoveriesAttempted > 0,
       status: directStatus,
-      recordsRead: direct.feedsPolled,
+      recordsRead: direct.feedsPolled + direct.secSubmissionsChecked,
       newEvents: direct.events.length,
-      error: direct.registeredFeeds === 0 ? "no_direct_issuer_feed_registered" : null,
+      error: direct.registeredFeeds === 0 && direct.secSubmissionsChecked === 0
+        ? "no_direct_issuer_evidence_available"
+        : null,
       nextRetryAt: null,
     });
   } catch (error) {
@@ -769,7 +778,7 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
       openFdaMinutes: 1440,
       macroMinutes: 720,
       alphaEarningsMinutes: 1440,
-      directIssuerFeedTargetMinutes: 60,
+      directIssuerFeedTargetMinutes: 15,
     },
   };
 }

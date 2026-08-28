@@ -6,13 +6,14 @@ import type { Pr262ExposureEntry } from "@/lib/opportunity-engine/pr262-exposure
 import type { Pr262SensorEvent } from "@/lib/opportunity-engine/pr262-change-sensor";
 
 const REGISTRY_KEY = pr262StorageKey("sensor/direct-company-feeds-v1.json");
-const DISCOVERY_CADENCE_MS = 60 * 60_000;
+const DISCOVERY_CADENCE_MS = 15 * 60_000;
 const NO_FEED_RETRY_MS = 24 * 60 * 60_000;
 const TRANSIENT_DISCOVERY_RETRY_MS = 60 * 60_000;
-const FEED_POLL_CADENCE_MS = 60 * 60_000;
-// Two prioritized discoveries every hour combine with the 15-minute urgent
-// and hourly broad SEC feeds for 168 calls/day, below the shared 190/day fuse.
-const MAX_DISCOVERIES_PER_CYCLE = 2;
+const FEED_POLL_CADENCE_MS = 15 * 60_000;
+// One prioritized SEC-submissions discovery per 15-minute production cycle is
+// at most 96 calls/day, leaving 94 calls of headroom in its dedicated 190/day
+// ledger. Broad and urgent SEC Atom scans use a separate current-filings ledger.
+const MAX_DISCOVERIES_PER_CYCLE = 1;
 const DISCOVERY_CONCURRENCY = 1;
 const MAX_FEEDS_POLLED_PER_CYCLE = 20;
 const SEC_AGENT = "SwingUp/1.0 support@swingup.app";
@@ -73,6 +74,92 @@ function tag(block: string, name: string) {
 
 function safePriority(title: string) {
   return /bankrupt|restat|guidance|earnings|merger|acquisition|offering|contract|recall|fda|cyber|investigation|ceo|cfo|dividend|buyback/i.test(title) ? 95 : 82;
+}
+
+const DECISION_GRADE_SEC_FORMS = new Set([
+  "8-K", "6-K", "10-Q", "10-K", "20-F", "40-F",
+  "424B5", "S-1", "S-3", "SC 13D", "SC 13G", "DEF 14A", "DEFA14A",
+]);
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function indexedText(value: unknown, index: number) {
+  return Array.isArray(value) ? text(value[index]) : null;
+}
+
+function secObservedAt(acceptance: string | null, filingDate: string | null) {
+  const compact = acceptance?.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/);
+  const candidate = compact
+    ? `${compact[1]}-${compact[2]}-${compact[3]}T${compact[4]}:${compact[5]}:${compact[6]}.000Z`
+    : acceptance ?? (filingDate ? `${filingDate}T12:00:00.000Z` : "");
+  const milliseconds = Date.parse(candidate);
+  return Number.isFinite(milliseconds) ? milliseconds : null;
+}
+
+function secFormPriority(form: string) {
+  if (/^(?:8-K|6-K|424B5)$/.test(form)) return 98;
+  if (/^(?:S-1|S-3)$/.test(form)) return 95;
+  if (/^(?:10-Q|10-K|20-F|40-F)$/.test(form)) return 93;
+  if (/^SC 13[DG]$/.test(form)) return 90;
+  return 84;
+}
+
+function recentSecFilingEvents(
+  body: Record<string, unknown>,
+  company: Pr262ExposureEntry,
+  submissionsUrl: string,
+  now: Date,
+): Pr262SensorEvent[] {
+  const recent = record(record(body.filings).recent);
+  const accessions = Array.isArray(recent.accessionNumber) ? recent.accessionNumber : [];
+  const cik = company.cik?.replace(/^0+/, "") || "0";
+  return accessions.slice(0, 40).flatMap((_, index): Pr262SensorEvent[] => {
+    const accession = indexedText(recent.accessionNumber, index);
+    const rawForm = indexedText(recent.form, index);
+    if (!accession || !/^\d{10}-\d{2}-\d{6}$/.test(accession) || !rawForm) return [];
+    const form = rawForm.toUpperCase().replace(/\s+/g, " ").trim();
+    const normalizedForm = form.replace(/\/A$/, "");
+    if (!DECISION_GRADE_SEC_FORMS.has(normalizedForm)) return [];
+    const observedMs = secObservedAt(
+      indexedText(recent.acceptanceDateTime, index),
+      indexedText(recent.filingDate, index),
+    );
+    if (observedMs === null || observedMs > now.getTime() + 5 * 60_000 || now.getTime() - observedMs > 48 * 60 * 60_000) return [];
+    const accessionCompact = accession.replace(/-/g, "");
+    const canonicalSecIndexUrl = `https://www.sec.gov/Archives/edgar/data/${cik}/${accessionCompact}/${accession}-index.html`;
+    const items = indexedText(recent.items, index)?.replace(/\s+/g, " ").slice(0, 120);
+    const description = indexedText(recent.primaryDocDescription, index)?.replace(/\s+/g, " ").slice(0, 120);
+    const detail = items ? ` (items ${items})` : description ? `: ${description}` : "";
+    return [{
+      id: `sec:${accession}`,
+      source: "sec",
+      sourceProvider: `issuer_sec_${company.ticker.toLowerCase()}`,
+      sourceHealthStatus: "connected",
+      observedAt: new Date(observedMs).toISOString(),
+      title: `${company.company} filed Form ${form}${detail}`.slice(0, 300),
+      url: canonicalSecIndexUrl,
+      sourceUrl: submissionsUrl,
+      ticker: company.ticker,
+      company: company.company,
+      kind: "issuer_sec_filing",
+      priority: secFormPriority(normalizedForm),
+      reason: "A current decision-grade filing was detected from the issuer's official SEC submissions record.",
+      cik: company.cik,
+      form,
+      accession,
+      canonicalSecIndexUrl,
+      identityMethod: "official_sec_archive_link",
+      mappingStatus: "mapped",
+      mappingMethod: "direct_issuer_sec_cik",
+      mappingReason: "The official SEC submissions record is keyed by the stored issuer CIK.",
+      queueAttempts: 0,
+      queueNextAttemptAt: null,
+      queueLastAttemptAt: null,
+      queueLastError: null,
+    }];
+  });
 }
 
 function localAddress(address: string) {
@@ -260,12 +347,17 @@ async function seedEnv(registry: Registry, exposure: Pr262ExposureEntry[]) {
   }
 }
 
-async function discoverOne(fetchImpl: typeof fetch, company: Pr262ExposureEntry, now: Date): Promise<RegistryEntry> {
+async function discoverOne(
+  fetchImpl: typeof fetch,
+  company: Pr262ExposureEntry,
+  now: Date,
+): Promise<{ entry: RegistryEntry; secEvents: Pr262SensorEvent[] }> {
   if (!company.cik) throw new Error("direct_feed_company_cik_missing");
   const submissionsUrl = `https://data.sec.gov/submissions/CIK${company.cik}.json`;
   const response = await fetchImpl(submissionsUrl, { headers: { Accept: "application/json", "user-agent": SEC_AGENT }, cache: "no-store", signal: AbortSignal.timeout(10_000) });
   if (!response.ok) throw new Error(`direct_feed_sec_submissions_http_${response.status}`);
   const body = await response.json() as Record<string, unknown>;
+  const secEvents = recentSecFilingEvents(body, company, submissionsUrl, now);
   const investorWebsite = text(body.investorWebsite) ?? text(body.website);
   let feedUrl: string | null = null;
   let error: string | null = null;
@@ -291,17 +383,20 @@ async function discoverOne(fetchImpl: typeof fetch, company: Pr262ExposureEntry,
     }
   }
   return {
-    ticker: company.ticker,
-    company: company.company,
-    cik: company.cik,
-    investorWebsite,
-    feedUrl,
-    discoveredAt: now.toISOString(),
-    lastDiscoveryAt: now.toISOString(),
-    lastCheckedAt: null,
-    lastSuccessAt: null,
-    nextCheckAt: feedUrl ? null : discoveryRetryAt(error ?? "issuer_rss_feed_not_discovered", now),
-    error: feedUrl ? null : error ?? "issuer_rss_feed_not_discovered",
+    entry: {
+      ticker: company.ticker,
+      company: company.company,
+      cik: company.cik,
+      investorWebsite,
+      feedUrl,
+      discoveredAt: now.toISOString(),
+      lastDiscoveryAt: now.toISOString(),
+      lastCheckedAt: null,
+      lastSuccessAt: null,
+      nextCheckAt: feedUrl ? null : discoveryRetryAt(error ?? "issuer_rss_feed_not_discovered", now),
+      error: feedUrl ? null : error ?? "issuer_rss_feed_not_discovered",
+    },
+    secEvents,
   };
 }
 
@@ -312,6 +407,9 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
   const registry = loaded.registry;
   await seedEnv(registry, input.exposure);
   const byTicker = new Map(registry.entries.map((entry) => [entry.ticker, entry]));
+  const events: Pr262SensorEvent[] = [];
+  let secSubmissionsChecked = 0;
+  let secFilingsFound = 0;
 
   const lastDiscoveryMs = registry.lastDiscoveryCycleAt ? Date.parse(registry.lastDiscoveryCycleAt) : 0;
   let discovered = 0;
@@ -353,8 +451,11 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
       for (let start = 0; start < discoveryTargets.length; start += DISCOVERY_CONCURRENCY) {
         await Promise.all(discoveryTargets.slice(start, start + DISCOVERY_CONCURRENCY).map(async ({ company, existing }) => {
           try {
-            const next = await discoverOne(fetchImpl, company, now);
-            byTicker.set(company.ticker, next);
+            const result = await discoverOne(fetchImpl, company, now);
+            byTicker.set(company.ticker, result.entry);
+            events.push(...result.secEvents);
+            secSubmissionsChecked += 1;
+            secFilingsFound += result.secEvents.length;
           } catch (error) {
             byTicker.set(company.ticker, {
               ticker: company.ticker,
@@ -391,7 +492,6 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
     .sort((left, right) => Date.parse(left.lastCheckedAt ?? "1970-01-01") - Date.parse(right.lastCheckedAt ?? "1970-01-01"))
     .slice(0, MAX_FEEDS_POLLED_PER_CYCLE);
 
-  const events: Pr262SensorEvent[] = [];
   let feedSuccesses = 0;
   for (const entry of due) {
     try {
@@ -418,6 +518,8 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
     feedsPolled: due.length,
     feedSuccesses,
     discoveriesAttempted: discovered,
+    secSubmissionsChecked,
+    secFilingsFound,
     companiesKnown: registry.entries.length,
     investorWebsitesFound: registry.entries.filter((entry) => entry.investorWebsite).length,
     feedlessCompanies: registry.entries.filter((entry) => !entry.feedUrl).length,

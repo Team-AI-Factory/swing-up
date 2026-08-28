@@ -57,15 +57,15 @@ const universeKey = "branch-labs/pr-262/equity-universe/v1.json";
 const sensorStateKey = "branch-labs/pr-262/sensor/state-v1.json";
 const directoryKey = "branch-labs/pr-262/sensor/company-directory-v1.json";
 const batchKey = "branch-labs/pr-262/value-investing/resumable/cycles/cycle-test/batches/0000.json";
-const now = new Date("2026-08-11T06:00:00.000Z");
+const now = new Date("2026-08-28T04:00:00.000Z");
 const atom = `<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
   <entry>
     <title>8-K - Twist Bioscience signs storage agreement mentioning Data Storage Corporation (DTST)</title>
     <link rel="alternate" type="text/html" href="https://www.sec.gov/Archives/edgar/data/1581280/000119312526123456/twist-20260811.htm" />
     <category term="8-K" />
-    <updated>2026-08-11T05:58:00Z</updated>
-    <summary type="html">Filed: 2026-08-11 AccNo: 0001193125-26-123456</summary>
+    <updated>2026-08-28T03:58:00Z</updated>
+    <summary type="html">Filed: 2026-08-28 AccNo: 0001193125-26-123456</summary>
   </entry>
 </feed>`;
 const parsed = sensor.parseSecAtomForSensor(atom, { now, provider: "sec_broad", requestedForm: null });
@@ -88,7 +88,7 @@ const inlineParsed = sensor.parseSecAtomForSensor(inlineAtom, { now, provider: "
 assert.equal(inlineParsed.events[0].cik, "0001581280");
 assert.equal(inlineParsed.events[0].accession, "0001193125-26-123456");
 
-const missingTimestampAtom = atom.replace("    <updated>2026-08-11T05:58:00Z</updated>\n", "");
+const missingTimestampAtom = atom.replace("    <updated>2026-08-28T03:58:00Z</updated>\n", "");
 const missingTimestamp = sensor.parseSecAtomForSensor(missingTimestampAtom, { now, provider: "sec_broad", requestedForm: null });
 assert.equal(missingTimestamp.recordsRead, 1);
 assert.equal(missingTimestamp.events.length, 0);
@@ -97,7 +97,7 @@ assert.equal(missingTimestamp.invalidTimestampCount, 1);
 const missingTimestampAgain = sensor.parseSecAtomForSensor(missingTimestampAtom, { now, provider: "sec_broad", requestedForm: null });
 assert.deepEqual(missingTimestampAgain.events, []);
 
-const futureTimestampAtom = atom.replace("2026-08-11T05:58:00Z", "2026-08-11T06:06:00Z");
+const futureTimestampAtom = atom.replace("2026-08-28T03:58:00Z", "2026-08-28T04:06:00Z");
 const futureTimestamp = sensor.parseSecAtomForSensor(futureTimestampAtom, { now, provider: "sec_broad", requestedForm: null });
 assert.equal(futureTimestamp.events.length, 0);
 assert.equal(futureTimestamp.status, "partial");
@@ -113,7 +113,7 @@ const rssMissingTimestamp = sensor.parseRssForPr262Sensor(
 assert.equal(rssMissingTimestamp.events.length, 0);
 assert.equal(rssMissingTimestamp.status, "partial");
 const rssFutureTimestamp = sensor.parseRssForPr262Sensor(
-  "<rss><channel><item><title>NASDAQ: TWST filing update</title><link>https://example.test/twst</link><pubDate>2026-08-11T06:06:00Z</pubDate></item></channel></rss>",
+  "<rss><channel><item><title>NASDAQ: TWST filing update</title><link>https://example.test/twst</link><pubDate>2026-08-28T04:06:00Z</pubDate></item></channel></rss>",
   "company_news",
   "company_news",
   "news",
@@ -460,25 +460,30 @@ const olderUntouched = { ...mappedDueRetry, id: "sec:older-untouched", priority:
 const freshUntouched = { ...olderUntouched, id: "sec:fresh-untouched", observedAt: new Date(now.getTime() - 60_000).toISOString() };
 const freshPriorityQueue = sensor.partitionPr262PendingEvents([olderUntouched, freshUntouched], now);
 assert.deepEqual(freshPriorityQueue.map((item) => item.id), [freshUntouched.id, olderUntouched.id], "Untouched equal-priority filings must be newest-first");
+const expiredMapped = { ...mappedDueRetry, id: "sec:expired-mapped", observedAt: new Date(now.getTime() - 49 * 60 * 60_000).toISOString() };
+assert.equal(sensor.partitionPr262PendingEvents([expiredMapped], now).length, 0, "A mapped event must not become a permanent analysis backlog after 48 hours.");
+const secondaryNews = { ...freshUntouched, id: "news:secondary", source: "company_news", priority: 100 };
+const officialSec = { ...olderUntouched, id: "sec:official-first", source: "sec", priority: 80 };
+assert.equal(sensor.partitionPr262PendingEvents([secondaryNews, officialSec], now)[0].id, officialSec.id, "Fresh SEC and issuer evidence must be analyzed before secondary news noise.");
 const legacyMarketEvent = {
   ...mappedDueRetry,
   id: "v3-market:legacy-minute-one",
   source: "market_price",
   sourceProvider: "tradingview_quality_watchlist_v3",
   kind: "strong_buy_price_crossed",
-  observedAt: "2026-08-20T09:00:00.000Z",
+  observedAt: "2026-08-27T09:00:00.000Z",
   queueAttempts: 0,
   queueNextAttemptAt: null,
 };
 const repeatedLegacyMarketEvent = {
   ...legacyMarketEvent,
   id: "v3-market:legacy-minute-two",
-  observedAt: "2026-08-20T09:05:00.000Z",
+  observedAt: "2026-08-27T09:05:00.000Z",
 };
 const nextDayMarketEvent = {
   ...legacyMarketEvent,
   id: "v3-market:next-day",
-  observedAt: "2026-08-21T09:00:00.000Z",
+  observedAt: "2026-08-28T03:00:00.000Z",
 };
 const compactedMarketQueue = sensor.partitionPr262PendingEvents([legacyMarketEvent, repeatedLegacyMarketEvent, nextDayMarketEvent], now);
 assert.deepEqual(
@@ -530,6 +535,8 @@ console.log(JSON.stringify({
   railwayAnalysisPreservesCloudflareOwnershipMetadata: true,
   mappedRetriesProtectedFromUnmappedQueueFloods: true,
   unresolvedQueuePartitionExpiresAfterOneDay: true,
+  mappedQueueExpiresAfterFortyEightHours: true,
+  officialEvidencePrioritized: true,
   freshEqualPriorityFilingsRunNewestFirst: true,
   legacyMarketQueueCompactsWithoutDeletion: true,
   maximumSecFeedCallsPerCycle: 2,

@@ -48,6 +48,7 @@ const MIN_IMPORTANT_PRIORITY = 80;
 const FIVE_MINUTES_MS = 5 * 60_000;
 const FIFTEEN_MINUTES_MS = 15 * 60_000;
 const THIRTY_MINUTES_MS = 30 * 60_000;
+const HOUR_MS = 60 * 60_000;
 const SEVENTY_FIVE_MINUTES_MS = 75 * 60_000;
 const TWO_HOURS_MS = 2 * 60 * 60_000;
 const TWELVE_HOURS_MS = 12 * 60 * 60_000;
@@ -503,12 +504,15 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
   newsUrl.searchParams.set("gl", "US");
   newsUrl.searchParams.set("ceid", "US:en");
 
+  // At the 15-minute Railway cadence this reserves the shared 190/day SEC
+  // budget: 96 urgent polls + 24 broad polls + 48 prioritized issuer lookups
+  // = 168 calls/day, leaving 22 calls of hard safety headroom.
   await Promise.all([
-    run("sec_broad", FIVE_MINUTES_MS, [broadUrl], async () => {
+    run("sec_broad", HOUR_MS, [broadUrl], async () => {
       const parsed = parseSecAtomForSensor(await boundedText(fetchImpl, broadUrl, "application/atom+xml,text/xml"), { now, provider: "v3_sec_broad", requestedForm: null });
       return { status: parsed.status ?? "connected", recordsRead: parsed.recordsRead, events: parsed.events, error: parsed.error };
     }),
-    run("sec_urgent", FIVE_MINUTES_MS, [urgentUrl], async () => {
+    run("sec_urgent", FIFTEEN_MINUTES_MS, [urgentUrl], async () => {
       const parsed = parseSecAtomForSensor(await boundedText(fetchImpl, urgentUrl, "application/atom+xml,text/xml"), { now, provider: `v3_sec_${urgentForm.toLowerCase()}`, requestedForm: urgentForm });
       return { status: parsed.status ?? "connected", recordsRead: parsed.recordsRead, events: parsed.events, error: parsed.error };
     }),
@@ -749,8 +753,8 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
       aiCalls: 0,
       fullArticleReads: 0,
       fullCompanyWarehouseRebuilds: 0,
-      broadSecMinutes: 5,
-      prioritySecMinutes: 5,
+      broadSecMinutes: 60,
+      prioritySecMinutes: 15,
       googleNewsMinutes: 5,
       tradeHaltMinutes: 5,
       priceWatchMinutes: 5,

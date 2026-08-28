@@ -211,7 +211,7 @@ const stubs = {
       assert.equal(input.targetedContext.universe.entries.length, 1, "Only one company may enter the runner");
       assert.equal(input.targetedContext.universe.entries[0].cik, "0001234567", "Exact CIK must survive");
       if (expectEmptyStoredCompanyAnalysis) {
-        assert.deepEqual(input.targetedContext.storedCompanyAnalysis, {}, "Unavailable valuation context must stay empty.");
+        assert.equal(input.targetedContext.storedCompanyAnalysis, undefined, "Unavailable valuation context must remain absent.");
       } else {
         assert.equal(input.targetedContext.storedCompanyAnalysis.ticker, "EXCT", "Refreshed company must remain exact");
       }

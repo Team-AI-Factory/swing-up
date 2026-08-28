@@ -6,7 +6,7 @@ import ts from "typescript";
 const monitor = readFileSync(new URL("../lib/opportunity-engine/pr262-direct-announcements.ts", import.meta.url), "utf8");
 const sensor = readFileSync(new URL("../lib/opportunity-engine/pr262-lightweight-sensor-v3.ts", import.meta.url), "utf8");
 
-assert.match(monitor, /DISCOVERY_CADENCE_MS = 15 \* 60_000/, "Issuer evidence discovery must run every fifteen minutes.");
+assert.match(monitor, /DISCOVERY_CADENCE_MS = 30 \* 60_000/, "Issuer SEC submissions discovery must run every thirty minutes so the shared 190/day SEC ledger retains hard headroom.");
 assert.match(monitor, /MAX_DISCOVERIES_PER_CYCLE = 1/, "Issuer discovery must stay below its dedicated SEC submissions fuse.");
 assert.match(sensor, /run\("sec_broad", HOUR_MS/, "Broad SEC discovery must run hourly.");
 assert.match(sensor, /run\("sec_urgent", FIFTEEN_MINUTES_MS/, "Urgent SEC discovery must retain the fifteen-minute cadence.");
@@ -161,7 +161,7 @@ console.log(JSON.stringify({
   dailyRediscovery: true,
   transientDiscoveryRetry: true,
   boundedParallelDiscovery: true,
-  ninetySixSubmissionsPerDayMaximum: true,
+  fortyEightSubmissionsPerDayMaximum: true,
   currentIssuerSecEvidence: true,
   feedPollingTelemetryHonest: true,
   legacyWebsitesSafelyUpgraded: true,

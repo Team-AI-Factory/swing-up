@@ -1564,6 +1564,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
     }
     let companyRefresh: Awaited<ReturnType<typeof refreshAffectedCompany>> | null = null;
     let foundationAnalysisFallback: UsValueCompanyAnalysis | null = null;
+    let targetedValueRefreshBlockedByQuota = false;
     if (source.decisionGrade && !sourceExpiredWithoutEvidence) {
       try {
         companyRefresh = await refreshAffectedCompany({
@@ -1587,22 +1588,32 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
           }),
         });
       } catch (error) {
+        if (!targetedValueBudgetDenied(error)) throw error;
+        targetedValueRefreshBlockedByQuota = true;
         const fallback = validatedFoundationValueAnalysis(
           resolved.valueAnalysis,
           resolved.directoryEntry.ticker,
           now,
         );
-        if (!targetedValueBudgetDenied(error) || !fallback) throw error;
-        foundationAnalysisFallback = fallback;
+        // Current event evidence must not be hidden merely because optional
+        // valuation context is unavailable. A complete fresh foundation
+        // analysis may bridge the quote budget; otherwise the event runner gets
+        // no stored valuation context and all existing evidence, quote,
+        // Committee, and Final Judge gates remain unchanged.
+        if (fallback) foundationAnalysisFallback = fallback;
       }
     }
     const valuationAnalysis = companyRefresh?.analysis ?? foundationAnalysisFallback;
     const valuationContext = {
       source: companyRefresh
         ? "event_targeted_refresh"
-        : foundationAnalysisFallback ? "daily_foundation_cache" : "not_used",
+        : foundationAnalysisFallback
+          ? "daily_foundation_cache"
+          : targetedValueRefreshBlockedByQuota ? "unavailable_budget_safe" : "not_used",
       observedAt: text(valuationAnalysis?.observedAt),
       quotaFallback: Boolean(foundationAnalysisFallback),
+      targetedRefreshBlockedByQuota: targetedValueRefreshBlockedByQuota,
+      usableFoundationContext: Boolean(valuationAnalysis),
       maximumFoundationAgeHours: FOUNDATION_ANALYSIS_MAX_AGE_MS / (60 * 60_000),
     };
     assertJobActive();
@@ -1650,7 +1661,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
             providers: [...source.providers, haltProvider],
             secFilingDetails: object(source.diagnostics),
             historicalSignalsComplete: true,
-            storedCompanyAnalysis: object(valuationAnalysis ?? resolved.valueAnalysis),
+            storedCompanyAnalysis: object(valuationAnalysis),
           },
         }));
     assertJobActive();
@@ -1810,7 +1821,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       nextRetryAt,
       attemptedAt: now,
     }, input.queueMutationSink).catch(() => null);
-    throw new Error(`${message}; next_retry_at=${nextRetryAt}`);
+    throw new Error(`${message}; event_id=${event.id}; ticker=${event.ticker ?? "unknown"}; cik=${event.cik ?? "unknown"}; next_retry_at=${nextRetryAt}`);
   } finally {
     if (deadlineTimer) clearTimeout(deadlineTimer);
     input.signal?.removeEventListener("abort", abortFromCaller);

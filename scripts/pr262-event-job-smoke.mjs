@@ -164,6 +164,7 @@ let committeeFingerprint = "fingerprint-1";
 let runnerResultMode = "serious";
 let targetedValueBudgetAllowed = true;
 let lastStoredCompanyAnalysis = null;
+let expectEmptyStoredCompanyAnalysis = false;
 const haltProvider = {
   provider: "nasdaq_trade_halts",
   status: "connected",
@@ -209,7 +210,11 @@ const stubs = {
       assert.equal(input.requirePilotBeforeOpenAi, false, "Historical cases must remain optional context rather than a committee gate");
       assert.equal(input.targetedContext.universe.entries.length, 1, "Only one company may enter the runner");
       assert.equal(input.targetedContext.universe.entries[0].cik, "0001234567", "Exact CIK must survive");
-      assert.equal(input.targetedContext.storedCompanyAnalysis.ticker, "EXCT", "Refreshed company must remain exact");
+      if (expectEmptyStoredCompanyAnalysis) {
+        assert.deepEqual(input.targetedContext.storedCompanyAnalysis, {}, "Unavailable valuation context must stay empty.");
+      } else {
+        assert.equal(input.targetedContext.storedCompanyAnalysis.ticker, "EXCT", "Refreshed company must remain exact");
+      }
       lastStoredCompanyAnalysis = structuredClone(input.targetedContext.storedCompanyAnalysis);
       assert.ok(input.targetedContext.providers.some((provider) => provider.provider === "nasdaq_trade_halts"));
       if (!failHistoryAccess) assert.ok(input.historicalSignals.length >= 5, "Available optional history should load");
@@ -619,6 +624,7 @@ setSecEventIdentity("000008", "2026-08-11T10:06:30.000Z");
 const freshObservedAt = analysis.observedAt;
 analysis.observedAt = "2026-08-09T00:00:00.000Z";
 lastStoredCompanyAnalysis = null;
+expectEmptyStoredCompanyAnalysis = true;
 const runnerCallsBeforeStaleFallback = runnerCalls;
 const staleFoundationContext = await runPr262EventJob({
   now: new Date("2026-08-11T10:07:00.000Z"),
@@ -633,6 +639,7 @@ assert.equal(staleFoundationContext.costControl.valuationContext.usableFoundatio
 assert.equal(runnerCalls, runnerCallsBeforeStaleFallback + 1, "Current event evidence must still reach deterministic gates when optional valuation context is unavailable.");
 assert.deepEqual(lastStoredCompanyAnalysis, {}, "Stale or malformed valuation context must never be passed into deterministic gates or the Committee.");
 assert.equal(retryCalls, retryCallsBeforeFallback, "A valuation-only quota gap must not backlog current decision-grade event evidence.");
+expectEmptyStoredCompanyAnalysis = false;
 analysis.observedAt = freshObservedAt;
 targetedValueBudgetAllowed = true;
 runnerResultMode = "serious";

@@ -876,7 +876,11 @@ async function cacheFullSource(event: Pr262SensorEvent, source: DecisionGradeSou
 }
 
 function permanentlyUnreadableFullSource(reason: string | null, event: Pr262SensorEvent) {
-  if (event.queueAttempts >= 2) return true;
+  void event;
+  // Retry count is not evidence that a source is permanently unreadable. A
+  // transient DNS, rate-limit, or provider outage may span several attempts;
+  // only explicit permanent failures (or the separate 48-hour expiry) may
+  // archive the event without analysis.
   return Boolean(reason && /(?:url_invalid|url_not_public_https|host_blocked|address_blocked|content_type_unsupported|body_too_large|issuer_or_event_unconfirmed|http_40[0134]|http_410)/i.test(reason));
 }
 
@@ -1581,6 +1585,11 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
         recoveredPersistedResult: false,
         ticker: resolved.directoryEntry.ticker,
         cik: resolved.directoryEntry.cik,
+        eventId: event.id,
+        eventSource: event.source,
+        sourceProvider: event.sourceProvider,
+        mappingMethod: event.mappingMethod ?? null,
+        sourceFailureReason,
         sourceDecisionGrade: source.decisionGrade,
         openAiCalled: false,
         seriousSignalFound: false,
@@ -1658,6 +1667,11 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       recoveredPersistedResult: created.conflict,
       ticker: String(finalized.pointer.ticker),
       cik: text(finalized.pointer.cik),
+      eventId: event.id,
+      eventSource: event.source,
+      sourceProvider: event.sourceProvider,
+      mappingMethod: event.mappingMethod ?? null,
+      sourceFailureReason,
       sourceDecisionGrade: persisted.payload.sourceDecisionGrade === true,
       openAiCalled: finalized.report.openAiCalled === true,
       seriousSignalFound: finalized.report.seriousSignalFound === true,

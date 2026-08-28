@@ -151,6 +151,9 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
   const mappedAtStart = state.pending.filter((event) => event.mappingStatus === "mapped" && Boolean(event.ticker)).length;
   const priorityEligibleAtStart = state.pending.filter((event) => event.priority >= 80).length;
   const officialOrSecAtStart = state.pending.filter((event) => event.source === "sec" || event.source === "official").length;
+  const secAtStart = state.pending.filter((event) => event.source === "sec").length;
+  const directIssuerAtStart = state.pending.filter((event) => (event.sourceProvider ?? "").startsWith("issuer_ir_")).length;
+  const issuerSpecificAtStart = state.pending.filter((event) => event.mappingMethod !== "deterministic_sector_fanout" && Boolean(event.ticker)).length;
   const readyAtStart = dueReadyCount(state);
   const capacity = capacityForQueue(readyAtStart);
   const eventResults: Json[] = [];
@@ -366,7 +369,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
         seriousBuys,
         seriousSells,
         seriousWatchOuts,
-        directIssuerFeedsPolled: directIssuer?.recordsRead ?? 0,
+        directIssuerFeedsPolled: sensor?.directAnnouncementMonitoring?.feedsPolled ?? directIssuer?.recordsRead ?? 0,
       }).catch((error) => ({ error: error instanceof Error ? error.message : "cost_metrics_failed" }))
     : { persisted: false, reason: "quiet_cycle_logged_to_railway_only" };
 
@@ -386,9 +389,14 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
     mappedAtStart,
     priorityEligibleAtStart,
     officialOrSecAtStart,
+    secAtStart,
+    directIssuerAtStart,
+    issuerSpecificAtStart,
     dueForAnalysisAtStart: readyAtStart,
     admittedThisCycle: eventResults.length,
     decisionGradeEvidence: eventResults.filter((result) => result.sourceDecisionGrade === true).length,
+    sourceEvidenceRejectedUnread: eventResults.filter((result) => result.status === "source_evidence_rejected_unread").length,
+    sourceEvidenceExpiredUnread: eventResults.filter((result) => result.status === "source_evidence_expired_unread").length,
     analyzedThisCycle: eventsProcessed,
     paidCommitteeReviews: aiCalls,
     committeeApproved: seriousBuys + seriousSells + seriousWatchOuts,
@@ -414,6 +422,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
       costPolicy: sensor.costPolicy,
       providerBudget: sourceBudget?.summary() ?? null,
       providerBudgetPersistence: budgetPersistence,
+      directAnnouncementMonitoring: sensor.directAnnouncementMonitoring,
     } : {
       skipped: true,
       owner: "railway_sensor",

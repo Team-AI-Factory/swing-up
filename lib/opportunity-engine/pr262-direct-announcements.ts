@@ -9,8 +9,10 @@ const REGISTRY_KEY = pr262StorageKey("sensor/direct-company-feeds-v1.json");
 const DISCOVERY_CADENCE_MS = 30 * 60_000;
 const NO_FEED_RETRY_MS = 24 * 60 * 60_000;
 const FEED_POLL_CADENCE_MS = 60 * 60_000;
-const MAX_DISCOVERIES_PER_CYCLE = 24;
-const DISCOVERY_CONCURRENCY = 4;
+// Three discoveries every 30 minutes stays below the shared 190/day SEC
+// submissions ceiling at a fifteen-minute sensor cadence and leaves headroom.
+const MAX_DISCOVERIES_PER_CYCLE = 3;
+const DISCOVERY_CONCURRENCY = 1;
 const MAX_FEEDS_POLLED_PER_CYCLE = 20;
 const SEC_AGENT = "SwingUp/1.0 support@swingup.app";
 
@@ -321,6 +323,7 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
       let cursor = registry.discoveryCursor % candidates.length;
       let inspected = 0;
       const discoveryTargets: Array<{ company: Pr262ExposureEntry; existing: RegistryEntry | undefined }> = [];
+      const selectedCiks = new Set<string>();
       while (inspected < candidates.length && discoveryTargets.length < MAX_DISCOVERIES_PER_CYCLE) {
         const company = candidates[cursor];
         cursor = (cursor + 1) % candidates.length;
@@ -328,6 +331,8 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
         const existing = byTicker.get(company.ticker);
         const lastAt = existing?.lastDiscoveryAt ? Date.parse(existing.lastDiscoveryAt) : 0;
         if (existing?.feedUrl || (Number.isFinite(lastAt) && now.getTime() - lastAt < NO_FEED_RETRY_MS)) continue;
+        if (!company.cik || selectedCiks.has(company.cik)) continue;
+        selectedCiks.add(company.cik);
         discoveryTargets.push({ company, existing });
       }
       for (let start = 0; start < discoveryTargets.length; start += DISCOVERY_CONCURRENCY) {

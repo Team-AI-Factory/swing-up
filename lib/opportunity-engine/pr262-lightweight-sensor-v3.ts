@@ -201,6 +201,16 @@ function receiptToEvent(receipt: EventReceipt, provider: string, resolver: Retur
   };
 }
 
+function canEnterIssuerEvidenceQueue(event: Pr262SensorEvent) {
+  if (event.source === "sec") {
+    return Boolean(event.cik)
+      && Boolean(event.accession)
+      && Boolean(event.canonicalSecIndexUrl)
+      && event.identityMethod === "official_sec_archive_link";
+  }
+  return Boolean(event.ticker);
+}
+
 function sectorTargets(title: string) {
   const value = title.toLowerCase();
   const sectors = new Set<string>();
@@ -614,6 +624,7 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
   // authenticated Watchlist instead. This also retires legacy price-only backlog
   // during the next normal state write.
   const importantPending = state.pending.filter((event) => event.priority >= MIN_IMPORTANT_PRIORITY && !researchOnlyPriceEvent(event));
+  const legacyNonActionable = importantPending.filter((event) => !canEnterIssuerEvidenceQueue(event));
   const known = new Set([...state.seen, ...importantPending.map((event) => event.id)]);
   const unseen = deduped
     .filter((event) => event.priority >= MIN_IMPORTANT_PRIORITY && !known.has(event.id))
@@ -624,13 +635,21 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
   const priceResearchEvents = unseen
     .filter(researchOnlyPriceEvent)
     .slice(0, MAX_FRESH);
+  const nonActionableResearchEvents = unseen
+    .filter((event) => event.mappingMethod !== "deterministic_sector_fanout"
+      && !researchOnlyPriceEvent(event)
+      && !canEnterIssuerEvidenceQueue(event))
+    .slice(0, MAX_FRESH);
   const fresh = unseen
-    .filter((event) => event.mappingMethod !== "deterministic_sector_fanout" && !researchOnlyPriceEvent(event))
+    .filter((event) => event.mappingMethod !== "deterministic_sector_fanout"
+      && !researchOnlyPriceEvent(event)
+      && canEnterIssuerEvidenceQueue(event))
     .slice(0, MAX_FRESH);
   const pending = partitionPr262PendingEvents([...importantPending, ...fresh], now);
   const retained = new Set(pending.map((event) => event.id));
   for (const event of contextualSectorFanouts) known.add(event.id);
   for (const event of priceResearchEvents) known.add(event.id);
+  for (const event of nonActionableResearchEvents) known.add(event.id);
   for (const event of fresh) if (retained.has(event.id)) known.add(event.id);
 
   const next: CompatState = {
@@ -690,6 +709,10 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
     exposureCompanies: exposure.entries.length,
     newEvents: fresh.length,
     priceResearchEvents: priceResearchEvents.length,
+    nonActionableEventsDropped: new Set([
+      ...legacyNonActionable.map((event) => event.id),
+      ...nonActionableResearchEvents.map((event) => event.id),
+    ]).size,
     sectorFanoutEvents: contextualSectorFanouts.length,
     contextOnlySectorFanoutEvents: contextualSectorFanouts.length,
     directAnnouncementMonitoring,

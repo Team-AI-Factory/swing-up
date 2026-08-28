@@ -630,7 +630,7 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
             ? "not_due"
             : "not_ready";
     summaries.push({
-      provider: "direct_issuer_evidence",
+      provider: "direct_issuer_feeds",
       attempted: direct.feedsPolled > 0 || direct.discoveriesAttempted > 0,
       status: directStatus,
       recordsRead: direct.feedsPolled + direct.secSubmissionsChecked,

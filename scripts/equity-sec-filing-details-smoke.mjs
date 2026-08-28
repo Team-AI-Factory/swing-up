@@ -911,6 +911,53 @@ for (let cycle = 0; cycle < rotationForms.length; cycle += 1) {
 }
 assert.deepEqual(agedSelections, agedRotationReceipts.map((item) => item.id));
 
+// A targeted event-job accession must bypass the process-wide fairness backlog.
+// This prevents unrelated carried-forward filings from making the exact current
+// issuer filing appear temporarily unavailable.
+resetSecFilingDetailStateForTest();
+const targetedPriorityReceipts = [
+  receipt({ id: "priority-backlog-424b5", rawEventType: "424B5", publishedAt: "2026-07-22T11:59:00.000Z", url: "https://www.sec.gov/Archives/edgar/data/7000001/000700000126000001/backlog-a-index.html" }),
+  receipt({ id: "priority-backlog-8k", rawEventType: "8-K", publishedAt: "2026-07-22T11:58:00.000Z", url: "https://www.sec.gov/Archives/edgar/data/7000002/000700000226000001/backlog-b-index.html" }),
+  receipt({ id: "priority-backlog-6k", rawEventType: "6-K", publishedAt: "2026-07-22T11:57:00.000Z", url: "https://www.sec.gov/Archives/edgar/data/7000003/000700000326000001/backlog-c-index.html" }),
+  receipt({ id: "priority-backlog-424b3", rawEventType: "424B3", publishedAt: "2026-07-22T11:56:00.000Z", url: "https://www.sec.gov/Archives/edgar/data/7000004/000700000426000001/backlog-d-index.html" }),
+];
+const exactTargetedReceipt = receipt({
+  id: "exact-targeted-10k",
+  rawEventType: "10-K",
+  publishedAt: "2026-07-22T10:00:00.000Z",
+  url: "https://www.sec.gov/Archives/edgar/data/7000005/000700000526000001/exact-target-index.html",
+});
+const priorityReceiptByUrl = new Map([...targetedPriorityReceipts, exactTargetedReceipt].map((item) => [item.url, item]));
+const priorityFetch = async (value) => {
+  const url = String(value);
+  const item = priorityReceiptByUrl.get(url);
+  if (item) {
+    return new Response(filingIndexHtml(item.rawEventType, url.replace(/-index\.html$/i, ".htm")), {
+      status: 200,
+      headers: { "content-type": "text/html" },
+    });
+  }
+  if (/\.htm$/i.test(url)) {
+    return new Response("<html><body><p>Exact targeted factual filing evidence.</p></body></html>", {
+      status: 200,
+      headers: { "content-type": "text/html" },
+    });
+  }
+  throw new Error(`Unexpected targeted-priority URL: ${url}`);
+};
+await enrichSecFilingDetails(targetedPriorityReceipts, priorityFetch, now);
+const targetedPriority = await enrichSecFilingDetails(
+  [exactTargetedReceipt],
+  priorityFetch,
+  new Date(now.getTime() + 5 * 60_000),
+  undefined,
+  { priorityReceiptIds: [exactTargetedReceipt.id] },
+);
+assert.equal(targetedPriority.diagnostics.selectedReceiptIds[0], exactTargetedReceipt.id);
+assert.deepEqual(targetedPriority.diagnostics.priorityReceiptIds, [exactTargetedReceipt.id]);
+assert.deepEqual(targetedPriority.diagnostics.prioritySelectedReceiptIds, [exactTargetedReceipt.id]);
+assert.equal(targetedPriority.policy.targetedReceiptPriority, true);
+
 console.log(JSON.stringify({
   ok: true,
   maximumNewFilingsPerRun: 2,
@@ -933,6 +980,7 @@ console.log(JSON.stringify({
   sustainedSameFormArrivalsCannotStarveAgedFilings: true,
   agedSameFormFilingsUseFifo: true,
   continuousFreshArrivalsCannotStarveOtherForms: true,
+  exactTargetedAccessionBypassesFairnessBacklog: true,
   selectedAccessionsReservedInOneBatchBeforeFetch: true,
   eachAccessionGrantCoversAtMostThreeChildRequests: true,
   explicitExhibit992Selected: true,

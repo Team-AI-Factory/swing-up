@@ -1248,7 +1248,11 @@ function compactAnalysisDiagnostics(report: Json) {
       alertReadiness: text(top.alertReadiness),
     } : null,
     blockers: Array.isArray(report.blockers)
-      ? report.blockers.filter((item): item is string => typeof item === "string").slice(0, 5)
+      ? report.blockers
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim().slice(0, 300))
+        .filter(Boolean)
+        .slice(0, 5)
       : [],
   };
 }

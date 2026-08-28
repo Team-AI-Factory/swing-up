@@ -23,6 +23,7 @@ assert.match(monitor, /if \(url\.protocol === "http:"\)[\s\S]*?url\.protocol = "
 assert.match(monitor, /discoverInvestorPages\(page\.body, page\.finalUrl\)/, "Discovery must follow a bounded investor/news page when the corporate homepage has no feed link.");
 assert.match(monitor, /\.slice\(0, 2\)/, "Nested issuer-page discovery must remain tightly bounded.");
 assert.match(monitor, /investorWebsitesFound[\s\S]*?feedlessCompanies[\s\S]*?discoveryErrors/, "Production diagnostics must distinguish missing issuer websites from missing feed links and transport errors.");
+assert.match(monitor, /const existing = registry\.entries\.find[\s\S]*?existing\.feedUrl = feedUrl/, "A configured official issuer feed must repair an existing feedless registry entry.");
 assert.match(sensor, /recordsRead: direct\.feedsPolled \+ direct\.secSubmissionsChecked/, "Cost telemetry must report RSS polls and SEC submissions checks honestly.");
 assert.match(sensor, /transientDiscoveryBacklog: direct\.transientDiscoveryBacklog/, "The production sensor must not drop issuer discovery backlog telemetry.");
 
@@ -121,6 +122,53 @@ registry.entries[0] = {
   ...registry.entries[0],
   investorWebsite: null,
   feedUrl: null,
+  nextCheckAt: "2026-08-29T09:00:00.000Z",
+  error: "issuer_rss_feed_not_discovered",
+};
+process.env.SWING_UP_PR262_DIRECT_FEEDS_JSON = JSON.stringify([{
+  ticker: "SAFE",
+  investorWebsite: "https://configured.example/investors",
+  feedUrl: "https://configured.example/releases.xml",
+}]);
+let configuredRecovery;
+try {
+  configuredRecovery = await loaded.exports.runPr262DirectAnnouncementMonitor({
+    now: new Date("2026-08-28T09:01:00.000Z"),
+    exposure: [{
+      ticker: "SAFE",
+      company: "Safe Corporation",
+      cik: "0000000001",
+      currentPrice: 10,
+      strongBuyBelowPrice: 12,
+      buyBelowPrice: 15,
+      trimAbovePrice: 40,
+      businessQuality: 80,
+      marketCap: 1_000_000_000,
+    }],
+    fetchImpl: async (request) => {
+      const url = String(request);
+      if (url === "https://configured.example/releases.xml") return response(`
+        <rss><channel><item><title>Safe Corporation announces contract</title><link>https://configured.example/news/contract</link><pubDate>2026-08-28T09:00:00.000Z</pubDate></item></channel></rss>
+      `, "application/rss+xml");
+      throw new Error(`Unexpected configured issuer-feed request: ${url}`);
+    },
+  });
+} finally {
+  delete process.env.SWING_UP_PR262_DIRECT_FEEDS_JSON;
+}
+assert.equal(configuredRecovery.registeredFeeds, 1);
+assert.equal(configuredRecovery.feedsPolled, 1);
+assert.equal(configuredRecovery.feedSuccesses, 1);
+assert.equal(configuredRecovery.discoveriesAttempted, 0, "A configured feed patch must not consume another SEC discovery call");
+assert.equal(configuredRecovery.events.length, 1);
+assert.equal(registry.entries[0].investorWebsite, "https://configured.example/investors");
+assert.equal(registry.entries[0].feedUrl, "https://configured.example/releases.xml");
+assert.equal(registry.entries[0].error, null);
+
+registry.entries[0] = {
+  ...registry.entries[0],
+  investorWebsite: null,
+  feedUrl: null,
   lastDiscoveryAt: "2026-08-28T09:00:00.000Z",
   nextCheckAt: "2026-08-29T09:00:00.000Z",
   error: "pr262_sensor_budget_guard:sec_edgar:rolling_24h_budget",
@@ -168,4 +216,5 @@ console.log(JSON.stringify({
   nestedInvestorPageDiscovery: true,
   discoveryDiagnosticsHonest: true,
   runtimeNestedFeedFoundAndPolled: true,
+  configuredFeedRepairsExistingRegistry: true,
 }, null, 2));

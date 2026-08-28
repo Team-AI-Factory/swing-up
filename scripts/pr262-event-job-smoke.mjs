@@ -422,8 +422,21 @@ const redirectLoop = await fetchFullSource(sourceReceipt, sourceEvent, "Exact Is
 assert.equal(redirectLoop.decisionGrade, false, "More than three redirects must fail closed");
 assert.equal(redirectLoop.providers[0].error, "full_source_too_many_redirects");
 
+const oversizedConfirmed = await fetchFullSource(
+  sourceReceipt,
+  sourceEvent,
+  "Exact Issuer Corp",
+  "EXCT",
+  async () => new Response(`${confirmedBody}${"x".repeat(500_001)}`, { status: 200, headers: { "content-type": "text/html" } }),
+  securityNow,
+  publicDns,
+);
+assert.equal(oversizedConfirmed.decisionGrade, true, "A large publisher page may use only its bounded prefix when that prefix independently confirms the issuer and event");
+assert.equal(oversizedConfirmed.diagnostics.sourceBodyTruncated, true, "The decision-grade result must disclose that the publisher body was truncated");
+assert.equal(oversizedConfirmed.diagnostics.sourceTextBytes, 500_000, "The reader must never retain more than the bounded source limit");
+
 const oversized = await fetchFullSource(sourceReceipt, sourceEvent, "Exact Issuer Corp", "EXCT", async () => new Response("x".repeat(500_001), { status: 200, headers: { "content-type": "text/plain" } }), securityNow, publicDns);
-assert.equal(oversized.decisionGrade, false, "A streamed source over 500 KB must fail closed");
+assert.equal(oversized.decisionGrade, false, "An oversized source without confirmed evidence in its bounded prefix must fail closed");
 assert.equal(oversized.providers[0].error, "full_source_body_too_large");
 
 const wrongContentType = await fetchFullSource(sourceReceipt, sourceEvent, "Exact Issuer Corp", "EXCT", async () => new Response(confirmedBody, { status: 200, headers: { "content-type": "application/json" } }), securityNow, publicDns);
@@ -609,6 +622,7 @@ console.log(JSON.stringify({
   affectedCompanyValuationRefreshedOnce: true,
   noBroadWarehouseRebuild: true,
   nonSecFullSourceSecurityCovered: true,
+  boundedLargePublisherPrefixCovered: true,
   validatedDnsAddressPinnedIntoTransport: true,
   fullSourceAbsoluteDeadlineEnforced: true,
   paidCommitteeInheritsCycleDeadline: true,

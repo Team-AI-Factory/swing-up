@@ -66,14 +66,18 @@ const priorEnvironment = {
   environment: process.env.RAILWAY_ENVIRONMENT_NAME,
   enabled: process.env.SWING_UP_PR262_PRODUCTION_FOUNDATION_ENABLED,
   premerge: process.env.SWING_UP_PR262_PREMERGE_PRODUCTION_ROLLOUT,
+  forceOnce: process.env.SWING_UP_PR262_FORCE_FOUNDATION_ONCE,
 };
 process.env.RAILWAY_GIT_BRANCH = "main";
 process.env.RAILWAY_ENVIRONMENT_NAME = "production";
 process.env.SWING_UP_PR262_PRODUCTION_FOUNDATION_ENABLED = "true";
 
 try {
-  const request = { headers: new Headers({ "x-swing-up-pr262-foundation-token": "foundation-token" }) };
-  const unauthenticated = await loaded.exports.POST({ headers: new Headers() });
+  const request = {
+    headers: new Headers({ "x-swing-up-pr262-foundation-token": "foundation-token" }),
+    nextUrl: new URL("https://example.test/api/internal/combined-opportunity-engine/production-foundation"),
+  };
+  const unauthenticated = await loaded.exports.POST({ headers: new Headers(), nextUrl: request.nextUrl });
   assert.equal(unauthenticated.status, 404, "The route must enforce its dedicated token without relying only on middleware.");
 
   const running = await loaded.exports.POST(request);
@@ -100,6 +104,17 @@ try {
   assert.equal(exposureBuilds, 1, "A complete foundation must materialize and verify the full exposure index.");
   assert.equal(runCount, 1, "A fresh completed foundation must not rescan the market.");
 
+  const queryAlone = await loaded.exports.POST({ ...request, nextUrl: new URL(`${request.nextUrl}?force=true`) });
+  assert.equal(queryAlone.body.reason, "production_foundation_fresh", "A query parameter alone must not bypass freshness.");
+  assert.equal(runCount, 1);
+
+  process.env.SWING_UP_PR262_FORCE_FOUNDATION_ONCE = "true";
+  const forced = await loaded.exports.POST({ ...request, nextUrl: new URL(`${request.nextUrl}?force=true`) });
+  assert.equal(forced.status, 200);
+  assert.equal(forced.body.foundationOnly, true);
+  assert.equal(runCount, 2, "The explicit service-scoped one-time force gate must rebuild a fresh foundation.");
+  process.env.SWING_UP_PR262_FORCE_FOUNDATION_ONCE = "false";
+
   process.env.RAILWAY_GIT_BRANCH = "agent/combined-opportunity-engine";
   process.env.RAILWAY_ENVIRONMENT_NAME = "preview";
   const preview = await loaded.exports.POST(request);
@@ -118,6 +133,8 @@ try {
   else process.env.SWING_UP_PR262_PRODUCTION_FOUNDATION_ENABLED = priorEnvironment.enabled;
   if (priorEnvironment.premerge === undefined) delete process.env.SWING_UP_PR262_PREMERGE_PRODUCTION_ROLLOUT;
   else process.env.SWING_UP_PR262_PREMERGE_PRODUCTION_ROLLOUT = priorEnvironment.premerge;
+  if (priorEnvironment.forceOnce === undefined) delete process.env.SWING_UP_PR262_FORCE_FOUNDATION_ONCE;
+  else process.env.SWING_UP_PR262_FORCE_FOUNDATION_ONCE = priorEnvironment.forceOnce;
 }
 
 const runnerSource = readFileSync(new URL("../lib/opportunity-engine/us-value-investing-resumable.ts", import.meta.url), "utf8");
@@ -144,6 +161,7 @@ console.log(JSON.stringify({
   completeUniverseRequired: true,
   foundationCannotUseAiDatabaseOrNotifications: true,
   freshDailyBaselineSkipsDuplicateWork: true,
+  forceRebuildRequiresQueryAndServiceScopedGate: true,
   oneJobResumesAllBatches: true,
   completeExposureRequiredBeforeSuccess: true,
 }, null, 2));

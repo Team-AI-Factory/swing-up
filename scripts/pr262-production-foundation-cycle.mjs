@@ -11,6 +11,7 @@ const port = process.env.PR262_FOUNDATION_PORT || "3016";
 const token = process.env.SWING_UP_PR262_FOUNDATION_RUNTIME_TOKEN?.trim()
   || crypto.randomBytes(32).toString("hex");
 const baseUrl = `http://127.0.0.1:${port}`;
+const forceOnce = process.env.SWING_UP_PR262_FORCE_FOUNDATION_ONCE?.trim().toLowerCase() === "true";
 const branch = process.env.RAILWAY_GIT_BRANCH?.trim() || "";
 const railwayEnvironment = process.env.RAILWAY_ENVIRONMENT_NAME?.trim().toLowerCase() || "";
 const approvedPremergeRollout = isApprovedPr262PremergeProductionRollout();
@@ -76,7 +77,8 @@ let exitCode = 1;
 try {
   if (!await waitForHealth(app)) throw new Error("pr262_foundation_app_health_timeout");
   for (let round = 1; round <= MAX_BATCH_ROUNDS; round += 1) {
-    const response = await fetch(`${baseUrl}/api/internal/combined-opportunity-engine/production-foundation`, {
+    const endpoint = `${baseUrl}/api/internal/combined-opportunity-engine/production-foundation${forceOnce ? "?force=true" : ""}`;
+    const response = await fetch(endpoint, {
       method: "POST",
       headers: { "x-swing-up-pr262-foundation-token": token },
       signal: AbortSignal.timeout(240_000),

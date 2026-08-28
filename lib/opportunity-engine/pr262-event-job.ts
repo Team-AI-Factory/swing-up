@@ -28,6 +28,7 @@ import {
   type Pr262ResolvedSensorCompany,
 } from "@/lib/opportunity-engine/pr262-company-directory";
 import { refreshUsValueCompany, type UsValueCompanyAnalysis } from "@/lib/opportunity-engine/us-value-investing-engine";
+import { hardenUsValueCompanyAnalysis } from "@/lib/opportunity-engine/us-value-investing-safety";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 import { promotePr262SeriousWatchOut } from "@/lib/opportunity-engine/pr262-serious-watch-out-authority";
 
@@ -40,11 +41,13 @@ const RUN_PREFIX = pr262StorageKey("event-job/runs");
 const OUTBOX_PREFIX = pr262StorageKey("serious-signal/outbox/event-job");
 const HISTORY_KEY = pr262StorageKey("serious-signal/equity-history-v1.json");
 const VALUE_REFRESH_PREFIX = pr262StorageKey("value-investing/event-refresh");
+const FULL_SOURCE_CACHE_PREFIX = pr262StorageKey("event-job/full-source-cache-v1");
 const PRODUCTION_R2_WRITES = STATE_KEY.startsWith("production/pr262/");
 const LEASE_MS = 5 * 60_000;
 const LEASE_HEARTBEAT_MS = 60_000;
 const COMMITTEE_WINDOW_MS = 24 * 60 * 60_000;
 const EVIDENCE_REVIEW_COOLDOWN_MS = 12 * 60 * 60_000;
+const FULL_SOURCE_RETRY_COOLDOWN_MS = 2 * 60 * 60_000;
 const MAX_COMMITTEE_CALLS_PER_DAY = 20;
 const MAX_STATE_RUNS = 200;
 const MAX_HISTORY_RECORDS = 50_000;
@@ -52,6 +55,7 @@ const PROVIDER_RESERVATION_RETENTION_MS = 2 * 24 * 60 * 60_000;
 const FULL_SOURCE_MAX_BYTES = 500_000;
 const FULL_SOURCE_MAX_REDIRECTS = 3;
 const FULL_SOURCE_ABSOLUTE_TIMEOUT_MS = 15_000;
+const FULL_SOURCE_CACHE_TTL_MS = 7 * 24 * 60 * 60_000;
 
 type Json = Record<string, unknown>;
 type CommitteeReservation = {
@@ -132,6 +136,11 @@ function eventResultKey(event: Pr262SensorEvent) {
   const day = Number.isFinite(Date.parse(event.observedAt)) ? event.observedAt.slice(0, 10) : "undated";
   const digest = crypto.createHash("sha256").update(event.id).digest("hex").slice(0, 16);
   return `${RUN_PREFIX}/${day}/${safeSegment(event.id)}-${digest}.json`;
+}
+
+function fullSourceCacheKey(eventId: string) {
+  const digest = crypto.createHash("sha256").update(eventId).digest("hex").slice(0, 16);
+  return `${FULL_SOURCE_CACHE_PREFIX}/${safeSegment(eventId)}-${digest}.json`;
 }
 
 function emptyState(): EventJobState {
@@ -640,19 +649,46 @@ function normalizedEvidenceText(value: string) {
     .trim();
 }
 
+const EVIDENCE_STOP_WORDS = new Set([
+  "about", "after", "announces", "company", "corporation", "from", "into", "more", "over", "reports", "says",
+  "that", "their", "this", "through", "under", "with", "will", "year", "years", "quarter", "results", "update",
+]);
+
+function evidenceTokens(value: string) {
+  return [...new Set(normalizedEvidenceText(value).split(" ")
+    .filter((token) => token.length >= 4 && !EVIDENCE_STOP_WORDS.has(token)))]
+    .slice(0, 24);
+}
+
 function fullSourceEvidenceConfirmed(sourceText: string, event: Pr262SensorEvent, company: string, ticker: string) {
   const normalizedSource = normalizedEvidenceText(sourceText);
   const normalizedCompany = normalizedEvidenceText(company);
+  const companyTokens = evidenceTokens(company);
+  const companyTokenMatches = companyTokens.filter((token) => normalizedSource.includes(token));
   const escapedTicker = ticker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const issuerConfirmed = (normalizedCompany.length >= 4 && normalizedSource.includes(normalizedCompany))
+    || (companyTokens.length > 0 && companyTokenMatches.length >= Math.min(2, companyTokens.length))
     || (ticker.length >= 2 && new RegExp(`(?:\\$${escapedTicker}\\b|\\(${escapedTicker}\\)|(?:NASDAQ|NYSE|AMEX)\\s*:\\s*${escapedTicker}\\b)`, "i").test(sourceText));
   const materialTerms = [
     "earnings", "guidance", "acquisition", "merger", "contract", "recall", "investigation",
     "offering", "bankrupt", "approval", "fda", "cyber", "tariff", "sanction", "product launch",
     "buyback", "dividend", "chief executive", "chief financial", "clinical trial",
   ].filter((term) => event.title.toLowerCase().includes(term));
-  const eventConfirmed = materialTerms.length > 0 && materialTerms.some((term) => normalizedSource.includes(normalizedEvidenceText(term)));
-  return { issuerConfirmed, eventConfirmed, materialTerms };
+  const headlineTokens = evidenceTokens(event.title);
+  const headlineTokenMatches = headlineTokens.filter((token) => normalizedSource.includes(token));
+  const headlineConfirmed = headlineTokens.length > 0
+    && headlineTokenMatches.length >= Math.min(3, headlineTokens.length)
+    && (headlineTokens.length <= 3 || headlineTokenMatches.length / headlineTokens.length >= 0.4);
+  const eventConfirmed = materialTerms.some((term) => normalizedSource.includes(normalizedEvidenceText(term)))
+    || headlineConfirmed;
+  return {
+    issuerConfirmed,
+    eventConfirmed,
+    materialTerms,
+    companyTokenMatches: companyTokenMatches.length,
+    headlineTokenMatches: headlineTokenMatches.length,
+    headlineTokenCount: headlineTokens.length,
+  };
 }
 
 function officialHostPreserved(receipt: EventReceipt, finalUrl: URL) {
@@ -742,7 +778,7 @@ async function fetchFullSource(
       cached: false,
       responseTimeMs: Date.now() - startedAt,
     };
-    return { receipts: [receipt], providers: [provider], decisionGrade: false, diagnostics: { sourceTextBytes: 0, sourceTextCharacters: 0 } };
+    return { receipts: [receipt], providers: [provider], decisionGrade: false, diagnostics: { sourceTextBytes: 0, sourceTextCharacters: 0, failureReason: message.slice(0, 240) } };
   }
 }
 
@@ -780,6 +816,55 @@ async function readDecisionGradeSource(
   const decisionGrade = Boolean(selected && selected.textLength >= 200 && !selected.eventExhibitMissing);
   const provider: ProviderResult = { ...details.provider, receipts: [] };
   return { receipts, providers: [provider], decisionGrade, diagnostics: details.diagnostics };
+}
+
+type DecisionGradeSourceResult = {
+  receipts: EventReceipt[];
+  providers: ProviderResult[];
+  decisionGrade: boolean;
+  diagnostics: Json;
+};
+
+async function readCachedFullSource(event: Pr262SensorEvent, now: Date): Promise<DecisionGradeSourceResult | null> {
+  const key = fullSourceCacheKey(event.id);
+  const current = await readVersionedTextFromR2(key);
+  if (!current.found || !current.text) return null;
+  const payload = object(JSON.parse(current.text));
+  const expiresAt = text(payload.expiresAt);
+  const source = object(payload.source);
+  if (payload.kind !== "pr262_decision_grade_full_source_cache"
+    || payload.eventId !== event.id
+    || !expiresAt
+    || Date.parse(expiresAt) <= now.getTime()
+    || source.decisionGrade !== true
+    || !Array.isArray(source.receipts)
+    || !Array.isArray(source.providers)) return null;
+  return {
+    receipts: source.receipts as EventReceipt[],
+    providers: (source.providers as ProviderResult[]).map((provider) => ({ ...provider, cached: true })),
+    decisionGrade: true,
+    diagnostics: { ...object(source.diagnostics), cacheHit: true, cacheKey: key },
+  };
+}
+
+async function cacheFullSource(event: Pr262SensorEvent, source: DecisionGradeSourceResult, now: Date) {
+  if (!source.decisionGrade) return { written: false, reason: "not_decision_grade" };
+  const key = fullSourceCacheKey(event.id);
+  const written = await writeVersionedJsonToR2(key, {
+    version: 1,
+    kind: "pr262_decision_grade_full_source_cache",
+    eventId: event.id,
+    sourceUrl: event.url,
+    createdAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + FULL_SOURCE_CACHE_TTL_MS).toISOString(),
+    source,
+  }, { createOnly: true });
+  return { written: written.written, conflict: written.conflict, key };
+}
+
+function permanentlyUnreadableFullSource(reason: string | null, event: Pr262SensorEvent) {
+  if (event.queueAttempts >= 2) return true;
+  return Boolean(reason && /(?:url_invalid|url_not_public_https|host_blocked|address_blocked|content_type_unsupported|body_too_large|issuer_or_event_unconfirmed|http_40[0134]|http_410)/i.test(reason));
 }
 
 function exactIssuerUniverse(resolved: Pr262ResolvedSensorCompany, now: Date): EquityUniverseSnapshot {
@@ -871,12 +956,12 @@ async function refreshAffectedCompany(input: {
     prepared = validatedValueRefresh(JSON.parse(existing.text), input.event.id, ticker);
   } else {
     await input.beforeFetch();
-    const analysis = await refreshUsValueCompany({
+    const analysis = hardenUsValueCompanyAnalysis(await refreshUsValueCompany({
       tradingViewSymbol: input.resolved.directoryEntry.tradingViewSymbol,
       ticker,
       fetchImpl: input.fetchImpl,
       now: input.now,
-    });
+    }));
     const payload = {
       version: 1,
       kind: "pr262_affected_company_value_refresh",
@@ -1330,7 +1415,10 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       assertJobActive();
       return fetchImpl(request, { ...init, signal: composedSignal([init?.signal, jobAbort.signal]) });
     };
-    if (!["sec", "market_price"].includes(resolved.event.source)) {
+    const cachedFullSource = !["sec", "market_price"].includes(resolved.event.source)
+      ? await readCachedFullSource(resolved.event, now).catch(() => null)
+      : null;
+    if (!["sec", "market_price"].includes(resolved.event.source) && !cachedFullSource) {
       await reserveProviderCall({
         eventId: event.id,
         ownerId,
@@ -1342,14 +1430,14 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
           checkedAt: now.toISOString(),
           rollingWindowMs: 24 * 60 * 60_000,
           maximumCallsInWindow: 100,
-          minimumIntervalMs: EVIDENCE_REVIEW_COOLDOWN_MS,
+          minimumIntervalMs: FULL_SOURCE_RETRY_COOLDOWN_MS,
         },
       });
     }
     assertJobActive();
     const baseReceipt = eventReceipt(resolved.event, resolved.directoryEntry.company, resolved.directoryEntry.ticker);
     const [source, haltProvider, history] = await Promise.all([
-      readDecisionGradeSource(
+      cachedFullSource ?? readDecisionGradeSource(
         baseReceipt,
         resolved.event,
         resolved.directoryEntry.company,
@@ -1363,12 +1451,19 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       loadOptionalHistoricalLibrary(),
     ]);
     assertJobActive();
+    const fullSourceCacheWrite = cachedFullSource || !source.decisionGrade
+      ? { written: false, reason: cachedFullSource ? "cache_hit" : "not_decision_grade" }
+      : await cacheFullSource(resolved.event, source, now).catch((error) => ({
+          written: false,
+          reason: error instanceof Error ? error.message.slice(0, 180) : "full_source_cache_write_failed",
+        }));
     const eventAgeMs = Math.max(0, now.getTime() - Date.parse(event.observedAt));
+    const sourceFailureReason = text(object(source.diagnostics).failureReason);
     const sourceExpiredWithoutEvidence = !source.decisionGrade
       && event.source !== "market_price"
-      && eventAgeMs > 7 * 24 * 60 * 60_000;
+      && (eventAgeMs > 48 * 60 * 60_000 || permanentlyUnreadableFullSource(sourceFailureReason, event));
     if (!source.decisionGrade && event.source !== "market_price" && !sourceExpiredWithoutEvidence) {
-      throw new RetryAtError(null, "pr262_event_full_source_incomplete");
+      throw new RetryAtError(null, `pr262_event_full_source_incomplete:${sourceFailureReason ?? "temporary_source_failure"}`);
     }
     const companyRefresh = source.decisionGrade && !sourceExpiredWithoutEvidence
       ? await refreshAffectedCompany({
@@ -1409,7 +1504,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       ? object({
           ok: true,
           checkedAt: now.toISOString(),
-          status: "source_evidence_expired_unread",
+          status: eventAgeMs > 48 * 60 * 60_000 ? "source_evidence_expired_unread" : "source_evidence_rejected_unread",
           seriousSignalFound: false,
           actionableSignalFound: false,
           alertType: null,
@@ -1419,7 +1514,9 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
           historicalPilot: null,
           tradingHaltSafety: { currentStateKnown: false },
           committee: null,
-          blockers: ["The full decision-grade source remained unavailable for seven days. The discovery item was archived without analysis, history admission, or serious-signal authority."],
+          blockers: [eventAgeMs > 48 * 60 * 60_000
+            ? "The full decision-grade source remained unavailable for 48 hours. The discovery item was archived without analysis, history admission, or Serious Signal authority."
+            : `The source failed a non-recoverable decision-grade check (${sourceFailureReason ?? "unreadable source"}). It was archived without analysis, history admission, or Serious Signal authority.`],
         })
       : object(await runEquitySignalLab({
           allowOpenAi: effectiveAllowOpenAi,
@@ -1448,6 +1545,8 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       fullCompanyWarehouseRebuilds: 0,
       broadEventFeedPolls: 0,
       affectedCompanyValuationRefreshes: companyRefresh ? 1 : 0,
+      fullSourceCacheHit: Boolean(cachedFullSource),
+      fullSourceCacheWrite,
       maximumCommitteeCallsPer24Hours: MAX_COMMITTEE_CALLS_PER_DAY,
       optionalHistoryContextPreparedBeforeCommittee: history.available,
       optionalHistoryContextRequiredForCommittee: false,

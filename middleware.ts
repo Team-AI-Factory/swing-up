@@ -36,6 +36,7 @@ export function middleware(request: NextRequest) {
       || (approvedPremergeRollout && path === INTERNAL_API_PATHS.pr262DeliveryTest && scope === "delivery_test_runtime")
       || (path === INTERNAL_API_PATHS.pr262SensorHandoff && scope === "sensor_handoff")
       || (path === INTERNAL_API_PATHS.seriousSignalStatus && scope === "serious_signal_read")
+      || (path === INTERNAL_API_PATHS.valuationWatchlistStatus && scope === "serious_signal_read")
     );
     if (branchAllowed && scope && internalApiScopeAuthorized(request.headers, scope)) {
       return NextResponse.next();

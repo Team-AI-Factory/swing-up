@@ -48,6 +48,60 @@ type LiveFeed = {
   emptyResultVerified: boolean;
 };
 
+type ValuationWatchlistItem = {
+  id: string;
+  anchor: string;
+  observedAt: string;
+  ticker: string;
+  company: string;
+  sector: string | null;
+  industry: string | null;
+  action: "buy_research" | "sell_research" | "watch_out_research" | "price_watch";
+  currentPrice: number | null;
+  fairValue: {
+    conservative: number | null;
+    base: number | null;
+    optimistic: number | null;
+    buyBelow: number | null;
+    trimAbove: number | null;
+    upsideToBasePercent: number | null;
+  };
+  scores: { quality: number | null; risk: number | null; evidence: number | null; fairValueConfidence: number | null };
+  reasons: string[];
+  blockers: string[];
+  specialistModelApplied: boolean;
+  publicationStatus: "provisional_research_only";
+  userAlertEligible: false;
+  committeeApproved: false;
+  links: Array<{ label: string; url: string }>;
+};
+
+type ValuationWatchlist = {
+  ok: true;
+  generatedAt: string;
+  foundation: {
+    available: boolean;
+    complete: boolean;
+    cycleId: string | null;
+    completedAt: string | null;
+    sourceCheckedAt: string | null;
+    coverage: { companies: number | null; totalCompanies: number | null; percent: number | null } | null;
+  };
+  summary: {
+    total: number;
+    buyResearch: number;
+    sellResearch: number;
+    watchOutResearch: number;
+    priceWatch: number;
+    specialistModelApplied: number;
+  };
+  candidates: ValuationWatchlistItem[];
+  truncated: boolean;
+  sanitized: true;
+  provisionalResearchOnly: true;
+  userAlertEligible: false;
+};
+
 const TOKEN_STORAGE_KEY = "swing_up_serious_signal_read_token";
 
 function formatTime(value: string) {
@@ -75,21 +129,35 @@ function deliveryLabel(value: string) {
   return value.replaceAll("_", " ");
 }
 
+function watchlistLabel(value: ValuationWatchlistItem["action"]) {
+  if (value === "buy_research") return "PROVISIONAL BUY RESEARCH";
+  if (value === "sell_research") return "PROVISIONAL SELL RESEARCH";
+  if (value === "watch_out_research") return "PROVISIONAL RISK WATCH";
+  return "PRICE WATCH";
+}
+
+function money(value: number | null) {
+  return value === null ? "—" : `$${value.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+}
+
 export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
   const [token, setToken] = useState("");
   const [draftToken, setDraftToken] = useState("");
   const [feed, setFeed] = useState<LiveFeed | null>(null);
+  const [watchlist, setWatchlist] = useState<ValuationWatchlist | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [watchlistError, setWatchlistError] = useState<string | null>(null);
 
   const load = useCallback(async (readToken: string, background = false) => {
     if (!readToken) return;
     if (!background) setLoading(true);
     try {
-      const response = await fetch("/api/internal/serious-signal-status?hours=48&limit=100", {
-        headers: { "x-swing-up-serious-signal-read-token": readToken },
-        cache: "no-store",
-      });
+      const headers = { "x-swing-up-serious-signal-read-token": readToken };
+      const [response, watchlistResponse] = await Promise.all([
+        fetch("/api/internal/serious-signal-status?hours=48&limit=100", { headers, cache: "no-store" }),
+        fetch("/api/internal/valuation-watchlist-status?limit=60", { headers, cache: "no-store" }),
+      ]);
       if (response.status === 404) throw new Error("The read-only access key was not accepted.");
       if (!response.ok) throw new Error("The live alert store is temporarily unavailable.");
       const payload = await response.json() as LiveFeed;
@@ -98,6 +166,20 @@ export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
       }
       setFeed(payload);
       setError(null);
+      if (watchlistResponse.ok) {
+        const watchlistPayload = await watchlistResponse.json() as ValuationWatchlist;
+        if (watchlistPayload.ok
+          && watchlistPayload.sanitized === true
+          && watchlistPayload.provisionalResearchOnly === true
+          && Array.isArray(watchlistPayload.candidates)) {
+          setWatchlist(watchlistPayload);
+          setWatchlistError(null);
+        } else {
+          setWatchlistError("The Valuation Watchlist response failed its safety check.");
+        }
+      } else {
+        setWatchlistError("The Valuation Watchlist is temporarily unavailable.");
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to load live Serious Signals.");
     } finally {
@@ -136,7 +218,9 @@ export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
     setToken("");
     setDraftToken("");
     setFeed(null);
+    setWatchlist(null);
     setError(null);
+    setWatchlistError(null);
   }
 
   if (!token) {
@@ -232,6 +316,60 @@ export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
             </div>
           )}
           {feed.truncated ? <p className="muted">More verified records exist than this page currently displays.</p> : null}
+
+          {!compact ? (
+            <section id="valuation-watchlist" style={{ marginTop: 36 }}>
+              <div className="eyebrow">Live foundation research · not a Serious Signal</div>
+              <h2>Valuation Watchlist</h2>
+              <p>
+                These are apparent valuation opportunities from the daily foundation screen. They are shown immediately for research,
+                but they have not passed current-event evidence, all 14 Committee roles, or the Final Judge.
+              </p>
+              <p className="muted">
+                Permanent link: <a href="/serious-signals#valuation-watchlist">/serious-signals#valuation-watchlist</a> · refreshes within one minute of new R2 foundation data.
+              </p>
+              {watchlistError ? <section className="card"><strong>Watchlist unavailable:</strong> {watchlistError}</section> : null}
+              {watchlist ? (
+                <>
+                  <div className="grid three">
+                    <div className="card"><span className="muted">Provisional Buy / Sell / Risk</span><div className="kpi">{watchlist.summary.buyResearch} / {watchlist.summary.sellResearch} / {watchlist.summary.watchOutResearch}</div></div>
+                    <div className="card"><span className="muted">Quality price watches</span><div className="kpi">{watchlist.summary.priceWatch}</div></div>
+                    <div className="card"><span className="muted">Specialist sector model</span><div className="kpi">{watchlist.summary.specialistModelApplied}</div></div>
+                  </div>
+                  <p className="muted">
+                    Foundation {watchlist.foundation.complete ? "complete" : "still building"}
+                    {watchlist.foundation.completedAt ? ` · completed ${formatTime(watchlist.foundation.completedAt)}` : ""}
+                    {watchlist.foundation.coverage?.percent !== null && watchlist.foundation.coverage?.percent !== undefined ? ` · ${watchlist.foundation.coverage.percent}% coverage` : ""}.
+                  </p>
+                  {watchlist.candidates.length === 0 ? (
+                    <section className="card"><h3>No provisional valuation candidate is available in the latest complete foundation run.</h3></section>
+                  ) : (
+                    <div className="grid">
+                      {watchlist.candidates.map((item) => (
+                        <article className="card alert-card" id={item.anchor} key={item.id}>
+                          <div className="button-row">
+                            <span className="badge">{watchlistLabel(item.action)}</span>
+                            <span className="badge">Not Committee approved</span>
+                            {item.specialistModelApplied ? <span className="badge">Sector specialist</span> : null}
+                          </div>
+                          <h3>{item.ticker} · {item.company}</h3>
+                          <p><strong>Current / conservative / base / optimistic:</strong> {money(item.currentPrice)} / {money(item.fairValue.conservative)} / {money(item.fairValue.base)} / {money(item.fairValue.optimistic)}</p>
+                          <p><strong>Quality / risk / evidence:</strong> {item.scores.quality ?? "—"} / {item.scores.risk ?? "—"} / {item.scores.evidence ?? "—"}</p>
+                          {item.reasons.length ? <p><strong>Why it reached the watchlist:</strong> {item.reasons.join(" ")}</p> : null}
+                          {item.blockers.length ? <p><strong>Why it is not a Serious Signal:</strong> {item.blockers.join(" ")}</p> : null}
+                          <div className="button-row">
+                            <a className="button" href={`/serious-signals#${item.anchor}`}>Link to this item</a>
+                            {item.links.map((link) => <a className="button" href={link.url} key={link.url} rel="noreferrer" target="_blank">{link.label}</a>)}
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  )}
+                  {watchlist.truncated ? <p className="muted">More research candidates exist than this screen currently displays.</p> : null}
+                </>
+              ) : loading ? <section className="card">Loading the Valuation Watchlist…</section> : null}
+            </section>
+          ) : null}
         </>
       ) : loading ? <section className="card">Loading the verified R2 feed…</section> : null}
     </section>

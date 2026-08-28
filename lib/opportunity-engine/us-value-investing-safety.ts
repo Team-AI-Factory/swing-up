@@ -7,6 +7,7 @@ import type {
   UsValueInvestingCycle,
 } from "@/lib/opportunity-engine/us-value-investing-engine";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
+import { evaluateSectorSpecialistValuation } from "@/lib/opportunity-engine/us-sector-specialist-valuation";
 
 export type HardenedUsValueInvestingCycle = UsValueInvestingCycle & {
   methodology: UsValueInvestingCycle["methodology"] & {
@@ -92,122 +93,164 @@ function isSpecialistSector(item: UsValueCompanyAnalysis) {
   return SPECIALIST_SECTOR.test(`${item.sector ?? ""} ${item.industry ?? ""}`);
 }
 
-function hardenCompany(item: UsValueCompanyAnalysis): UsValueCompanyAnalysis {
-  const diagnostics = valuationDiagnostics(item);
-  const eligibleExchange = ELIGIBLE_EXCHANGES.has(item.exchange.toUpperCase());
-  const sensiblePrice = Number.isFinite(item.currentPrice) && item.currentPrice >= 1;
-  const liquid = (item.marketCap ?? 0) >= 500_000_000
-    && (item.estimatedAverageDollarVolume10d ?? 0) >= 5_000_000;
-  const watchOutLiquid = (item.marketCap ?? 0) >= 300_000_000
-    && (item.estimatedAverageDollarVolume10d ?? 0) >= 2_000_000;
+export function hardenUsValueCompanyAnalysis(item: UsValueCompanyAnalysis): UsValueCompanyAnalysis {
   const specialistSector = isSpecialistSector(item);
-  const supportedGeneralModel = !specialistSector;
+  const specialist = specialistSector ? evaluateSectorSpecialistValuation({
+    ticker: item.ticker,
+    company: item.company,
+    sector: item.sector,
+    industry: item.industry,
+    currentPrice: item.currentPrice,
+    marketCap: item.marketCap,
+    estimatedAverageDollarVolume10d: item.estimatedAverageDollarVolume10d,
+    fundamentals: item.fundamentals,
+    valuation: item.valuation,
+    scores: { evidenceCompleteness: item.scores.evidenceCompleteness },
+  }, item.observedAt) : null;
+  const assessed: UsValueCompanyAnalysis = specialist ? {
+    ...item,
+    scores: {
+      ...item.scores,
+      businessQuality: specialist.qualityScore,
+      risk: specialist.riskScore,
+      evidenceCompleteness: specialist.evidenceScore,
+      fairValueConfidence: specialist.evidenceScore,
+    },
+    fairValue: {
+      methods: specialist.methods,
+      conservativeValue: specialist.fairValue.conservativeValue,
+      baseValue: specialist.fairValue.baseValue,
+      optimisticValue: specialist.fairValue.optimisticValue,
+      buyBelowPrice: specialist.fairValue.buyBelowPrice,
+      strongBuyBelowPrice: specialist.fairValue.strongBuyBelowPrice,
+      trimAbovePrice: specialist.fairValue.trimAbovePrice,
+      upsideToBasePercent: specialist.fairValue.upsideToBasePercent,
+      discountToBasePercent: rounded(specialist.fairValue.baseValue !== null && specialist.fairValue.baseValue > 0
+        ? ((specialist.fairValue.baseValue - item.currentPrice) / specialist.fairValue.baseValue) * 100
+        : null),
+      marginOfSafetyPercent: specialist.fairValue.conservativeUpsidePercent,
+    },
+  } : item;
+  const diagnostics = valuationDiagnostics(assessed);
+  const eligibleExchange = ELIGIBLE_EXCHANGES.has(assessed.exchange.toUpperCase());
+  const sensiblePrice = Number.isFinite(assessed.currentPrice) && assessed.currentPrice >= 1;
+  const liquid = (assessed.marketCap ?? 0) >= 500_000_000
+    && (assessed.estimatedAverageDollarVolume10d ?? 0) >= 5_000_000;
+  const watchOutLiquid = (assessed.marketCap ?? 0) >= 300_000_000
+    && (assessed.estimatedAverageDollarVolume10d ?? 0) >= 2_000_000;
   const methodAgreement = diagnostics.methodSpreadPercent !== null
     && diagnostics.methodSpreadPercent <= 60;
-  const profitable = (item.fundamentals.netIncome ?? 0) > 0
-    && (item.fundamentals.freeCashFlow ?? 0) > 0
-    && (item.fundamentals.dilutedEpsTtm ?? 0) > 0;
+  const profitable = (assessed.fundamentals.netIncome ?? 0) > 0
+    && (assessed.fundamentals.freeCashFlow ?? 0) > 0
+    && (assessed.fundamentals.dilutedEpsTtm ?? 0) > 0;
   const growthDeteriorating = [
-    item.fundamentals.revenueGrowthTtmPercent,
-    item.fundamentals.revenueGrowthFyPercent,
-    item.fundamentals.netIncomeGrowthTtmPercent,
-    item.fundamentals.epsGrowthTtmPercent,
+    assessed.fundamentals.revenueGrowthTtmPercent,
+    assessed.fundamentals.revenueGrowthFyPercent,
+    assessed.fundamentals.netIncomeGrowthTtmPercent,
+    assessed.fundamentals.epsGrowthTtmPercent,
   ].some((value) => value !== null && value < -5);
-  const directStress = (item.fundamentals.freeCashFlow ?? 0) <= 0
-    || (item.fundamentals.netIncome ?? 0) <= 0
-    || (item.fundamentals.debtToEquityPercent ?? 0) > 250
-    || (item.fundamentals.currentRatio ?? 2) < 0.8;
+  const directStress = (assessed.fundamentals.freeCashFlow ?? 0) <= 0
+    || (assessed.fundamentals.netIncome ?? 0) <= 0
+    || (assessed.fundamentals.debtToEquityPercent ?? 0) > 250
+    || (assessed.fundamentals.currentRatio ?? 2) < 0.8;
 
   const seriousBuy = eligibleExchange
     && sensiblePrice
     && liquid
-    && supportedGeneralModel
-    && profitable
-    && item.scores.businessQuality >= 75
-    && item.scores.balanceSheet >= 60
-    && item.scores.risk <= 45
-    && item.scores.fairValueConfidence >= 75
-    && item.fairValue.methods.length >= 2
-    && methodAgreement
-    && (item.fairValue.upsideToBasePercent ?? -Infinity) >= 40
-    && (diagnostics.conservativeUpsidePercent ?? -Infinity) >= 20;
+    && (specialist
+      ? specialist.decision.foundationPromotionEligible && specialist.decision.action === "buy"
+      : profitable
+        && assessed.scores.businessQuality >= 75
+        && assessed.scores.balanceSheet >= 60
+        && assessed.scores.risk <= 45
+        && assessed.scores.fairValueConfidence >= 75
+        && assessed.fairValue.methods.length >= 2
+        && methodAgreement
+        && (assessed.fairValue.upsideToBasePercent ?? -Infinity) >= 40
+        && (diagnostics.conservativeUpsidePercent ?? -Infinity) >= 20);
 
   const seriousSell = eligibleExchange
     && sensiblePrice
     && liquid
-    && supportedGeneralModel
-    && item.scores.fairValueConfidence >= 70
-    && item.fairValue.methods.length >= 2
-    && methodAgreement
-    && (diagnostics.premiumToBasePercent ?? -Infinity) >= 50
-    && (diagnostics.premiumToOptimisticPercent ?? -Infinity) >= 20
-    && (growthDeteriorating || item.scores.risk >= 55 || item.scores.businessQuality < 65);
+    && (specialist
+      ? specialist.decision.foundationPromotionEligible && specialist.decision.action === "sell"
+      : assessed.scores.fairValueConfidence >= 70
+        && assessed.fairValue.methods.length >= 2
+        && methodAgreement
+        && (diagnostics.premiumToBasePercent ?? -Infinity) >= 50
+        && (diagnostics.premiumToOptimisticPercent ?? -Infinity) >= 20
+        && (growthDeteriorating || assessed.scores.risk >= 55 || assessed.scores.businessQuality < 65));
 
   const seriousWatchOut = eligibleExchange
     && sensiblePrice
     && watchOutLiquid
-    && item.scores.risk >= 80
-    && item.scores.evidenceCompleteness >= 65
-    && directStress;
+    && (specialist
+      ? specialist.decision.foundationPromotionEligible && specialist.decision.action === "watch_out"
+      : assessed.scores.risk >= 80
+        && assessed.scores.evidenceCompleteness >= 65
+        && directStress);
 
   const qualityWatch = !seriousBuy
     && !seriousSell
     && !seriousWatchOut
     && eligibleExchange
     && sensiblePrice
-    && supportedGeneralModel
     && liquid
-    && item.scores.businessQuality >= 70
-    && item.scores.risk <= 50
-    && item.fairValue.baseValue !== null;
+    && (specialist
+      ? specialist.decision.action === "watch"
+      : assessed.scores.businessQuality >= 70
+        && assessed.scores.risk <= 50
+        && assessed.fairValue.baseValue !== null);
 
   let action: UsValueCompanyAnalysis["decision"]["action"] = "no_action";
-  let tier: UsValueCompanyAnalysis["decision"]["tier"] = item.fairValue.baseValue === null
+  let tier: UsValueCompanyAnalysis["decision"]["tier"] = assessed.fairValue.baseValue === null
     ? "insufficient_evidence"
     : "research_only";
   let publicationStatus: UsValueCompanyAnalysis["decision"]["publicationStatus"] = "research_only";
-  const reasons: string[] = [];
-  const blockers: string[] = [];
+  const reasons: string[] = specialist ? [...specialist.decision.reasons] : [];
+  const blockers: string[] = specialist ? [...specialist.decision.blockers] : [];
 
   if (seriousBuy) {
     action = "buy";
     tier = "serious_foundation_buy";
     publicationStatus = "serious_internal_review_only";
-    reasons.push(`Current price $${item.currentPrice.toFixed(2)} is below every accepted valuation method and ${(diagnostics.conservativeUpsidePercent ?? 0).toFixed(1)}% below the lowest fair-value estimate.`);
-    reasons.push(`Base fair value is $${item.fairValue.baseValue!.toFixed(2)}, implying ${(item.fairValue.upsideToBasePercent ?? 0).toFixed(1)}% potential upside before any new catalyst.`);
-    reasons.push(`Business quality is ${item.scores.businessQuality}/100, risk is ${item.scores.risk}/100, and valuation-method spread is ${(diagnostics.methodSpreadPercent ?? 0).toFixed(1)}%.`);
+    reasons.push(`Current price $${assessed.currentPrice.toFixed(2)} is below every accepted valuation method and ${(diagnostics.conservativeUpsidePercent ?? 0).toFixed(1)}% below the lowest fair-value estimate.`);
+    reasons.push(`Base fair value is $${assessed.fairValue.baseValue!.toFixed(2)}, implying ${(assessed.fairValue.upsideToBasePercent ?? 0).toFixed(1)}% potential upside before any new catalyst.`);
+    reasons.push(`Business quality is ${assessed.scores.businessQuality}/100, risk is ${assessed.scores.risk}/100, and valuation-method spread is ${(diagnostics.methodSpreadPercent ?? 0).toFixed(1)}%.`);
   } else if (seriousSell) {
     action = "sell";
     tier = "serious_foundation_sell";
     publicationStatus = "serious_internal_review_only";
-    reasons.push(`Current price $${item.currentPrice.toFixed(2)} is ${(diagnostics.premiumToBasePercent ?? 0).toFixed(1)}% above base fair value and ${(diagnostics.premiumToOptimisticPercent ?? 0).toFixed(1)}% above the highest accepted estimate.`);
-    reasons.push(`The premium is not supported by current growth, quality, or risk: quality ${item.scores.businessQuality}/100 and risk ${item.scores.risk}/100.`);
+    reasons.push(`Current price $${assessed.currentPrice.toFixed(2)} is ${(diagnostics.premiumToBasePercent ?? 0).toFixed(1)}% above base fair value and ${(diagnostics.premiumToOptimisticPercent ?? 0).toFixed(1)}% above the highest accepted estimate.`);
+    reasons.push(`The premium is not supported by current growth, quality, or risk: quality ${assessed.scores.businessQuality}/100 and risk ${assessed.scores.risk}/100.`);
   } else if (seriousWatchOut) {
     action = "watch_out";
     tier = "serious_foundation_watch_out";
     publicationStatus = "serious_internal_review_only";
-    reasons.push(`Fundamental danger is ${item.scores.risk}/100, with direct cash-flow, profit, liquidity, or leverage stress.`);
+    reasons.push(`Fundamental danger is ${assessed.scores.risk}/100, with direct cash-flow, profit, liquidity, or leverage stress.`);
     reasons.push("The warning does not predict an exact price target; it says the business may be too fragile for ordinary valuation assumptions.");
   } else if (qualityWatch) {
     action = "watch";
     tier = "quality_price_watchlist";
     publicationStatus = "watchlist_internal";
-    reasons.push(`Business quality is ${item.scores.businessQuality}/100, but the current price is not yet safely below the conservative valuation range.`);
-    reasons.push(`Preferred buy-below level is $${(item.fairValue.buyBelowPrice ?? item.fairValue.baseValue ?? 0).toFixed(2)}.`);
+    reasons.push(`Business quality is ${assessed.scores.businessQuality}/100, but the current price is not yet safely below the conservative valuation range.`);
+    reasons.push(`Preferred buy-below level is $${(assessed.fairValue.buyBelowPrice ?? assessed.fairValue.baseValue ?? 0).toFixed(2)}.`);
   }
 
   if (!eligibleExchange) blockers.push("Not listed on Nasdaq, NYSE, or NYSE American; excluded from PR #262 serious foundation alerts.");
   if (!sensiblePrice) blockers.push("Current price is below $1 or invalid; serious foundation promotion is blocked.");
-  if (!liquid) blockers.push("Market capitalization or average dollar trading volume is below the serious Buy/Sell threshold.");
-  if (specialistSector) blockers.push("Banks, insurers, real estate, and utilities require a specialist sector valuation model before serious Buy/Sell promotion.");
-  if (item.fairValue.methods.length < 2) blockers.push("Fewer than two independent fair-value methods are available.");
-  if (!methodAgreement) blockers.push("The fair-value methods disagree too widely for a serious directional alert.");
-  if ((diagnostics.conservativeUpsidePercent ?? -Infinity) < 20) blockers.push("The current price is not at least 20% below the lowest accepted fair-value estimate.");
+  if (!liquid && !seriousWatchOut) blockers.push("Market capitalization or average dollar trading volume is below the serious Buy/Sell threshold.");
+  if (specialistSector && !specialist) blockers.push("The specialist sector could not be classified safely.");
+  if (!seriousWatchOut && assessed.fairValue.methods.length < 2) blockers.push("Fewer than two independent fair-value methods are available.");
+  if (!seriousWatchOut && !methodAgreement) blockers.push("The fair-value methods disagree too widely for a serious directional alert.");
+  if (!seriousSell && !seriousWatchOut && (diagnostics.conservativeUpsidePercent ?? -Infinity) < 20) {
+    blockers.push("The current price is not at least 20% below the lowest accepted fair-value estimate.");
+  }
 
   return {
-    ...item,
+    ...assessed,
     decision: {
-      ...item.decision,
+      ...assessed.decision,
       action,
       tier,
       seriousSignal: seriousBuy || seriousSell || seriousWatchOut,
@@ -222,7 +265,7 @@ function hardenCompany(item: UsValueCompanyAnalysis): UsValueCompanyAnalysis {
 function buildHardened(raw: UsValueInvestingCycle): HardenedUsValueInvestingCycle {
   const eligible = raw.analyses
     .filter((item) => ELIGIBLE_EXCHANGES.has(item.exchange.toUpperCase()))
-    .map(hardenCompany);
+    .map(hardenUsValueCompanyAnalysis);
   const seriousBuy = eligible
     .filter((item) => item.decision.tier === "serious_foundation_buy")
     .sort((left, right) => (right.fairValue.upsideToBasePercent ?? -Infinity) - (left.fairValue.upsideToBasePercent ?? -Infinity));

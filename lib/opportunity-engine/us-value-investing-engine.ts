@@ -3,6 +3,7 @@ import {
   writeVersionedJsonToR2,
 } from "@/lib/r2-warehouse";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
+import type { SpecialistValuationMethod } from "@/lib/opportunity-engine/us-sector-specialist-valuation";
 
 export type ValueAlertAction = "buy" | "sell" | "watch_out" | "watch" | "no_action";
 export type ValueAlertTier =
@@ -14,7 +15,7 @@ export type ValueAlertTier =
   | "insufficient_evidence";
 
 export type ValueMethod = {
-  method: "earnings_power" | "owner_earnings_fcf" | "graham_value";
+  method: "earnings_power" | "owner_earnings_fcf" | "graham_value" | SpecialistValuationMethod["method"];
   value: number;
   assumption: string;
 };

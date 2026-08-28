@@ -59,6 +59,8 @@
     "smoke:pr262-exposure-index-completeness": "node scripts/pr262-exposure-index-completeness-smoke.mjs",
     "smoke:pr262-cloudflare-sensor": "node scripts/pr262-cloudflare-sensor-smoke.mjs",
     "smoke:pr262-live-serious-signal-surface": "node scripts/pr262-live-serious-signal-surface-smoke.mjs",
+    "smoke:valuation-watchlist-feed": "node scripts/valuation-watchlist-feed-smoke.mjs",
+    "smoke:pr262-direct-issuer-feed": "node scripts/pr262-direct-issuer-feed-smoke.mjs",
     "check:pr262-cloudflare-bundle": "npx --yes wrangler@4.124.0 deploy --dry-run --config cloudflare/wrangler.pr262-sensor.toml --outdir /tmp/swing-up-pr262-worker-production && npx --yes wrangler@4.124.0 deploy --dry-run --config cloudflare/wrangler.pr262-sensor-shadow.toml --outdir /tmp/swing-up-pr262-worker-shadow",
     "smoke:equity-historical-analogs": "node scripts/equity-historical-analogs-smoke.mjs",
     "smoke:equity-historical-bootstrap": "node scripts/equity-historical-bootstrap-smoke.mjs",

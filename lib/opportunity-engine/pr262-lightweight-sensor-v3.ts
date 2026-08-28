@@ -535,7 +535,7 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
   try {
     const direct = await runPr262DirectAnnouncementMonitor({ exposure: exposure.entries, now, fetchImpl });
     events.push(...direct.events);
-    summaries.push({ provider: "direct_issuer_feeds", attempted: direct.feedsPolled > 0 || direct.discoveriesAttempted > 0, status: direct.feedSuccesses === direct.feedsPolled ? "connected" : direct.feedSuccesses > 0 ? "partial" : direct.feedsPolled ? "temporarily_unavailable" : "not_due", recordsRead: direct.events.length, newEvents: direct.events.length, error: null, nextRetryAt: null });
+    summaries.push({ provider: "direct_issuer_feeds", attempted: direct.feedsPolled > 0 || direct.discoveriesAttempted > 0, status: direct.feedSuccesses === direct.feedsPolled ? "connected" : direct.feedSuccesses > 0 ? "partial" : direct.feedsPolled ? "temporarily_unavailable" : "not_due", recordsRead: direct.feedsPolled, newEvents: direct.events.length, error: null, nextRetryAt: null });
   } catch (error) {
     summaries.push({ provider: "direct_issuer_feeds", attempted: true, status: "temporarily_unavailable", recordsRead: 0, newEvents: 0, error: error instanceof Error ? error.message.slice(0, 200) : "direct_issuer_feeds_failed", nextRetryAt: null });
   }

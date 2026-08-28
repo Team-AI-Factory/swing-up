@@ -11,6 +11,7 @@ const MAX_SEEN = 20_000;
 const MAX_READY_PENDING = 2_000;
 const MAX_UNRESOLVED_PENDING = 500;
 const MAX_FRESH_PER_RUN = 500;
+const READY_EVENT_TTL_MS = 48 * 60 * 60_000;
 const UNRESOLVED_EVENT_TTL_MS = 24 * 60 * 60_000;
 const FIVE_MINUTES_MS = 5 * 60_000;
 const FIFTEEN_MINUTES_MS = 15 * 60_000;
@@ -149,7 +150,15 @@ function pendingOrder(left: Pr262SensorEvent, right: Pr262SensorEvent, nowMs: nu
   };
   const leftRank = retryRank(left);
   const rightRank = retryRank(right);
+  const evidenceRank = (event: Pr262SensorEvent) => event.source === "sec"
+    ? 0
+    : event.source === "official"
+      ? 1
+      : event.source === "company_news"
+        ? 2
+        : 3;
   return leftRank - rightRank
+    || evidenceRank(left) - evidenceRank(right)
     || right.priority - left.priority
     || (leftRank === 2
       ? right.observedAt.localeCompare(left.observedAt)
@@ -181,6 +190,10 @@ export function partitionPr262PendingEvents(events: Pr262SensorEvent[], now: Dat
   const nowMs = now.getTime();
   const ready = deduped
     .filter(processingReady)
+    .filter((event) => {
+      const observedAt = Date.parse(event.observedAt);
+      return Number.isFinite(observedAt) && nowMs - observedAt <= READY_EVENT_TTL_MS;
+    })
     .sort((left, right) => pendingOrder(left, right, nowMs))
     .slice(0, MAX_READY_PENDING);
   const unresolved = deduped

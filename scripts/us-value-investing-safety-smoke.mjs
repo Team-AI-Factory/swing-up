@@ -3,6 +3,14 @@ import { readFileSync } from "node:fs";
 import ts from "typescript";
 
 const source = readFileSync(new URL("../lib/opportunity-engine/us-value-investing-safety.ts", import.meta.url), "utf8");
+const specialistSource = readFileSync(new URL("../lib/opportunity-engine/us-sector-specialist-valuation.ts", import.meta.url), "utf8");
+const specialistOutput = ts.transpileModule(specialistSource, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
+}).outputText;
+const specialistModule = { exports: {} };
+new Function("require", "module", "exports", specialistOutput)(() => {
+  throw new Error("Sector specialist valuation module must remain dependency-free.");
+}, specialistModule, specialistModule.exports);
 const output = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
 }).outputText;
@@ -23,6 +31,7 @@ new Function("require", "module", "exports", output)((name) => {
     },
   };
   if (name === "@/lib/opportunity-engine/pr262-storage") return { pr262StorageKey: (relative) => `branch-labs/pr-262/${relative}` };
+  if (name === "@/lib/opportunity-engine/us-sector-specialist-valuation") return specialistModule.exports;
   throw new Error(`Unexpected import in value safety smoke: ${name}`);
 }, cjsModule, cjsModule.exports);
 const {
@@ -177,7 +186,8 @@ assert.equal(hardened.coverage.companiesAnalyzed, 3);
 assert.equal(hardened.coverage.processingCoveragePercent, 100);
 assert.deepEqual(hardened.seriousAlerts.buy.map((entry) => entry.ticker), ["SAFE"]);
 assert.equal(hardened.analyses.find((entry) => entry.ticker === "BANK").decision.seriousSignal, false);
-assert.ok(hardened.analyses.find((entry) => entry.ticker === "BANK").decision.blockers.some((value) => /specialist sector/i.test(value)));
+assert.ok(hardened.analyses.find((entry) => entry.ticker === "BANK").decision.reasons.some((value) => /bank specialist model/i.test(value)));
+assert.equal(hardened.analyses.find((entry) => entry.ticker === "BANK").decision.blockers.some((value) => /require a specialist sector valuation model/i.test(value)), false);
 assert.equal(hardened.analyses.find((entry) => entry.ticker === "WIDE").decision.seriousSignal, false);
 assert.ok(hardened.analyses.find((entry) => entry.ticker === "WIDE").decision.blockers.some((value) => /disagree too widely/i.test(value)));
 assert.equal(hardened.analyses.some((entry) => entry.ticker === "OTCX"), false);
@@ -223,7 +233,7 @@ console.log(JSON.stringify({
   ok: true,
   seriousBuy: hardened.seriousAlerts.buy.map((entry) => entry.ticker),
   otcExcluded: true,
-  specialistSectorsBlocked: true,
+  specialistSectorModelIntegrated: true,
   valuationAgreementRequired: true,
   eligibleCoveragePercent: hardened.coverage.processingCoveragePercent,
   boundedShardWriteConcurrency: maximumConcurrentWrites,

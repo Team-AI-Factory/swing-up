@@ -10,6 +10,7 @@ export type InternalApiScope =
 type AuthEnvironment = Record<string, string | undefined>;
 
 const SERIOUS_SIGNAL_STATUS_PATH = "/api/internal/serious-signal-status";
+const VALUATION_WATCHLIST_STATUS_PATH = "/api/internal/valuation-watchlist-status";
 const PR262_CRON_PATH = "/api/internal/combined-opportunity-engine/cron-v3";
 const PR262_SENSOR_HANDOFF_PATH = "/api/internal/combined-opportunity-engine/cloudflare-sensor-handoff";
 const PR262_PRODUCTION_FOUNDATION_PATH = "/api/internal/combined-opportunity-engine/production-foundation";
@@ -37,7 +38,7 @@ function pathMatches(path: string, prefix: string) {
 
 export function requiredInternalApiScope(path: string, method: string): InternalApiScope | null {
   const normalizedMethod = method.trim().toUpperCase();
-  if (path === SERIOUS_SIGNAL_STATUS_PATH) return "serious_signal_read";
+  if (path === SERIOUS_SIGNAL_STATUS_PATH || path === VALUATION_WATCHLIST_STATUS_PATH) return "serious_signal_read";
   if (path === PR262_CRON_PATH && normalizedMethod === "POST") return "cron_runtime";
   if (path === PR262_SENSOR_HANDOFF_PATH && normalizedMethod === "POST") return "sensor_handoff";
   if (path === PR262_PRODUCTION_FOUNDATION_PATH && normalizedMethod === "POST") return "foundation_runtime";
@@ -117,6 +118,7 @@ export function internalApiScopeAuthorized(
 
 export const INTERNAL_API_PATHS = {
   seriousSignalStatus: SERIOUS_SIGNAL_STATUS_PATH,
+  valuationWatchlistStatus: VALUATION_WATCHLIST_STATUS_PATH,
   pr262Cron: PR262_CRON_PATH,
   pr262SensorHandoff: PR262_SENSOR_HANDOFF_PATH,
   pr262ProductionFoundation: PR262_PRODUCTION_FOUNDATION_PATH,

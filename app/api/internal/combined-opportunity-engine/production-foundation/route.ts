@@ -64,7 +64,9 @@ export async function POST(request: NextRequest) {
 
   try {
     const prior = await readResumableUsValueState();
-    if (freshComplete(prior)) {
+    const forceOnce = request.nextUrl.searchParams.get("force") === "true"
+      && process.env.SWING_UP_PR262_FORCE_FOUNDATION_ONCE?.trim().toLowerCase() === "true";
+    if (freshComplete(prior) && !forceOnce) {
       const exposure = await completeExposure();
       return NextResponse.json({
         ok: true,

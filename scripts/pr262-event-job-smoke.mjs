@@ -591,7 +591,7 @@ setSecEventIdentity("000009", "2026-08-11T10:03:30.000Z");
 event.form = "4";
 event.kind = "4";
 const unsupportedForm = await runPr262EventJob({ now: new Date("2026-08-11T10:03:45.000Z"), allowOpenAi: true });
-assert.equal(unsupportedForm.status, "source_evidence_expired_unread");
+assert.equal(unsupportedForm.status, "source_evidence_rejected_unread");
 assert.equal(unsupportedForm.seriousSignalFound, false);
 assert.equal(retryCalls, retriesBeforeUnsupportedForm, "A structurally unsupported SEC form must be retired instead of backlogged forever.");
 event.form = "8-K";

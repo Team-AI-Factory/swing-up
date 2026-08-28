@@ -541,7 +541,7 @@ function deferDetailRetry(indexUrl: string, requestedRetryAfterMs: number | null
   pruneState(nowMs);
 }
 
-function eligibleReceipts(receipts: EventReceipt[], now: Date) {
+function eligibleReceipts(receipts: EventReceipt[], now: Date, priorityReceiptIds = new Set<string>()) {
   const skipped = skipRecord();
   const eligibleByFiling = new Map<string, EligibleReceipt>();
   for (const receipt of receipts) {
@@ -578,7 +578,14 @@ function eligibleReceipts(receipts: EventReceipt[], now: Date) {
     const existing = eligibleByFiling.get(key);
     if (existing) {
       skipped.duplicate_accession += 1;
-      if (compareEligible(item, existing) < 0) eligibleByFiling.set(key, item);
+      const itemPrioritized = priorityReceiptIds.has(item.receipt.id);
+      const existingPrioritized = priorityReceiptIds.has(existing.receipt.id);
+      if (
+        (itemPrioritized && !existingPrioritized)
+        || (itemPrioritized === existingPrioritized && compareEligible(item, existing) < 0)
+      ) {
+        eligibleByFiling.set(key, item);
+      }
       continue;
     }
     eligibleByFiling.set(key, item);
@@ -596,11 +603,24 @@ export async function enrichSecFilingDetails(
   options: SecFilingDetailSelectionOptions = {},
 ): Promise<SecFilingDetailsResult> {
   pruneState(now.getTime());
-  const selection = eligibleReceipts(receipts, now);
+  const priorityReceiptIds = [...new Set(options.priorityReceiptIds ?? [])];
+  const priorityReceiptIdSet = new Set(priorityReceiptIds);
+  const selection = eligibleReceipts(receipts, now, priorityReceiptIdSet);
+  const priorityFilingKeys = new Set(
+    selection.eligible
+      .filter((eligible) => priorityReceiptIdSet.has(eligible.receipt.id))
+      .map((eligible) => eligible.filingKey),
+  );
   const currentFilingKeys = new Set(selection.eligible.map((eligible) => eligible.filingKey));
   for (const eligible of selection.eligible) {
     const queued = eligibleReceiptQueue.get(eligible.filingKey);
-    if (!queued || compareEligible(eligible, queued) < 0) eligibleReceiptQueue.set(eligible.filingKey, eligible);
+    if (
+      priorityFilingKeys.has(eligible.filingKey)
+      || !queued
+      || compareEligible(eligible, queued) < 0
+    ) {
+      eligibleReceiptQueue.set(eligible.filingKey, eligible);
+    }
   }
   const boundedUnionEligible = boundEligibleQueue([...eligibleReceiptQueue.values()]);
   const retainedFilingKeys = new Set(boundedUnionEligible.map((eligible) => eligible.filingKey));
@@ -657,8 +677,6 @@ export async function enrichSecFilingDetails(
     truncated: detail.truncated,
     errorCategory: detail.eventExhibitMissing ? "event_exhibit_not_found" : null,
   }));
-  const priorityReceiptIds = [...new Set(options.priorityReceiptIds ?? [])];
-  const priorityReceiptIdSet = new Set(priorityReceiptIds);
   const selected = selectNextCandidates(fetchCandidates, now.getTime(), priorityReceiptIdSet);
   selection.skipped.run_limit = Math.max(0, fetchCandidates.length - selected.length);
   const fetchedDetails: SecFilingDetail[] = [];

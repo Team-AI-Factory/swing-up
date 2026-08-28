@@ -927,7 +927,16 @@ const exactTargetedReceipt = receipt({
   publishedAt: "2026-07-22T10:00:00.000Z",
   url: "https://www.sec.gov/Archives/edgar/data/7000005/000700000526000001/exact-target-index.html",
 });
-const priorityReceiptByUrl = new Map([...targetedPriorityReceipts, exactTargetedReceipt].map((item) => [item.url, item]));
+const queuedExactTargetReceipt = receipt({
+  id: "000-queued-hash-10k",
+  rawEventType: exactTargetedReceipt.rawEventType,
+  publishedAt: exactTargetedReceipt.publishedAt,
+  url: exactTargetedReceipt.url,
+});
+const priorityReceiptByUrl = new Map(
+  [...targetedPriorityReceipts, queuedExactTargetReceipt, exactTargetedReceipt]
+    .map((item) => [item.url, item]),
+);
 const priorityFetch = async (value) => {
   const url = String(value);
   const item = priorityReceiptByUrl.get(url);
@@ -945,7 +954,7 @@ const priorityFetch = async (value) => {
   }
   throw new Error(`Unexpected targeted-priority URL: ${url}`);
 };
-await enrichSecFilingDetails(targetedPriorityReceipts, priorityFetch, now);
+await enrichSecFilingDetails([...targetedPriorityReceipts, queuedExactTargetReceipt], priorityFetch, now);
 const targetedPriority = await enrichSecFilingDetails(
   [exactTargetedReceipt],
   priorityFetch,
@@ -981,6 +990,7 @@ console.log(JSON.stringify({
   agedSameFormFilingsUseFifo: true,
   continuousFreshArrivalsCannotStarveOtherForms: true,
   exactTargetedAccessionBypassesFairnessBacklog: true,
+  exactTargetedAccessionReplacesDeduplicatedReceipt: true,
   selectedAccessionsReservedInOneBatchBeforeFetch: true,
   eachAccessionGrantCoversAtMostThreeChildRequests: true,
   explicitExhibit992Selected: true,

@@ -609,7 +609,24 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
       discoveryErrors: direct.discoveryErrors,
     };
     events.push(...direct.events);
-    summaries.push({ provider: "direct_issuer_feeds", attempted: direct.feedsPolled > 0 || direct.discoveriesAttempted > 0, status: direct.feedSuccesses === direct.feedsPolled ? "connected" : direct.feedSuccesses > 0 ? "partial" : direct.feedsPolled ? "temporarily_unavailable" : "not_due", recordsRead: direct.feedsPolled, newEvents: direct.events.length, error: null, nextRetryAt: null });
+    const directStatus = direct.registeredFeeds === 0
+      ? "not_ready"
+      : direct.feedSuccesses === direct.feedsPolled
+        ? "connected"
+        : direct.feedSuccesses > 0
+          ? "partial"
+          : direct.feedsPolled
+            ? "temporarily_unavailable"
+            : "not_due";
+    summaries.push({
+      provider: "direct_issuer_feeds",
+      attempted: direct.feedsPolled > 0 || direct.discoveriesAttempted > 0,
+      status: directStatus,
+      recordsRead: direct.feedsPolled,
+      newEvents: direct.events.length,
+      error: direct.registeredFeeds === 0 ? "no_direct_issuer_feed_registered" : null,
+      nextRetryAt: null,
+    });
   } catch (error) {
     summaries.push({ provider: "direct_issuer_feeds", attempted: true, status: "temporarily_unavailable", recordsRead: 0, newEvents: 0, error: error instanceof Error ? error.message.slice(0, 200) : "direct_issuer_feeds_failed", nextRetryAt: null });
   }

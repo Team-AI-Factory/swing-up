@@ -11,6 +11,8 @@ const directAnnouncementSource = readFileSync(new URL("../lib/opportunity-engine
 assert.match(directAnnouncementSource, /redirect: "manual"/, "Direct issuer feeds must never auto-follow an unvalidated redirect.");
 assert.match(directAnnouncementSource, /current = new URL\(location, url\)\.toString\(\)/, "Every direct issuer redirect must be resolved and revalidated.");
 assert.match(directAnnouncementSource, /direct_feed_redirect_limit/, "Direct issuer redirect chains must be bounded.");
+assert.match(directAnnouncementSource, /MAX_DISCOVERIES_PER_CYCLE = 3/, "Issuer discovery must remain below the shared SEC submissions daily ceiling.");
+assert.match(directAnnouncementSource, /DISCOVERY_CONCURRENCY = 1/, "Issuer discovery must avoid duplicate concurrent CIK reservations.");
 
 function putObject(key, value) {
   revision += 1;
@@ -87,6 +89,31 @@ const inlineAtom = atom.replace(
 const inlineParsed = sensor.parseSecAtomForSensor(inlineAtom, { now, provider: "sec_urgent_8-k", requestedForm: "8-K" });
 assert.equal(inlineParsed.events[0].cik, "0001581280");
 assert.equal(inlineParsed.events[0].accession, "0001193125-26-123456");
+
+const pendingFreshSec = sensor.partitionPr262PendingEvents([parsed.events[0]], now);
+assert.equal(pendingFreshSec.length, 1, "A fresh SEC filing must receive one authoritative CIK mapping attempt.");
+const pendingFailedSec = sensor.partitionPr262PendingEvents([{
+  ...parsed.events[0],
+  mappingStatus: "unmapped",
+  mappingMethod: "sec_cik_unknown_fail_closed",
+  mappingReason: "The official issuer CIK is not present in the stored company directory.",
+}], now);
+assert.equal(pendingFailedSec.length, 0, "An SEC identity that already failed authoritative mapping must not remain backlog.");
+const pendingFailedTicker = sensor.partitionPr262PendingEvents([{
+  ...parsed.events[0],
+  id: "news:unknown-ticker",
+  source: "company_news",
+  sourceProvider: "v3_google_news",
+  identityMethod: "not_applicable",
+  ticker: "UNKNOWN",
+  cik: null,
+  accession: null,
+  canonicalSecIndexUrl: null,
+  mappingStatus: "unmapped",
+  mappingMethod: "structured_ticker_unknown_fail_closed",
+  mappingReason: "The structured ticker is not present in the stored company directory.",
+}], now);
+assert.equal(pendingFailedTicker.length, 0, "An unknown structured ticker must not be retried after fail-closed mapping.");
 
 const missingTimestampAtom = atom.replace("    <updated>2026-08-28T03:58:00Z</updated>\n", "");
 const missingTimestamp = sensor.parseSecAtomForSensor(missingTimestampAtom, { now, provider: "sec_broad", requestedForm: null });
@@ -440,21 +467,23 @@ const mappedDueRetry = {
   queueAttempts: 2,
   queueNextAttemptAt: now.toISOString(),
 };
-const unmappedFlood = Array.from({ length: 2_500 }, (_, index) => ({
+const freshUnmappedFlood = Array.from({ length: 2_500 }, (_, index) => ({
   ...parsed.events[0],
   id: `sec:unmapped-${index}`,
   ticker: null,
   company: null,
   mappingStatus: "unmapped",
-  mappingMethod: "sec_cik_unknown_fail_closed",
+  mappingMethod: undefined,
   priority: 100,
   observedAt: new Date(now.getTime() - 60_000).toISOString(),
 }));
-const partitionedQueue = sensor.partitionPr262PendingEvents([...unmappedFlood, mappedDueRetry], now);
+const partitionedQueue = sensor.partitionPr262PendingEvents([...freshUnmappedFlood, mappedDueRetry], now);
 assert.equal(partitionedQueue[0].id, mappedDueRetry.id, "A due mapped retry must outrank unmapped discovery noise");
-assert.equal(partitionedQueue.filter((item) => item.mappingStatus !== "mapped").length, 500, "Unresolved discovery has its own bounded partition");
+assert.equal(partitionedQueue.filter((item) => item.mappingStatus !== "mapped").length, 500, "Fresh unresolved discovery has its own bounded one-pass partition");
 assert.equal(partitionedQueue.some((item) => item.id === mappedDueRetry.id), true, "Unmapped SEC volume must not evict a mapped retry");
-const expiredUnmapped = { ...unmappedFlood[0], id: "sec:expired-unmapped", observedAt: new Date(now.getTime() - 25 * 60 * 60_000).toISOString() };
+const failedUnmappedFlood = freshUnmappedFlood.map((event) => ({ ...event, mappingMethod: "sec_cik_unknown_fail_closed" }));
+assert.equal(sensor.partitionPr262PendingEvents(failedUnmappedFlood, now).length, 0, "Authoritatively failed SEC identities must not remain in the unresolved partition.");
+const expiredUnmapped = { ...freshUnmappedFlood[0], id: "sec:expired-unmapped", observedAt: new Date(now.getTime() - 25 * 60 * 60_000).toISOString() };
 assert.equal(sensor.partitionPr262PendingEvents([expiredUnmapped, mappedDueRetry], now).some((item) => item.id === expiredUnmapped.id), false, "Unmapped discovery must expire after one day");
 const olderUntouched = { ...mappedDueRetry, id: "sec:older-untouched", priority: 100, queueAttempts: 0, queueNextAttemptAt: null, observedAt: new Date(now.getTime() - 10 * 60_000).toISOString() };
 const freshUntouched = { ...olderUntouched, id: "sec:fresh-untouched", observedAt: new Date(now.getTime() - 60_000).toISOString() };

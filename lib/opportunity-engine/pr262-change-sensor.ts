@@ -142,12 +142,15 @@ function processingReady(event: Pr262SensorEvent) {
 }
 
 function canBecomeProcessingReady(event: Pr262SensorEvent) {
+  // Directory enrichment writes a fail-closed method only after an item has
+  // received its authoritative identity lookup. Retaining that item cannot
+  // make it actionable on a later sensor pass; it only recreates backlog.
+  // Newly discovered SEC filings have no mappingMethod yet, so they still get
+  // exactly one legitimate CIK mapping attempt before this fence applies.
+  if (event.mappingMethod?.endsWith("_fail_closed")) return false;
   // Non-SEC discovery is allowed to map only from an explicit structured
   // ticker. Company-name text is intentionally never used as identity, so a
   // tickerless news/official item cannot become actionable on a later pass.
-  // SEC items may become mappable after the next authoritative directory
-  // refresh, but only when their complete official filing identity is already
-  // present.
   if (event.source === "sec") {
     return Boolean(event.cik)
       && Boolean(event.accession)

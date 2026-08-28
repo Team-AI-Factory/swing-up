@@ -7,8 +7,9 @@ import path from "node:path";
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const read = (relativePath) => readFile(path.join(repositoryRoot, relativePath), "utf8");
 
-const [railwayRaw, railwaySensorRaw, railwayRecoveryRaw, packageRaw, middleware, cronLauncher, legacySensorWorker, legacyPauseLauncher, oldSensorRoute, retiredCloudflareHandoff, deliveryTestRoute, sensorV3, historicalPolicy, watchOutAuthority, orchestrator] = await Promise.all([
+const [railwayRaw, railwayPreviewWebRaw, railwaySensorRaw, railwayRecoveryRaw, packageRaw, middleware, cronLauncher, legacySensorWorker, legacyPauseLauncher, oldSensorRoute, retiredCloudflareHandoff, deliveryTestRoute, sensorV3, historicalPolicy, watchOutAuthority, orchestrator] = await Promise.all([
   read("railway.json"),
+  read("railway.preview-web.json"),
   read("railway.sensor.json"),
   read("railway.analysis-recovery.json"),
   read("package.json"),
@@ -26,6 +27,7 @@ const [railwayRaw, railwaySensorRaw, railwayRecoveryRaw, packageRaw, middleware,
 ]);
 
 const railway = JSON.parse(railwayRaw);
+const railwayPreviewWeb = JSON.parse(railwayPreviewWebRaw);
 const railwaySensor = JSON.parse(railwaySensorRaw);
 const railwayRecovery = JSON.parse(railwayRecoveryRaw);
 const pkg = JSON.parse(packageRaw);
@@ -34,6 +36,9 @@ assert.equal(railway.build?.builder, "NIXPACKS", "The repository default must co
 assert.equal(railway.deploy?.startCommand, "npx prisma migrate deploy && npm run start", "Merging PR262 must not replace the website with a cron process");
 assert.equal(railway.deploy?.cronSchedule, undefined, "The persistent website must not inherit a five-minute cron schedule");
 assert.equal(railway.deploy?.restartPolicyType, "ON_FAILURE", "The website must restart after an application failure");
+assert.equal(railwayPreviewWeb.deploy?.startCommand, "npm run start", "A pull-request web preview must start without mutating its cloned database");
+assert.equal(railwayPreviewWeb.deploy?.healthcheckPath, "/api/health", "A pull-request web preview must still prove application health");
+assert.doesNotMatch(railwayPreviewWeb.deploy?.startCommand ?? "", /prisma|migrate/i, "A pull-request web preview must never run database migrations");
 assert.equal(railwaySensor.build?.builder, "RAILPACK", "The Railway sensor uses Railway Railpack");
 assert.equal(railwaySensor.deploy?.startCommand, "npm run pr262:cron", "Railway must keep the cheap five-minute sensor active");
 assert.equal(railwaySensor.deploy?.cronSchedule, "*/5 * * * *", "Railway sensing remains five-minute");

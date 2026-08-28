@@ -6,13 +6,13 @@ import type { Pr262ExposureEntry } from "@/lib/opportunity-engine/pr262-exposure
 import type { Pr262SensorEvent } from "@/lib/opportunity-engine/pr262-change-sensor";
 
 const REGISTRY_KEY = pr262StorageKey("sensor/direct-company-feeds-v1.json");
-const DISCOVERY_CADENCE_MS = 15 * 60_000;
+const DISCOVERY_CADENCE_MS = 30 * 60_000;
 const NO_FEED_RETRY_MS = 24 * 60 * 60_000;
 const TRANSIENT_DISCOVERY_RETRY_MS = 60 * 60_000;
 const FEED_POLL_CADENCE_MS = 15 * 60_000;
-// One prioritized SEC-submissions discovery per 15-minute production cycle is
-// at most 96 calls/day, leaving 94 calls of headroom in its dedicated 190/day
-// ledger. Broad and urgent SEC Atom scans use a separate current-filings ledger.
+// The direct lookup shares the 190/day SEC ledger with 96 urgent and 24 broad
+// current-filings polls. One prioritized SEC-submissions discovery every 30
+// minutes is at most 48 calls/day, for 168 total and 22 calls of hard headroom.
 const MAX_DISCOVERIES_PER_CYCLE = 1;
 const DISCOVERY_CONCURRENCY = 1;
 const MAX_FEEDS_POLLED_PER_CYCLE = 20;

@@ -88,6 +88,31 @@ const inlineParsed = sensor.parseSecAtomForSensor(inlineAtom, { now, provider: "
 assert.equal(inlineParsed.events[0].cik, "0001581280");
 assert.equal(inlineParsed.events[0].accession, "0001193125-26-123456");
 
+const pendingFreshSec = sensor.partitionPr262PendingEvents([parsed.events[0]], now);
+assert.equal(pendingFreshSec.length, 1, "A fresh SEC filing must receive one authoritative CIK mapping attempt.");
+const pendingFailedSec = sensor.partitionPr262PendingEvents([{
+  ...parsed.events[0],
+  mappingStatus: "unmapped",
+  mappingMethod: "sec_cik_unknown_fail_closed",
+  mappingReason: "The official issuer CIK is not present in the stored company directory.",
+}], now);
+assert.equal(pendingFailedSec.length, 0, "An SEC identity that already failed authoritative mapping must not remain backlog.");
+const pendingFailedTicker = sensor.partitionPr262PendingEvents([{
+  ...parsed.events[0],
+  id: "news:unknown-ticker",
+  source: "company_news",
+  sourceProvider: "v3_google_news",
+  identityMethod: "not_applicable",
+  ticker: "UNKNOWN",
+  cik: null,
+  accession: null,
+  canonicalSecIndexUrl: null,
+  mappingStatus: "unmapped",
+  mappingMethod: "structured_ticker_unknown_fail_closed",
+  mappingReason: "The structured ticker is not present in the stored company directory.",
+}], now);
+assert.equal(pendingFailedTicker.length, 0, "An unknown structured ticker must not be retried after fail-closed mapping.");
+
 const missingTimestampAtom = atom.replace("    <updated>2026-08-28T03:58:00Z</updated>\n", "");
 const missingTimestamp = sensor.parseSecAtomForSensor(missingTimestampAtom, { now, provider: "sec_broad", requestedForm: null });
 assert.equal(missingTimestamp.recordsRead, 1);

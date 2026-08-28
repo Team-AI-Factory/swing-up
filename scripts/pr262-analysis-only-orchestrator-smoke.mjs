@@ -78,6 +78,10 @@ const stubs = {
         eventMode = "idle";
         throw new Error("The operation was aborted due to timeout; next_retry_at=2026-08-27T10:42:26.025Z");
       }
+      if (eventMode === "universe_stale_deferred") {
+        eventMode = "idle";
+        throw new Error("pr262_authoritative_equity_universe_stale; next_retry_at=2026-08-28T07:30:40.815Z");
+      }
       if (eventMode === "broken") {
         eventMode = "idle";
         throw new Error("unexpected_event_processing_failure");
@@ -148,6 +152,13 @@ assert.equal(deferredNetworkTimeout.processing.eventFailures, 0);
 assert.equal(deferredNetworkTimeout.processing.eventDeferrals, 1);
 assert.equal(deferredNetworkTimeout.processing.eventResults[0].status, "event_job_deferred");
 
+eventMode = "universe_stale_deferred";
+const deferredStaleUniverse = await loaded.exports.runPr262AnalysisOnlyCycle({ maxCycleMs: 90_000 });
+assert.equal(deferredStaleUniverse.ok, true, "A stale-universe retry with a durable retry time must wait for foundation data without crashing recovery.");
+assert.equal(deferredStaleUniverse.processing.eventFailures, 0);
+assert.equal(deferredStaleUniverse.processing.eventDeferrals, 1);
+assert.equal(deferredStaleUniverse.processing.eventResults[0].status, "event_job_deferred");
+
 eventMode = "broken";
 const brokenEvent = await loaded.exports.runPr262AnalysisOnlyCycle({ maxCycleMs: 90_000 });
 assert.equal(brokenEvent.ok, false, "An unexpected event-processing failure must still fail the cron job.");
@@ -197,6 +208,7 @@ console.log(JSON.stringify({
   scheduledRollingQuotaDeferralRemainsHealthy: true,
   scheduledTargetedQuotaDeferralRemainsHealthy: true,
   scheduledNetworkTimeoutDeferralRemainsHealthy: true,
+  scheduledStaleUniverseDeferralRemainsHealthy: true,
   unexpectedEventFailureRemainsUnhealthy: true,
   queueOutcomesPersistOncePerCycle: true,
 }, null, 2));

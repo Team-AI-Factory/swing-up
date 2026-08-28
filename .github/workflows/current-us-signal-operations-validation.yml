@@ -34,8 +34,11 @@ jobs:
         run: |
           branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
           test "${branch}" != "main"
-          test "${branch}" = "agent/combined-opportunity-engine"
-          echo "Validating PR #262 signal operations on ${branch}"
+          case "${branch}" in
+            agent/combined-opportunity-engine|agent/pr262-sector-specialist-valuations) ;;
+            *) echo "Signal-operations validation is not approved for ${branch}." >&2; exit 1 ;;
+          esac
+          echo "Validating current U.S. signal operations on ${branch}"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4

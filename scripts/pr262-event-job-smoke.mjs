@@ -59,13 +59,59 @@ const event = {
 
 const analysis = {
   ticker: "EXCT",
+  tradingViewSymbol: "NASDAQ:EXCT",
   company: "Exact Issuer Corp",
+  exchange: "NASDAQ",
+  sector: "Technology",
+  industry: "Software",
+  currency: "USD",
   observedAt: "2026-08-11T00:00:00.000Z",
   currentPrice: 40,
-  fairValue: { conservativeValue: 60, baseValue: 75, optimisticValue: 90, buyBelowPrice: 55 },
-  scores: { businessQuality: 85, risk: 25, fairValueConfidence: 88 },
+  marketCap: 4_000_000_000,
+  estimatedAverageDollarVolume10d: 20_000_000,
+  fairValue: {
+    methods: [{ method: "owner_earnings", value: 75, weight: 1, rationale: "Fixture value" }],
+    conservativeValue: 60,
+    baseValue: 75,
+    optimisticValue: 90,
+    buyBelowPrice: 55,
+    strongBuyBelowPrice: 48,
+    trimAbovePrice: 95,
+    upsideToBasePercent: 87.5,
+    discountToBasePercent: 46.7,
+    marginOfSafetyPercent: 46.7,
+  },
+  valuation: {
+    priceToEarnings: 15,
+    priceToBook: 3,
+    priceToSales: 2,
+    enterpriseValueToEbitda: 10,
+    providerTargetPrice: 80,
+    providerAnalystCount: 12,
+  },
+  scores: {
+    businessQuality: 85,
+    profitability: 82,
+    balanceSheet: 80,
+    growthDurability: 78,
+    cashGeneration: 84,
+    risk: 25,
+    evidenceCompleteness: 92,
+    fairValueConfidence: 88,
+  },
   fundamentals: { revenue: 2_000_000_000, freeCashFlow: 300_000_000 },
-  decision: { tier: "quality_price_watchlist" },
+  decision: {
+    action: "watch",
+    tier: "quality_price_watchlist",
+    seriousSignal: false,
+    userAlertEligible: false,
+    publicationStatus: "watchlist_internal",
+    historicallyCertified: false,
+    evidenceTriggered: false,
+    noNewsRequired: true,
+    reasons: ["Fixture"],
+    blockers: [],
+  },
 };
 
 const historicalRecords = Array.from({ length: 5 }, (_, index) => ({
@@ -116,6 +162,8 @@ let decisionGradeSecSource = true;
 let failHistoryAccess = false;
 let committeeFingerprint = "fingerprint-1";
 let runnerResultMode = "serious";
+let targetedValueBudgetAllowed = true;
+let lastStoredCompanyAnalysis = null;
 const haltProvider = {
   provider: "nasdaq_trade_halts",
   status: "connected",
@@ -140,7 +188,13 @@ const stubs = {
   "@/lib/opportunity-engine/pr262-serious-watch-out-authority": {
     promotePr262SeriousWatchOut: async () => ({ promoted: false, reason: "not_a_watch_out", outboxKey: null }),
   },
-  "@/lib/branch-signal-lab-policy": { providerCallBudgetDecision: () => ({ allowed: true, nextRetryAt: null, reason: "reserved" }) },
+  "@/lib/branch-signal-lab-policy": {
+    providerCallBudgetDecision: (_reservations, request) => (
+      request.provider === "tradingview_targeted_value" && !targetedValueBudgetAllowed
+        ? { allowed: false, nextRetryAt: "2026-08-12T00:00:00.000Z", reason: "rolling_quota_guard" }
+        : { allowed: true, nextRetryAt: null, reason: "reserved" }
+    ),
+  },
   "@/lib/equity-signal/historical-bootstrap": {
     mergeHistoricalSignals: (...groups) => [...new Map(groups.flat().map((record) => [record.id, record])).values()],
   },
@@ -156,6 +210,7 @@ const stubs = {
       assert.equal(input.targetedContext.universe.entries.length, 1, "Only one company may enter the runner");
       assert.equal(input.targetedContext.universe.entries[0].cik, "0001234567", "Exact CIK must survive");
       assert.equal(input.targetedContext.storedCompanyAnalysis.ticker, "EXCT", "Refreshed company must remain exact");
+      lastStoredCompanyAnalysis = structuredClone(input.targetedContext.storedCompanyAnalysis);
       assert.ok(input.targetedContext.providers.some((provider) => provider.provider === "nasdaq_trade_halts"));
       if (!failHistoryAccess) assert.ok(input.historicalSignals.length >= 5, "Available optional history should load");
       else assert.equal(input.historicalSignals.length, 0, "Unavailable optional history must fall back to an empty context");
@@ -542,6 +597,34 @@ assert.equal(routineNoSignal.r2Persistence.companyRefreshWritten, false, "A rout
 assert.equal([...objects.keys()].filter((key) => key.startsWith(PR262_EVENT_JOB_KEYS.RUN_PREFIX)).length, detailedRunCountBeforeQuietAnalysis);
 assert.equal([...objects.keys()].filter((key) => key.includes("/value-investing/event-refresh/")).length, valueRefreshCountBeforeQuietAnalysis);
 assert.equal(writes.filter((write) => write.key === PR262_EVENT_JOB_KEYS.STATE_KEY).length, stateWritesBeforeQuietAnalysis, "Routine no-signal analysis must not rewrite the completion ledger.");
+
+targetedValueBudgetAllowed = false;
+setSecEventIdentity("000007", "2026-08-11T10:05:00.000Z");
+lastStoredCompanyAnalysis = null;
+const valueRefreshCallsBeforeFallback = valueRefreshCalls;
+const retryCallsBeforeFallback = retryCalls;
+const foundationFallback = await runPr262EventJob({ now: new Date("2026-08-11T10:06:00.000Z"), allowOpenAi: true });
+assert.equal(foundationFallback.status, "no_qualified_signal");
+assert.equal(foundationFallback.costControl.affectedCompanyValuationRefreshes, 0);
+assert.equal(foundationFallback.costControl.affectedCompanyValuationCacheFallbacks, 1);
+assert.equal(foundationFallback.costControl.valuationContext.source, "daily_foundation_cache");
+assert.equal(foundationFallback.costControl.valuationContext.quotaFallback, true);
+assert.equal(valueRefreshCalls, valueRefreshCallsBeforeFallback, "A denied targeted quote must not make an unreserved provider call.");
+assert.equal(retryCalls, retryCallsBeforeFallback, "Fresh complete daily valuation must prevent a quota-only event deferral.");
+assert.equal(lastStoredCompanyAnalysis.currentPrice, 40, "The Committee must receive the exact fresh daily foundation valuation.");
+
+setSecEventIdentity("000008", "2026-08-11T10:06:30.000Z");
+const freshObservedAt = analysis.observedAt;
+analysis.observedAt = "2026-08-09T00:00:00.000Z";
+const runnerCallsBeforeStaleFallback = runnerCalls;
+await assert.rejects(
+  () => runPr262EventJob({ now: new Date("2026-08-11T10:07:00.000Z"), allowOpenAi: true }),
+  /tradingview_targeted_value_rolling_quota_guard/,
+);
+assert.equal(runnerCalls, runnerCallsBeforeStaleFallback, "A stale daily valuation must never reach the Committee.");
+assert.equal(retryCalls, retryCallsBeforeFallback + 1, "An unsafe fallback must retain the event for a bounded retry.");
+analysis.observedAt = freshObservedAt;
+targetedValueBudgetAllowed = true;
 runnerResultMode = "serious";
 
 setSecEventIdentity("000004", "2026-08-11T10:04:00.000Z");
@@ -620,6 +703,8 @@ console.log(JSON.stringify({
   orphanedResultRecoveredWithoutSecondCommittee: true,
   wrongCachedSecAccessionCannotSupplyDecisionGrade: true,
   affectedCompanyValuationRefreshedOnce: true,
+  freshDailyFoundationValuationBridgesTargetedQuota: true,
+  staleFoundationValuationStillFailsClosed: true,
   noBroadWarehouseRebuild: true,
   nonSecFullSourceSecurityCovered: true,
   boundedLargePublisherPrefixCovered: true,

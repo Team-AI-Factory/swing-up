@@ -637,7 +637,7 @@ assert.equal(staleFoundationContext.costControl.valuationContext.source, "unavai
 assert.equal(staleFoundationContext.costControl.valuationContext.targetedRefreshBlockedByQuota, true);
 assert.equal(staleFoundationContext.costControl.valuationContext.usableFoundationContext, false);
 assert.equal(runnerCalls, runnerCallsBeforeStaleFallback + 1, "Current event evidence must still reach deterministic gates when optional valuation context is unavailable.");
-assert.deepEqual(lastStoredCompanyAnalysis, {}, "Stale or malformed valuation context must never be passed into deterministic gates or the Committee.");
+assert.equal(lastStoredCompanyAnalysis, undefined, "Stale or malformed valuation context must never be passed into deterministic gates or the Committee.");
 assert.equal(retryCalls, retryCallsBeforeFallback, "A valuation-only quota gap must not backlog current decision-grade event evidence.");
 expectEmptyStoredCompanyAnalysis = false;
 analysis.observedAt = freshObservedAt;

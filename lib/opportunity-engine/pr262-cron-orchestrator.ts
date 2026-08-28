@@ -153,7 +153,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
   const officialOrSecAtStart = state.pending.filter((event) => event.source === "sec" || event.source === "official").length;
   const secAtStart = state.pending.filter((event) => event.source === "sec").length;
   const directIssuerAtStart = state.pending.filter((event) => (event.sourceProvider ?? "").startsWith("issuer_ir_")).length;
-  const issuerSpecificAtStart = state.pending.filter((event) => event.mappingMethod !== "deterministic_sector_fanout" && Boolean(event.ticker)).length;
+  const issuerSpecificAtStart = state.pending.filter((event) => event.mappingMethod !== "deterministic_sector_fanout" && !event.id.includes(":fanout:") && Boolean(event.ticker)).length;
   const readyAtStart = dueReadyCount(state);
   const capacity = capacityForQueue(readyAtStart);
   const eventResults: Json[] = [];

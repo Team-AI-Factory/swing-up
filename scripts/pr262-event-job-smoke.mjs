@@ -233,6 +233,40 @@ const stubs = {
           selectedCandidate: null,
           historicalPilot: null,
           tradingHaltSafety: { currentStateKnown: true },
+          candidateFunnel: {
+            realEventReceipts: 1,
+            mappedRelationships: 1,
+            eventClusters: 1,
+            directCandidates: 1,
+            knockOnCandidates: 0,
+            candidatesPassingEventFirstGate: 0,
+            candidatesWithMarketQuote: 0,
+            candidatesSkippedBecauseRecentlyReviewed: 0,
+            unreviewedCandidatesAvailable: 0,
+            committeeCandidates: 0,
+          },
+          qualityScore: 61,
+          rankedCandidates: [{
+            ticker: "EXCT",
+            direction: "upside",
+            eventFamily: "earnings_guidance",
+            score: 61,
+            eventTruth: 100,
+            mappingConfidence: 100,
+            materiality: 58,
+            transmissionConfidence: 72,
+            evidenceIndependence: 90,
+            contradictionPenalty: 0,
+            pricedInPenalty: 0,
+            gatePassed: false,
+            gateChecks: {
+              eventTruthAtLeast80: true,
+              mappingConfidenceAtLeast95: true,
+              materialityAtLeast65: false,
+            },
+            alertReadiness: "watch_only",
+          }],
+          blockers: ["No current event passed the strict event-first gate."],
           committee: null,
         };
       }
@@ -622,6 +656,12 @@ assert.equal(routineNoSignal.status, "no_qualified_signal");
 assert.equal(routineNoSignal.resultKey, null, "A routine no-signal analysis must not write a full result object.");
 assert.equal(routineNoSignal.r2Persistence.detailedResultWritten, false);
 assert.equal(routineNoSignal.r2Persistence.companyRefreshWritten, false, "A routine valuation refresh must stay in memory unless it supports an important finding.");
+assert.equal(routineNoSignal.analysisDiagnostics.qualityScore, 61);
+assert.equal(routineNoSignal.analysisDiagnostics.funnel.realEventReceipts, 1);
+assert.equal(routineNoSignal.analysisDiagnostics.funnel.candidatesPassingEventFirstGate, 0);
+assert.equal(routineNoSignal.analysisDiagnostics.topNearMiss.ticker, "EXCT");
+assert.deepEqual(routineNoSignal.analysisDiagnostics.topNearMiss.failedGateChecks, ["materialityAtLeast65"]);
+assert.deepEqual(routineNoSignal.analysisDiagnostics.blockers, ["No current event passed the strict event-first gate."]);
 assert.equal([...objects.keys()].filter((key) => key.startsWith(PR262_EVENT_JOB_KEYS.RUN_PREFIX)).length, detailedRunCountBeforeQuietAnalysis);
 assert.equal([...objects.keys()].filter((key) => key.includes("/value-investing/event-refresh/")).length, valueRefreshCountBeforeQuietAnalysis);
 assert.equal(writes.filter((write) => write.key === PR262_EVENT_JOB_KEYS.STATE_KEY).length, stateWritesBeforeQuietAnalysis, "Routine no-signal analysis must not rewrite the completion ledger.");

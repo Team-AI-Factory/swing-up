@@ -234,6 +234,65 @@ assert.equal(repeatedSameDay.r2Persistence.unimportantEventsPersisted, 0);
 assert.equal(sensorStateWrites, 2, "Only the initial important findings and first price-research identity checkpoint may rewrite the full queue.");
 assert.equal(sensorCadenceWrites, 3, "Each scan retains a small scheduling checkpoint so provider cadences remain safe after restart.");
 
+// Existing broad-SEC backlog must retire forms that cannot ever enter the
+// decision-grade Serious Signal lane, while retaining supported current filings.
+function queuedSecEvent(id, form, accession) {
+  const accessionDigits = accession.replace(/-/g, "");
+  const url = `https://www.sec.gov/Archives/edgar/data/1/${accessionDigits}/${accession}-index.html`;
+  return {
+    id,
+    source: "sec",
+    sourceProvider: "v3_sec_broad",
+    sourceHealthStatus: "connected",
+    observedAt: "2026-08-20T09:14:00.000Z",
+    title: `${form} - Safe Corporation`,
+    url,
+    sourceUrl: url,
+    ticker: "SAFE",
+    company: "Safe Corporation",
+    kind: form,
+    priority: 100,
+    reason: "Official SEC filing.",
+    cik: "0000000001",
+    form,
+    accession,
+    canonicalSecIndexUrl: url,
+    identityMethod: "official_sec_archive_link",
+    mappingStatus: "mapped",
+    mappingMethod: "official_sec_cik_exact",
+    mappingReason: "Exact official CIK.",
+    tradingViewSymbol: "NASDAQ:SAFE",
+    queueAttempts: 0,
+    queueNextAttemptAt: null,
+    queueLastAttemptAt: null,
+    queueLastError: null,
+  };
+}
+const unsupportedOwnershipEvent = queuedSecEvent("sec:unsupported-form-4", "4", "0000000000-26-000004");
+const supportedEightKEvent = queuedSecEvent("sec:supported-8k", "8-K", "0000000000-26-000008");
+persistedSensorState = {
+  version: 2,
+  updatedAt: "2026-08-20T09:14:00.000Z",
+  seen: [],
+  pending: [unsupportedOwnershipEvent, supportedEightKEvent],
+  lastMarketWatchAt: null,
+  cursors: { secUrgentFormIndex: 0, newsQueryIndex: 0, officialFeedIndex: 0, directIssuerFeedIndex: 0 },
+  sourceHealth: {},
+  sensorReadiness: { version: 1, checkedAt: "2026-08-20T09:14:00.000Z", universeReady: true, universeEntries: 1, exposureReady: true, exposureEntries: 1 },
+  cloudflareSensor: null,
+};
+persistedSensorCadence = null;
+stateWritten = null;
+const unsupportedRetirement = await loaded.exports.runPr262LightweightSensorV3({
+  now: new Date("2026-08-20T09:15:00.000Z"),
+  fetchImpl: async (request, init) => init?.method === "POST"
+    ? { ok: true, status: 200, json: async () => ({ data: [{ s: "NASDAQ:SAFE", d: ["SAFE", "Safe Corporation", 9.5, -7, 1_200_000, 5] }] }) }
+    : { ok: true, status: 200, text: async () => "<feed></feed>" },
+});
+assert.equal(stateWritten.value.pending.some((item) => item.id === unsupportedOwnershipEvent.id), false, "Unsupported SEC forms must not survive in the Serious Signal queue.");
+assert.equal(stateWritten.value.pending.some((item) => item.id === supportedEightKEvent.id), true, "Supported exact SEC filings must remain queued for evidence analysis.");
+assert.equal(unsupportedRetirement.nonActionableEventsDropped >= 1, true);
+
 console.log(JSON.stringify({
   ok: true,
   cleanNamespaceScansImmediately: true,
@@ -247,4 +306,5 @@ console.log(JSON.stringify({
   quietScanDoesNotRewriteFullQueue: true,
   unimportantDiscoveriesNotPersisted: true,
   partialOrStaleUniverseCannotCertifyCoverage: true,
+  unsupportedSecFormsRetiredFromSeriousQueue: true,
 }, null, 2));

@@ -7,9 +7,10 @@ import type { Pr262SensorEvent } from "@/lib/opportunity-engine/pr262-change-sen
 
 const REGISTRY_KEY = pr262StorageKey("sensor/direct-company-feeds-v1.json");
 const DISCOVERY_CADENCE_MS = 30 * 60_000;
-const NO_FEED_RETRY_MS = 30 * 24 * 60 * 60_000;
+const NO_FEED_RETRY_MS = 7 * 24 * 60 * 60_000;
 const FEED_POLL_CADENCE_MS = 60 * 60_000;
-const MAX_DISCOVERIES_PER_CYCLE = 4;
+const MAX_DISCOVERIES_PER_CYCLE = 12;
+const DISCOVERY_CONCURRENCY = 4;
 const MAX_FEEDS_POLLED_PER_CYCLE = 20;
 const SEC_AGENT = "SwingUp/1.0 support@swingup.app";
 
@@ -264,33 +265,38 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
     if (candidates.length) {
       let cursor = registry.discoveryCursor % candidates.length;
       let inspected = 0;
-      while (inspected < candidates.length && discovered < MAX_DISCOVERIES_PER_CYCLE) {
+      const discoveryTargets: Array<{ company: Pr262ExposureEntry; existing: RegistryEntry | undefined }> = [];
+      while (inspected < candidates.length && discoveryTargets.length < MAX_DISCOVERIES_PER_CYCLE) {
         const company = candidates[cursor];
         cursor = (cursor + 1) % candidates.length;
         inspected += 1;
         const existing = byTicker.get(company.ticker);
         const lastAt = existing?.lastDiscoveryAt ? Date.parse(existing.lastDiscoveryAt) : 0;
         if (existing?.feedUrl || (Number.isFinite(lastAt) && now.getTime() - lastAt < NO_FEED_RETRY_MS)) continue;
-        try {
-          const next = await discoverOne(fetchImpl, company, now);
-          byTicker.set(company.ticker, next);
+        discoveryTargets.push({ company, existing });
+      }
+      for (let start = 0; start < discoveryTargets.length; start += DISCOVERY_CONCURRENCY) {
+        await Promise.all(discoveryTargets.slice(start, start + DISCOVERY_CONCURRENCY).map(async ({ company, existing }) => {
+          try {
+            const next = await discoverOne(fetchImpl, company, now);
+            byTicker.set(company.ticker, next);
+          } catch (error) {
+            byTicker.set(company.ticker, {
+              ticker: company.ticker,
+              company: company.company,
+              cik: company.cik!,
+              investorWebsite: existing?.investorWebsite ?? null,
+              feedUrl: existing?.feedUrl ?? null,
+              discoveredAt: existing?.discoveredAt ?? now.toISOString(),
+              lastDiscoveryAt: now.toISOString(),
+              lastCheckedAt: existing?.lastCheckedAt ?? null,
+              lastSuccessAt: existing?.lastSuccessAt ?? null,
+              nextCheckAt: new Date(now.getTime() + NO_FEED_RETRY_MS).toISOString(),
+              error: error instanceof Error ? error.message.slice(0, 180) : "direct_feed_discovery_failed",
+            });
+          }
           discovered += 1;
-        } catch (error) {
-          byTicker.set(company.ticker, {
-            ticker: company.ticker,
-            company: company.company,
-            cik: company.cik!,
-            investorWebsite: existing?.investorWebsite ?? null,
-            feedUrl: existing?.feedUrl ?? null,
-            discoveredAt: existing?.discoveredAt ?? now.toISOString(),
-            lastDiscoveryAt: now.toISOString(),
-            lastCheckedAt: existing?.lastCheckedAt ?? null,
-            lastSuccessAt: existing?.lastSuccessAt ?? null,
-            nextCheckAt: new Date(now.getTime() + NO_FEED_RETRY_MS).toISOString(),
-            error: error instanceof Error ? error.message.slice(0, 180) : "direct_feed_discovery_failed",
-          });
-          discovered += 1;
-        }
+        }));
       }
       registry.discoveryCursor = cursor;
       registry.lastDiscoveryCycleAt = now.toISOString();

@@ -14,7 +14,12 @@ assert.match(source, /deadlineAtMs/, "Event processing must accept a hard parent
 assert.match(source, /alertType === "sell"[\s\S]*?promotePr262SeriousWatchOut\(input\.resultKey\)/, "A qualifying downside risk must become one Watch Out instead of duplicate Sell and Watch Out alerts");
 assert.match(source, /request\.destroy\(new Error\("full_source_timeout"\)\)/, "The fixed deadline must terminate the pinned HTTPS request and its body stream");
 assert.doesNotMatch(source, /request\.setTimeout\(/, "A socket-inactivity timeout cannot replace the absolute full-source deadline");
-const testableSource = source.replace("async function fetchFullSource(", "export async function fetchFullSource(");
+assert.match(source, /FULL_SOURCE_CACHE_PREFIX/, "Decision-grade full-source work must be reusable across retries.");
+assert.match(source, /FULL_SOURCE_RETRY_COOLDOWN_MS = 2 \* 60 \* 60_000/, "Temporary full-source failures must retry before they are stale.");
+const testableSource = source
+  .replace("async function fetchFullSource(", "export async function fetchFullSource(")
+  .replace("async function readCachedFullSource(", "export async function readCachedFullSource(")
+  .replace("async function cacheFullSource(", "export async function cacheFullSource(");
 const output = ts.transpileModule(testableSource, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
 }).outputText;
@@ -100,6 +105,7 @@ async function writeObject(key, payload, options = {}) {
 
 let runnerCalls = 0;
 let valueRefreshCalls = 0;
+let valueSafetyCalls = 0;
 let acknowledgements = 0;
 let retryCalls = 0;
 let decisionGradeSecSource = true;
@@ -275,6 +281,12 @@ const stubs = {
       return { ...analysis, ticker, observedAt: now.toISOString(), currentPrice: 41 };
     },
   },
+  "@/lib/opportunity-engine/us-value-investing-safety": {
+    hardenUsValueCompanyAnalysis: (analysis) => {
+      valueSafetyCalls += 1;
+      return analysis;
+    },
+  },
 };
 
 const cjsModule = { exports: {} };
@@ -283,7 +295,7 @@ new Function("require", "module", "exports", output)((name) => {
   throw new Error(`Unexpected event-job import: ${name}`);
 }, cjsModule, cjsModule.exports);
 
-const { fetchFullSource, runPr262EventJob, PR262_EVENT_JOB_KEYS } = cjsModule.exports;
+const { cacheFullSource, fetchFullSource, readCachedFullSource, runPr262EventJob, PR262_EVENT_JOB_KEYS } = cjsModule.exports;
 
 const securityNow = new Date("2026-08-11T10:00:00.000Z");
 const publicDns = async () => ["93.184.216.34"];
@@ -321,6 +333,16 @@ const okTextResponse = () => new Response(confirmedBody, { status: 200, headers:
 
 const validFullSource = await fetchFullSource(sourceReceipt, sourceEvent, "Exact Issuer Corp", "EXCT", async () => okTextResponse(), securityNow, publicDns);
 assert.equal(validFullSource.decisionGrade, true, "A bounded public HTTPS source with exact issuer and event evidence should be usable");
+const cachedWrite = await cacheFullSource(sourceEvent, validFullSource, securityNow);
+assert.equal(cachedWrite.written, true);
+const cachedRead = await readCachedFullSource(sourceEvent, new Date("2026-08-11T10:05:00.000Z"));
+assert.equal(cachedRead.decisionGrade, true);
+assert.equal(cachedRead.providers[0].cached, true, "A later retry must reuse the already verified source without another source request.");
+const headlineOnlyEvent = { ...sourceEvent, id: "news:orion-milestone", title: "Exact Issuer Corp completes Orion program milestone" };
+const headlineOnlyReceipt = { ...sourceReceipt, id: headlineOnlyEvent.id, title: headlineOnlyEvent.title };
+const headlineOnlyBody = `<html><h1>Exact Issuer Corp completes Orion program milestone</h1><p>${"The Orion program reached its planned commercial milestone with customer acceptance. ".repeat(8)}</p></html>`;
+const headlineOnlySource = await fetchFullSource(headlineOnlyReceipt, headlineOnlyEvent, "Exact Issuer Corp", "EXCT", async () => new Response(headlineOnlyBody, { status: 200, headers: { "content-type": "text/html" } }), securityNow, publicDns);
+assert.equal(headlineOnlySource.decisionGrade, true, "A matching issuer headline must not be rejected merely because it lacks a small hard-coded keyword list.");
 let pinnedTransportAddresses = [];
 const pinnedFullSource = await fetchFullSource(
   sourceReceipt,
@@ -404,6 +426,7 @@ assert.equal(first.costControl.affectedCompanyValuationRefreshes, 1);
 assert.equal(first.costControl.optionalHistoryContextPreparedBeforeCommittee, true);
 assert.equal(runnerCalls, 1);
 assert.equal(valueRefreshCalls, 1);
+assert.equal(valueSafetyCalls, 1, "A targeted event refresh must pass through the same specialist-sector safety overlay as the daily foundation.");
 assert.equal(retryCalls, 0);
 assert.equal(acknowledgements, 1);
 assert.equal(objects.get(PR262_EVENT_JOB_KEYS.STATE_KEY).value.runs.length, 1);

@@ -5,6 +5,7 @@ import net, { type LookupFunction } from "node:net";
 import { Readable } from "node:stream";
 import { branchProviderCallRequest } from "@/lib/branch-signal-lab";
 import { providerCallBudgetDecision, type ProviderBudgetReservation } from "@/lib/branch-signal-lab-policy";
+import { PERMISSION_GATE_KEYS } from "@/lib/equity-signal/analysis";
 import { mergeHistoricalSignals } from "@/lib/equity-signal/historical-bootstrap";
 import type { HistoricalSignalRecord } from "@/lib/equity-signal/historical-analogs";
 import { fetchNasdaqTradeHalts, mergeSecFilingDetails } from "@/lib/equity-signal/event-sources";
@@ -1242,10 +1243,8 @@ function compactAnalysisDiagnostics(report: Json) {
       contradictionPenalty: finiteDiagnosticNumber(top.contradictionPenalty),
       pricedInPenalty: finiteDiagnosticNumber(top.pricedInPenalty),
       gatePassed: top.gatePassed === true,
-      failedGateChecks: Object.entries(gateChecks)
-        .filter(([, passed]) => passed === false)
-        .map(([name]) => name)
-        .slice(0, 20),
+      failedGateChecks: PERMISSION_GATE_KEYS
+        .filter((name) => gateChecks[name] !== true),
       alertReadiness: text(top.alertReadiness),
     } : null,
     blockers: Array.isArray(report.blockers)

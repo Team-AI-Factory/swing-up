@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { lookup } from "node:dns/promises";
 import * as https from "node:https";
-import net from "node:net";
+import net, { type LookupFunction } from "node:net";
 import { Readable } from "node:stream";
 import { branchProviderCallRequest } from "@/lib/branch-signal-lab";
 import { providerCallBudgetDecision, type ProviderBudgetReservation } from "@/lib/branch-signal-lab-policy";
@@ -576,6 +576,19 @@ async function defaultResolveHost(hostname: string) {
   return (await lookup(hostname, { all: true, verbatim: true })).map((item) => item.address);
 }
 
+function pinnedAddressLookup(address: string, family: number): LookupFunction {
+  return (_hostname, options, callback) => {
+    // Node 24's HTTPS agent can request every address (`all: true`). Returning
+    // the legacy single-address callback shape in that mode is interpreted as
+    // an address entry with `address: undefined`, which aborts the request.
+    if (options.all) {
+      callback(null, [{ address, family }]);
+      return;
+    }
+    callback(null, address, family);
+  };
+}
+
 async function pinnedHttpsTransport(url: URL, validatedAddresses: string[]) {
   let lastError: unknown = null;
   for (const address of validatedAddresses) {
@@ -590,7 +603,7 @@ async function pinnedHttpsTransport(url: URL, validatedAddresses: string[]) {
           method: "GET",
           headers: { Accept: "text/html,application/xhtml+xml,text/plain,application/xml", "user-agent": "SwingUp/1.0 support@swingup.app" },
           servername: url.hostname,
-          lookup: (_hostname, _options, callback) => callback(null, address, family),
+          lookup: pinnedAddressLookup(address, family),
         }, (incoming) => {
           const clearAbsoluteDeadline = () => clearTimeout(absoluteDeadline);
           incoming.once("end", clearAbsoluteDeadline);

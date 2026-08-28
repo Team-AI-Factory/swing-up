@@ -66,7 +66,7 @@ function asJson(value: unknown): Json {
 
 function isScheduledEventDeferral(message: string) {
   if (!/; next_retry_at=\d{4}-\d{2}-\d{2}T/.test(message)) return false;
-  return /^(?:pr262_event_full_source_incomplete|pr262_event_report_retry:[^;]+|[a-z0-9_]+_(?:rolling_quota_guard|cadence_guard)|The operation was aborted due to timeout); next_retry_at=/.test(message);
+  return /^(?:pr262_event_full_source_incomplete(?::[^;]+)?|pr262_authoritative_equity_universe_stale|pr262_event_report_retry:[^;]+|[a-z0-9_]+_(?:rolling_quota_guard|cadence_guard)|The operation was aborted due to timeout); next_retry_at=/.test(message);
 }
 
 class Pr262CycleDeadlineError extends Error {

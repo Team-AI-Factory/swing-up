@@ -7,8 +7,9 @@ import path from "node:path";
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const read = (relativePath) => readFile(path.join(repositoryRoot, relativePath), "utf8");
 
-const [railwayRaw, railwaySensorRaw, railwayRecoveryRaw, packageRaw, middleware, cronLauncher, legacySensorWorker, legacyPauseLauncher, oldSensorRoute, retiredCloudflareHandoff, deliveryTestRoute, sensorV3, historicalPolicy, watchOutAuthority, orchestrator] = await Promise.all([
+const [railwayRaw, railwayPreviewWebRaw, railwaySensorRaw, railwayRecoveryRaw, packageRaw, middleware, cronLauncher, legacySensorWorker, legacyPauseLauncher, oldSensorRoute, retiredCloudflareHandoff, deliveryTestRoute, sensorV3, historicalPolicy, watchOutAuthority, orchestrator] = await Promise.all([
   read("railway.json"),
+  read("railway.preview-web.json"),
   read("railway.sensor.json"),
   read("railway.analysis-recovery.json"),
   read("package.json"),
@@ -26,6 +27,7 @@ const [railwayRaw, railwaySensorRaw, railwayRecoveryRaw, packageRaw, middleware,
 ]);
 
 const railway = JSON.parse(railwayRaw);
+const railwayPreviewWeb = JSON.parse(railwayPreviewWebRaw);
 const railwaySensor = JSON.parse(railwaySensorRaw);
 const railwayRecovery = JSON.parse(railwayRecoveryRaw);
 const pkg = JSON.parse(packageRaw);
@@ -34,6 +36,10 @@ assert.equal(railway.build?.builder, "NIXPACKS", "The repository default must co
 assert.equal(railway.deploy?.startCommand, "npx prisma migrate deploy && npm run start", "Merging PR262 must not replace the website with a cron process");
 assert.equal(railway.deploy?.cronSchedule, undefined, "The persistent website must not inherit a five-minute cron schedule");
 assert.equal(railway.deploy?.restartPolicyType, "ON_FAILURE", "The website must restart after an application failure");
+assert.equal(railwayPreviewWeb.deploy?.startCommand, "npm run start", "A pull-request web preview must start without mutating its cloned database");
+assert.equal(railwayPreviewWeb.deploy?.healthcheckPath, "/api/health", "A pull-request web preview must still prove application health");
+assert.equal(railwayPreviewWeb.deploy?.healthcheckTimeout, 300, "A pull-request web preview must allow the normal bounded health-check window");
+assert.doesNotMatch(railwayPreviewWeb.deploy?.startCommand ?? "", /prisma|migrate/i, "A pull-request web preview must never run database migrations");
 assert.equal(railwaySensor.build?.builder, "RAILPACK", "The Railway sensor uses Railway Railpack");
 assert.equal(railwaySensor.deploy?.startCommand, "npm run pr262:cron", "Railway must keep the cheap five-minute sensor active");
 assert.equal(railwaySensor.deploy?.cronSchedule, "*/5 * * * *", "Railway sensing remains five-minute");
@@ -61,6 +67,23 @@ assert.match(cronLauncher, /SWING_UP_PR262_DELIVERY_TEST_RUN_ID/, "The delivery 
 assert.match(cronLauncher, /SWING_UP_PR262_RUN_DELIVERY_TEST_ONCE/, "Railway's config-as-code start command must have an exact-gated one-time delivery-test switch");
 assert.match(cronLauncher, /delete env\.TELEGRAM_SERIOUS_SIGNAL_CHAT_ID/);
 assert.match(cronLauncher, /delete env\.SWING_UP_SERIOUS_SIGNAL_WEBHOOK_URL/);
+
+const genericPreviewSkip = spawnSync(process.execPath, [fileURLToPath(new URL("./pr262-cron-cycle.mjs", import.meta.url))], {
+  encoding: "utf8",
+  env: {
+    ...process.env,
+    RAILWAY_GIT_BRANCH: "codex/unrelated-pull-request",
+    RAILWAY_ENVIRONMENT_NAME: "swing-up-pr-999",
+    SWING_UP_PR262_STORAGE_PREFIX: "branch-labs/pr-262/",
+  },
+  timeout: 5_000,
+});
+assert.equal(genericPreviewSkip.status, 0, "An ordinary pull-request preview must exit cleanly without running production sensing.");
+assert.match(
+  `${genericPreviewSkip.stdout ?? ""}${genericPreviewSkip.stderr ?? ""}`,
+  /preview_runtime_skipped branch=codex\/unrelated-pull-request reason=non_pr262_branch/,
+  "An ordinary pull-request preview must visibly prove that provider polling and queue processing were skipped.",
+);
 
 assert.match(middleware, /\/api\/health/, "Health route must remain available");
 assert.match(middleware, /INTERNAL_API_PATHS\.pr262Cron/, "The scoped V3 cron route may cross the PR262 runtime boundary");

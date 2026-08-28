@@ -16,10 +16,12 @@ assert.match(source, /request\.destroy\(new Error\("full_source_timeout"\)\)/, "
 assert.doesNotMatch(source, /request\.setTimeout\(/, "A socket-inactivity timeout cannot replace the absolute full-source deadline");
 assert.match(source, /FULL_SOURCE_CACHE_PREFIX/, "Decision-grade full-source work must be reusable across retries.");
 assert.match(source, /FULL_SOURCE_RETRY_COOLDOWN_MS = 2 \* 60 \* 60_000/, "Temporary full-source failures must retry before they are stale.");
+assert.match(source, /if \(options\.all\)[\s\S]*callback\(null, \[\{ address, family \}\]\)/, "Pinned HTTPS lookup must support Node's all-address callback contract.");
 const testableSource = source
   .replace("async function fetchFullSource(", "export async function fetchFullSource(")
   .replace("async function readCachedFullSource(", "export async function readCachedFullSource(")
-  .replace("async function cacheFullSource(", "export async function cacheFullSource(");
+  .replace("async function cacheFullSource(", "export async function cacheFullSource(")
+  .replace("function pinnedAddressLookup(", "export function pinnedAddressLookup(");
 const output = ts.transpileModule(testableSource, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
 }).outputText;
@@ -295,7 +297,7 @@ new Function("require", "module", "exports", output)((name) => {
   throw new Error(`Unexpected event-job import: ${name}`);
 }, cjsModule, cjsModule.exports);
 
-const { cacheFullSource, fetchFullSource, readCachedFullSource, runPr262EventJob, PR262_EVENT_JOB_KEYS } = cjsModule.exports;
+const { cacheFullSource, fetchFullSource, pinnedAddressLookup, readCachedFullSource, runPr262EventJob, PR262_EVENT_JOB_KEYS } = cjsModule.exports;
 
 const securityNow = new Date("2026-08-11T10:00:00.000Z");
 const publicDns = async () => ["93.184.216.34"];
@@ -359,6 +361,21 @@ const pinnedFullSource = await fetchFullSource(
 );
 assert.equal(pinnedFullSource.decisionGrade, true);
 assert.deepEqual(pinnedTransportAddresses, ["93.184.216.34"], "The production transport must receive and pin the already-validated DNS address");
+
+const pinnedSingleLookup = await new Promise((resolve, reject) => {
+  pinnedAddressLookup("93.184.216.34", 4)("news.example.com", { all: false }, (error, address, family) => {
+    if (error) reject(error);
+    else resolve({ address, family });
+  });
+});
+assert.deepEqual(pinnedSingleLookup, { address: "93.184.216.34", family: 4 });
+const pinnedAllLookup = await new Promise((resolve, reject) => {
+  pinnedAddressLookup("2606:4700:4700::1111", 6)("news.example.com", { all: true }, (error, addresses) => {
+    if (error) reject(error);
+    else resolve(addresses);
+  });
+});
+assert.deepEqual(pinnedAllLookup, [{ address: "2606:4700:4700::1111", family: 6 }], "Node 24 all-address lookups must not receive an undefined address.");
 
 for (const blockedUrl of [
   "http://news.example.com/exact-guidance",

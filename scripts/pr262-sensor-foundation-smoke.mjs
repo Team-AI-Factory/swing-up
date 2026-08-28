@@ -467,21 +467,23 @@ const mappedDueRetry = {
   queueAttempts: 2,
   queueNextAttemptAt: now.toISOString(),
 };
-const unmappedFlood = Array.from({ length: 2_500 }, (_, index) => ({
+const freshUnmappedFlood = Array.from({ length: 2_500 }, (_, index) => ({
   ...parsed.events[0],
   id: `sec:unmapped-${index}`,
   ticker: null,
   company: null,
   mappingStatus: "unmapped",
-  mappingMethod: "sec_cik_unknown_fail_closed",
+  mappingMethod: undefined,
   priority: 100,
   observedAt: new Date(now.getTime() - 60_000).toISOString(),
 }));
-const partitionedQueue = sensor.partitionPr262PendingEvents([...unmappedFlood, mappedDueRetry], now);
+const partitionedQueue = sensor.partitionPr262PendingEvents([...freshUnmappedFlood, mappedDueRetry], now);
 assert.equal(partitionedQueue[0].id, mappedDueRetry.id, "A due mapped retry must outrank unmapped discovery noise");
-assert.equal(partitionedQueue.filter((item) => item.mappingStatus !== "mapped").length, 500, "Unresolved discovery has its own bounded partition");
+assert.equal(partitionedQueue.filter((item) => item.mappingStatus !== "mapped").length, 500, "Fresh unresolved discovery has its own bounded one-pass partition");
 assert.equal(partitionedQueue.some((item) => item.id === mappedDueRetry.id), true, "Unmapped SEC volume must not evict a mapped retry");
-const expiredUnmapped = { ...unmappedFlood[0], id: "sec:expired-unmapped", observedAt: new Date(now.getTime() - 25 * 60 * 60_000).toISOString() };
+const failedUnmappedFlood = freshUnmappedFlood.map((event) => ({ ...event, mappingMethod: "sec_cik_unknown_fail_closed" }));
+assert.equal(sensor.partitionPr262PendingEvents(failedUnmappedFlood, now).length, 0, "Authoritatively failed SEC identities must not remain in the unresolved partition.");
+const expiredUnmapped = { ...freshUnmappedFlood[0], id: "sec:expired-unmapped", observedAt: new Date(now.getTime() - 25 * 60 * 60_000).toISOString() };
 assert.equal(sensor.partitionPr262PendingEvents([expiredUnmapped, mappedDueRetry], now).some((item) => item.id === expiredUnmapped.id), false, "Unmapped discovery must expire after one day");
 const olderUntouched = { ...mappedDueRetry, id: "sec:older-untouched", priority: 100, queueAttempts: 0, queueNextAttemptAt: null, observedAt: new Date(now.getTime() - 10 * 60_000).toISOString() };
 const freshUntouched = { ...olderUntouched, id: "sec:fresh-untouched", observedAt: new Date(now.getTime() - 60_000).toISOString() };

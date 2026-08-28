@@ -38,6 +38,7 @@ assert.equal(railway.deploy?.cronSchedule, undefined, "The persistent website mu
 assert.equal(railway.deploy?.restartPolicyType, "ON_FAILURE", "The website must restart after an application failure");
 assert.equal(railwayPreviewWeb.deploy?.startCommand, "npm run start", "A pull-request web preview must start without mutating its cloned database");
 assert.equal(railwayPreviewWeb.deploy?.healthcheckPath, "/api/health", "A pull-request web preview must still prove application health");
+assert.equal(railwayPreviewWeb.deploy?.healthcheckTimeout, 300, "A pull-request web preview must allow the normal bounded health-check window");
 assert.doesNotMatch(railwayPreviewWeb.deploy?.startCommand ?? "", /prisma|migrate/i, "A pull-request web preview must never run database migrations");
 assert.equal(railwaySensor.build?.builder, "RAILPACK", "The Railway sensor uses Railway Railpack");
 assert.equal(railwaySensor.deploy?.startCommand, "npm run pr262:cron", "Railway must keep the cheap five-minute sensor active");

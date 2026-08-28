@@ -855,12 +855,34 @@ async function readDecisionGradeSource(
     }
     return fetchFullSource(receipt, event, company, ticker, fetchImpl, now, resolveHost, fullSourceTransport);
   }
-  const details = await enrichSecFilingDetails([receipt], fetchImpl, now);
+  const details = await enrichSecFilingDetails(
+    [receipt],
+    fetchImpl,
+    now,
+    undefined,
+    { priorityReceiptIds: [receipt.id] },
+  );
   const receipts = mergeSecFilingDetails([receipt], details.details);
   const selected = details.details.find((detail) => detail.receipt.id === receipt.id) ?? null;
   const decisionGrade = Boolean(selected && selected.textLength >= 200 && !selected.eventExhibitMissing);
   const provider: ProviderResult = { ...details.provider, receipts: [] };
-  return { receipts, providers: [provider], decisionGrade, diagnostics: details.diagnostics };
+  const currentDiagnostic = details.diagnostics.items.find((item) => item.receiptId === receipt.id) ?? null;
+  const skipped = details.diagnostics.skipped;
+  const failureReason = currentDiagnostic?.errorCategory
+    ?? (skipped.unsupported_form > 0 ? "unsupported_form"
+      : skipped.invalid_url > 0 ? "invalid_url"
+      : skipped.invalid_date > 0 ? "invalid_date"
+      : skipped.stale > 0 ? "stale"
+      : skipped.failure_cooldown > 0 ? "failure_cooldown"
+      : skipped.retry_not_due > 0 ? "provider_budget_not_due"
+      : skipped.run_limit > 0 ? "targeted_accession_not_selected"
+      : details.provider.error);
+  return {
+    receipts,
+    providers: [provider],
+    decisionGrade,
+    diagnostics: { ...details.diagnostics, failureReason },
+  };
 }
 
 type DecisionGradeSourceResult = {
@@ -913,7 +935,7 @@ function permanentlyUnreadableFullSource(reason: string | null, event: Pr262Sens
   // transient DNS, rate-limit, or provider outage may span several attempts;
   // only explicit permanent failures (or the separate 48-hour expiry) may
   // archive the event without analysis.
-  return Boolean(reason && /(?:url_invalid|url_not_public_https|host_blocked|address_blocked|content_type_unsupported|body_too_large|issuer_or_event_unconfirmed|http_40[0134]|http_410)/i.test(reason));
+  return Boolean(reason && /(?:unsupported_form|url_invalid|url_not_public_https|host_blocked|address_blocked|content_type_unsupported|body_too_large|issuer_or_event_unconfirmed|http_40[0134]|http_410)/i.test(reason));
 }
 
 function exactIssuerUniverse(resolved: Pr262ResolvedSensorCompany, now: Date): EquityUniverseSnapshot {

@@ -8,6 +8,7 @@ import type { Pr262SensorEvent } from "@/lib/opportunity-engine/pr262-change-sen
 const REGISTRY_KEY = pr262StorageKey("sensor/direct-company-feeds-v1.json");
 const DISCOVERY_CADENCE_MS = 30 * 60_000;
 const NO_FEED_RETRY_MS = 24 * 60 * 60_000;
+const TRANSIENT_DISCOVERY_RETRY_MS = 60 * 60_000;
 const FEED_POLL_CADENCE_MS = 60 * 60_000;
 // Three discoveries every 30 minutes stays below the shared 190/day SEC
 // submissions ceiling at a fifteen-minute sensor cadence and leaves headroom.
@@ -44,6 +45,15 @@ function emptyRegistry(): Registry {
 
 function text(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function transientDiscoveryError(value: string | null) {
+  return Boolean(value && /budget_guard|minimum_interval|rolling_24h_budget|timeout|temporarily_unavailable|rate_limit|http_429|http_5\d\d/i.test(value));
+}
+
+function discoveryRetryAt(error: string | null, now: Date) {
+  const delay = transientDiscoveryError(error) ? TRANSIENT_DISCOVERY_RETRY_MS : NO_FEED_RETRY_MS;
+  return new Date(now.getTime() + delay).toISOString();
 }
 
 function cleanXml(value: string) {
@@ -290,7 +300,7 @@ async function discoverOne(fetchImpl: typeof fetch, company: Pr262ExposureEntry,
     lastDiscoveryAt: now.toISOString(),
     lastCheckedAt: null,
     lastSuccessAt: null,
-    nextCheckAt: feedUrl ? null : new Date(now.getTime() + NO_FEED_RETRY_MS).toISOString(),
+    nextCheckAt: feedUrl ? null : discoveryRetryAt(error ?? "issuer_rss_feed_not_discovered", now),
     error: feedUrl ? null : error ?? "issuer_rss_feed_not_discovered",
   };
 }
@@ -329,8 +339,13 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
         cursor = (cursor + 1) % candidates.length;
         inspected += 1;
         const existing = byTicker.get(company.ticker);
-        const lastAt = existing?.lastDiscoveryAt ? Date.parse(existing.lastDiscoveryAt) : 0;
-        if (existing?.feedUrl || (Number.isFinite(lastAt) && now.getTime() - lastAt < NO_FEED_RETRY_MS)) continue;
+        const lastAt = existing?.lastDiscoveryAt ? Date.parse(existing.lastDiscoveryAt) : Number.NaN;
+        const nextAt = existing?.nextCheckAt ? Date.parse(existing.nextCheckAt) : Number.NaN;
+        const retryDue = !existing
+          || (transientDiscoveryError(existing.error)
+            ? !Number.isFinite(lastAt) || now.getTime() - lastAt >= TRANSIENT_DISCOVERY_RETRY_MS
+            : !Number.isFinite(nextAt) || nextAt <= now.getTime());
+        if (existing?.feedUrl || !retryDue) continue;
         if (!company.cik || selectedCiks.has(company.cik)) continue;
         selectedCiks.add(company.cik);
         discoveryTargets.push({ company, existing });
@@ -351,7 +366,10 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
               lastDiscoveryAt: now.toISOString(),
               lastCheckedAt: existing?.lastCheckedAt ?? null,
               lastSuccessAt: existing?.lastSuccessAt ?? null,
-              nextCheckAt: new Date(now.getTime() + NO_FEED_RETRY_MS).toISOString(),
+              nextCheckAt: discoveryRetryAt(
+                error instanceof Error ? error.message : "direct_feed_discovery_failed",
+                now,
+              ),
               error: error instanceof Error ? error.message.slice(0, 180) : "direct_feed_discovery_failed",
             });
           }
@@ -403,6 +421,7 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
     companiesKnown: registry.entries.length,
     investorWebsitesFound: registry.entries.filter((entry) => entry.investorWebsite).length,
     feedlessCompanies: registry.entries.filter((entry) => !entry.feedUrl).length,
+    transientDiscoveryBacklog: registry.entries.filter((entry) => !entry.feedUrl && transientDiscoveryError(entry.error)).length,
     discoveryErrors: [...new Set(registry.entries.map((entry) => entry.error).filter((value): value is string => Boolean(value)))].slice(0, 8),
     registryKey: REGISTRY_KEY,
   };

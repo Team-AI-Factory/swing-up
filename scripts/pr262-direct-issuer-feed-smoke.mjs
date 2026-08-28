@@ -24,6 +24,7 @@ assert.match(monitor, /discoverInvestorPages\(page\.body, page\.finalUrl\)/, "Di
 assert.match(monitor, /\.slice\(0, 2\)/, "Nested issuer-page discovery must remain tightly bounded.");
 assert.match(monitor, /investorWebsitesFound[\s\S]*?feedlessCompanies[\s\S]*?discoveryErrors/, "Production diagnostics must distinguish missing issuer websites from missing feed links and transport errors.");
 assert.match(monitor, /const existing = registry\.entries\.find[\s\S]*?existing\.feedUrl = feedUrl/, "A configured official issuer feed must repair an existing feedless registry entry.");
+assert.match(monitor, /issuer_website_missing_in_sec_submissions/, "Issuer telemetry must distinguish a missing SEC website from a website that exposes no RSS feed.");
 assert.match(sensor, /recordsRead: direct\.feedsPolled \+ direct\.secSubmissionsChecked/, "Cost telemetry must report RSS polls and SEC submissions checks honestly.");
 assert.match(sensor, /transientDiscoveryBacklog: direct\.transientDiscoveryBacklog/, "The production sensor must not drop issuer discovery backlog telemetry.");
 

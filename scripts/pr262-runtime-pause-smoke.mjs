@@ -41,8 +41,8 @@ assert.equal(railwayPreviewWeb.deploy?.healthcheckPath, "/api/health", "A pull-r
 assert.equal(railwayPreviewWeb.deploy?.healthcheckTimeout, 300, "A pull-request web preview must allow the normal bounded health-check window");
 assert.doesNotMatch(railwayPreviewWeb.deploy?.startCommand ?? "", /prisma|migrate/i, "A pull-request web preview must never run database migrations");
 assert.equal(railwaySensor.build?.builder, "RAILPACK", "The Railway sensor uses Railway Railpack");
-assert.equal(railwaySensor.deploy?.startCommand, "npm run pr262:cron", "Railway must keep the cheap five-minute sensor active");
-assert.equal(railwaySensor.deploy?.cronSchedule, "*/5 * * * *", "Railway sensing remains five-minute");
+assert.equal(railwaySensor.deploy?.startCommand, "npm run pr262:cron", "Railway must keep the lightweight sensor active");
+assert.equal(railwaySensor.deploy?.cronSchedule, "*/15 * * * *", "Railway sensing uses the approved fifteen-minute cadence");
 assert.equal(railwaySensor.deploy?.restartPolicyType, "NEVER", "A completed sensor cron waits for the next schedule");
 assert.equal(railwayRecovery.deploy?.startCommand, "npm run pr262:analysis-cron", "Railway recovery must process the existing R2 queue without duplicating source scans");
 assert.equal(railwayRecovery.deploy?.cronSchedule, "7 * * * *", "The Railway analysis cron is an hourly recovery net");
@@ -56,7 +56,7 @@ assert.match(cronLauncher, /PRODUCTION_STORAGE_PREFIX = "production\/pr262\/"/, 
 assert.match(cronLauncher, /SWING_UP_R2_WRITE_PREFIX:\s*storagePrefix/, "Cron must fence writes to its selected PR262 namespace");
 assert.match(cronLauncher, /analysisOnly \? "analysis_only" : "sensor_and_analysis"/, "The recovery service must select analysis-only mode");
 assert.match(cronLauncher, /SWING_UP_PR262_SENSOR_OWNER:[\s\S]*analysisOnly \? "railway_analysis_recovery"/, "The recovery service must identify itself without claiming the source-sensor role");
-assert.match(cronLauncher, /AbortSignal\.timeout\(240_000\)/, "Cron route call must have an absolute timeout shorter than the next five-minute schedule");
+assert.match(cronLauncher, /AbortSignal\.timeout\(240_000\)/, "Cron route call must have an absolute timeout shorter than the next fifteen-minute schedule");
 assert.match(cronLauncher, /SIGTERM/, "Cron must shut down the temporary web app after one cycle");
 assert.match(orchestrator, /runPr262AnalysisOnlyCycle/, "The hourly Railway recovery service needs an exported analysis-only entry point");
 assert.match(orchestrator, /return runPr262Cycle\("sensor_and_analysis", input\)/, "A stale Cloudflare variable must not disable the approved Railway sensor");
@@ -153,4 +153,4 @@ assert.match(watchOutAuthority, /committee\.agentsCompleted\s*===\s*14/, "Seriou
 assert.match(watchOutAuthority, /committee\.agentsFailed\s*===\s*0/, "Serious Watch Out must reject incomplete committee runs");
 assert.match(watchOutAuthority, /judge\.verdict\s*===\s*"positive"/, "Serious Watch Out must require a positive Final Judge");
 
-console.log("PR #262 runtime recovery smoke passed: website default restored, Railway owns cheap five-minute sensing, hourly Railway recovery is separated, quiet scans avoid full R2 rewrites, the production namespace is fenced, legacy scanners are blocked, and Serious Watch Out authority is protected.");
+console.log("PR #262 runtime recovery smoke passed: website default restored, Railway owns lightweight fifteen-minute sensing, hourly Railway recovery is separated, quiet scans avoid full R2 rewrites, the production namespace is fenced, legacy scanners are blocked, and Serious Watch Out authority is protected.");

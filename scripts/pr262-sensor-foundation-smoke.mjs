@@ -463,6 +463,15 @@ assert.deepEqual(freshPriorityQueue.map((item) => item.id), [freshUntouched.id, 
 const expiredMapped = { ...mappedDueRetry, id: "sec:expired-mapped", observedAt: new Date(now.getTime() - 49 * 60 * 60_000).toISOString() };
 assert.equal(sensor.partitionPr262PendingEvents([expiredMapped], now).length, 0, "A mapped event must not become a permanent analysis backlog after 48 hours.");
 const secondaryNews = { ...freshUntouched, id: "news:secondary", source: "company_news", priority: 100 };
+const permanentlyUnmappableNews = {
+  ...secondaryNews,
+  id: "news:no-structured-ticker",
+  ticker: null,
+  company: null,
+  mappingStatus: "unmapped",
+  mappingMethod: "structured_ticker_required_fail_closed",
+};
+assert.equal(sensor.partitionPr262PendingEvents([permanentlyUnmappableNews, mappedDueRetry], now).some((item) => item.id === permanentlyUnmappableNews.id), false, "Tickerless non-SEC research can never satisfy the exact-issuer gate and must not become backlog.");
 const officialSec = { ...olderUntouched, id: "sec:official-first", source: "sec", priority: 80 };
 assert.equal(sensor.partitionPr262PendingEvents([secondaryNews, officialSec], now)[0].id, officialSec.id, "Fresh SEC and issuer evidence must be analyzed before secondary news noise.");
 const retriedSecondaryNews = { ...secondaryNews, id: "news:retried-secondary", queueAttempts: 3, queueNextAttemptAt: now.toISOString() };

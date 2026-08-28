@@ -420,6 +420,12 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
     deferredForRetry: eventDeferrals,
     failed: eventFailures,
     pendingAtEnd: state.pending.length,
+    pendingMappedAtEnd: state.pending.filter((event) => event.mappingStatus === "mapped" && Boolean(event.ticker)).length,
+    pendingUnmappedAtEnd: state.pending.filter((event) => event.mappingStatus !== "mapped" || !event.ticker).length,
+    pendingBySourceAtEnd: state.pending.reduce<Record<string, number>>((counts, event) => {
+      counts[event.source] = (counts[event.source] ?? 0) + 1;
+      return counts;
+    }, {}),
     deferralReasons: [...new Set(eventResults
       .filter((result) => result.status === "event_job_deferred")
       .map((result) => String(result.error ?? "unknown").split("; next_retry_at=")[0].slice(0, 180)))].slice(0, 12),
@@ -432,6 +438,8 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
     sensor: sensor ? {
       skipped: false,
       newEvents: sensor.newEvents,
+      priceResearchEvents: sensor.priceResearchEvents,
+      nonActionableEventsDropped: sensor.nonActionableEventsDropped,
       sectorFanoutEvents: sensor.sectorFanoutEvents,
       pendingEvents: state.pending.length,
       exposureCompanies: sensor.exposureCompanies,
@@ -440,6 +448,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
       providerBudget: sourceBudget?.summary() ?? null,
       providerBudgetPersistence: budgetPersistence,
       directAnnouncementMonitoring: sensor.directAnnouncementMonitoring,
+      r2Persistence: sensor.r2Persistence,
     } : {
       skipped: true,
       owner: "railway_sensor",

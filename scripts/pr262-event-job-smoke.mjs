@@ -260,9 +260,9 @@ const stubs = {
             pricedInPenalty: 0,
             gatePassed: false,
             gateChecks: {
-              eventTruthAtLeast80: true,
-              mappingConfidenceAtLeast95: true,
-              materialityAtLeast65: false,
+              verifiedEventTruth: true,
+              reliableTickerMapping: true,
+              materialEvent: false,
             },
             alertReadiness: "watch_only",
           }],
@@ -660,7 +660,7 @@ assert.equal(routineNoSignal.analysisDiagnostics.qualityScore, 61);
 assert.equal(routineNoSignal.analysisDiagnostics.funnel.realEventReceipts, 1);
 assert.equal(routineNoSignal.analysisDiagnostics.funnel.candidatesPassingEventFirstGate, 0);
 assert.equal(routineNoSignal.analysisDiagnostics.topNearMiss.ticker, "EXCT");
-assert.deepEqual(routineNoSignal.analysisDiagnostics.topNearMiss.failedGateChecks, ["materialityAtLeast65"]);
+assert.deepEqual(routineNoSignal.analysisDiagnostics.topNearMiss.failedGateChecks, ["materialEvent"]);
 assert.deepEqual(routineNoSignal.analysisDiagnostics.blockers, ["No current event passed the strict event-first gate."]);
 assert.equal([...objects.keys()].filter((key) => key.startsWith(PR262_EVENT_JOB_KEYS.RUN_PREFIX)).length, detailedRunCountBeforeQuietAnalysis);
 assert.equal([...objects.keys()].filter((key) => key.includes("/value-investing/event-refresh/")).length, valueRefreshCountBeforeQuietAnalysis);

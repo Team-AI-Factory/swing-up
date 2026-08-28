@@ -609,6 +609,8 @@ assert.equal(foundationFallback.costControl.affectedCompanyValuationRefreshes, 0
 assert.equal(foundationFallback.costControl.affectedCompanyValuationCacheFallbacks, 1);
 assert.equal(foundationFallback.costControl.valuationContext.source, "daily_foundation_cache");
 assert.equal(foundationFallback.costControl.valuationContext.quotaFallback, true);
+assert.equal(foundationFallback.costControl.valuationContext.targetedRefreshBlockedByQuota, true);
+assert.equal(foundationFallback.costControl.valuationContext.usableFoundationContext, true);
 assert.equal(valueRefreshCalls, valueRefreshCallsBeforeFallback, "A denied targeted quote must not make an unreserved provider call.");
 assert.equal(retryCalls, retryCallsBeforeFallback, "Fresh complete daily valuation must prevent a quota-only event deferral.");
 assert.equal(lastStoredCompanyAnalysis.currentPrice, 40, "The Committee must receive the exact fresh daily foundation valuation.");
@@ -616,13 +618,21 @@ assert.equal(lastStoredCompanyAnalysis.currentPrice, 40, "The Committee must rec
 setSecEventIdentity("000008", "2026-08-11T10:06:30.000Z");
 const freshObservedAt = analysis.observedAt;
 analysis.observedAt = "2026-08-09T00:00:00.000Z";
+lastStoredCompanyAnalysis = null;
 const runnerCallsBeforeStaleFallback = runnerCalls;
-await assert.rejects(
-  () => runPr262EventJob({ now: new Date("2026-08-11T10:07:00.000Z"), allowOpenAi: true }),
-  /tradingview_targeted_value_rolling_quota_guard/,
-);
-assert.equal(runnerCalls, runnerCallsBeforeStaleFallback, "A stale daily valuation must never reach the Committee.");
-assert.equal(retryCalls, retryCallsBeforeFallback + 1, "An unsafe fallback must retain the event for a bounded retry.");
+const staleFoundationContext = await runPr262EventJob({
+  now: new Date("2026-08-11T10:07:00.000Z"),
+  allowOpenAi: true,
+});
+assert.equal(staleFoundationContext.status, "no_qualified_signal");
+assert.equal(staleFoundationContext.costControl.affectedCompanyValuationRefreshes, 0);
+assert.equal(staleFoundationContext.costControl.affectedCompanyValuationCacheFallbacks, 0);
+assert.equal(staleFoundationContext.costControl.valuationContext.source, "unavailable_budget_safe");
+assert.equal(staleFoundationContext.costControl.valuationContext.targetedRefreshBlockedByQuota, true);
+assert.equal(staleFoundationContext.costControl.valuationContext.usableFoundationContext, false);
+assert.equal(runnerCalls, runnerCallsBeforeStaleFallback + 1, "Current event evidence must still reach deterministic gates when optional valuation context is unavailable.");
+assert.deepEqual(lastStoredCompanyAnalysis, {}, "Stale or malformed valuation context must never be passed into deterministic gates or the Committee.");
+assert.equal(retryCalls, retryCallsBeforeFallback, "A valuation-only quota gap must not backlog current decision-grade event evidence.");
 analysis.observedAt = freshObservedAt;
 targetedValueBudgetAllowed = true;
 runnerResultMode = "serious";
@@ -704,7 +714,7 @@ console.log(JSON.stringify({
   wrongCachedSecAccessionCannotSupplyDecisionGrade: true,
   affectedCompanyValuationRefreshedOnce: true,
   freshDailyFoundationValuationBridgesTargetedQuota: true,
-  staleFoundationValuationStillFailsClosed: true,
+  staleFoundationValuationExcludedWithoutBlockingEventEvidence: true,
   noBroadWarehouseRebuild: true,
   nonSecFullSourceSecurityCovered: true,
   boundedLargePublisherPrefixCovered: true,

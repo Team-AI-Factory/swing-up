@@ -933,9 +933,24 @@ const queuedExactTargetReceipt = receipt({
   publishedAt: exactTargetedReceipt.publishedAt,
   url: exactTargetedReceipt.url,
 });
+const saturatedPriorityReceipts = Array.from({ length: 1_000 }, (_, index) => {
+  const forms = ["8-K", "6-K", "424B5", "424B3", "10-Q", "10-K"];
+  const cik = String(8_000_000 + index);
+  const accession = `${cik}26000001`;
+  return receipt({
+    id: `saturated-priority-backlog-${index}`,
+    rawEventType: forms[index % forms.length],
+    publishedAt: "2026-07-22T11:30:00.000Z",
+    url: `https://www.sec.gov/Archives/edgar/data/${cik}/${accession}/saturated-${index}-index.html`,
+  });
+});
 const priorityReceiptByUrl = new Map(
-  [...targetedPriorityReceipts, queuedExactTargetReceipt, exactTargetedReceipt]
-    .map((item) => [item.url, item]),
+  [
+    ...targetedPriorityReceipts,
+    ...saturatedPriorityReceipts,
+    queuedExactTargetReceipt,
+    exactTargetedReceipt,
+  ].map((item) => [item.url, item]),
 );
 const priorityFetch = async (value) => {
   const url = String(value);
@@ -956,7 +971,7 @@ const priorityFetch = async (value) => {
 };
 await enrichSecFilingDetails([...targetedPriorityReceipts, queuedExactTargetReceipt], priorityFetch, now);
 const targetedPriority = await enrichSecFilingDetails(
-  [exactTargetedReceipt],
+  [...saturatedPriorityReceipts, exactTargetedReceipt],
   priorityFetch,
   new Date(now.getTime() + 5 * 60_000),
   undefined,
@@ -991,6 +1006,7 @@ console.log(JSON.stringify({
   continuousFreshArrivalsCannotStarveOtherForms: true,
   exactTargetedAccessionBypassesFairnessBacklog: true,
   exactTargetedAccessionReplacesDeduplicatedReceipt: true,
+  exactTargetedAccessionSurvivesQueueCapacityBounding: true,
   selectedAccessionsReservedInOneBatchBeforeFetch: true,
   eachAccessionGrantCoversAtMostThreeChildRequests: true,
   explicitExhibit992Selected: true,

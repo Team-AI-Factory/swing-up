@@ -242,18 +242,26 @@ function compareByRecency(left: EligibleReceipt, right: EligibleReceipt) {
     || left.receipt.id.localeCompare(right.receipt.id);
 }
 
-function boundEligibleQueue(items: EligibleReceipt[]) {
-  if (items.length <= MAX_ELIGIBLE_QUEUE_ENTRIES) return [...items].sort(compareEligible);
-  const reservedPerForm = Math.floor(MAX_ELIGIBLE_QUEUE_ENTRIES / FORM_ROTATION.length);
+function boundEligibleQueue(items: EligibleReceipt[], priorityFilingKeys = new Set<string>()) {
+  const prioritized = items
+    .filter((item) => priorityFilingKeys.has(item.filingKey))
+    .sort(compareByRecency)
+    .slice(0, MAX_ELIGIBLE_QUEUE_ENTRIES);
+  const prioritizedFilingKeys = new Set(prioritized.map((item) => item.filingKey));
+  const ordinary = items.filter((item) => !prioritizedFilingKeys.has(item.filingKey));
+  const ordinaryCapacity = MAX_ELIGIBLE_QUEUE_ENTRIES - prioritized.length;
+  if (ordinary.length <= ordinaryCapacity) return [...prioritized, ...ordinary].sort(compareEligible);
+
+  const reservedPerForm = Math.floor(ordinaryCapacity / FORM_ROTATION.length);
   const retained: EligibleReceipt[] = [];
   const overflow: EligibleReceipt[] = [];
   for (const form of FORM_ROTATION) {
-    const formItems = items.filter((item) => item.form === form).sort(compareByRecency);
+    const formItems = ordinary.filter((item) => item.form === form).sort(compareByRecency);
     retained.push(...formItems.slice(0, reservedPerForm));
     overflow.push(...formItems.slice(reservedPerForm));
   }
-  retained.push(...overflow.sort(compareByRecency).slice(0, MAX_ELIGIBLE_QUEUE_ENTRIES - retained.length));
-  return retained.sort(compareEligible);
+  retained.push(...overflow.sort(compareByRecency).slice(0, ordinaryCapacity - retained.length));
+  return [...prioritized, ...retained].sort(compareEligible);
 }
 
 function compareWithinForm(left: EligibleReceipt, right: EligibleReceipt, nowMs: number) {
@@ -622,7 +630,7 @@ export async function enrichSecFilingDetails(
       eligibleReceiptQueue.set(eligible.filingKey, eligible);
     }
   }
-  const boundedUnionEligible = boundEligibleQueue([...eligibleReceiptQueue.values()]);
+  const boundedUnionEligible = boundEligibleQueue([...eligibleReceiptQueue.values()], priorityFilingKeys);
   const retainedFilingKeys = new Set(boundedUnionEligible.map((eligible) => eligible.filingKey));
   for (const eligible of eligibleReceiptQueue.values()) {
     if (!retainedFilingKeys.has(eligible.filingKey)) eligibleReceiptQueue.delete(eligible.filingKey);

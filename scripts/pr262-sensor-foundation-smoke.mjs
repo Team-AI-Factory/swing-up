@@ -11,6 +11,8 @@ const directAnnouncementSource = readFileSync(new URL("../lib/opportunity-engine
 assert.match(directAnnouncementSource, /redirect: "manual"/, "Direct issuer feeds must never auto-follow an unvalidated redirect.");
 assert.match(directAnnouncementSource, /current = new URL\(location, url\)\.toString\(\)/, "Every direct issuer redirect must be resolved and revalidated.");
 assert.match(directAnnouncementSource, /direct_feed_redirect_limit/, "Direct issuer redirect chains must be bounded.");
+assert.match(directAnnouncementSource, /MAX_DISCOVERIES_PER_CYCLE = 3/, "Issuer discovery must remain below the shared SEC submissions daily ceiling.");
+assert.match(directAnnouncementSource, /DISCOVERY_CONCURRENCY = 1/, "Issuer discovery must avoid duplicate concurrent CIK reservations.");
 
 function putObject(key, value) {
   revision += 1;

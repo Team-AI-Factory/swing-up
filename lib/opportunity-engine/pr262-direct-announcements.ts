@@ -411,6 +411,9 @@ async function discoverOne(
       error = cause instanceof Error ? cause.message.slice(0, 180) : "direct_feed_discovery_failed";
     }
   }
+  const missingFeedReason = investorWebsite
+    ? "issuer_rss_feed_not_discovered"
+    : "issuer_website_missing_in_sec_submissions";
   return {
     entry: {
       ticker: company.ticker,
@@ -422,8 +425,8 @@ async function discoverOne(
       lastDiscoveryAt: now.toISOString(),
       lastCheckedAt: null,
       lastSuccessAt: null,
-      nextCheckAt: feedUrl ? null : discoveryRetryAt(error ?? "issuer_rss_feed_not_discovered", now),
-      error: feedUrl ? null : error ?? "issuer_rss_feed_not_discovered",
+      nextCheckAt: feedUrl ? null : discoveryRetryAt(error ?? missingFeedReason, now),
+      error: feedUrl ? null : error ?? missingFeedReason,
     },
     secEvents,
   };

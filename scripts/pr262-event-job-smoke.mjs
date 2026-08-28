@@ -351,6 +351,21 @@ const stubs = {
       };
     },
   },
+  "@/lib/equity-signal/analysis": {
+    PERMISSION_GATE_KEYS: [
+      "verifiedEventTruth",
+      "reliableTickerMapping",
+      "materialEvent",
+      "causalTransmission",
+      "freshEvidence",
+      "primaryOrIndependentProof",
+      "noSevereContradiction",
+      "notRumour",
+      "knockOnCausalPathVerified",
+      "eventMagnitudeActionable",
+      "currentEvidenceScoreAtLeast72",
+    ],
+  },
   "@/lib/r2-warehouse": {
     readVersionedTextFromR2: async (key) => {
       if (failHistoryAccess && key === historyKey) throw new Error("simulated_optional_history_store_failure");

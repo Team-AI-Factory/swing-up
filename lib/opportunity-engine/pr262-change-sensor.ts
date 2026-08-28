@@ -145,8 +145,11 @@ function contextOnlyEvent(event: Pr262SensorEvent) {
   // A broad macro/sector observation can be useful research context, but it
   // cannot prove an issuer-specific causal event. Sending these synthetic
   // fan-outs through the full-source/Committee queue only consumes evidence
-  // budget and can never satisfy the exact-issuer gate.
-  return event.mappingMethod === "deterministic_sector_fanout";
+  // budget and can never satisfy the exact-issuer gate. Directory enrichment
+  // may replace mappingMethod with its structured-ticker resolution, so the
+  // durable event ID is also part of the compatibility fence for older state.
+  return event.mappingMethod === "deterministic_sector_fanout"
+    || event.id.includes(":fanout:");
 }
 
 function pendingOrder(left: Pr262SensorEvent, right: Pr262SensorEvent, nowMs: number) {

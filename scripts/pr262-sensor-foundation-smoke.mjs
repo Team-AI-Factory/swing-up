@@ -469,11 +469,17 @@ const retriedSecondaryNews = { ...secondaryNews, id: "news:retried-secondary", q
 assert.equal(sensor.partitionPr262PendingEvents([retriedSecondaryNews, officialSec], now)[0].id, officialSec.id, "A noisy retry must never jump ahead of fresh SEC evidence.");
 const contextualFanout = {
   ...officialSec,
-  id: "official:macro-fanout:SAFE",
+  id: "official:macro:fanout:SAFE",
   source: "official",
   mappingMethod: "deterministic_sector_fanout",
 };
 assert.equal(sensor.partitionPr262PendingEvents([contextualFanout, officialSec], now).some((item) => item.id === contextualFanout.id), false, "Broad sector fan-out belongs in context telemetry, not the issuer evidence queue.");
+const legacyEnrichedFanout = {
+  ...contextualFanout,
+  mappingMethod: "structured_ticker_exact",
+  mappingReason: "An explicit source ticker matched the authoritative U.S. universe.",
+};
+assert.equal(sensor.partitionPr262PendingEvents([legacyEnrichedFanout, officialSec], now).some((item) => item.id === legacyEnrichedFanout.id), false, "Directory enrichment must not disguise an older context-only fan-out as issuer evidence.");
 const legacyMarketEvent = {
   ...mappedDueRetry,
   id: "v3-market:legacy-minute-one",

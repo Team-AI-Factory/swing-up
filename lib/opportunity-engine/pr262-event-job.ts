@@ -85,6 +85,16 @@ type EventJobLeaseState = { version: 1; updatedAt: string; lease: EventLease | n
 type EventJobProviderBudgetState = { version: 1; updatedAt: string; reservations: ProviderReservation[] };
 type EventJobCommitteeBudgetState = { version: 1; updatedAt: string; reservations: CommitteeReservation[] };
 
+function obsoleteContextOnlyProviderReservation(reservation: ProviderReservation) {
+  // PR269 stopped new sector fan-outs from entering the issuer evidence queue.
+  // Older directory-enriched fan-outs lost their mappingMethod marker, but the
+  // durable cadence key still contains the event ID. Ignore only those obsolete
+  // full-source reservations so they cannot consume today's issuer evidence
+  // allowance; every real provider and Committee reservation remains intact.
+  return reservation.quotaKey === "pr262_full_source_reads"
+    && reservation.cadenceKey.includes(":fanout:");
+}
+
 export type Pr262EventJobInput = {
   now?: Date;
   fetchImpl?: typeof fetch;
@@ -250,6 +260,7 @@ async function loadProviderBudgetState(now: Date) {
     const item = object(JSON.parse(current.text));
     const reservations = Array.isArray(item.reservations)
       ? normalizeState({ providerReservations: item.reservations }, now).providerReservations
+        .filter((reservation) => !obsoleteContextOnlyProviderReservation(reservation))
       : [];
     return {
       state: { version: 1, updatedAt: text(item.updatedAt) ?? new Date(0).toISOString(), reservations } as EventJobProviderBudgetState,
@@ -258,7 +269,11 @@ async function loadProviderBudgetState(now: Date) {
   }
   const legacy = await loadState(now);
   return {
-    state: { version: 1, updatedAt: legacy.state.updatedAt, reservations: legacy.state.providerReservations } as EventJobProviderBudgetState,
+    state: {
+      version: 1,
+      updatedAt: legacy.state.updatedAt,
+      reservations: legacy.state.providerReservations.filter((reservation) => !obsoleteContextOnlyProviderReservation(reservation)),
+    } as EventJobProviderBudgetState,
     etag: current.etag,
   };
 }

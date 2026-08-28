@@ -18,6 +18,7 @@ assert.match(source, /FULL_SOURCE_CACHE_PREFIX/, "Decision-grade full-source wor
 assert.match(source, /FULL_SOURCE_RETRY_COOLDOWN_MS = 2 \* 60 \* 60_000/, "Temporary full-source failures must retry before they are stale.");
 assert.match(source, /if \(options\.all\)[\s\S]*callback\(null, \[\{ address, family \}\]\)/, "Pinned HTTPS lookup must support Node's all-address callback contract.");
 assert.doesNotMatch(source, /event\.queueAttempts\s*>=\s*2/, "Retry count alone must never turn a transient evidence failure into a permanent rejection.");
+assert.match(source, /quotaKey === "pr262_full_source_reads"[\s\S]*cadenceKey\.includes\(":fanout:"\)/, "Obsolete sector fan-out reads must not consume the issuer full-source allowance.");
 const testableSource = source
   .replace("async function fetchFullSource(", "export async function fetchFullSource(")
   .replace("async function readCachedFullSource(", "export async function readCachedFullSource(")

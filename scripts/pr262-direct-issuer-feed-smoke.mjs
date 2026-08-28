@@ -6,7 +6,10 @@ import ts from "typescript";
 const monitor = readFileSync(new URL("../lib/opportunity-engine/pr262-direct-announcements.ts", import.meta.url), "utf8");
 const sensor = readFileSync(new URL("../lib/opportunity-engine/pr262-lightweight-sensor-v3.ts", import.meta.url), "utf8");
 
-assert.match(monitor, /MAX_DISCOVERIES_PER_CYCLE = 3/, "Issuer-feed discovery must remain below the shared SEC submissions budget at the fifteen-minute sensor cadence.");
+assert.match(monitor, /DISCOVERY_CADENCE_MS = 60 \* 60_000/, "Issuer-feed discovery must run hourly to reserve shared SEC budget.");
+assert.match(monitor, /MAX_DISCOVERIES_PER_CYCLE = 2/, "Issuer-feed discovery must reserve headroom below the shared SEC submissions budget.");
+assert.match(sensor, /run\("sec_broad", HOUR_MS/, "Broad SEC discovery must run hourly.");
+assert.match(sensor, /run\("sec_urgent", FIFTEEN_MINUTES_MS/, "Urgent SEC discovery must retain the fifteen-minute cadence.");
 assert.match(monitor, /DISCOVERY_CONCURRENCY = 1/, "Issuer discovery must not create concurrent SEC budget reservations.");
 assert.match(monitor, /NO_FEED_RETRY_MS = 24 \* 60 \* 60_000/, "Confirmed missing feeds must be rechecked daily rather than hidden for a week.");
 assert.match(monitor, /TRANSIENT_DISCOVERY_RETRY_MS = 60 \* 60_000/, "Transient discovery failures must become eligible again within one hour.");

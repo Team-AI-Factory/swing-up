@@ -37,6 +37,7 @@ import {
 
 const SENSOR_STATE_KEY = pr262StorageKey("sensor/state-v1.json");
 const SENSOR_CADENCE_KEY = pr262StorageKey("sensor/cadence-v1.json");
+const LIVE_WATCHLIST_PRICE_KEY = pr262StorageKey("value-investing/watchlist-live-prices-v1.json");
 const SEC_AGENT = "SwingUp/1.0 support@swingup.app";
 const TRADINGVIEW_SCAN = "https://scanner.tradingview.com/america/scan";
 const FMP_NEWS_URL = "https://financialmodelingprep.com/stable/news/stock";
@@ -90,6 +91,27 @@ type SourceSummary = {
   error: string | null;
   nextRetryAt: string | null;
 };
+
+type LiveWatchlistPrice = {
+  ticker: string;
+  tradingViewSymbol: string;
+  price: number;
+  changePercent: number;
+  relativeVolume: number;
+  threshold: string | null;
+};
+
+type LiveWatchlistPriceSnapshot = {
+  version: 1;
+  checkedAt: string;
+  source: "tradingview_market_watch";
+  prices: LiveWatchlistPrice[];
+};
+
+function researchOnlyPriceEvent(event: Pr262SensorEvent) {
+  return event.source === "market_price"
+    && event.sourceProvider === "tradingview_quality_watchlist_v3";
+}
 
 function object(value: unknown): Json {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Json : {};
@@ -374,28 +396,32 @@ async function runFmpNews(fetchImpl: typeof fetch, exposure: Pr262ExposureEntry[
 async function marketWatch(fetchImpl: typeof fetch, exposure: Pr262ExposureEntry[], now: Date) {
   const watch = exposure.filter((item) => item.tradingViewSymbol && (item.buyBelowPrice !== null || item.strongBuyBelowPrice !== null || item.trimAbovePrice !== null || item.businessQuality >= 70))
     .sort((left, right) => right.businessQuality - left.businessQuality || (right.marketCap ?? 0) - (left.marketCap ?? 0)).slice(0, 500);
-  if (!watch.length) return [] as Pr262SensorEvent[];
+  if (!watch.length) return { events: [] as Pr262SensorEvent[], prices: [] as LiveWatchlistPrice[] };
   const response = await fetchImpl(TRADINGVIEW_SCAN, { method: "POST", headers: { "content-type": "application/json", Accept: "application/json" }, body: JSON.stringify({ symbols: { tickers: watch.map((item) => item.tradingViewSymbol), query: { types: [] } }, columns: ["name", "description", "close", "change", "volume", "relative_volume_10d_calc"] }), cache: "no-store", signal: AbortSignal.timeout(15_000) });
   if (!response.ok) throw new Error(`pr262_v3_market_http_${response.status}`);
   const body = await response.json() as { data?: Array<{ s?: string; d?: unknown[] }> };
   const byTicker = new Map(watch.map((item) => [item.ticker, item]));
-  return (Array.isArray(body.data) ? body.data : []).flatMap((row): Pr262SensorEvent[] => {
+  const events: Pr262SensorEvent[] = [];
+  const prices: LiveWatchlistPrice[] = [];
+  for (const row of Array.isArray(body.data) ? body.data : []) {
     const data = Array.isArray(row.d) ? row.d : [];
     const ticker = String(data[0] ?? "").toUpperCase();
     const price = finite(data[2]);
     const change = finite(data[3]) ?? 0;
     const relativeVolume = finite(data[5]) ?? 0;
     const item = byTicker.get(ticker);
-    if (!item || price === null || price <= 0) return [];
+    if (!item || price === null || price <= 0 || !item.tradingViewSymbol) continue;
     const threshold = item.strongBuyBelowPrice !== null && price <= item.strongBuyBelowPrice ? "strong_buy_price_crossed" : item.buyBelowPrice !== null && price <= item.buyBelowPrice ? "buy_price_crossed" : item.trimAbovePrice !== null && price >= item.trimAbovePrice ? "trim_price_crossed" : null;
-    if (!threshold && Math.abs(change) < 5 && relativeVolume < 3) return [];
+    prices.push({ ticker, tradingViewSymbol: item.tradingViewSymbol, price, changePercent: change, relativeVolume, threshold });
+    if (!threshold && Math.abs(change) < 5 && relativeVolume < 3) continue;
     const kind = threshold ?? "unusual_price_or_volume";
     // The event job always refreshes the quote before deciding, so one durable
     // event per ticker/reason/day is enough. Including the live price and minute
     // in the identity recreated the same threshold event every five minutes and
     // could bury genuinely new filings or news beneath repeated price work.
-    return [{ id: `v3-market:${hash(`${ticker}|${kind}|${now.toISOString().slice(0, 10)}`)}`, source: "market_price", sourceProvider: "tradingview_quality_watchlist_v3", sourceHealthStatus: "connected", observedAt: now.toISOString(), title: `${ticker} ${kind} at ${price}`, url: `https://www.tradingview.com/symbols/${encodeURIComponent(row.s ?? ticker)}/`, sourceUrl: TRADINGVIEW_SCAN, ticker, company: item.company, kind, priority: threshold === "strong_buy_price_crossed" ? 100 : threshold ? 92 : 80, reason: threshold ? "A stored valuation threshold crossed; reuse the existing company thesis and inspect only this ticker." : `A large market change was detected (${change.toFixed(1)}%, ${relativeVolume.toFixed(1)}x relative volume).`, cik: item.cik, form: null, accession: null, canonicalSecIndexUrl: null, identityMethod: "not_applicable", mappingStatus: "mapped", mappingMethod: "stored_watchlist_ticker", mappingReason: "The ticker comes from the stored PR262 company exposure index.", tradingViewSymbol: item.tradingViewSymbol, queueAttempts: 0, queueNextAttemptAt: null, queueLastAttemptAt: null, queueLastError: null }];
-  });
+    events.push({ id: `v3-market:${hash(`${ticker}|${kind}|${now.toISOString().slice(0, 10)}`)}`, source: "market_price", sourceProvider: "tradingview_quality_watchlist_v3", sourceHealthStatus: "connected", observedAt: now.toISOString(), title: `${ticker} ${kind} at ${price}`, url: `https://www.tradingview.com/symbols/${encodeURIComponent(row.s ?? ticker)}/`, sourceUrl: TRADINGVIEW_SCAN, ticker, company: item.company, kind, priority: threshold === "strong_buy_price_crossed" ? 100 : threshold ? 92 : 80, reason: threshold ? "A stored valuation threshold crossed and is exposed through the provisional Valuation Watchlist; price alone is not Serious Signal evidence." : `A large market change was detected (${change.toFixed(1)}%, ${relativeVolume.toFixed(1)}x relative volume) and is retained as provisional price research only.`, cik: item.cik, form: null, accession: null, canonicalSecIndexUrl: null, identityMethod: "not_applicable", mappingStatus: "mapped", mappingMethod: "stored_watchlist_ticker", mappingReason: "The ticker comes from the stored PR262 company exposure index.", tradingViewSymbol: item.tradingViewSymbol, queueAttempts: 0, queueNextAttemptAt: null, queueLastAttemptAt: null, queueLastError: null });
+  }
+  return { events, prices };
 }
 
 export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl?: typeof fetch } = {}) {
@@ -424,6 +450,7 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
   const state = loaded.state;
   const summaries: SourceSummary[] = [];
   const events: Pr262SensorEvent[] = [];
+  let liveWatchlistPriceSnapshot: LiveWatchlistPriceSnapshot | null = null;
 
   if (exposureError) {
     summaries.push({
@@ -513,9 +540,26 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
     }),
     run("fmp_news", TWO_HOURS_MS, [FMP_NEWS_URL], async () => runFmpNews(fetchImpl, exposure.entries, now).then((value) => ({ status: value.status, recordsRead: value.recordsRead, receipts: value.receipts, error: value.error }))),
     run("market_watch", FIVE_MINUTES_MS, [TRADINGVIEW_SCAN], async () => {
-      const market = await marketWatch(fetchImpl, exposure.entries, now); return { status: "connected", recordsRead: Math.min(500, exposure.entries.length), events: market, error: null };
+      const market = await marketWatch(fetchImpl, exposure.entries, now);
+      if (market.prices.length) liveWatchlistPriceSnapshot = { version: 1, checkedAt: now.toISOString(), source: "tradingview_market_watch", prices: market.prices };
+      return { status: "connected", recordsRead: market.prices.length, events: market.events, error: null };
     }),
   ]);
+
+  let liveWatchlistPricePersistence: { written: boolean; reason: string | null } = {
+    written: false,
+    reason: "market_watch_not_due_or_no_prices",
+  };
+  if (liveWatchlistPriceSnapshot) {
+    const prior = await readVersionedTextFromR2(LIVE_WATCHLIST_PRICE_KEY);
+    const written = await writeVersionedJsonToR2(
+      LIVE_WATCHLIST_PRICE_KEY,
+      liveWatchlistPriceSnapshot,
+      prior.etag ? { expectedEtag: prior.etag } : { createOnly: true },
+    );
+    if (written.conflict) throw new Error("pr262_live_watchlist_price_conflict");
+    liveWatchlistPricePersistence = { written: true, reason: null };
+  }
 
   if (due(state.sourceHealth, "v3_macro", TWELVE_HOURS_MS, now)) {
     try {
@@ -537,6 +581,10 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
     feedsPolled: 0,
     feedSuccesses: 0,
     discoveriesAttempted: 0,
+    companiesKnown: 0,
+    investorWebsitesFound: 0,
+    feedlessCompanies: 0,
+    discoveryErrors: [] as string[],
   };
   try {
     const direct = await runPr262DirectAnnouncementMonitor({ exposure: exposure.entries, now, fetchImpl });
@@ -545,6 +593,10 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
       feedsPolled: direct.feedsPolled,
       feedSuccesses: direct.feedSuccesses,
       discoveriesAttempted: direct.discoveriesAttempted,
+      companiesKnown: direct.companiesKnown,
+      investorWebsitesFound: direct.investorWebsitesFound,
+      feedlessCompanies: direct.feedlessCompanies,
+      discoveryErrors: direct.discoveryErrors,
     };
     events.push(...direct.events);
     summaries.push({ provider: "direct_issuer_feeds", attempted: direct.feedsPolled > 0 || direct.discoveriesAttempted > 0, status: direct.feedSuccesses === direct.feedsPolled ? "connected" : direct.feedSuccesses > 0 ? "partial" : direct.feedsPolled ? "temporarily_unavailable" : "not_due", recordsRead: direct.feedsPolled, newEvents: direct.events.length, error: null, nextRetryAt: null });
@@ -556,7 +608,12 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
   const deduped = [...[...events, ...fanout].reduce((map, event) => {
     const current = map.get(event.id); if (!current || event.priority > current.priority) map.set(event.id, event); return map;
   }, new Map<string, Pr262SensorEvent>()).values()];
-  const importantPending = state.pending.filter((event) => event.priority >= MIN_IMPORTANT_PRIORITY);
+  // Price thresholds and unusual moves are valuable provisional research, but
+  // price alone cannot satisfy the source-evidence gate. Keep them out of the
+  // Serious Signal queue and publish their compact current-price snapshot to the
+  // authenticated Watchlist instead. This also retires legacy price-only backlog
+  // during the next normal state write.
+  const importantPending = state.pending.filter((event) => event.priority >= MIN_IMPORTANT_PRIORITY && !researchOnlyPriceEvent(event));
   const known = new Set([...state.seen, ...importantPending.map((event) => event.id)]);
   const unseen = deduped
     .filter((event) => event.priority >= MIN_IMPORTANT_PRIORITY && !known.has(event.id))
@@ -564,12 +621,16 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
   const contextualSectorFanouts = unseen
     .filter((event) => event.mappingMethod === "deterministic_sector_fanout")
     .slice(0, MAX_FRESH);
+  const priceResearchEvents = unseen
+    .filter(researchOnlyPriceEvent)
+    .slice(0, MAX_FRESH);
   const fresh = unseen
-    .filter((event) => event.mappingMethod !== "deterministic_sector_fanout")
+    .filter((event) => event.mappingMethod !== "deterministic_sector_fanout" && !researchOnlyPriceEvent(event))
     .slice(0, MAX_FRESH);
   const pending = partitionPr262PendingEvents([...importantPending, ...fresh], now);
   const retained = new Set(pending.map((event) => event.id));
   for (const event of contextualSectorFanouts) known.add(event.id);
+  for (const event of priceResearchEvents) known.add(event.id);
   for (const event of fresh) if (retained.has(event.id)) known.add(event.id);
 
   const next: CompatState = {
@@ -628,6 +689,7 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
     exposureError,
     exposureCompanies: exposure.entries.length,
     newEvents: fresh.length,
+    priceResearchEvents: priceResearchEvents.length,
     sectorFanoutEvents: contextualSectorFanouts.length,
     contextOnlySectorFanoutEvents: contextualSectorFanouts.length,
     directAnnouncementMonitoring,
@@ -638,6 +700,9 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
       queueWriteReason: queuePersistence.reason,
       cadenceKey: SENSOR_CADENCE_KEY,
       cadenceWritten: true,
+      liveWatchlistPriceKey: LIVE_WATCHLIST_PRICE_KEY,
+      liveWatchlistPriceWritten: liveWatchlistPricePersistence.written,
+      liveWatchlistPriceWriteReason: liveWatchlistPricePersistence.reason,
       unimportantEventsPersisted: 0,
     },
     costPolicy: {

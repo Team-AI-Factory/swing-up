@@ -58,6 +58,9 @@ type ValuationWatchlistItem = {
   industry: string | null;
   action: "buy_research" | "sell_research" | "watch_out_research" | "price_watch";
   currentPrice: number | null;
+  priceObservedAt: string;
+  livePriceFresh: boolean;
+  livePriceAlert: { threshold: string | null; changePercent: number | null; relativeVolume: number | null } | null;
   fairValue: {
     conservative: number | null;
     base: number | null;
@@ -87,6 +90,7 @@ type ValuationWatchlist = {
     sourceCheckedAt: string | null;
     coverage: { companies: number | null; totalCompanies: number | null; percent: number | null } | null;
   };
+  livePricing: { available: boolean; checkedAt: string | null; ageMinutes: number | null; source: string | null };
   summary: {
     total: number;
     buyResearch: number;
@@ -134,6 +138,13 @@ function watchlistLabel(value: ValuationWatchlistItem["action"]) {
   if (value === "sell_research") return "PROVISIONAL SELL RESEARCH";
   if (value === "watch_out_research") return "PROVISIONAL RISK WATCH";
   return "PRICE WATCH";
+}
+
+function livePriceAlertLabel(value: NonNullable<ValuationWatchlistItem["livePriceAlert"]>) {
+  if (value.threshold === "strong_buy_price_crossed") return "LIVE STRONG-BUY PRICE CROSS";
+  if (value.threshold === "buy_price_crossed") return "LIVE BUY PRICE CROSS";
+  if (value.threshold === "trim_price_crossed") return "LIVE TRIM PRICE CROSS";
+  return "LIVE UNUSUAL PRICE / VOLUME";
 }
 
 function money(value: number | null) {
@@ -326,7 +337,7 @@ export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
                 but they have not passed current-event evidence, all 14 Committee roles, or the Final Judge.
               </p>
               <p className="muted">
-                Permanent link: <a href="/serious-signals#valuation-watchlist">/serious-signals#valuation-watchlist</a> · refreshes within one minute of new R2 foundation data.
+                Permanent link: <a href="/serious-signals#valuation-watchlist">/serious-signals#valuation-watchlist</a> · refreshes within one minute of new R2 foundation or live-price data.
               </p>
               {watchlistError ? <section className="card"><strong>Watchlist unavailable:</strong> {watchlistError}</section> : null}
               {watchlist ? (
@@ -340,6 +351,7 @@ export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
                     Foundation {watchlist.foundation.complete ? "complete" : "still building"}
                     {watchlist.foundation.completedAt ? ` · completed ${formatTime(watchlist.foundation.completedAt)}` : ""}
                     {watchlist.foundation.coverage?.percent !== null && watchlist.foundation.coverage?.percent !== undefined ? ` · ${watchlist.foundation.coverage.percent}% coverage` : ""}.
+                    {watchlist.livePricing.available && watchlist.livePricing.checkedAt ? ` Live prices checked ${formatTime(watchlist.livePricing.checkedAt)}.` : ""}
                   </p>
                   {watchlist.candidates.length === 0 ? (
                     <section className="card"><h3>No provisional valuation candidate is available in the latest complete foundation run.</h3></section>
@@ -351,9 +363,12 @@ export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
                             <span className="badge">{watchlistLabel(item.action)}</span>
                             <span className="badge">Not Committee approved</span>
                             {item.specialistModelApplied ? <span className="badge">Sector specialist</span> : null}
+                            {item.livePriceAlert ? <span className="badge">{livePriceAlertLabel(item.livePriceAlert)}</span> : null}
                           </div>
                           <h3>{item.ticker} · {item.company}</h3>
                           <p><strong>Current / conservative / base / optimistic:</strong> {money(item.currentPrice)} / {money(item.fairValue.conservative)} / {money(item.fairValue.base)} / {money(item.fairValue.optimistic)}</p>
+                          <p className="muted">Price checked {formatTime(item.priceObservedAt)}{item.livePriceFresh ? " · live sensor snapshot" : " · latest foundation snapshot"}.</p>
+                          {item.livePriceAlert ? <p><strong>Live market move:</strong> {item.livePriceAlert.changePercent !== null ? `${item.livePriceAlert.changePercent.toFixed(1)}%` : "change unavailable"}{item.livePriceAlert.relativeVolume !== null ? ` · ${item.livePriceAlert.relativeVolume.toFixed(1)}x relative volume` : ""}. This remains provisional research until current evidence and the Committee approve it.</p> : null}
                           <p><strong>Quality / risk / evidence:</strong> {item.scores.quality ?? "—"} / {item.scores.risk ?? "—"} / {item.scores.evidence ?? "—"}</p>
                           {item.reasons.length ? <p><strong>Why it reached the watchlist:</strong> {item.reasons.join(" ")}</p> : null}
                           {item.blockers.length ? <p><strong>Why it is not a Serious Signal:</strong> {item.blockers.join(" ")}</p> : null}

@@ -87,7 +87,15 @@ function localAddress(address: string) {
 }
 
 async function safePublicHttps(raw: string) {
-  const url = new URL(raw);
+  const trimmed = raw.trim();
+  const url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`);
+  // SEC company profiles sometimes retain an old http:// website even when the
+  // same issuer endpoint supports HTTPS. Upgrade before enforcing the public
+  // origin policy; a host that does not support HTTPS will still fail closed.
+  if (url.protocol === "http:") {
+    url.protocol = "https:";
+    url.port = "";
+  }
   if (url.protocol !== "https:" || url.username || url.password || (url.port && url.port !== "443")) throw new Error("direct_feed_url_not_https");
   const host = url.hostname.toLowerCase().replace(/\.$/, "");
   if (!host || host === "localhost" || /\.(?:local|internal|home|lan)$/.test(host)) throw new Error("direct_feed_host_blocked");
@@ -140,6 +148,29 @@ function discoverFeedUrl(html: string, base: string) {
     try { return new URL(href, base).toString(); } catch {}
   }
   return null;
+}
+
+function discoverInvestorPages(html: string, base: string) {
+  const pages = new Map<string, number>();
+  for (const match of html.matchAll(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
+    const href = match[1];
+    const label = cleanXml(match[2]);
+    const combined = `${href} ${label}`.toLowerCase();
+    if (!/(?:investor|press|news|media|release|announcement|financial-results)/.test(combined)) continue;
+    try {
+      const url = new URL(href, base);
+      if (!/^https?:$/.test(url.protocol)) continue;
+      const rank = /(?:rss|atom|feed)/.test(combined) ? 0
+        : /(?:investor|press-release|news-release|announcement)/.test(combined) ? 1
+          : 2;
+      const prior = pages.get(url.toString());
+      if (prior === undefined || rank < prior) pages.set(url.toString(), rank);
+    } catch {}
+  }
+  return [...pages.entries()]
+    .sort((left, right) => left[1] - right[1] || left[0].localeCompare(right[0]))
+    .map(([url]) => url)
+    .slice(0, 2);
 }
 
 function parseFeed(feed: string, entry: RegistryEntry, now: Date): Pr262SensorEvent[] {
@@ -230,7 +261,19 @@ async function discoverOne(fetchImpl: typeof fetch, company: Pr262ExposureEntry,
     try {
       const page = await fetchBounded(fetchImpl, investorWebsite, "text/html,application/xhtml+xml", 8_000);
       feedUrl = discoverFeedUrl(page.body, page.finalUrl);
-      if (feedUrl) await safePublicHttps(feedUrl);
+      if (feedUrl) feedUrl = (await safePublicHttps(feedUrl)).toString();
+      if (!feedUrl) {
+        for (const candidate of discoverInvestorPages(page.body, page.finalUrl)) {
+          try {
+            const nested = await fetchBounded(fetchImpl, candidate, "text/html,application/xhtml+xml,application/rss+xml,application/atom+xml,text/xml", 5_000);
+            const directXml = /<(?:rss|feed)\b/i.test(nested.body) ? nested.finalUrl : null;
+            const discovered = directXml ?? discoverFeedUrl(nested.body, nested.finalUrl);
+            if (!discovered) continue;
+            feedUrl = (await safePublicHttps(discovered)).toString();
+            break;
+          } catch {}
+        }
+      }
     } catch (cause) {
       error = cause instanceof Error ? cause.message.slice(0, 180) : "direct_feed_discovery_failed";
     }
@@ -352,6 +395,10 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
     feedsPolled: due.length,
     feedSuccesses,
     discoveriesAttempted: discovered,
+    companiesKnown: registry.entries.length,
+    investorWebsitesFound: registry.entries.filter((entry) => entry.investorWebsite).length,
+    feedlessCompanies: registry.entries.filter((entry) => !entry.feedUrl).length,
+    discoveryErrors: [...new Set(registry.entries.map((entry) => entry.error).filter((value): value is string => Boolean(value)))].slice(0, 8),
     registryKey: REGISTRY_KEY,
   };
 }

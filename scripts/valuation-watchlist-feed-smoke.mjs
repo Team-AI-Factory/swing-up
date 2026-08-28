@@ -35,11 +35,22 @@ const summary = {
   seriousAlerts: { buy: [candidate], sell: [], watchOut: [] },
   qualityPriceWatchlist: [],
 };
+const livePriceCheckedAt = new Date().toISOString();
+const livePriceSnapshot = {
+  version: 1,
+  checkedAt: livePriceCheckedAt,
+  source: "tradingview_market_watch",
+  prices: [{ ticker: "BANK", tradingViewSymbol: "NYSE:BANK", price: 42, changePercent: 5.2, relativeVolume: 3.1, threshold: "buy_price_crossed" }],
+};
 
 const cjsModule = { exports: {} };
 new Function("require", "module", "exports", output)((name) => {
   if (name === "@/lib/r2-warehouse") return {
-    readVersionedTextFromR2: async () => ({ found: true, text: JSON.stringify(summary), etag: '"test"' }),
+    readVersionedTextFromR2: async (key) => ({
+      found: true,
+      text: JSON.stringify(key.endsWith("watchlist-live-prices-v1.json") ? livePriceSnapshot : summary),
+      etag: '"test"',
+    }),
   };
   if (name === "@/lib/opportunity-engine/pr262-storage") return {
     pr262StorageKey: (relative) => `production/pr262/${relative}`,
@@ -53,7 +64,14 @@ assert.equal(result.foundation.complete, true);
 assert.equal(result.foundation.coverage.percent, 100);
 assert.equal(result.summary.buyResearch, 1);
 assert.equal(result.summary.specialistModelApplied, 1);
+assert.equal(result.livePricing.available, true);
+assert.equal(result.livePricing.checkedAt, livePriceCheckedAt);
 assert.equal(result.candidates.length, 1);
+assert.equal(result.candidates[0].currentPrice, 42, "The compact sensor snapshot must update the displayed price without changing Serious Signal authority.");
+assert.equal(result.candidates[0].priceObservedAt, livePriceCheckedAt);
+assert.equal(result.candidates[0].livePriceFresh, true);
+assert.equal(result.candidates[0].livePriceAlert.threshold, "buy_price_crossed");
+assert.equal(result.candidates[0].fairValue.upsideToBasePercent, 54.76);
 assert.equal(result.candidates[0].publicationStatus, "provisional_research_only");
 assert.equal(result.candidates[0].userAlertEligible, false);
 assert.equal(result.candidates[0].committeeApproved, false);
@@ -66,5 +84,6 @@ console.log(JSON.stringify({
   authenticatedRoutePayloadIsSanitized: true,
   provisionalResearchCannotMasqueradeAsSeriousSignal: true,
   specialistModelIsVisible: true,
+  livePriceOverlayIsVisible: true,
   stableWebAndResearchLinks: true,
 }, null, 2));

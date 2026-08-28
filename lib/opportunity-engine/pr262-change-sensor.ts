@@ -152,6 +152,11 @@ function contextOnlyEvent(event: Pr262SensorEvent) {
     || event.id.includes(":fanout:");
 }
 
+function researchOnlyPriceEvent(event: Pr262SensorEvent) {
+  return event.source === "market_price"
+    && event.sourceProvider === "tradingview_quality_watchlist_v3";
+}
+
 function pendingOrder(left: Pr262SensorEvent, right: Pr262SensorEvent, nowMs: number) {
   const retryRank = (event: Pr262SensorEvent) => {
     const retryAt = event.queueNextAttemptAt ? Date.parse(event.queueNextAttemptAt) : Number.NaN;
@@ -181,7 +186,7 @@ function pendingOrder(left: Pr262SensorEvent, right: Pr262SensorEvent, nowMs: nu
 }
 
 export function partitionPr262PendingEvents(events: Pr262SensorEvent[], now: Date) {
-  const deduped = [...events.filter((event) => !contextOnlyEvent(event)).reduce((map, event) => {
+  const deduped = [...events.filter((event) => !contextOnlyEvent(event) && !researchOnlyPriceEvent(event)).reduce((map, event) => {
     // Older sensor versions included the live price and minute in market-event
     // IDs. Collapse those legacy duplicates by their actual meaning so a normal
     // state write repairs the queue without deleting R2 data by hand.

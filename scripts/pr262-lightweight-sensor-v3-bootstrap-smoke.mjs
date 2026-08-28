@@ -14,6 +14,8 @@ let persistedSensorState = null;
 let persistedSensorCadence = null;
 let sensorStateWrites = 0;
 let sensorCadenceWrites = 0;
+let livePriceWrites = 0;
+let persistedLivePrices = null;
 let universeLoads = 0;
 let exposureAvailable = false;
 const emptyProvider = async () => ({ status: "connected", recordsRead: 0, receipts: [], error: null });
@@ -109,6 +111,7 @@ const stubs = {
     readVersionedTextFromR2: async (key) => {
       if (key.endsWith("sensor/state-v1.json") && persistedSensorState) return { found: true, text: JSON.stringify(persistedSensorState), etag: "sensor-state-etag" };
       if (key.endsWith("sensor/cadence-v1.json") && persistedSensorCadence) return { found: true, text: JSON.stringify(persistedSensorCadence), etag: "sensor-cadence-etag" };
+      if (key.endsWith("value-investing/watchlist-live-prices-v1.json") && persistedLivePrices) return { found: true, text: JSON.stringify(persistedLivePrices), etag: "live-prices-etag" };
       return { found: false, text: null, etag: null };
     },
     writeVersionedJsonToR2: async (key, value) => {
@@ -120,6 +123,10 @@ const stubs = {
       if (key.endsWith("sensor/cadence-v1.json")) {
         persistedSensorCadence = structuredClone(value);
         sensorCadenceWrites += 1;
+      }
+      if (key.endsWith("value-investing/watchlist-live-prices-v1.json")) {
+        persistedLivePrices = structuredClone(value);
+        livePriceWrites += 1;
       }
       return { written: true, conflict: false, etag: key.endsWith("cadence-v1.json") ? "sensor-cadence-etag" : "sensor-state-etag" };
     },
@@ -133,7 +140,7 @@ const stubs = {
     partitionPr262PendingEvents: (events) => events,
   },
   "@/lib/opportunity-engine/pr262-direct-announcements": {
-    runPr262DirectAnnouncementMonitor: async () => ({ events: [], feedsPolled: 0, discoveriesAttempted: 0, feedSuccesses: 0 }),
+    runPr262DirectAnnouncementMonitor: async () => ({ events: [], registeredFeeds: 0, feedsPolled: 0, discoveriesAttempted: 0, feedSuccesses: 0, companiesKnown: 0, investorWebsitesFound: 0, feedlessCompanies: 0, discoveryErrors: [] }),
   },
   "@/lib/opportunity-engine/pr262-exposure-index": {
     loadPr262ExposureIndex: async () => {
@@ -204,7 +211,10 @@ await loaded.exports.runPr262LightweightSensorV3({
     : { ok: true, status: 200, text: async () => "<feed></feed>" },
 });
 const firstMarketEvent = stateWritten.value.pending.find((event) => event.sourceProvider === "tradingview_quality_watchlist_v3");
-assert.ok(firstMarketEvent, "The first threshold observation must enter the durable queue.");
+assert.equal(firstMarketEvent, undefined, "Price-only research must not enter the Serious Signal evidence queue.");
+assert.equal(persistedLivePrices.prices[0].ticker, "SAFE");
+assert.equal(persistedLivePrices.prices[0].price, 10);
+assert.equal(livePriceWrites, 1);
 
 const repeatedSameDay = await loaded.exports.runPr262LightweightSensorV3({
   now: new Date("2026-08-20T09:10:00.000Z"),
@@ -213,12 +223,15 @@ const repeatedSameDay = await loaded.exports.runPr262LightweightSensorV3({
     : { ok: true, status: 200, text: async () => "<feed></feed>" },
 });
 const repeatedMarketEvents = stateWritten.value.pending.filter((event) => event.sourceProvider === "tradingview_quality_watchlist_v3");
-assert.equal(repeatedMarketEvents.length, 1, "A lower price five minutes later must reuse the same daily threshold event instead of growing the queue.");
-assert.equal(repeatedSameDay.newEvents, 0, "Repeated same-day market observations must not count as new work.");
+assert.equal(repeatedMarketEvents.length, 0, "Price-only research must remain outside the Serious Signal queue.");
+assert.equal(repeatedSameDay.newEvents, 0, "Repeated same-day market observations must not count as new Serious Signal work.");
+assert.equal(repeatedSameDay.priceResearchEvents, 0, "Repeated price observations update the live snapshot without recreating queue work.");
+assert.equal(persistedLivePrices.prices[0].price, 9.5);
+assert.equal(livePriceWrites, 2);
 assert.equal(repeatedSameDay.r2Persistence.queueWritten, false, "A quiet scan must not rewrite the full R2 queue.");
 assert.equal(repeatedSameDay.r2Persistence.cadenceWritten, true, "A quiet scan must retain only its compact cadence and health checkpoint.");
 assert.equal(repeatedSameDay.r2Persistence.unimportantEventsPersisted, 0);
-assert.equal(sensorStateWrites, 2, "Only the initial important findings and first market threshold may rewrite the full queue.");
+assert.equal(sensorStateWrites, 2, "Only the initial important findings and first price-research identity checkpoint may rewrite the full queue.");
 assert.equal(sensorCadenceWrites, 3, "Each scan retains a small scheduling checkpoint so provider cadences remain safe after restart.");
 
 console.log(JSON.stringify({
@@ -226,7 +239,8 @@ console.log(JSON.stringify({
   cleanNamespaceScansImmediately: true,
   baselineAbsenceReportedHonestly: true,
   valuationDependentLanesFailClosed: true,
-  sameDayMarketThresholdsDeduplicated: true,
+  priceResearchSeparatedFromSeriousQueue: true,
+  liveWatchlistPriceSnapshotUpdated: true,
   companyNameMappingFailsClosed: true,
   structuredTickerMappingRetained: true,
   importantProductionSensorStatePersisted: true,

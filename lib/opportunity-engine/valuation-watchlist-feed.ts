@@ -3,6 +3,8 @@ import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 import type { UsValueCompanyAnalysis } from "@/lib/opportunity-engine/us-value-investing-engine";
 
 const LATEST_FOUNDATION_SUMMARY_KEY = pr262StorageKey("value-investing/resumable/latest/index.json");
+const LIVE_WATCHLIST_PRICE_KEY = pr262StorageKey("value-investing/watchlist-live-prices-v1.json");
+const LIVE_PRICE_MAX_AGE_MS = 6 * 60 * 60_000;
 
 type FoundationSummary = {
   kind?: unknown;
@@ -16,6 +18,15 @@ type FoundationSummary = {
 };
 
 type WatchlistAction = "buy_research" | "sell_research" | "watch_out_research" | "price_watch";
+
+type LivePrice = {
+  ticker: string;
+  price: number;
+  checkedAt: string;
+  changePercent: number | null;
+  relativeVolume: number | null;
+  threshold: string | null;
+};
 
 function object(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -55,7 +66,7 @@ function rank(item: UsValueCompanyAnalysis, action: WatchlistAction) {
   return item.scores.businessQuality;
 }
 
-function sanitizeCandidate(item: UsValueCompanyAnalysis, action: WatchlistAction, cycleId: string) {
+function sanitizeCandidate(item: UsValueCompanyAnalysis, action: WatchlistAction, cycleId: string, livePrice?: LivePrice) {
   const ticker = safeTicker(item.ticker);
   if (!ticker) return null;
   const reasons = sanitizeReasons(item.decision?.reasons);
@@ -63,6 +74,11 @@ function sanitizeCandidate(item: UsValueCompanyAnalysis, action: WatchlistAction
   const specialistModelApplied = reasons.some((reason) => /specialist model/i.test(reason));
   const secUrl = `https://www.sec.gov/edgar/search/#/q=${encodeURIComponent(ticker)}`;
   const tradingViewUrl = safeTradingViewUrl(item.tradingViewSymbol);
+  const currentPrice = livePrice?.price ?? finite(item.currentPrice);
+  const baseValue = finite(item.fairValue?.baseValue);
+  const liveUpsideToBasePercent = currentPrice !== null && currentPrice > 0 && baseValue !== null
+    ? Math.round(((baseValue - currentPrice) / currentPrice) * 10_000) / 100
+    : finite(item.fairValue?.upsideToBasePercent);
   return {
     id: `${cycleId}:${action}:${ticker}`,
     anchor: `valuation-watchlist-${action}-${ticker.toLowerCase().replace(/[^a-z0-9-]/g, "-")}`,
@@ -72,14 +88,21 @@ function sanitizeCandidate(item: UsValueCompanyAnalysis, action: WatchlistAction
     sector: text(item.sector),
     industry: text(item.industry),
     action,
-    currentPrice: finite(item.currentPrice),
+    currentPrice,
+    priceObservedAt: livePrice?.checkedAt ?? item.observedAt,
+    livePriceFresh: Boolean(livePrice),
+    livePriceAlert: livePrice && (livePrice.threshold || Math.abs(livePrice.changePercent ?? 0) >= 5 || (livePrice.relativeVolume ?? 0) >= 3) ? {
+      threshold: livePrice.threshold,
+      changePercent: livePrice.changePercent,
+      relativeVolume: livePrice.relativeVolume,
+    } : null,
     fairValue: {
       conservative: finite(item.fairValue?.conservativeValue),
-      base: finite(item.fairValue?.baseValue),
+      base: baseValue,
       optimistic: finite(item.fairValue?.optimisticValue),
       buyBelow: finite(item.fairValue?.buyBelowPrice),
       trimAbove: finite(item.fairValue?.trimAbovePrice),
-      upsideToBasePercent: finite(item.fairValue?.upsideToBasePercent),
+      upsideToBasePercent: liveUpsideToBasePercent,
     },
     scores: {
       quality: finite(item.scores?.businessQuality),
@@ -109,12 +132,16 @@ function arrayOfAnalyses(value: unknown) {
 export async function getValuationWatchlistStatus(options: { limit?: number } = {}) {
   const requestedLimit = Number(options.limit ?? 60);
   const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(200, Math.floor(requestedLimit))) : 60;
-  const current = await readVersionedTextFromR2(LATEST_FOUNDATION_SUMMARY_KEY);
+  const [current, livePriceCurrent] = await Promise.all([
+    readVersionedTextFromR2(LATEST_FOUNDATION_SUMMARY_KEY),
+    readVersionedTextFromR2(LIVE_WATCHLIST_PRICE_KEY),
+  ]);
   if (!current.found || !current.text) {
     return {
       ok: true as const,
       generatedAt: new Date().toISOString(),
       foundation: { available: false, complete: false, cycleId: null, completedAt: null, sourceCheckedAt: null, coverage: null },
+      livePricing: { available: false, checkedAt: null, ageMinutes: null, source: null },
       summary: { total: 0, buyResearch: 0, sellResearch: 0, watchOutResearch: 0, priceWatch: 0, specialistModelApplied: 0 },
       candidates: [],
       truncated: false,
@@ -127,6 +154,30 @@ export async function getValuationWatchlistStatus(options: { limit?: number } = 
   const parsed = JSON.parse(current.text) as FoundationSummary;
   if (parsed.kind !== "us_value_investing_resumable_summary") throw new Error("valuation_watchlist_summary_invalid");
   const cycleId = text(parsed.cycleId) ?? "unknown-cycle";
+  const nowMs = Date.now();
+  let livePriceCheckedAt: string | null = null;
+  const livePrices = new Map<string, LivePrice>();
+  if (livePriceCurrent.found && livePriceCurrent.text) {
+    const snapshot = object(JSON.parse(livePriceCurrent.text));
+    const checkedAt = text(snapshot.checkedAt);
+    const checkedAtMs = checkedAt ? Date.parse(checkedAt) : Number.NaN;
+    if (checkedAt && Number.isFinite(checkedAtMs) && nowMs - checkedAtMs >= 0 && nowMs - checkedAtMs <= LIVE_PRICE_MAX_AGE_MS) {
+      livePriceCheckedAt = checkedAt;
+      for (const row of Array.isArray(snapshot.prices) ? snapshot.prices : []) {
+        const value = object(row);
+        const ticker = safeTicker(value.ticker);
+        const price = finite(value.price);
+        if (ticker && price !== null && price > 0) livePrices.set(ticker, {
+          ticker,
+          price,
+          checkedAt,
+          changePercent: finite(value.changePercent),
+          relativeVolume: finite(value.relativeVolume),
+          threshold: text(value.threshold),
+        });
+      }
+    }
+  }
   const serious = object(parsed.seriousAlerts);
   const groups: Array<[WatchlistAction, UsValueCompanyAnalysis[]]> = [
     ["buy_research", arrayOfAnalyses(serious.buy)],
@@ -136,7 +187,7 @@ export async function getValuationWatchlistStatus(options: { limit?: number } = 
   ];
   const all = groups.flatMap(([action, items]) => items.map((item) => ({ action, item, rank: rank(item, action) })))
     .sort((left, right) => right.rank - left.rank)
-    .flatMap(({ action, item }) => sanitizeCandidate(item, action, cycleId) ?? []);
+    .flatMap(({ action, item }) => sanitizeCandidate(item, action, cycleId, livePrices.get(item.ticker.toUpperCase())) ?? []);
   const candidates = all.slice(0, limit);
   const coverage = object(parsed.coverage);
   return {
@@ -153,6 +204,12 @@ export async function getValuationWatchlistStatus(options: { limit?: number } = 
         totalCompanies: finite(coverage.totalCompanies),
         percent: finite(coverage.coveragePercent),
       },
+    },
+    livePricing: {
+      available: livePriceCheckedAt !== null,
+      checkedAt: livePriceCheckedAt,
+      ageMinutes: livePriceCheckedAt ? Math.round(((nowMs - Date.parse(livePriceCheckedAt)) / 60_000) * 10) / 10 : null,
+      source: livePriceCheckedAt ? "tradingview_market_watch" : null,
     },
     summary: {
       total: all.length,
@@ -172,6 +229,7 @@ export async function getValuationWatchlistStatus(options: { limit?: number } = 
 
 export const VALUATION_WATCHLIST_POLICY = Object.freeze({
   sourceKey: LATEST_FOUNDATION_SUMMARY_KEY,
+  livePriceKey: LIVE_WATCHLIST_PRICE_KEY,
   authenticated: true,
   sanitized: true,
   provisionalResearchOnly: true,

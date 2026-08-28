@@ -503,8 +503,8 @@ const nextDayMarketEvent = {
 const compactedMarketQueue = sensor.partitionPr262PendingEvents([legacyMarketEvent, repeatedLegacyMarketEvent, nextDayMarketEvent], now);
 assert.deepEqual(
   compactedMarketQueue.map((item) => item.id),
-  [nextDayMarketEvent.id, repeatedLegacyMarketEvent.id],
-  "Legacy minute-level market events must compact to one ticker/reason entry per day while preserving a new day.",
+  [],
+  "Legacy price-only research must leave the Serious Signal evidence queue; its current value is carried by the compact Watchlist snapshot.",
 );
 
 putObject(universeKey, {
@@ -553,7 +553,7 @@ console.log(JSON.stringify({
   mappedQueueExpiresAfterFortyEightHours: true,
   officialEvidencePrioritized: true,
   freshEqualPriorityFilingsRunNewestFirst: true,
-  legacyMarketQueueCompactsWithoutDeletion: true,
+  legacyMarketQueueMovesToWatchlistResearch: true,
   maximumSecFeedCallsPerCycle: 2,
   quietCycleAiCalls: 0,
   quietCycleDeepAnalysisCalls: 0,

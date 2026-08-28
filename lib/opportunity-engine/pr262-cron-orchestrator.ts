@@ -37,9 +37,7 @@ type AiBudgetStatus = Awaited<ReturnType<typeof getPr262AiDailyBudgetStatus>> & 
   accountingError?: string | null;
 };
 
-function dueReadyCount(state: Awaited<ReturnType<typeof readPr262ChangeSensorState>>) {
-  const now = Date.now();
-  return state.pending.filter((event) => {
+function analysisReady(event: Awaited<ReturnType<typeof readPr262ChangeSensorState>>["pending"][number], now: number) {
     const retryAt = event.queueNextAttemptAt ? Date.parse(event.queueNextAttemptAt) : Number.NaN;
     return event.priority >= 80
       && Boolean(event.ticker)
@@ -51,7 +49,11 @@ function dueReadyCount(state: Awaited<ReturnType<typeof readPr262ChangeSensorSta
         && Boolean(event.canonicalSecIndexUrl)
       ))
       && (!Number.isFinite(retryAt) || retryAt <= now);
-  }).length;
+}
+
+function dueReadyCount(state: Awaited<ReturnType<typeof readPr262ChangeSensorState>>) {
+  const now = Date.now();
+  return state.pending.filter((event) => analysisReady(event, now)).length;
 }
 
 function capacityForQueue(ready: number) {
@@ -154,6 +156,13 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
   const secAtStart = state.pending.filter((event) => event.source === "sec").length;
   const directIssuerAtStart = state.pending.filter((event) => (event.sourceProvider ?? "").startsWith("issuer_ir_")).length;
   const issuerSpecificAtStart = state.pending.filter((event) => event.mappingMethod !== "deterministic_sector_fanout" && !event.id.includes(":fanout:") && Boolean(event.ticker)).length;
+  const readyNow = Date.now();
+  const readyBySourceAtStart = state.pending.filter((event) => analysisReady(event, readyNow)).reduce<Record<string, number>>((counts, event) => {
+    counts[event.source] = (counts[event.source] ?? 0) + 1;
+    return counts;
+  }, {});
+  const readyOfficialOrSecAtStart = (readyBySourceAtStart.sec ?? 0) + (readyBySourceAtStart.official ?? 0);
+  const readyDirectIssuerAtStart = state.pending.filter((event) => analysisReady(event, readyNow) && (event.sourceProvider ?? "").startsWith("issuer_ir_")).length;
   const readyAtStart = dueReadyCount(state);
   const capacity = capacityForQueue(readyAtStart);
   const eventResults: Json[] = [];
@@ -392,6 +401,9 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
     secAtStart,
     directIssuerAtStart,
     issuerSpecificAtStart,
+    readyBySourceAtStart,
+    readyOfficialOrSecAtStart,
+    readyDirectIssuerAtStart,
     dueForAnalysisAtStart: readyAtStart,
     admittedThisCycle: eventResults.length,
     decisionGradeEvidence: eventResults.filter((result) => result.sourceDecisionGrade === true).length,
@@ -400,6 +412,11 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
     analyzedThisCycle: eventsProcessed,
     paidCommitteeReviews: aiCalls,
     committeeApproved: seriousBuys + seriousSells + seriousWatchOuts,
+    analyzedBySource: eventResults.filter((result) => Number(result.eventsProcessed) > 0).reduce<Record<string, number>>((counts, result) => {
+      const source = String(result.eventSource ?? "unknown");
+      counts[source] = (counts[source] ?? 0) + 1;
+      return counts;
+    }, {}),
     deferredForRetry: eventDeferrals,
     failed: eventFailures,
     pendingAtEnd: state.pending.length,

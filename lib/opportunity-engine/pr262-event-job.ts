@@ -56,6 +56,7 @@ const FULL_SOURCE_MAX_BYTES = 500_000;
 const FULL_SOURCE_MAX_REDIRECTS = 3;
 const FULL_SOURCE_ABSOLUTE_TIMEOUT_MS = 15_000;
 const FULL_SOURCE_CACHE_TTL_MS = 7 * 24 * 60 * 60_000;
+const FOUNDATION_ANALYSIS_MAX_AGE_MS = 30 * 60 * 60_000;
 
 type Json = Record<string, unknown>;
 type CommitteeReservation = {
@@ -967,6 +968,54 @@ function validatedValueRefresh(value: unknown, eventId: string, ticker: string) 
   return { payload, analysis: analysis as unknown as UsValueCompanyAnalysis };
 }
 
+function validatedFoundationValueAnalysis(
+  value: unknown,
+  ticker: string,
+  now: Date,
+): UsValueCompanyAnalysis | null {
+  const analysis = object(value);
+  const observedAt = text(analysis.observedAt);
+  const observedMs = observedAt ? Date.parse(observedAt) : Number.NaN;
+  const currentPrice = Number(analysis.currentPrice);
+  const fairValue = object(analysis.fairValue);
+  const scores = object(analysis.scores);
+  const decision = object(analysis.decision);
+  const methods = Array.isArray(fairValue.methods) ? fairValue.methods : [];
+  const fairValues = [
+    fairValue.conservativeValue,
+    fairValue.baseValue,
+    fairValue.optimisticValue,
+  ];
+  if (String(analysis.ticker ?? "").toUpperCase() !== ticker.toUpperCase()
+    || !Number.isFinite(observedMs)
+    || observedMs > now.getTime()
+    || now.getTime() - observedMs > FOUNDATION_ANALYSIS_MAX_AGE_MS
+    || !Number.isFinite(currentPrice)
+    || currentPrice <= 0
+    || methods.length === 0
+    || !fairValues.some((candidate) => typeof candidate === "number" && Number.isFinite(candidate) && candidate > 0)
+    || typeof scores.evidenceCompleteness !== "number"
+    || !Number.isFinite(scores.evidenceCompleteness)
+    || typeof scores.fairValueConfidence !== "number"
+    || !Number.isFinite(scores.fairValueConfidence)
+    || !text(decision.action)
+    || !text(decision.tier)
+    || Object.keys(object(analysis.fundamentals)).length === 0
+    || Object.keys(object(analysis.valuation)).length === 0) {
+    return null;
+  }
+  try {
+    return hardenUsValueCompanyAnalysis(analysis as unknown as UsValueCompanyAnalysis);
+  } catch {
+    return null;
+  }
+}
+
+function targetedValueBudgetDenied(error: unknown) {
+  return error instanceof ProviderBudgetError
+    && error.message.startsWith("tradingview_targeted_value_");
+}
+
 async function writeMonotonicLatest(key: string, payload: Json, candidateAt: string, currentTimestamp: (value: Json) => string | null) {
   const candidateMs = Date.parse(candidateAt);
   if (!Number.isFinite(candidateMs)) throw new Error("pr262_latest_candidate_time_invalid");
@@ -1513,8 +1562,11 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
     if (!source.decisionGrade && event.source !== "market_price" && !sourceExpiredWithoutEvidence) {
       throw new RetryAtError(null, `pr262_event_full_source_incomplete:${sourceFailureReason ?? "temporary_source_failure"}`);
     }
-    const companyRefresh = source.decisionGrade && !sourceExpiredWithoutEvidence
-      ? await refreshAffectedCompany({
+    let companyRefresh: Awaited<ReturnType<typeof refreshAffectedCompany>> | null = null;
+    let foundationAnalysisFallback: UsValueCompanyAnalysis | null = null;
+    if (source.decisionGrade && !sourceExpiredWithoutEvidence) {
+      try {
+        companyRefresh = await refreshAffectedCompany({
           event: resolved.event,
           resolved,
           fetchImpl: quotaAwareFetch,
@@ -1533,8 +1585,26 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
               minimumIntervalMs: 15 * 60_000,
             },
           }),
-        })
-      : null;
+        });
+      } catch (error) {
+        const fallback = validatedFoundationValueAnalysis(
+          resolved.valueAnalysis,
+          resolved.directoryEntry.ticker,
+          now,
+        );
+        if (!targetedValueBudgetDenied(error) || !fallback) throw error;
+        foundationAnalysisFallback = fallback;
+      }
+    }
+    const valuationAnalysis = companyRefresh?.analysis ?? foundationAnalysisFallback;
+    const valuationContext = {
+      source: companyRefresh
+        ? "event_targeted_refresh"
+        : foundationAnalysisFallback ? "daily_foundation_cache" : "not_used",
+      observedAt: text(valuationAnalysis?.observedAt),
+      quotaFallback: Boolean(foundationAnalysisFallback),
+      maximumFoundationAgeHours: FOUNDATION_ANALYSIS_MAX_AGE_MS / (60 * 60_000),
+    };
     assertJobActive();
     await renewLease(event.id, ownerId, clock());
     const eventReceipts = [...source.receipts, ...haltProvider.receipts];
@@ -1580,7 +1650,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
             providers: [...source.providers, haltProvider],
             secFilingDetails: object(source.diagnostics),
             historicalSignalsComplete: true,
-            storedCompanyAnalysis: object(companyRefresh?.analysis ?? resolved.valueAnalysis),
+            storedCompanyAnalysis: object(valuationAnalysis ?? resolved.valueAnalysis),
           },
         }));
     assertJobActive();
@@ -1593,6 +1663,8 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       fullCompanyWarehouseRebuilds: 0,
       broadEventFeedPolls: 0,
       affectedCompanyValuationRefreshes: companyRefresh ? 1 : 0,
+      affectedCompanyValuationCacheFallbacks: foundationAnalysisFallback ? 1 : 0,
+      valuationContext,
       fullSourceCacheHit: Boolean(cachedFullSource),
       fullSourceCacheWrite,
       maximumCommitteeCallsPer24Hours: MAX_COMMITTEE_CALLS_PER_DAY,
@@ -1656,6 +1728,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       },
       sourceDecisionGrade: source.decisionGrade,
       sourceDiagnostics: source.diagnostics,
+      valuationContext,
       companyRefresh: persistedCompanyRefresh ? {
         immutableKey: persistedCompanyRefresh.immutableKey,
         latestKey: persistedCompanyRefresh.latestKey,

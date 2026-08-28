@@ -16,6 +16,7 @@ const UNRESOLVED_EVENT_TTL_MS = 24 * 60 * 60_000;
 const FIVE_MINUTES_MS = 5 * 60_000;
 const FIFTEEN_MINUTES_MS = 15 * 60_000;
 const MAX_SOURCE_CLOCK_SKEW_MS = FIVE_MINUTES_MS;
+const FOUNDATION_VALUATION_FALLBACK_CUTOVER_MS = Date.parse("2026-08-28T20:20:00.000Z");
 const SEC_URGENT_FORMS = ["8-K", "6-K", "424B5", "S-3", "10-Q", "10-K"] as const;
 const NEWS_QUERIES = [
   '(earnings OR guidance OR acquisition OR merger OR "contract award" OR recall OR investigation OR offering) (NASDAQ OR NYSE OR company)',
@@ -128,6 +129,13 @@ type SensorState = {
 };
 
 export type Pr262SensorState = SensorState;
+
+function foundationValuationFallbackRetryEligible(event: Pr262SensorEvent) {
+  const attemptedAt = event.queueLastAttemptAt ? Date.parse(event.queueLastAttemptAt) : Number.NaN;
+  return Number.isFinite(attemptedAt)
+    && attemptedAt < FOUNDATION_VALUATION_FALLBACK_CUTOVER_MS
+    && /^tradingview_targeted_value_/.test(event.queueLastError ?? "");
+}
 
 function processingReady(event: Pr262SensorEvent) {
   return event.priority >= 80
@@ -1179,7 +1187,9 @@ export async function readNextPr262PendingSensorEvent(input: {
   const excludedEventIds = new Set(input.excludedEventIds ?? []);
   return state.pending.find((event) => {
     const retryAt = event.queueNextAttemptAt ? Date.parse(event.queueNextAttemptAt) : Number.NaN;
-    const retryDue = !Number.isFinite(retryAt) || retryAt <= nowMs;
+    const retryDue = !Number.isFinite(retryAt)
+      || retryAt <= nowMs
+      || foundationValuationFallbackRetryEligible(event);
     return !excludedEventIds.has(event.id)
       && event.priority >= minimumPriority
       && processingReady(event)

@@ -416,6 +416,33 @@ assert.equal(afterRetry.cursors.directIssuerFeedIndex, 37);
 assert.equal(afterRetry.cloudflareSensor.owner, "cloudflare_worker");
 assert.equal(afterRetry.cloudflareSensor.lastScanId, "cf-scan-test");
 assert.equal(afterRetry.sensorReadiness.exposureReady, true);
+
+const fallbackReleaseNow = new Date("2026-08-28T20:30:00.000Z");
+const quotaDeferredBeforeFallback = {
+  ...afterRetry.pending[0],
+  observedAt: "2026-08-28T20:00:00.000Z",
+  queueLastAttemptAt: "2026-08-28T20:15:00.000Z",
+  queueNextAttemptAt: "2026-08-29T05:40:00.000Z",
+  queueLastError: "tradingview_targeted_value_rolling_quota_guard",
+};
+putObject(sensorStateKey, { ...afterRetry, pending: [quotaDeferredBeforeFallback] });
+assert.equal(
+  (await sensor.readNextPr262PendingSensorEvent({ now: fallbackReleaseNow, minimumPriority: 80 }))?.id,
+  quotaDeferredBeforeFallback.id,
+  "Only a targeted-value quota retry from before the safe fallback cutover must be released immediately.",
+);
+const quotaDeferredAfterFallback = {
+  ...quotaDeferredBeforeFallback,
+  queueLastAttemptAt: "2026-08-28T20:21:00.000Z",
+};
+putObject(sensorStateKey, { ...afterRetry, pending: [quotaDeferredAfterFallback] });
+assert.equal(
+  await sensor.readNextPr262PendingSensorEvent({ now: fallbackReleaseNow, minimumPriority: 80 }),
+  null,
+  "Retries after the compatibility cutover must continue respecting their durable next-attempt time.",
+);
+putObject(sensorStateKey, afterRetry);
+
 const acknowledged = await sensor.acknowledgePr262PendingSensorEvent(parsed.events[0].id);
 assert.equal(acknowledged.acknowledged, true);
 const afterAcknowledgement = await sensor.readPr262ChangeSensorState();
@@ -586,6 +613,7 @@ console.log(JSON.stringify({
   successfulProviderCadencesPersisted: true,
   healthySkippedSourcesReportedAsNotDue: true,
   providerAndEventRetriesPersistedInR2: true,
+  preFallbackTargetedQuotaRetriesReleasedOnce: true,
   eventAcknowledgementPreservesQueueState: true,
   railwayAnalysisPreservesCloudflareOwnershipMetadata: true,
   mappedRetriesProtectedFromUnmappedQueueFloods: true,

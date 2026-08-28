@@ -1661,7 +1661,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
             providers: [...source.providers, haltProvider],
             secFilingDetails: object(source.diagnostics),
             historicalSignalsComplete: true,
-            storedCompanyAnalysis: object(valuationAnalysis),
+            storedCompanyAnalysis: valuationAnalysis ? object(valuationAnalysis) : undefined,
           },
         }));
     assertJobActive();

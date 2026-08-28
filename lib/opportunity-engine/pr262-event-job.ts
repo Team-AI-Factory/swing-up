@@ -649,23 +649,36 @@ async function pinnedHttpsTransport(url: URL, validatedAddresses: string[]) {
 }
 
 async function limitedResponseText(response: Response) {
-  const declared = Number(response.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > FULL_SOURCE_MAX_BYTES) throw new Error("full_source_body_too_large");
   if (!response.body) throw new Error("full_source_body_unavailable");
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
+  let truncated = false;
   while (true) {
     const next = await reader.read();
     if (next.done) break;
-    total += next.value.byteLength;
-    if (total > FULL_SOURCE_MAX_BYTES) {
+    const remaining = FULL_SOURCE_MAX_BYTES - total;
+    if (remaining <= 0) {
+      truncated = true;
       await reader.cancel().catch(() => null);
-      throw new Error("full_source_body_too_large");
+      break;
     }
-    chunks.push(next.value);
+    const chunk = next.value.byteLength > remaining
+      ? next.value.subarray(0, remaining)
+      : next.value;
+    chunks.push(chunk);
+    total += chunk.byteLength;
+    if (chunk.byteLength < next.value.byteLength) {
+      truncated = true;
+      await reader.cancel().catch(() => null);
+      break;
+    }
   }
-  return { raw: Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8"), bytes: total };
+  return {
+    raw: Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8"),
+    bytes: total,
+    truncated,
+  };
 }
 
 function normalizedEvidenceText(value: string) {
@@ -764,11 +777,14 @@ async function fetchFullSource(
     if (!/^(?:text\/(?:html|plain|xml)|application\/(?:xhtml\+xml|xml))(?:;|$)/.test(contentType)) {
       throw new Error("full_source_content_type_unsupported");
     }
-    const { raw, bytes } = await limitedResponseText(response);
+    const { raw, bytes, truncated } = await limitedResponseText(response);
     const sourceText = cleanSourceText(raw).slice(0, 80_000);
     if (sourceText.length < 200) throw new Error("full_source_text_too_short");
     const evidence = fullSourceEvidenceConfirmed(sourceText, event, company, ticker);
-    if (!evidence.issuerConfirmed || !evidence.eventConfirmed) throw new Error("full_source_issuer_or_event_unconfirmed");
+    if (!evidence.issuerConfirmed || !evidence.eventConfirmed) {
+      if (truncated) throw new Error("full_source_body_too_large");
+      throw new Error("full_source_issuer_or_event_unconfirmed");
+    }
     const officialPreserved = officialHostPreserved(receipt, current);
     const enriched: EventReceipt = {
       ...receipt,
@@ -790,7 +806,7 @@ async function fetchFullSource(
       cached: false,
       responseTimeMs: Date.now() - startedAt,
     };
-    return { receipts: [enriched], providers: [provider], decisionGrade: true, diagnostics: { sourceTextBytes: bytes, sourceTextCharacters: sourceText.length, redirects, finalUrl: current.toString(), ...evidence, officialPreserved } };
+    return { receipts: [enriched], providers: [provider], decisionGrade: true, diagnostics: { sourceTextBytes: bytes, sourceTextCharacters: sourceText.length, sourceBodyTruncated: truncated, redirects, finalUrl: current.toString(), ...evidence, officialPreserved } };
   } catch (error) {
     const message = error instanceof Error ? error.message : "full_source_failed";
     const provider: ProviderResult = {

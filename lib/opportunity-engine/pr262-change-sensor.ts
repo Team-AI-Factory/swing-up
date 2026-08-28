@@ -141,6 +141,22 @@ function processingReady(event: Pr262SensorEvent) {
     ));
 }
 
+function canBecomeProcessingReady(event: Pr262SensorEvent) {
+  // Non-SEC discovery is allowed to map only from an explicit structured
+  // ticker. Company-name text is intentionally never used as identity, so a
+  // tickerless news/official item cannot become actionable on a later pass.
+  // SEC items may become mappable after the next authoritative directory
+  // refresh, but only when their complete official filing identity is already
+  // present.
+  if (event.source === "sec") {
+    return Boolean(event.cik)
+      && Boolean(event.accession)
+      && Boolean(event.canonicalSecIndexUrl)
+      && event.identityMethod === "official_sec_archive_link";
+  }
+  return Boolean(event.ticker);
+}
+
 function contextOnlyEvent(event: Pr262SensorEvent) {
   // A broad macro/sector observation can be useful research context, but it
   // cannot prove an issuer-specific causal event. Sending these synthetic
@@ -218,6 +234,7 @@ export function partitionPr262PendingEvents(events: Pr262SensorEvent[], now: Dat
     .slice(0, MAX_READY_PENDING);
   const unresolved = deduped
     .filter((event) => !processingReady(event))
+    .filter(canBecomeProcessingReady)
     .filter((event) => {
       const observedAt = Date.parse(event.observedAt);
       return Number.isFinite(observedAt) && nowMs - observedAt <= UNRESOLVED_EVENT_TTL_MS;

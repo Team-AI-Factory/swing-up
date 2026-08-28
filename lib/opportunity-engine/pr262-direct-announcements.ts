@@ -335,15 +335,44 @@ async function seedEnv(registry: Registry, exposure: Pr262ExposureEntry[]) {
   let rows: unknown[] = [];
   try { rows = JSON.parse(raw) as unknown[]; } catch { return; }
   const exposureByTicker = new Map(exposure.map((item) => [item.ticker, item]));
+  const seededAt = new Date().toISOString();
   for (const value of rows) {
     if (!value || typeof value !== "object" || Array.isArray(value)) continue;
     const row = value as Record<string, unknown>;
     const ticker = text(row.ticker)?.toUpperCase();
     const feedUrl = text(row.feedUrl);
+    const investorWebsite = text(row.investorWebsite);
     const company = ticker ? exposureByTicker.get(ticker) : null;
     if (!ticker || !feedUrl || !company?.cik) continue;
-    if (registry.entries.some((entry) => entry.ticker === ticker)) continue;
-    registry.entries.push({ ticker, company: company.company, cik: company.cik, investorWebsite: null, feedUrl, discoveredAt: new Date().toISOString(), lastDiscoveryAt: new Date().toISOString(), lastCheckedAt: null, lastSuccessAt: null, nextCheckAt: null, error: null });
+    const existing = registry.entries.find((entry) => entry.ticker === ticker);
+    if (existing) {
+      const feedChanged = existing.feedUrl !== feedUrl;
+      const websiteChanged = Boolean(investorWebsite && existing.investorWebsite !== investorWebsite);
+      if (!feedChanged && !websiteChanged) continue;
+      existing.company = company.company;
+      existing.cik = company.cik;
+      existing.feedUrl = feedUrl;
+      if (investorWebsite) existing.investorWebsite = investorWebsite;
+      existing.lastDiscoveryAt = seededAt;
+      existing.lastCheckedAt = null;
+      existing.lastSuccessAt = feedChanged ? null : existing.lastSuccessAt;
+      existing.nextCheckAt = null;
+      existing.error = null;
+      continue;
+    }
+    registry.entries.push({
+      ticker,
+      company: company.company,
+      cik: company.cik,
+      investorWebsite,
+      feedUrl,
+      discoveredAt: seededAt,
+      lastDiscoveryAt: seededAt,
+      lastCheckedAt: null,
+      lastSuccessAt: null,
+      nextCheckAt: null,
+      error: null,
+    });
   }
 }
 
@@ -382,6 +411,9 @@ async function discoverOne(
       error = cause instanceof Error ? cause.message.slice(0, 180) : "direct_feed_discovery_failed";
     }
   }
+  const missingFeedReason = investorWebsite
+    ? "issuer_rss_feed_not_discovered"
+    : "issuer_website_missing_in_sec_submissions";
   return {
     entry: {
       ticker: company.ticker,
@@ -393,8 +425,8 @@ async function discoverOne(
       lastDiscoveryAt: now.toISOString(),
       lastCheckedAt: null,
       lastSuccessAt: null,
-      nextCheckAt: feedUrl ? null : discoveryRetryAt(error ?? "issuer_rss_feed_not_discovered", now),
-      error: feedUrl ? null : error ?? "issuer_rss_feed_not_discovered",
+      nextCheckAt: feedUrl ? null : discoveryRetryAt(error ?? missingFeedReason, now),
+      error: feedUrl ? null : error ?? missingFeedReason,
     },
     secEvents,
   };

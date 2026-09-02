@@ -61,10 +61,45 @@ const restarted = await createPr262SensorBudgetedFetch({
     return new Response("should not be reached");
   },
 });
-await assert.rejects(() => restarted.fetchImpl(requestUrl), /minimum_interval/);
+await assert.rejects(
+  () => restarted.fetchImpl(requestUrl),
+  /minimum_interval;next_retry_at=\d{4}-\d{2}-\d{2}T/,
+  "A cadence block must tell the sensor exactly when the provider is safe to call again",
+);
 assert.equal(networkCalls, 1, "A restart must honor the pre-network reservation left by the crashed process");
 const flushed = await restarted.flush();
 assert.equal(flushed.reservationsPersistedBeforeNetwork, true);
+
+const currentMs = Date.now();
+const currentHour = new Date(Math.floor(currentMs / 3_600_000) * 3_600_000).toISOString().slice(0, 13);
+stored = {
+  value: {
+    version: 2,
+    updatedAt: new Date(currentMs).toISOString(),
+    hourlyCounts: { sensor_alpha_vantage: { [currentHour]: 20 } },
+    lastCadenceAt: {},
+  },
+  etag: `etag-${++revision}`,
+};
+const quotaBlocked = await createPr262SensorBudgetedFetch({
+  fetchImpl: async () => {
+    networkCalls += 1;
+    return new Response("must not be reached");
+  },
+});
+let rollingRetryAt = null;
+await assert.rejects(
+  () => quotaBlocked.fetchImpl("https://www.alphavantage.co/query?function=NEWS_SENTIMENT"),
+  (error) => {
+    const match = error.message.match(/rolling_24h_budget;next_retry_at=([^;\s]+)/);
+    rollingRetryAt = match?.[1] ?? null;
+    return Boolean(rollingRetryAt);
+  },
+  "A full daily budget must report the earliest conservatively safe rolling-window retry",
+);
+assert.ok(Date.parse(rollingRetryAt) > currentMs + 24 * 60 * 60_000);
+assert.ok(Date.parse(rollingRetryAt) <= currentMs + 25 * 60 * 60_000);
+assert.equal(networkCalls, 1, "A full Alpha Vantage budget must fail closed before the network");
 
 stored = null;
 revision = 0;
@@ -82,9 +117,11 @@ await Promise.all([
   "https://api.marketaux.com/v1/news/all?symbols=AAPL",
   "https://api.commerce.gov/api/news",
   "https://www.federalregister.gov/api/v1/documents.json",
+  "https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=AAPL",
+  "https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=MSFT",
 ].map((url) => parallel.fetchImpl(url)));
 assert.equal(maximumConcurrentWrites, 1, "Parallel providers must queue the shared R2 budget reservation instead of colliding.");
-assert.equal(networkCalls, 7, "Every independently budgeted provider may start after its durable reservation.");
+assert.equal(networkCalls, 9, "Every independently budgeted provider and exact-symbol Alpha quote may start after its durable reservation.");
 
 stored = { raw: "{invalid-provider-ledger", etag: `etag-${++revision}` };
 const corrupted = await createPr262SensorBudgetedFetch({
@@ -94,7 +131,7 @@ const corrupted = await createPr262SensorBudgetedFetch({
   },
 });
 await assert.rejects(() => corrupted.fetchImpl(requestUrl), /provider_budget_state_invalid/);
-assert.equal(networkCalls, 7, "A corrupt quota ledger must fail closed before any provider request");
+assert.equal(networkCalls, 9, "A corrupt quota ledger must fail closed before any provider request");
 
 console.log(JSON.stringify({
   ok: true,

@@ -137,7 +137,21 @@ const stubs = {
   "@/lib/opportunity-engine/pr262-change-sensor": {
     parseRssForPr262Sensor: () => ({ status: "connected", recordsRead: 0, events: [], error: null }),
     parseSecAtomForSensor: () => ({ status: "connected", recordsRead: 0, events: [], error: null }),
-    partitionPr262PendingEvents: (events) => events,
+    partitionPr262PendingEventsWithTelemetry: (events) => ({
+      pending: events,
+      droppedEventIds: [],
+      hygiene: {
+        inputEventCount: events.length,
+        retainedEventCount: events.length,
+        retainedAuthoritativeEventCount: events.filter((event) => event.source === "sec" || event.source === "official").length,
+        retainedDirectIssuerEventCount: events.filter((event) => /^(?:issuer_ir_|issuer_sec_)/.test(event.sourceProvider ?? "")).length,
+        droppedEventCount: 0,
+        duplicateLowValueCompanyNewsDropped: 0,
+        staleLowValueCompanyNewsDropped: 0,
+        permanentlyIneligibleDropped: 0,
+        capacityDropped: 0,
+      },
+    }),
   },
   "@/lib/opportunity-engine/pr262-direct-announcements": {
     runPr262DirectAnnouncementMonitor: async () => ({ events: [], registeredFeeds: 0, feedsPolled: 0, discoveriesAttempted: 0, feedSuccesses: 0, companiesKnown: 0, investorWebsitesFound: 0, feedlessCompanies: 0, discoveryErrors: [] }),
@@ -188,6 +202,12 @@ assert.equal(result.exposureError, "pr262_exposure_value_cycle_missing");
 assert.equal(result.sourceSummary[0].provider, "exposure_index");
 assert.equal(result.sourceSummary[0].status, "not_ready");
 assert.equal(result.sourceSummary.find((item) => item.provider === "market_watch").status, "connected");
+assert.deepEqual(
+  result.sourceSummary.find((item) => item.provider === "fmp_news"),
+  { provider: "fmp_news", attempted: false, status: "disabled_by_license", recordsRead: 0, newEvents: 0, error: null, nextRetryAt: null },
+  "An unapproved FMP license must be a clean legal skip, not a retried source failure.",
+);
+assert.equal(result.costPolicy.fmpNewsMinutes, null);
 assert.equal(universeLoads, 1, "The authoritative U.S. universe must still load on a clean namespace.");
 assert.equal(stateWritten.key, "production/pr262/sensor/state-v1.json");
 assert.equal(stateWritten.value.version, 2);

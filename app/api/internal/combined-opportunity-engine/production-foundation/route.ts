@@ -7,6 +7,7 @@ import {
 } from "@/lib/opportunity-engine/us-value-investing-resumable";
 import { resolvePr262StoragePrefix } from "@/lib/opportunity-engine/pr262-storage";
 import { isPr262ApprovedPremergeProductionRollout } from "@/lib/opportunity-engine/pr262-runtime";
+import { getValuationWatchlistStatus } from "@/lib/opportunity-engine/valuation-watchlist-feed";
 
 export const dynamic = "force-dynamic";
 
@@ -54,6 +55,33 @@ async function completeExposure() {
   };
 }
 
+async function foundationCandidateSummary() {
+  const watchlist = await getValuationWatchlistStatus({ limit: 200 });
+  const candidates = watchlist.candidates
+    .filter((candidate) => candidate.action !== "price_watch")
+    .map((candidate) => ({
+      ticker: candidate.ticker,
+      company: candidate.company,
+      action: candidate.action,
+      currentPrice: candidate.currentPrice,
+      baseValue: candidate.fairValue.base,
+      upsideToBasePercent: candidate.fairValue.upsideToBasePercent,
+      specialistModelApplied: candidate.specialistModelApplied,
+      userAlertEligible: false as const,
+    }));
+  return {
+    cycleId: watchlist.foundation.cycleId,
+    complete: watchlist.foundation.complete,
+    buyCount: watchlist.summary.buyResearch,
+    sellCount: watchlist.summary.sellResearch,
+    watchOutCount: watchlist.summary.watchOutResearch,
+    candidates,
+    candidatesComplete: !watchlist.truncated
+      || candidates.length >= watchlist.summary.buyResearch + watchlist.summary.sellResearch + watchlist.summary.watchOutResearch,
+    provisionalResearchOnly: true as const,
+  };
+}
+
 export async function POST(request: NextRequest) {
   if (!internalApiScopeAuthorized(request.headers, "foundation_runtime")) {
     return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
@@ -67,7 +95,10 @@ export async function POST(request: NextRequest) {
     const forceOnce = request.nextUrl.searchParams.get("force") === "true"
       && process.env.SWING_UP_PR262_FORCE_FOUNDATION_ONCE?.trim().toLowerCase() === "true";
     if (freshComplete(prior) && !forceOnce) {
-      const exposure = await completeExposure();
+      const [exposure, candidateSummary] = await Promise.all([
+        completeExposure(),
+        foundationCandidateSummary(),
+      ]);
       return NextResponse.json({
         ok: true,
         mode: "pr262_production_foundation",
@@ -86,6 +117,7 @@ export async function POST(request: NextRequest) {
             : 0,
         },
         exposure,
+        foundationCandidateSummary: candidateSummary,
         safety: {
           databaseWrites: false,
           publishing: false,
@@ -106,12 +138,15 @@ export async function POST(request: NextRequest) {
       });
     }
     const result = await runtime.__swingUpProductionFoundationRun;
-    const exposure = result.status === "complete" ? await completeExposure() : null;
+    const [exposure, candidateSummary] = result.status === "complete"
+      ? await Promise.all([completeExposure(), foundationCandidateSummary()])
+      : [null, null];
     return NextResponse.json({
       ...result,
       mode: "pr262_production_foundation",
       foundationOnly: true,
       exposure,
+      foundationCandidateSummary: candidateSummary,
     }, { status: result.ok ? 200 : 503 });
   } catch (error) {
     return NextResponse.json({

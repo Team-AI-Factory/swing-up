@@ -119,6 +119,8 @@ assert.equal(result.ok, true);
 assert.equal(result.mode, "pr262_railway_analysis_recovery");
 assert.equal(result.sensor.skipped, true);
 assert.equal(result.sensor.owner, "railway_sensor");
+assert.equal(result.processing.queueHealthAtStart.basis, "age_priority_and_retry_state");
+assert.equal(result.processing.queueHealthAtStart.healthyQueueNeedNotBeEmpty, true, "Queue health must use age, priority, and retry state rather than demanding an empty queue.");
 assert.equal(sensorCalls, 0);
 assert.equal(mappingCalls, 1);
 assert.equal(eventCalls, 1);

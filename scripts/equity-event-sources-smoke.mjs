@@ -45,7 +45,7 @@ new Function("require", "module", "exports", output)((name) => {
   throw new Error(`Unexpected event-source import: ${name}`);
 }, loaded, loaded.exports);
 
-const { collectEventSources, fetchCommerceNews, fetchGdeltDiscovery, fetchGoogleDiscovery, fetchMarketauxDiscovery, fetchNasdaqTradeHalts, fetchSecCurrentFilings, mergeSecFilingDetails } = loaded.exports;
+const { collectEventSources, fetchAlphaEarningsCalendar, fetchCommerceNews, fetchGdeltDiscovery, fetchGoogleDiscovery, fetchMarketauxDiscovery, fetchNasdaqTradeHalts, fetchOfficialFeeds, fetchSecCurrentFilings, mergeSecFilingDetails } = loaded.exports;
 const now = new Date("2026-07-22T14:00:00.000Z");
 
 const secEntry = ({ form, title, cik, company, accession }) => `<entry>
@@ -121,6 +121,31 @@ assert.equal(gdeltUrl.searchParams.get("maxrecords"), "75");
 assert.equal(gdeltUrl.searchParams.get("timespan"), "2h");
 assert.ok(gdeltUrl.searchParams.get("query").length < 220);
 assert.doesNotMatch(gdeltUrl.searchParams.get("query"), /\bwar\b/i);
+
+const previousAlphaKey = process.env.ALPHA_VANTAGE_API_KEY;
+process.env.ALPHA_VANTAGE_API_KEY = "test-key-not-a-secret";
+let alphaAcceptHeader = "not-checked";
+const alphaEarnings = await fetchAlphaEarningsCalendar(async (_value, init) => {
+  alphaAcceptHeader = new Headers(init?.headers).get("accept");
+  return new Response([
+    "symbol,name,reportDate,fiscalDateEnding,estimate,currency",
+    'TEST,"Test Holdings, Inc.",2026-07-24,2026-06-30,1.00,USD',
+  ].join("\n"), { status: 200 });
+}, now);
+assert.equal(alphaAcceptHeader, null, "The earnings calendar must not send the restrictive Accept header that Alpha Vantage rejects with 406.");
+assert.equal(alphaEarnings.status, "connected");
+assert.equal(alphaEarnings.receipts.length, 1);
+assert.deepEqual(alphaEarnings.receipts[0].companyHints, ["Test Holdings, Inc."]);
+if (previousAlphaKey === undefined) delete process.env.ALPHA_VANTAGE_API_KEY;
+else process.env.ALPHA_VANTAGE_API_KEY = previousAlphaKey;
+
+const rotatingOfficialUrls = [];
+const rotatingOfficial = await fetchOfficialFeeds(async (value) => {
+  rotatingOfficialUrls.push(String(value));
+  return new Response('<?xml version="1.0"?><rss><channel></channel></rss>', { status: 200 });
+}, now, { offset: 4, limit: 3 });
+assert.equal(rotatingOfficialUrls.length, 3, "A lightweight scan must poll one bounded official-feed batch.");
+assert.deepEqual(rotatingOfficial.map((item) => item.provider), ["sec_press", "white_house", "cisa"]);
 
 let googleUrl;
 await fetchGoogleDiscovery(async (value) => {

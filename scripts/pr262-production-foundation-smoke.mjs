@@ -57,6 +57,17 @@ const stubs = {
   "@/lib/opportunity-engine/pr262-runtime": {
     isPr262ApprovedPremergeProductionRollout: () => process.env.SWING_UP_PR262_PREMERGE_PRODUCTION_ROLLOUT === "true",
   },
+  "@/lib/opportunity-engine/valuation-watchlist-feed": {
+    getValuationWatchlistStatus: async () => ({
+      foundation: { cycleId: "cycle-complete", complete: true },
+      summary: { buyResearch: 1, sellResearch: 1, watchOutResearch: 0 },
+      candidates: [
+        { ticker: "BUY", company: "Buy Corp", action: "buy_research", currentPrice: 10, fairValue: { base: 20, upsideToBasePercent: 100 }, specialistModelApplied: false },
+        { ticker: "SELL", company: "Sell Corp", action: "sell_research", currentPrice: 20, fairValue: { base: 10, upsideToBasePercent: -50 }, specialistModelApplied: false },
+      ],
+      truncated: false,
+    }),
+  },
 };
 const loaded = { exports: {} };
 new Function("require", "module", "exports", output)((name) => stubs[name] ?? nodeRequire(name), loaded, loaded.exports);
@@ -101,6 +112,10 @@ try {
   assert.equal(fresh.body.reason, "production_foundation_fresh");
   assert.equal(fresh.body.exposure.ready, true);
   assert.equal(fresh.body.exposure.entries, 6_000);
+  assert.equal(fresh.body.foundationCandidateSummary.buyCount, 1);
+  assert.equal(fresh.body.foundationCandidateSummary.sellCount, 1);
+  assert.equal(fresh.body.foundationCandidateSummary.candidates.length, 2);
+  assert.equal(fresh.body.foundationCandidateSummary.candidatesComplete, true);
   assert.equal(exposureBuilds, 1, "A complete foundation must materialize and verify the full exposure index.");
   assert.equal(runCount, 1, "A fresh completed foundation must not rescan the market.");
 
@@ -147,6 +162,7 @@ for (const secret of ["DATABASE_URL", "OPENAI_API_KEY", "TELEGRAM_BOT_TOKEN", "S
   assert.match(launcherSource, new RegExp(`"${secret}"`), `${secret} must be stripped from the isolated foundation process.`);
 }
 assert.match(launcherSource, /MAX_BATCH_ROUNDS = 10/);
+assert.match(launcherSource, /\[pr262-foundation-candidates\]/, "The daily job must emit an unclipped compact candidate list.");
 assert.equal(railwayConfig.deploy.startCommand, "npm run pr262:production-foundation");
 assert.equal(oneShotRailwayConfig.deploy.startCommand, "npm run pr262:production-foundation");
 assert.equal(oneShotRailwayConfig.deploy.restartPolicyType, "NEVER");

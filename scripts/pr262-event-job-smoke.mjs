@@ -7,6 +7,7 @@ import { Readable } from "node:stream";
 import ts from "typescript";
 
 const source = readFileSync(new URL("../lib/opportunity-engine/pr262-event-job.ts", import.meta.url), "utf8");
+assert.match(source, /createPr262SensorBudgetedFetch\([\s\S]*?eventJobBudgetedFetch/, "Sensor and event-job calls must share one durable provider-account guard.");
 assert.match(source, /FULL_SOURCE_ABSOLUTE_TIMEOUT_MS = 15_000/, "Full-source reads need a fixed wall-clock deadline");
 assert.match(source, /LEASE_MS = 5 \* 60_000/, "A crashed event job must not retain the old two-hour global lease");
 assert.match(source, /LEASE_HEARTBEAT_MS = 60_000/, "A healthy long-running event job must renew its short lease");
@@ -16,14 +17,14 @@ assert.match(source, /request\.destroy\(new Error\("full_source_timeout"\)\)/, "
 assert.doesNotMatch(source, /request\.setTimeout\(/, "A socket-inactivity timeout cannot replace the absolute full-source deadline");
 assert.match(source, /FULL_SOURCE_CACHE_PREFIX/, "Decision-grade full-source work must be reusable across retries.");
 assert.match(source, /FULL_SOURCE_RETRY_COOLDOWN_MS = 2 \* 60 \* 60_000/, "Temporary full-source failures must retry before they are stale.");
-assert.match(source, /if \(options\.all\)[\s\S]*callback\(null, \[\{ address, family \}\]\)/, "Pinned HTTPS lookup must support Node's all-address callback contract.");
+assert.match(source, /hostname: address,[\s\S]*Host: url\.host,[\s\S]*servername: url\.hostname/, "Full-source transport must connect to the validated IP while preserving HTTP Host and TLS SNI.");
+assert.doesNotMatch(source, /lookup: pinnedAddressLookup/, "Node 24 full-source requests must not enter the null TLS socket lookup path.");
 assert.doesNotMatch(source, /event\.queueAttempts\s*>=\s*2/, "Retry count alone must never turn a transient evidence failure into a permanent rejection.");
 assert.match(source, /quotaKey === "pr262_full_source_reads"[\s\S]*cadenceKey\.includes\(":fanout:"\)/, "Obsolete sector fan-out reads must not consume the issuer full-source allowance.");
 const testableSource = source
   .replace("async function fetchFullSource(", "export async function fetchFullSource(")
   .replace("async function readCachedFullSource(", "export async function readCachedFullSource(")
-  .replace("async function cacheFullSource(", "export async function cacheFullSource(")
-  .replace("function pinnedAddressLookup(", "export function pinnedAddressLookup(");
+  .replace("async function cacheFullSource(", "export async function cacheFullSource(");
 const output = ts.transpileModule(testableSource, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
 }).outputText;
@@ -407,6 +408,9 @@ const stubs = {
       valueAnalysis: analysis,
     }),
   },
+  "@/lib/opportunity-engine/pr262-sensor-fetch-budget": {
+    createPr262SensorBudgetedFetch: async ({ fetchImpl }) => ({ fetchImpl, flush: async () => ({ persisted: true }), summary: () => ({}) }),
+  },
   "@/lib/opportunity-engine/us-value-investing-engine": {
     refreshUsValueCompany: async ({ ticker, now, beforeFetch }) => {
       valueRefreshCalls += 1;
@@ -428,7 +432,7 @@ new Function("require", "module", "exports", output)((name) => {
   throw new Error(`Unexpected event-job import: ${name}`);
 }, cjsModule, cjsModule.exports);
 
-const { cacheFullSource, fetchFullSource, pinnedAddressLookup, readCachedFullSource, runPr262EventJob, PR262_EVENT_JOB_KEYS } = cjsModule.exports;
+const { cacheFullSource, fetchFullSource, readCachedFullSource, runPr262EventJob, PR262_EVENT_JOB_KEYS } = cjsModule.exports;
 
 const securityNow = new Date("2026-08-11T10:00:00.000Z");
 const publicDns = async () => ["93.184.216.34"];
@@ -492,21 +496,6 @@ const pinnedFullSource = await fetchFullSource(
 );
 assert.equal(pinnedFullSource.decisionGrade, true);
 assert.deepEqual(pinnedTransportAddresses, ["93.184.216.34"], "The production transport must receive and pin the already-validated DNS address");
-
-const pinnedSingleLookup = await new Promise((resolve, reject) => {
-  pinnedAddressLookup("93.184.216.34", 4)("news.example.com", { all: false }, (error, address, family) => {
-    if (error) reject(error);
-    else resolve({ address, family });
-  });
-});
-assert.deepEqual(pinnedSingleLookup, { address: "93.184.216.34", family: 4 });
-const pinnedAllLookup = await new Promise((resolve, reject) => {
-  pinnedAddressLookup("2606:4700:4700::1111", 6)("news.example.com", { all: true }, (error, addresses) => {
-    if (error) reject(error);
-    else resolve(addresses);
-  });
-});
-assert.deepEqual(pinnedAllLookup, [{ address: "2606:4700:4700::1111", family: 6 }], "Node 24 all-address lookups must not receive an undefined address.");
 
 for (const blockedUrl of [
   "http://news.example.com/exact-guidance",

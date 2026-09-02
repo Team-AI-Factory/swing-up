@@ -362,14 +362,37 @@ function isSyndicationFeed(body: string) {
   return /<(?:rss|feed|(?:[a-z0-9_-]+:)?RDF)\b/i.test(body);
 }
 
-async function fetchText(fetchImpl: typeof fetch, url: URL | string, accept: string, timeoutMs = 20_000) {
-  const response = await fetchImpl(url, { headers: { Accept: accept, "user-agent": SEC_AGENT }, cache: "no-store", signal: AbortSignal.timeout(timeoutMs) });
+async function fetchText(fetchImpl: typeof fetch, url: URL | string, accept: string | null, timeoutMs = 20_000) {
+  const headers: Record<string, string> = { "user-agent": SEC_AGENT };
+  if (accept) headers.Accept = accept;
+  const response = await fetchImpl(url, { headers, cache: "no-store", signal: AbortSignal.timeout(timeoutMs) });
   const body = await response.text();
   if (!response.ok) {
     const policy = providerFailurePolicy({ httpStatus: response.status, bodyText: body });
     throw new Error(`${policy.status}_http_${response.status}`);
   }
   return { response, body };
+}
+
+function parseCsvRow(line: string) {
+  const values: string[] = [];
+  let value = "";
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+    if (character === '"') {
+      if (quoted && line[index + 1] === '"') {
+        value += '"';
+        index += 1;
+      } else quoted = !quoted;
+    } else if (character === "," && !quoted) {
+      values.push(value.trim());
+      value = "";
+    } else value += character;
+  }
+  values.push(value.trim());
+  if (quoted) throw new Error("invalid_csv_payload");
+  return values;
 }
 
 function secEntryForm(block: string, fallback: string | null) {
@@ -595,7 +618,7 @@ export async function fetchAlphaNews(fetchImpl: typeof fetch, now: Date): Promis
   if (!key) return result({ provider: "alpha_vantage_news", status: "not_configured", sourceUrls: [ALPHA_VANTAGE_URL] });
   const url = new URL(ALPHA_VANTAGE_URL);
   url.searchParams.set("function", "NEWS_SENTIMENT");
-  url.searchParams.set("topics", ["technology", "earnings", "economy_macro", "financial_markets", "mergers_and_acquisitions"][Math.floor(now.getTime() / (70 * 60_000)) % 5]);
+  url.searchParams.set("topics", ["technology", "earnings", "economy_macro", "financial_markets", "mergers_and_acquisitions"][Math.floor(now.getTime() / (75 * 60_000)) % 5]);
   url.searchParams.set("time_from", new Date(now.getTime() - 3 * 60 * 60 * 1000).toISOString().replace(/[-:]/g, "").slice(0, 13));
   url.searchParams.set("sort", "LATEST");
   url.searchParams.set("limit", "1000");
@@ -630,14 +653,25 @@ export async function fetchAlphaEarningsCalendar(fetchImpl: typeof fetch, now: D
   url.searchParams.set("horizon", "3month");
   url.searchParams.set("apikey", key);
   try {
-    const { body } = await fetchText(fetchImpl, url, "text/csv");
+    // Alpha Vantage documents this calendar as an ordinary GET. Its edge can
+    // reject restrictive `Accept: text/csv` negotiation with HTTP 406, so do
+    // not send a media-type constraint the endpoint does not require.
+    const { body } = await fetchText(fetchImpl, url, null);
+    if (/^\s*[\[{]/.test(body)) {
+      const payload = JSON.parse(body) as Record<string, unknown>;
+      const message = text(payload.Note ?? payload.Information ?? payload["Error Message"]);
+      throw new Error(/limit|frequency|quota/i.test(message) ? "rate_limited" : "invalid_earnings_calendar_payload");
+    }
     const lines = body.trim().split(/\r?\n/);
-    const headers = (lines.shift() ?? "").split(",").map((value) => value.trim());
+    const headers = parseCsvRow(lines.shift() ?? "");
+    if (!["symbol", "name", "reportDate"].every((header) => headers.includes(header))) {
+      throw new Error("invalid_earnings_calendar_headers");
+    }
     const at = (values: string[], name: string) => text(values[headers.indexOf(name)]);
     const today = now.toISOString().slice(0, 10);
     const near = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const receipts = lines.flatMap((line): EventReceipt[] => {
-      const values = line.split(",");
+      const values = parseCsvRow(line);
       const reportDate = at(values, "reportDate");
       const ticker = normalizeEquitySymbol(at(values, "symbol"));
       const company = at(values, "name");
@@ -652,8 +686,16 @@ export async function fetchAlphaEarningsCalendar(fetchImpl: typeof fetch, now: D
   }
 }
 
-export async function fetchOfficialFeeds(fetchImpl: typeof fetch, now: Date): Promise<ProviderResult[]> {
-  const settled = await Promise.allSettled(OFFICIAL_FEEDS.map(async (feed) => {
+export async function fetchOfficialFeeds(
+  fetchImpl: typeof fetch,
+  now: Date,
+  options: { offset?: number; limit?: number } = {},
+): Promise<ProviderResult[]> {
+  const offset = Math.max(0, Math.floor(options.offset ?? 0));
+  const requestedLimit = Math.floor(options.limit ?? OFFICIAL_FEEDS.length);
+  const limit = Math.max(1, Math.min(OFFICIAL_FEEDS.length, requestedLimit));
+  const selected = Array.from({ length: limit }, (_, index) => OFFICIAL_FEEDS[(offset + index) % OFFICIAL_FEEDS.length]);
+  const settled = await Promise.allSettled(selected.map(async (feed) => {
     const startedAt = Date.now();
     const { body } = await fetchText(fetchImpl, feed.url, "application/rss+xml,application/atom+xml,text/xml", 15_000);
     if (!isSyndicationFeed(body)) throw new Error("invalid_feed_payload");
@@ -663,7 +705,7 @@ export async function fetchOfficialFeeds(fetchImpl: typeof fetch, now: Date): Pr
   const rows = settled.map((item, index) => {
     if (item.status === "fulfilled") return item.value;
     const failure = publicFeedErrorCategory(item.reason);
-    return result({ provider: OFFICIAL_FEEDS[index].provider, status: failure.status, sourceUrls: [OFFICIAL_FEEDS[index].url], error: failure.error });
+    return result({ provider: selected[index].provider, status: failure.status, sourceUrls: [selected[index].url], error: failure.error });
   });
   return aggregateProviderRows(rows);
 }

@@ -86,6 +86,9 @@ try {
     const raw = await response.text();
     let body;
     try { body = JSON.parse(raw); } catch { body = { raw: raw.slice(0, 2_000) }; }
+    if (body.foundationCandidateSummary) {
+      console.log(`[pr262-foundation-candidates] ${JSON.stringify(body.foundationCandidateSummary)}`);
+    }
     console.log(`[pr262-foundation] round=${round} status=${response.status} ${JSON.stringify(body).slice(0, 50_000)}`);
     if (!response.ok) throw new Error(`pr262_foundation_route_http_${response.status}`);
     if (body.status === "complete" || body.skipped === true) {

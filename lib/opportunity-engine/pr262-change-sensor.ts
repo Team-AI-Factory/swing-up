@@ -13,6 +13,7 @@ const MAX_UNRESOLVED_PENDING = 500;
 const MAX_FRESH_PER_RUN = 500;
 const READY_EVENT_TTL_MS = 48 * 60 * 60_000;
 const UNRESOLVED_EVENT_TTL_MS = 24 * 60 * 60_000;
+const LOW_VALUE_COMPANY_NEWS_TTL_MS = 6 * 60 * 60_000;
 const FIVE_MINUTES_MS = 5 * 60_000;
 const FIFTEEN_MINUTES_MS = 15 * 60_000;
 const MAX_SOURCE_CLOCK_SKEW_MS = FIVE_MINUTES_MS;
@@ -184,6 +185,103 @@ function researchOnlyPriceEvent(event: Pr262SensorEvent) {
     && event.sourceProvider === "tradingview_quality_watchlist_v3";
 }
 
+function directIssuerEvent(event: Pr262SensorEvent) {
+  return /^(?:issuer_ir_|issuer_sec_)/.test(event.sourceProvider ?? "");
+}
+
+function authoritativeEvent(event: Pr262SensorEvent) {
+  return event.source === "sec" || event.source === "official" || directIssuerEvent(event);
+}
+
+function lowValueCompanyNewsEvent(event: Pr262SensorEvent) {
+  return event.source === "company_news" && event.priority < 80;
+}
+
+const COMPANY_NEWS_PUBLISHER_SUFFIX = /\s+(?:-|\||\u2013|\u2014)\s+(?:reuters|bloomberg|cnbc|yahoo(?: finance)?|marketwatch|seeking alpha|benzinga|globenewswire|business wire|pr newswire|barron'?s|the motley fool|investor'?s business daily|zacks)\s*$/i;
+const COMPANY_NEWS_STOP_WORDS = new Set([
+  "a", "an", "and", "as", "at", "by", "for", "from", "in", "into", "its", "of", "on", "or", "the", "to", "with",
+  "co", "company", "corp", "corporation", "inc", "incorporated", "ltd", "limited", "plc",
+  "amex", "nasdaq", "nyse",
+]);
+
+function normalizedCompanyNewsTokens(value: string) {
+  return value
+    .normalize("NFKD")
+    .replace(/&amp;/gi, " and ")
+    .replace(/&(?:apos|#39);/gi, "'")
+    .replace(/&(?:quot|#34);/gi, " ")
+    .toLowerCase()
+    .replace(/\bfull[-\s]?year\b/g, " fy ")
+    .replace(/\b(?:first|1st)[-\s]?quarter\b/g, " q1 ")
+    .replace(/\b(?:second|2nd)[-\s]?quarter\b/g, " q2 ")
+    .replace(/\b(?:third|3rd)[-\s]?quarter\b/g, " q3 ")
+    .replace(/\b(?:fourth|4th)[-\s]?quarter\b/g, " q4 ")
+    .replace(/\b(?:raises?|raised|boosts?|boosted|lifts?|lifted|hikes?|hiked|increases?|increased)\b/g, " raise ")
+    .replace(/\b(?:cuts?|cutting|lowers?|lowered|slashes?|slashed|reduces?|reduced)\b/g, " lower ")
+    .replace(/\b(?:outlook|forecasts?)\b/g, " guidance ")
+    .replace(/\b(?:sales)\b/g, " revenue ")
+    .replace(/\b(?:results?)\b/g, " earnings ")
+    .replace(/\b(?:announces?|announced|announcement)\b/g, " announce ")
+    .replace(/\b(?:opens?|opened)\b/g, " open ")
+    .replace(/\b(?:launches?|launched)\b/g, " launch ")
+    .replace(/\b(?:partners?|partnered|partnership)\b/g, " partner ")
+    .replace(/\b(?:updates?|updated)\b/g, " update ")
+    .replace(/[^a-z0-9.]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function companyNewsSemanticKey(event: Pr262SensorEvent) {
+  if (!lowValueCompanyNewsEvent(event) || !event.ticker) return null;
+  const observedDay = event.observedAt.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(observedDay)) return null;
+  const ticker = event.ticker.toUpperCase();
+  const companyTokens = new Set(normalizedCompanyNewsTokens(event.company ?? ""));
+  const title = event.title.replace(COMPANY_NEWS_PUBLISHER_SUFFIX, "");
+  const meaningTokens = normalizedCompanyNewsTokens(title)
+    .filter((token) => token.toUpperCase() !== ticker)
+    .filter((token) => !COMPANY_NEWS_STOP_WORDS.has(token))
+    .filter((token) => !companyTokens.has(token));
+  if (!meaningTokens.length) return null;
+  // Preserve token order: normalized equivalent headlines collapse, while
+  // inverse statements such as "A sues B" and "B sues A" remain separate.
+  // Exact ticker and UTC day are also mandatory.
+  const meaning = meaningTokens.join("_");
+  return `company-news:${ticker}:${observedDay}:${meaning}`;
+}
+
+function preferredSemanticDuplicate(left: Pr262SensorEvent, right: Pr262SensorEvent) {
+  const leftReady = processingReady(left) ? 1 : 0;
+  const rightReady = processingReady(right) ? 1 : 0;
+  const leftHealth = left.sourceHealthStatus === "connected" ? 1 : 0;
+  const rightHealth = right.sourceHealthStatus === "connected" ? 1 : 0;
+  if (left.priority !== right.priority) return left.priority > right.priority ? left : right;
+  if (leftReady !== rightReady) return leftReady > rightReady ? left : right;
+  if (leftHealth !== rightHealth) return leftHealth > rightHealth ? left : right;
+  if (left.observedAt !== right.observedAt) return left.observedAt > right.observedAt ? left : right;
+  if (left.queueAttempts !== right.queueAttempts) return left.queueAttempts > right.queueAttempts ? left : right;
+  return left.id.localeCompare(right.id) <= 0 ? left : right;
+}
+
+export type Pr262PendingQueueHygiene = {
+  inputEventCount: number;
+  retainedEventCount: number;
+  retainedAuthoritativeEventCount: number;
+  retainedDirectIssuerEventCount: number;
+  droppedEventCount: number;
+  duplicateLowValueCompanyNewsDropped: number;
+  staleLowValueCompanyNewsDropped: number;
+  permanentlyIneligibleDropped: number;
+  capacityDropped: number;
+};
+
+export type Pr262PendingPartitionResult = {
+  pending: Pr262SensorEvent[];
+  droppedEventIds: string[];
+  hygiene: Pr262PendingQueueHygiene;
+};
+
 function pendingOrder(left: Pr262SensorEvent, right: Pr262SensorEvent, nowMs: number) {
   const retryRank = (event: Pr262SensorEvent) => {
     const retryAt = event.queueNextAttemptAt ? Date.parse(event.queueNextAttemptAt) : Number.NaN;
@@ -195,16 +293,16 @@ function pendingOrder(left: Pr262SensorEvent, right: Pr262SensorEvent, nowMs: nu
   const rightRank = retryRank(right);
   const evidenceRank = (event: Pr262SensorEvent) => event.source === "sec"
     ? 0
-    : event.source === "official"
+    : directIssuerEvent(event)
       ? 1
+    : event.source === "official"
+      ? 2
       : event.source === "company_news"
-        ? 2
-        : 3;
+        ? 3
+        : 4;
   const leftEvidenceRank = evidenceRank(left);
   const rightEvidenceRank = evidenceRank(right);
-  const directIssuerRank = (event: Pr262SensorEvent) => (event.sourceProvider ?? "").startsWith("issuer_ir_") ? 0 : 1;
   return leftEvidenceRank - rightEvidenceRank
-    || directIssuerRank(left) - directIssuerRank(right)
     || leftRank - rightRank
     || right.priority - left.priority
     || (leftRank === 2
@@ -212,47 +310,98 @@ function pendingOrder(left: Pr262SensorEvent, right: Pr262SensorEvent, nowMs: nu
       : left.observedAt.localeCompare(right.observedAt));
 }
 
-export function partitionPr262PendingEvents(events: Pr262SensorEvent[], now: Date) {
-  const deduped = [...events.filter((event) => !contextOnlyEvent(event) && !researchOnlyPriceEvent(event)).reduce((map, event) => {
-    // Older sensor versions included the live price and minute in market-event
-    // IDs. Collapse those legacy duplicates by their actual meaning so a normal
-    // state write repairs the queue without deleting R2 data by hand.
-    const observedDay = event.observedAt.slice(0, 10);
-    const semanticKey = event.source === "market_price"
-      && event.sourceProvider === "tradingview_quality_watchlist_v3"
-      && event.ticker
-      && event.kind
-      && /^\d{4}-\d{2}-\d{2}$/.test(observedDay)
-      ? `market:${event.ticker}:${event.kind}:${observedDay}`
-      : `id:${event.id}`;
-    const current = map.get(semanticKey);
+export function partitionPr262PendingEventsWithTelemetry(events: Pr262SensorEvent[], now: Date): Pr262PendingPartitionResult {
+  type DropReason = "duplicate_low_value_company_news" | "stale_low_value_company_news" | "permanently_ineligible" | "capacity";
+  const droppedReasons = new Map<string, DropReason>();
+  const markDropped = (event: Pr262SensorEvent, reason: DropReason) => {
+    if (event.id) droppedReasons.set(event.id, reason);
+  };
+  const candidates = events.filter((event) => {
+    const retained = !contextOnlyEvent(event) && !researchOnlyPriceEvent(event);
+    if (!retained) markDropped(event, "permanently_ineligible");
+    return retained;
+  });
+  const idDeduped = [...candidates.reduce((map, event) => {
+    const current = map.get(event.id);
     if (!current
       || event.priority > current.priority
       || event.queueAttempts > current.queueAttempts
       || (event.priority === current.priority
         && event.queueAttempts === current.queueAttempts
-        && event.observedAt > current.observedAt)) map.set(semanticKey, event);
+        && event.observedAt > current.observedAt)) map.set(event.id, event);
+    return map;
+  }, new Map<string, Pr262SensorEvent>()).values()];
+  const deduped = [...idDeduped.reduce((map, event) => {
+    // Older sensor versions included the live price and minute in market-event
+    // IDs. Collapse those legacy duplicates by their actual meaning so a normal
+    // state write repairs the queue without deleting R2 data by hand.
+    const observedDay = event.observedAt.slice(0, 10);
+    const companyNewsKey = companyNewsSemanticKey(event);
+    const semanticKey = companyNewsKey ?? (event.source === "market_price"
+      && event.sourceProvider === "tradingview_quality_watchlist_v3"
+      && event.ticker
+      && event.kind
+      && /^\d{4}-\d{2}-\d{2}$/.test(observedDay)
+      ? `market:${event.ticker}:${event.kind}:${observedDay}`
+      : `id:${event.id}`);
+    const current = map.get(semanticKey);
+    if (!current) map.set(semanticKey, event);
+    else if (companyNewsKey) {
+      const preferred = preferredSemanticDuplicate(current, event);
+      const discarded = preferred === current ? event : current;
+      markDropped(discarded, "duplicate_low_value_company_news");
+      map.set(semanticKey, preferred);
+    }
     return map;
   }, new Map<string, Pr262SensorEvent>()).values()];
   const nowMs = now.getTime();
-  const ready = deduped
+  const withinTtl = (event: Pr262SensorEvent, ttlMs: number) => {
+    const observedAt = Date.parse(event.observedAt);
+    const retained = Number.isFinite(observedAt) && nowMs - observedAt <= ttlMs;
+    if (!retained) markDropped(event, lowValueCompanyNewsEvent(event) ? "stale_low_value_company_news" : "permanently_ineligible");
+    return retained;
+  };
+  const readyCandidates = deduped
     .filter(processingReady)
-    .filter((event) => {
-      const observedAt = Date.parse(event.observedAt);
-      return Number.isFinite(observedAt) && nowMs - observedAt <= READY_EVENT_TTL_MS;
-    })
-    .sort((left, right) => pendingOrder(left, right, nowMs))
-    .slice(0, MAX_READY_PENDING);
-  const unresolved = deduped
+    .filter((event) => withinTtl(event, lowValueCompanyNewsEvent(event) ? LOW_VALUE_COMPANY_NEWS_TTL_MS : READY_EVENT_TTL_MS))
+    .sort((left, right) => pendingOrder(left, right, nowMs));
+  const ready = readyCandidates.slice(0, MAX_READY_PENDING);
+  for (const event of readyCandidates.slice(MAX_READY_PENDING)) markDropped(event, "capacity");
+  const unresolvedCandidates = deduped
     .filter((event) => !processingReady(event))
-    .filter(canBecomeProcessingReady)
     .filter((event) => {
-      const observedAt = Date.parse(event.observedAt);
-      return Number.isFinite(observedAt) && nowMs - observedAt <= UNRESOLVED_EVENT_TTL_MS;
+      const retained = canBecomeProcessingReady(event);
+      if (!retained) markDropped(event, "permanently_ineligible");
+      return retained;
     })
-    .sort((left, right) => right.priority - left.priority || right.observedAt.localeCompare(left.observedAt))
-    .slice(0, MAX_UNRESOLVED_PENDING);
-  return [...ready, ...unresolved];
+    .filter((event) => withinTtl(event, lowValueCompanyNewsEvent(event) ? LOW_VALUE_COMPANY_NEWS_TTL_MS : UNRESOLVED_EVENT_TTL_MS))
+    .sort((left, right) => pendingOrder(left, right, nowMs));
+  const unresolved = unresolvedCandidates.slice(0, MAX_UNRESOLVED_PENDING);
+  for (const event of unresolvedCandidates.slice(MAX_UNRESOLVED_PENDING)) markDropped(event, "capacity");
+  const pending = [...ready, ...unresolved];
+  const retainedIds = new Set(pending.map((event) => event.id));
+  for (const id of retainedIds) droppedReasons.delete(id);
+  const droppedEventIds = [...droppedReasons.keys()];
+  const countReason = (reason: DropReason) => [...droppedReasons.values()].filter((value) => value === reason).length;
+  return {
+    pending,
+    droppedEventIds,
+    hygiene: {
+      inputEventCount: events.length,
+      retainedEventCount: pending.length,
+      retainedAuthoritativeEventCount: pending.filter(authoritativeEvent).length,
+      retainedDirectIssuerEventCount: pending.filter(directIssuerEvent).length,
+      droppedEventCount: droppedEventIds.length,
+      duplicateLowValueCompanyNewsDropped: countReason("duplicate_low_value_company_news"),
+      staleLowValueCompanyNewsDropped: countReason("stale_low_value_company_news"),
+      permanentlyIneligibleDropped: countReason("permanently_ineligible"),
+      capacityDropped: countReason("capacity"),
+    },
+  };
+}
+
+export function partitionPr262PendingEvents(events: Pr262SensorEvent[], now: Date) {
+  return partitionPr262PendingEventsWithTelemetry(events, now).pending;
 }
 
 type ValueWatchItem = {
@@ -760,11 +909,15 @@ function migrateState(value: unknown, now: Date): SensorState {
   const pending = Array.isArray(item.pending)
     ? item.pending.map((event) => normalizePersistedEvent(event, now)).filter((event): event is Pr262SensorEvent => Boolean(event))
     : [];
+  const partitioned = partitionPr262PendingEventsWithTelemetry(pending, now);
   return {
     version: 2,
     updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : fallback.updatedAt,
-    seen: Array.isArray(item.seen) ? item.seen.filter((id): id is string => typeof id === "string").slice(-MAX_SEEN) : [],
-    pending: partitionPr262PendingEvents(pending, now),
+    seen: [...new Set([
+      ...(Array.isArray(item.seen) ? item.seen.filter((id): id is string => typeof id === "string") : []),
+      ...partitioned.droppedEventIds,
+    ])].slice(-MAX_SEEN),
+    pending: partitioned.pending,
     lastMarketWatchAt: typeof item.lastMarketWatchAt === "string" ? item.lastMarketWatchAt : null,
     cursors: {
       secUrgentFormIndex: Math.max(0, Number(cursors.secUrgentFormIndex) || 0) % SEC_URGENT_FORMS.length,
@@ -1092,12 +1245,14 @@ export async function runPr262ChangeSensor(
   const seen = new Set([...state.seen, ...state.pending.map((event) => event.id)]);
   const fresh = deduped
     .filter((event) => !seen.has(event.id))
-    .sort((left, right) => right.priority - left.priority || right.observedAt.localeCompare(left.observedAt))
+    .sort((left, right) => pendingOrder(left, right, now.getTime()))
     .slice(0, MAX_FRESH_PER_RUN);
-  const pending = partitionPr262PendingEvents([...state.pending, ...fresh], now);
+  const partitioned = partitionPr262PendingEventsWithTelemetry([...state.pending, ...fresh], now);
+  const pending = partitioned.pending;
   const retainedPendingIds = new Set(pending.map((event) => event.id));
+  const droppedPendingIds = new Set(partitioned.droppedEventIds);
   for (const event of fresh) {
-    if (retainedPendingIds.has(event.id)) seen.add(event.id);
+    if (retainedPendingIds.has(event.id) || droppedPendingIds.has(event.id)) seen.add(event.id);
   }
 
   const nextSourceHealth = { ...state.sourceHealth };
@@ -1148,6 +1303,7 @@ export async function runPr262ChangeSensor(
       key: SENSOR_STATE_KEY,
       pendingEventCount: pending.length,
       seenIdentityCount: next.seen.length,
+      queueHygiene: partitioned.hygiene,
       cursors: next.cursors,
       retryingProviders: sourceHealth.filter((item) => Boolean(item.nextRetryAt)).map((item) => ({ provider: item.provider, nextRetryAt: item.nextRetryAt })),
     },
@@ -1171,8 +1327,8 @@ export async function runPr262ChangeSensor(
   };
 }
 
-export async function readPr262ChangeSensorState() {
-  return (await loadSensorState()).state;
+export async function readPr262ChangeSensorState(now = new Date()) {
+  return (await loadSensorState(now)).state;
 }
 
 export async function readNextPr262PendingSensorEvent(input: {
@@ -1199,6 +1355,7 @@ export async function readNextPr262PendingSensorEvent(input: {
 
 export async function applyPr262PendingSensorEventMutations(
   mutations: readonly Pr262PendingSensorEventMutation[],
+  now = new Date(),
 ) {
   const normalized = new Map<string, Pr262PendingSensorEventMutation>();
   for (const mutation of mutations) {
@@ -1210,12 +1367,12 @@ export async function applyPr262PendingSensorEventMutations(
     normalized.set(eventId, { ...mutation, eventId });
   }
   if (!normalized.size) {
-    const state = (await loadSensorState()).state;
+    const state = (await loadSensorState(now)).state;
     return { written: false, writes: 0, acknowledged: 0, retried: 0, pendingCount: state.pending.length };
   }
 
   for (let attempt = 0; attempt < 5; attempt += 1) {
-    const loaded = await loadSensorState();
+    const loaded = await loadSensorState(now);
     let acknowledged = 0;
     let retried = 0;
     const pending = loaded.state.pending.flatMap((event): Pr262SensorEvent[] => {
@@ -1238,7 +1395,7 @@ export async function applyPr262PendingSensorEventMutations(
     if (acknowledged === 0 && retried === 0) {
       return { written: false, writes: 0, acknowledged, retried, pendingCount: pending.length };
     }
-    const next: SensorState = { ...loaded.state, updatedAt: new Date().toISOString(), pending };
+    const next: SensorState = { ...loaded.state, updatedAt: now.toISOString(), pending };
     const written = await writeVersionedJsonToR2(
       SENSOR_STATE_KEY,
       next,
@@ -1251,8 +1408,8 @@ export async function applyPr262PendingSensorEventMutations(
   throw new Error("pr262_sensor_batch_state_conflict");
 }
 
-export async function acknowledgePr262PendingSensorEvent(eventId: string) {
-  const result = await applyPr262PendingSensorEventMutations([{ action: "acknowledge", eventId }]);
+export async function acknowledgePr262PendingSensorEvent(eventId: string, now = new Date()) {
+  const result = await applyPr262PendingSensorEventMutations([{ action: "acknowledge", eventId }], now);
   return { acknowledged: result.acknowledged > 0, pendingCount: result.pendingCount };
 }
 
@@ -1262,7 +1419,7 @@ export async function retryPr262PendingSensorEvent(input: {
   nextRetryAt: string;
   attemptedAt?: Date;
 }) {
-  const result = await applyPr262PendingSensorEventMutations([{ action: "retry", ...input }]);
+  const result = await applyPr262PendingSensorEventMutations([{ action: "retry", ...input }], input.attemptedAt ?? new Date());
   return {
     retried: result.retried > 0,
     pendingCount: result.pendingCount,

@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { lookup } from "node:dns/promises";
 import * as https from "node:https";
-import net, { type LookupFunction } from "node:net";
+import net from "node:net";
 import { Readable } from "node:stream";
 import { branchProviderCallRequest } from "@/lib/branch-signal-lab";
 import { providerCallBudgetDecision, type ProviderBudgetReservation } from "@/lib/branch-signal-lab-policy";
@@ -32,6 +32,7 @@ import { refreshUsValueCompany, type UsValueCompanyAnalysis } from "@/lib/opport
 import { hardenUsValueCompanyAnalysis } from "@/lib/opportunity-engine/us-value-investing-safety";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 import { promotePr262SeriousWatchOut } from "@/lib/opportunity-engine/pr262-serious-watch-out-authority";
+import { createPr262SensorBudgetedFetch } from "@/lib/opportunity-engine/pr262-sensor-fetch-budget";
 
 const STATE_KEY = pr262StorageKey("event-job/state-v1.json");
 const LEASE_KEY = pr262StorageKey("event-job/runtime/lease-v1.json");
@@ -593,19 +594,6 @@ async function defaultResolveHost(hostname: string) {
   return (await lookup(hostname, { all: true, verbatim: true })).map((item) => item.address);
 }
 
-function pinnedAddressLookup(address: string, family: number): LookupFunction {
-  return (_hostname, options, callback) => {
-    // Node 24's HTTPS agent can request every address (`all: true`). Returning
-    // the legacy single-address callback shape in that mode is interpreted as
-    // an address entry with `address: undefined`, which aborts the request.
-    if (options.all) {
-      callback(null, [{ address, family }]);
-      return;
-    }
-    callback(null, address, family);
-  };
-}
-
 async function pinnedHttpsTransport(url: URL, validatedAddresses: string[]) {
   let lastError: unknown = null;
   for (const address of validatedAddresses) {
@@ -616,11 +604,25 @@ async function pinnedHttpsTransport(url: URL, validatedAddresses: string[]) {
           reject(new Error("full_source_address_invalid"));
           return;
         }
-        const request = https.request(url, {
+        // Connect to the address that was already validated, while retaining
+        // the original hostname for both TLS SNI and the HTTP Host header.
+        // Passing a custom `lookup` callback into Node 24's HTTPS agent can
+        // reach a null TLS socket (`setServername`) before the callback shape
+        // is consumed. A literal-IP connection avoids that runtime path and
+        // keeps the DNS-rebinding/SSRF protection intact.
+        const request = https.request({
+          protocol: "https:",
+          hostname: address,
+          port: 443,
+          path: `${url.pathname}${url.search}`,
           method: "GET",
-          headers: { Accept: "text/html,application/xhtml+xml,text/plain,application/xml", "user-agent": "SwingUp/1.0 support@swingup.app" },
+          headers: {
+            Accept: "text/html,application/xhtml+xml,text/plain,application/xml",
+            Host: url.host,
+            "user-agent": "SwingUp/1.0 support@swingup.app",
+          },
           servername: url.hostname,
-          lookup: pinnedAddressLookup(address, family),
+          family,
         }, (incoming) => {
           const clearAbsoluteDeadline = () => clearTimeout(absoluteDeadline);
           incoming.once("end", clearAbsoluteDeadline);
@@ -1585,13 +1587,23 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
     if (event.source === "sec" && (!event.cik || resolved.directoryEntry.cik !== event.cik)) {
       throw new Error("pr262_event_sec_cik_mismatch");
     }
-    const quotaAwareFetch: typeof fetch = async (request, init) => {
+    const eventJobBudgetedFetch: typeof fetch = async (request, init) => {
       assertJobActive();
       const budget = branchProviderCallRequest(request, now);
       if (budget) await reserveProviderCall({ eventId: event.id, ownerId, now, request: budget });
       assertJobActive();
       return fetchImpl(request, { ...init, signal: composedSignal([init?.signal, jobAbort.signal]) });
     };
+    // The event job and sensor share provider credentials. Route event-job
+    // network calls through the same durable account ledger so Alpha Vantage
+    // (and every other recognized provider) cannot be overrun by two services
+    // whose separate local ledgers each look safe in isolation.
+    const sharedProviderBudget = await createPr262SensorBudgetedFetch({
+      now,
+      fetchImpl: eventJobBudgetedFetch,
+      signal: jobAbort.signal,
+    });
+    const quotaAwareFetch = sharedProviderBudget.fetchImpl;
     const cachedFullSource = !["sec", "market_price"].includes(resolved.event.source)
       ? await readCachedFullSource(resolved.event, now).catch(() => null)
       : null;

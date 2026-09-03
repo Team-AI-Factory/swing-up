@@ -56,6 +56,33 @@ function dueReadyCount(state: Awaited<ReturnType<typeof readPr262ChangeSensorSta
   return state.pending.filter((event) => analysisReady(event, now)).length;
 }
 
+function queueHealthSnapshot(state: Awaited<ReturnType<typeof readPr262ChangeSensorState>>, nowMs: number) {
+  const due = state.pending.filter((event) => analysisReady(event, nowMs));
+  const dueAges = due
+    .map((event) => nowMs - Date.parse(event.observedAt))
+    .filter((age) => Number.isFinite(age) && age >= 0);
+  const waitingForScheduledRetry = state.pending.filter((event) => {
+    const retryAt = event.queueNextAttemptAt ? Date.parse(event.queueNextAttemptAt) : Number.NaN;
+    return Number.isFinite(retryAt) && retryAt > nowMs;
+  });
+  const directIssuer = (provider: string | null | undefined) => /^(?:issuer_ir_|issuer_sec_)/.test(provider ?? "");
+  return {
+    basis: "age_priority_and_retry_state",
+    healthyQueueNeedNotBeEmpty: true,
+    pendingCount: state.pending.length,
+    dueReadyCount: due.length,
+    waitingForScheduledRetryCount: waitingForScheduledRetry.length,
+    highestDuePriority: due.length ? Math.max(...due.map((event) => event.priority)) : null,
+    oldestDueEvidenceAgeMinutes: dueAges.length ? Math.floor(Math.max(...dueAges) / 60_000) : null,
+    dueAuthoritativeCount: due.filter((event) => event.source === "sec" || event.source === "official" || directIssuer(event.sourceProvider)).length,
+    duePriority90OrHigherCount: due.filter((event) => event.priority >= 90).length,
+    duePriority90OlderThan30MinutesCount: due.filter((event) => {
+      const age = nowMs - Date.parse(event.observedAt);
+      return event.priority >= 90 && Number.isFinite(age) && age > 30 * 60_000;
+    }).length,
+  };
+}
+
 function capacityForQueue(ready: number) {
   if (ready >= 100) return 12;
   if (ready >= 30) return 8;
@@ -165,6 +192,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
   const readyOfficialOrSecAtStart = (readyBySourceAtStart.sec ?? 0) + (readyBySourceAtStart.official ?? 0);
   const readyDirectIssuerAtStart = state.pending.filter((event) => analysisReady(event, readyNow) && (event.sourceProvider ?? "").startsWith("issuer_ir_")).length;
   const readyAtStart = dueReadyCount(state);
+  const queueHealthAtStart = queueHealthSnapshot(state, readyNow);
   const capacity = capacityForQueue(readyAtStart);
   const eventResults: Json[] = [];
   const notificationResults: Json[] = [];
@@ -459,6 +487,8 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
     mapping,
     processing: {
       readyAtStart,
+      queueHealthAtStart,
+      queueHealthAtEnd: queueHealthSnapshot(state, Date.now()),
       capacity,
       eventsProcessed,
       eventFailures,

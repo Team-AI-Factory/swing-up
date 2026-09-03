@@ -7,14 +7,16 @@ const monitor = readFileSync(new URL("../lib/opportunity-engine/pr262-direct-ann
 const sensor = readFileSync(new URL("../lib/opportunity-engine/pr262-lightweight-sensor-v3.ts", import.meta.url), "utf8");
 
 assert.match(monitor, /DISCOVERY_CADENCE_MS = 30 \* 60_000/, "Issuer SEC submissions discovery must run every thirty minutes so the shared 190/day SEC ledger retains hard headroom.");
-assert.match(monitor, /MAX_DISCOVERIES_PER_CYCLE = 1/, "Issuer discovery must stay below its dedicated SEC submissions fuse.");
+assert.match(monitor, /MAX_DISCOVERIES_PER_CYCLE = 3/, "Issuer discovery may use 144 of its dedicated 190/day SEC submissions fuse without creating a burst.");
 assert.match(sensor, /run\("sec_broad", HOUR_MS/, "Broad SEC discovery must run hourly.");
 assert.match(sensor, /run\("sec_urgent", FIFTEEN_MINUTES_MS/, "Urgent SEC discovery must retain the fifteen-minute cadence.");
 assert.match(monitor, /DISCOVERY_CONCURRENCY = 1/, "Issuer discovery must not create concurrent SEC budget reservations.");
 assert.match(monitor, /NO_FEED_RETRY_MS = 24 \* 60 \* 60_000/, "Confirmed missing feeds must be rechecked daily rather than hidden for a week.");
 assert.match(monitor, /TRANSIENT_DISCOVERY_RETRY_MS = 60 \* 60_000/, "Transient discovery failures must become eligible again within one hour.");
 assert.match(monitor, /transientDiscoveryError\(existing\.error\)[\s\S]*?TRANSIENT_DISCOVERY_RETRY_MS/, "A stale future no-feed timestamp must not hide a transient SEC budget or timeout failure.");
+assert.match(monitor, /failedFeedRetry[\s\S]*?MAX_FAILED_FEED_BACKOFF_MS[\s\S]*?consecutiveFailures/, "Broken issuer feeds must back off progressively while healthy feeds retain their fifteen-minute cadence.");
 assert.match(monitor, /transientDiscoveryBacklog/, "Runtime telemetry must expose how many issuer discoveries are waiting only on transient recovery.");
+assert.match(monitor, /transientDiscoveryDueNow[\s\S]*?transientDiscoveryWaiting/, "Backlog telemetry must separate work due now from retry cooldowns.");
 assert.match(monitor, /recentSecFilingEvents/, "Each already-budgeted SEC submissions response must also yield current decision-grade issuer filings.");
 assert.match(monitor, /id: `sec:\$\{accession\}`/, "Direct issuer SEC events must deduplicate against the global SEC feed by accession.");
 assert.match(monitor, /Promise\.all\(discoveryTargets\.slice\(start, start \+ DISCOVERY_CONCURRENCY\)/, "Issuer discovery must use its bounded parallel batch.");
@@ -210,7 +212,7 @@ console.log(JSON.stringify({
   dailyRediscovery: true,
   transientDiscoveryRetry: true,
   boundedParallelDiscovery: true,
-  fortyEightSubmissionsPerDayMaximum: true,
+  oneHundredFortyFourSubmissionsPerDayMaximum: true,
   currentIssuerSecEvidence: true,
   feedPollingTelemetryHonest: true,
   legacyWebsitesSafelyUpgraded: true,
@@ -218,4 +220,5 @@ console.log(JSON.stringify({
   discoveryDiagnosticsHonest: true,
   runtimeNestedFeedFoundAndPolled: true,
   configuredFeedRepairsExistingRegistry: true,
+  failedFeedBackoffWithoutSlowingHealthyFeeds: true,
 }, null, 2));

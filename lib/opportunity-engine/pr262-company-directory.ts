@@ -349,10 +349,10 @@ export function resolvePr262SensorDirectoryEntry(
   };
 }
 
-export async function readPr262ResolvedSensorCompany(eventId: string): Promise<Pr262ResolvedSensorCompany | null> {
+export async function readPr262ResolvedSensorCompany(eventId: string, now = new Date()): Promise<Pr262ResolvedSensorCompany | null> {
   const id = eventId.trim();
   if (!id) throw new Error("pr262_sensor_event_id_required");
-  const [directory, sensor] = await Promise.all([buildDirectory(), readPr262ChangeSensorState()]);
+  const [directory, sensor] = await Promise.all([buildDirectory(), readPr262ChangeSensorState(now)]);
   const event = sensor.pending.find((item) => item.id === id);
   if (!event) return null;
   const resolution = resolvePr262SensorDirectoryEntry(event, directory.entries);

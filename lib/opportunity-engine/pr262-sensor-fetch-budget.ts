@@ -37,7 +37,10 @@ function policyFor(request: RequestInfo | URL): Policy | null {
   if (host === "api.commerce.gov") return { provider: "commerce", quotaKey: "sensor_commerce", cadenceKey: "sensor_commerce", maximumPer24Hours: 52, minimumIntervalMs: 29 * MINUTE_MS };
   if (host === "www.alphavantage.co") {
     const fn = (url.searchParams.get("function") ?? "unknown").toUpperCase();
-    return { provider: "alpha_vantage", quotaKey: "sensor_alpha_vantage", cadenceKey: `sensor_alpha:${fn}`, maximumPer24Hours: 20, minimumIntervalMs: fn === "EARNINGS_CALENDAR" ? 23 * 60 * MINUTE_MS : 74 * MINUTE_MS };
+    const symbol = (url.searchParams.get("symbol") ?? "all").toUpperCase();
+    const cadenceSubject = fn === "GLOBAL_QUOTE" ? symbol : "all";
+    const minimumIntervalMs = fn === "EARNINGS_CALENDAR" ? 23 * 60 * MINUTE_MS : fn === "GLOBAL_QUOTE" ? 59 * MINUTE_MS : 74 * MINUTE_MS;
+    return { provider: "alpha_vantage", quotaKey: "sensor_alpha_vantage", cadenceKey: `sensor_alpha:${fn}:${cadenceSubject}`, maximumPer24Hours: 20, minimumIntervalMs };
   }
   if (host === "financialmodelingprep.com") return { provider: "fmp", quotaKey: "sensor_fmp", cadenceKey: "sensor_fmp_news", maximumPer24Hours: 10, minimumIntervalMs: 119 * MINUTE_MS };
   if (host === "www.federalregister.gov") return { provider: "federal_register", quotaKey: "sensor_federal_register", cadenceKey: "sensor_federal_register", maximumPer24Hours: 52, minimumIntervalMs: 29 * MINUTE_MS };
@@ -84,6 +87,31 @@ function prune(state: BudgetState, nowMs: number) {
 
 function quotaCount(state: BudgetState, quotaKey: string) {
   return Object.values(state.hourlyCounts[quotaKey] ?? {}).reduce((sum, value) => sum + Math.max(0, Number(value) || 0), 0);
+}
+
+function rollingBudgetNextEligibleAt(state: BudgetState, policy: Policy) {
+  const requiredExpiryCount = Math.max(1, quotaCount(state, policy.quotaKey) - policy.maximumPer24Hours + 1);
+  let expiredCount = 0;
+  const buckets = Object.entries(state.hourlyCounts[policy.quotaKey] ?? {})
+    .map(([key, value]) => ({ at: Date.parse(`${key}:00:00.000Z`), count: Math.max(0, Number(value) || 0) }))
+    .filter((entry) => Number.isFinite(entry.at) && entry.count > 0)
+    .sort((left, right) => left.at - right.at);
+  for (const bucket of buckets) {
+    expiredCount += bucket.count;
+    if (expiredCount >= requiredExpiryCount) {
+      // Counts are intentionally compacted into hourly buckets. Waiting until
+      // the end of the oldest required bucket guarantees every request in that
+      // bucket is outside the rolling 24-hour window without storing a large
+      // per-request ledger.
+      return new Date(bucket.at + DAY_MS + HOUR_MS).toISOString();
+    }
+  }
+  return null;
+}
+
+function budgetGuardError(policy: Policy, reason: "minimum_interval" | "rolling_24h_budget", nextEligibleAt: string | null) {
+  const retry = nextEligibleAt ? `;next_retry_at=${nextEligibleAt}` : "";
+  return new Error(`pr262_sensor_budget_guard:${policy.provider}:${reason}${retry}`);
 }
 
 function migrate(raw: unknown, nowMs: number): BudgetState {
@@ -136,14 +164,15 @@ export async function createPr262SensorBudgetedFetch(input: { now?: Date; fetchI
       prune(candidate, currentMs);
       const used = quotaCount(candidate, policy.quotaKey);
       if (used >= policy.maximumPer24Hours) {
-        blocked.push({ provider: policy.provider, reason: "rolling_24h_budget", nextEligibleAt: null });
-        throw new Error(`pr262_sensor_budget_guard:${policy.provider}:rolling_24h_budget`);
+        const nextEligibleAt = rollingBudgetNextEligibleAt(candidate, policy);
+        blocked.push({ provider: policy.provider, reason: "rolling_24h_budget", nextEligibleAt });
+        throw budgetGuardError(policy, "rolling_24h_budget", nextEligibleAt);
       }
       const last = Date.parse(candidate.lastCadenceAt[policy.cadenceKey] ?? "");
       if (Number.isFinite(last) && currentMs - last < policy.minimumIntervalMs) {
         const nextEligibleAt = new Date(last + policy.minimumIntervalMs).toISOString();
         blocked.push({ provider: policy.provider, reason: "minimum_interval", nextEligibleAt });
-        throw new Error(`pr262_sensor_budget_guard:${policy.provider}:minimum_interval`);
+        throw budgetGuardError(policy, "minimum_interval", nextEligibleAt);
       }
       addCount(candidate, policy.quotaKey, currentMs);
       candidate.lastCadenceAt[policy.cadenceKey] = new Date(currentMs).toISOString();
@@ -168,6 +197,7 @@ export async function createPr262SensorBudgetedFetch(input: { now?: Date; fetchI
       ? init?.signal ? AbortSignal.any([input.signal, init.signal]) : input.signal
       : init?.signal;
     if (!policy) return rawFetch(request, { ...init, signal });
+    signal?.throwIfAborted();
     const currentMs = Date.now();
     // Source reads run concurrently, but their compact R2 budget ledger is one
     // shared document. Serialize only this short reservation step so parallel

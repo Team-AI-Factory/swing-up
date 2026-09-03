@@ -8,11 +8,15 @@ const objects = new Map();
 let revision = 0;
 
 const directAnnouncementSource = readFileSync(new URL("../lib/opportunity-engine/pr262-direct-announcements.ts", import.meta.url), "utf8");
+const lightweightSensorV3Source = readFileSync(new URL("../lib/opportunity-engine/pr262-lightweight-sensor-v3.ts", import.meta.url), "utf8");
 assert.match(directAnnouncementSource, /redirect: "manual"/, "Direct issuer feeds must never auto-follow an unvalidated redirect.");
 assert.match(directAnnouncementSource, /current = new URL\(location, url\)\.toString\(\)/, "Every direct issuer redirect must be resolved and revalidated.");
 assert.match(directAnnouncementSource, /direct_feed_redirect_limit/, "Direct issuer redirect chains must be bounded.");
-assert.match(directAnnouncementSource, /DISCOVERY_CADENCE_MS = 30 \* 60_000/, "Issuer SEC submissions discovery must preserve headroom in the shared daily SEC ledger while the production sensor remains fifteen-minute.");
-assert.match(directAnnouncementSource, /MAX_DISCOVERIES_PER_CYCLE = 1/, "Issuer discovery must remain below the shared SEC submissions daily ceiling.");
+assert.match(directAnnouncementSource, /DISCOVERY_CADENCE_MS = 30 \* 60_000/, "Issuer SEC submissions discovery must preserve headroom in its dedicated daily ledger while the production sensor remains fifteen-minute.");
+assert.match(directAnnouncementSource, /MAX_DISCOVERIES_PER_CYCLE = 3/, "Issuer discovery must remain below its dedicated 190/day SEC submissions ceiling.");
+assert.match(lightweightSensorV3Source, /function budgetDeferral[\s\S]*?minimum_interval[\s\S]*?status: "not_due"/, "A provider cadence fuse must become a clean not-due checkpoint instead of a repeated source failure.");
+assert.match(lightweightSensorV3Source, /Math\.max\(30 \* 60_000, providerCadenceMs\)/, "A provider quota warning must not retry faster than that provider's safe cadence.");
+assert.match(lightweightSensorV3Source, /partitionPr262PendingEventsWithTelemetry[\s\S]*?droppedEventIds[\s\S]*?known\.add/, "V3 must tombstone trimmed queue identities so polling cannot recreate stale backlog.");
 assert.match(directAnnouncementSource, /recentSecFilingEvents/, "Issuer discovery must recover current primary SEC evidence when RSS is unavailable.");
 assert.match(directAnnouncementSource, /DISCOVERY_CONCURRENCY = 1/, "Issuer discovery must avoid duplicate concurrent CIK reservations.");
 
@@ -342,7 +346,7 @@ const recoveredDirectoryMapping = await directory.enrichPr262SensorCompanyMappin
 assert.equal(recoveredDirectoryMapping.directoryCompanies, 2, "A truncated cached directory must fail its digest and rebuild from immutable batches.");
 assert.equal(JSON.parse(objects.get(directoryKey).text).entries.length, 2);
 
-const resolved = await directory.readPr262ResolvedSensorCompany(parsed.events[0].id);
+const resolved = await directory.readPr262ResolvedSensorCompany(parsed.events[0].id, now);
 assert.equal(resolved.event.ticker, "TWST");
 assert.equal(resolved.directoryEntry.batchKey, batchKey);
 assert.equal(resolved.directoryEntry.analysisIndex, 0);
@@ -409,7 +413,7 @@ const retry = await sensor.retryPr262PendingSensorEvent({
 });
 assert.equal(retry.retried, true);
 assert.equal(await sensor.readNextPr262PendingSensorEvent({ now, minimumPriority: 80 }), null);
-const afterRetry = await sensor.readPr262ChangeSensorState();
+const afterRetry = await sensor.readPr262ChangeSensorState(now);
 assert.equal(afterRetry.pending[0].queueAttempts, 1);
 assert.equal(afterRetry.pending[0].queueNextAttemptAt, nextRetryAt);
 assert.equal(afterRetry.cursors.directIssuerFeedIndex, 37);
@@ -443,9 +447,9 @@ assert.equal(
 );
 putObject(sensorStateKey, afterRetry);
 
-const acknowledged = await sensor.acknowledgePr262PendingSensorEvent(parsed.events[0].id);
+const acknowledged = await sensor.acknowledgePr262PendingSensorEvent(parsed.events[0].id, now);
 assert.equal(acknowledged.acknowledged, true);
-const afterAcknowledgement = await sensor.readPr262ChangeSensorState();
+const afterAcknowledgement = await sensor.readPr262ChangeSensorState(now);
 assert.equal(afterAcknowledgement.pending.length, 0);
 assert.equal(afterAcknowledgement.cursors.directIssuerFeedIndex, 37);
 assert.equal(afterAcknowledgement.cloudflareSensor.owner, "cloudflare_worker");
@@ -475,12 +479,12 @@ const batchRetryAt = new Date(now.getTime() + 45 * 60_000).toISOString();
 const batchMutation = await sensor.applyPr262PendingSensorEventMutations([
   { action: "acknowledge", eventId: batchAcknowledged.id },
   { action: "retry", eventId: batchRetried.id, error: "bounded retry", nextRetryAt: batchRetryAt, attemptedAt: now },
-]);
+], now);
 assert.equal(batchMutation.writes, 1, "A cycle must checkpoint all queue outcomes with one R2 upload.");
 assert.equal(revision, revisionBeforeBatch + 1, "Acknowledgements and retries must not rewrite the full queue once per event.");
 assert.equal(batchMutation.acknowledged, 1);
 assert.equal(batchMutation.retried, 1);
-const afterBatchMutation = await sensor.readPr262ChangeSensorState();
+const afterBatchMutation = await sensor.readPr262ChangeSensorState(now);
 assert.deepEqual(afterBatchMutation.pending.map((event) => event.id), [batchRetried.id]);
 assert.equal(afterBatchMutation.pending[0].queueAttempts, 2);
 assert.equal(afterBatchMutation.pending[0].queueNextAttemptAt, batchRetryAt);

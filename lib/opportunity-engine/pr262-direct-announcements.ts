@@ -10,10 +10,12 @@ const DISCOVERY_CADENCE_MS = 30 * 60_000;
 const NO_FEED_RETRY_MS = 24 * 60 * 60_000;
 const TRANSIENT_DISCOVERY_RETRY_MS = 60 * 60_000;
 const FEED_POLL_CADENCE_MS = 15 * 60_000;
-// The direct lookup shares the 190/day SEC ledger with 96 urgent and 24 broad
-// current-filings polls. One prioritized SEC-submissions discovery every 30
-// minutes is at most 48 calls/day, for 168 total and 22 calls of hard headroom.
-const MAX_DISCOVERIES_PER_CYCLE = 1;
+const MAX_FAILED_FEED_BACKOFF_MS = 6 * 60 * 60_000;
+// SEC-submissions discovery has its own durable 190/day ledger. Three
+// sequential lookups every 30 minutes are at most 144/day, leaving 46 calls of
+// rolling-window headroom and remaining far below the SEC's 10 requests/second
+// fair-access ceiling. This clears transient discovery debt without bursts.
+const MAX_DISCOVERIES_PER_CYCLE = 3;
 const DISCOVERY_CONCURRENCY = 1;
 const MAX_FEEDS_POLLED_PER_CYCLE = 20;
 const SEC_AGENT = "SwingUp/1.0 support@swingup.app";
@@ -30,6 +32,7 @@ type RegistryEntry = {
   lastSuccessAt: string | null;
   nextCheckAt: string | null;
   error: string | null;
+  consecutiveFailures?: number;
 };
 
 type Registry = {
@@ -55,6 +58,12 @@ function transientDiscoveryError(value: string | null) {
 function discoveryRetryAt(error: string | null, now: Date) {
   const delay = transientDiscoveryError(error) ? TRANSIENT_DISCOVERY_RETRY_MS : NO_FEED_RETRY_MS;
   return new Date(now.getTime() + delay).toISOString();
+}
+
+function failedFeedRetry(entry: RegistryEntry, now: Date) {
+  const consecutiveFailures = Math.max(1, Math.floor(Number(entry.consecutiveFailures) || 0) + 1);
+  const delayMs = Math.min(MAX_FAILED_FEED_BACKOFF_MS, FEED_POLL_CADENCE_MS * (2 ** Math.min(5, consecutiveFailures - 1)));
+  return { consecutiveFailures, nextCheckAt: new Date(now.getTime() + delayMs).toISOString() };
 }
 
 function cleanXml(value: string) {
@@ -358,6 +367,7 @@ async function seedEnv(registry: Registry, exposure: Pr262ExposureEntry[]) {
       existing.lastSuccessAt = feedChanged ? null : existing.lastSuccessAt;
       existing.nextCheckAt = null;
       existing.error = null;
+      existing.consecutiveFailures = 0;
       continue;
     }
     registry.entries.push({
@@ -372,6 +382,7 @@ async function seedEnv(registry: Registry, exposure: Pr262ExposureEntry[]) {
       lastSuccessAt: null,
       nextCheckAt: null,
       error: null,
+      consecutiveFailures: 0,
     });
   }
 }
@@ -427,6 +438,7 @@ async function discoverOne(
       lastSuccessAt: null,
       nextCheckAt: feedUrl ? null : discoveryRetryAt(error ?? missingFeedReason, now),
       error: feedUrl ? null : error ?? missingFeedReason,
+      consecutiveFailures: 0,
     },
     secEvents,
   };
@@ -504,6 +516,7 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
                 now,
               ),
               error: error instanceof Error ? error.message.slice(0, 180) : "direct_feed_discovery_failed",
+              consecutiveFailures: existing?.consecutiveFailures ?? 0,
             });
           }
           discovered += 1;
@@ -533,11 +546,14 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
       entry.lastSuccessAt = now.toISOString();
       entry.nextCheckAt = new Date(now.getTime() + FEED_POLL_CADENCE_MS).toISOString();
       entry.error = null;
+      entry.consecutiveFailures = 0;
       feedSuccesses += 1;
     } catch (error) {
+      const retry = failedFeedRetry(entry, now);
       entry.lastCheckedAt = now.toISOString();
-      entry.nextCheckAt = new Date(now.getTime() + FEED_POLL_CADENCE_MS).toISOString();
+      entry.nextCheckAt = retry.nextCheckAt;
       entry.error = error instanceof Error ? error.message.slice(0, 180) : "direct_feed_poll_failed";
+      entry.consecutiveFailures = retry.consecutiveFailures;
     }
   }
 
@@ -556,6 +572,17 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
     investorWebsitesFound: registry.entries.filter((entry) => entry.investorWebsite).length,
     feedlessCompanies: registry.entries.filter((entry) => !entry.feedUrl).length,
     transientDiscoveryBacklog: registry.entries.filter((entry) => !entry.feedUrl && transientDiscoveryError(entry.error)).length,
+    transientDiscoveryDueNow: registry.entries.filter((entry) => {
+      if (entry.feedUrl || !transientDiscoveryError(entry.error)) return false;
+      const lastAt = Date.parse(entry.lastDiscoveryAt);
+      return !Number.isFinite(lastAt) || now.getTime() - lastAt >= TRANSIENT_DISCOVERY_RETRY_MS;
+    }).length,
+    transientDiscoveryWaiting: registry.entries.filter((entry) => {
+      if (entry.feedUrl || !transientDiscoveryError(entry.error)) return false;
+      const lastAt = Date.parse(entry.lastDiscoveryAt);
+      return Number.isFinite(lastAt) && now.getTime() - lastAt < TRANSIENT_DISCOVERY_RETRY_MS;
+    }).length,
+    failedFeedsInBackoff: registry.entries.filter((entry) => Boolean(entry.feedUrl && entry.error && (entry.consecutiveFailures ?? 0) > 0 && Date.parse(entry.nextCheckAt ?? "") > now.getTime())).length,
     discoveryErrors: [...new Set(registry.entries.map((entry) => entry.error).filter((value): value is string => Boolean(value)))].slice(0, 8),
     registryKey: REGISTRY_KEY,
   };

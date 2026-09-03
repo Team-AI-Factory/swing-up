@@ -23,7 +23,7 @@ import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 import {
   parseRssForPr262Sensor,
   parseSecAtomForSensor,
-  partitionPr262PendingEvents,
+  partitionPr262PendingEventsWithTelemetry,
   type Pr262SensorEvent,
   type Pr262SensorReadiness,
   type Pr262SensorSourceHealth,
@@ -338,10 +338,15 @@ function due(health: Record<string, Pr262SensorSourceHealth>, provider: string, 
   return !Number.isFinite(successAt) || now.getTime() - successAt >= cadenceMs;
 }
 
-function health(provider: string, status: string, recordsRead: number, error: string | null, urls: string[], now: Date, prior?: Pr262SensorSourceHealth): Pr262SensorSourceHealth {
+function health(provider: string, status: string, recordsRead: number, error: string | null, urls: string[], now: Date, prior?: Pr262SensorSourceHealth, providerCadenceMs = 0): Pr262SensorSourceHealth {
   const connected = status === "connected" || status === "partial";
   const failures = connected ? 0 : (prior?.consecutiveFailures ?? 0) + 1;
-  const retryMs = /rate/i.test(status) ? 30 * 60_000 : Math.min(30 * 60_000, 60_000 * (2 ** Math.min(5, Math.max(0, failures - 1))));
+  // A provider quota warning must never create a faster retry loop than the
+  // provider's normal safe cadence. The durable network guard remains the
+  // final authority and can defer further to its exact rolling-window time.
+  const retryMs = /rate/i.test(status)
+    ? Math.max(30 * 60_000, providerCadenceMs)
+    : Math.min(30 * 60_000, 60_000 * (2 ** Math.min(5, Math.max(0, failures - 1))));
   return {
     provider,
     status: connected ? status as "connected" | "partial" : /rate/i.test(status) ? "rate_limited" : "temporarily_unavailable",
@@ -358,8 +363,40 @@ function health(provider: string, status: string, recordsRead: number, error: st
   };
 }
 
-async function boundedText(fetchImpl: typeof fetch, url: string, accept: string) {
-  const response = await fetchImpl(url, { headers: { Accept: accept, "user-agent": SEC_AGENT }, cache: "no-store", signal: AbortSignal.timeout(12_000) });
+function budgetDeferral(
+  provider: string,
+  error: string | null | undefined,
+  cadenceMs: number,
+  urls: string[],
+  now: Date,
+  prior?: Pr262SensorSourceHealth,
+) {
+  const match = error?.match(/^pr262_sensor_budget_guard:[^:]+:(minimum_interval|rolling_24h_budget)(?:;next_retry_at=([^;\s]+))?$/);
+  const reason = match?.[1];
+  if (reason !== "minimum_interval" && reason !== "rolling_24h_budget") return null;
+  const retryMs = reason === "rolling_24h_budget" ? DAY_MS : cadenceMs;
+  const requestedRetryAt = Date.parse(match?.[2] ?? "");
+  const nextRetryAt = Number.isFinite(requestedRetryAt) && requestedRetryAt > now.getTime()
+    ? new Date(requestedRetryAt).toISOString()
+    : new Date(now.getTime() + retryMs).toISOString();
+  return {
+    provider,
+    status: "not_due" as const,
+    checkedAt: now.toISOString(),
+    lastSuccessAt: prior?.lastSuccessAt ?? null,
+    lastSuccessStatus: prior?.lastSuccessStatus ?? null,
+    nextRetryAt,
+    consecutiveFailures: prior?.consecutiveFailures ?? 0,
+    recordsRead: 0,
+    error: null,
+    sourceUrls: urls,
+    attemptedThisCycle: false,
+    skipReason: "not_scheduled" as const,
+  } satisfies Pr262SensorSourceHealth;
+}
+
+async function boundedText(fetchImpl: typeof fetch, url: string, accept: string, timeoutMs = 12_000) {
+  const response = await fetchImpl(url, { headers: { Accept: accept, "user-agent": SEC_AGENT }, cache: "no-store", signal: AbortSignal.timeout(timeoutMs) });
   if (!response.ok) throw new Error(`pr262_v3_http_${response.status}`);
   const body = await response.text();
   if (Buffer.byteLength(body) > 1_000_000) throw new Error("pr262_v3_feed_too_large");
@@ -485,13 +522,25 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
     }
     try {
       const value = await worker();
+      const deferred = budgetDeferral(key, value.error, cadenceMs, urls, now, state.sourceHealth[key]);
+      if (deferred) {
+        state.sourceHealth[key] = deferred;
+        summaries.push({ provider, attempted: false, status: "not_due", recordsRead: 0, newEvents: 0, error: null, nextRetryAt: deferred.nextRetryAt });
+        return;
+      }
       const converted = value.events ?? (value.receipts ?? []).flatMap((receipt) => receiptToEvent(receipt, provider, resolver, now) ?? []);
       events.push(...converted);
-      state.sourceHealth[key] = health(key, value.status, value.recordsRead, value.error ?? null, urls, now, state.sourceHealth[key]);
+      state.sourceHealth[key] = health(key, value.status, value.recordsRead, value.error ?? null, urls, now, state.sourceHealth[key], cadenceMs);
       summaries.push({ provider, attempted: true, status: value.status, recordsRead: value.recordsRead, newEvents: converted.length, error: value.error ?? null, nextRetryAt: state.sourceHealth[key].nextRetryAt });
     } catch (error) {
       const message = error instanceof Error ? error.message.slice(0, 200) : `${provider}_failed`;
-      state.sourceHealth[key] = health(key, "temporarily_unavailable", 0, message, urls, now, state.sourceHealth[key]);
+      const deferred = budgetDeferral(key, message, cadenceMs, urls, now, state.sourceHealth[key]);
+      if (deferred) {
+        state.sourceHealth[key] = deferred;
+        summaries.push({ provider, attempted: false, status: "not_due", recordsRead: 0, newEvents: 0, error: null, nextRetryAt: deferred.nextRetryAt });
+        return;
+      }
+      state.sourceHealth[key] = health(key, "temporarily_unavailable", 0, message, urls, now, state.sourceHealth[key], cadenceMs);
       summaries.push({ provider, attempted: true, status: "temporarily_unavailable", recordsRead: 0, newEvents: 0, error: message, nextRetryAt: state.sourceHealth[key].nextRetryAt });
     }
   };
@@ -506,12 +555,11 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
   newsUrl.searchParams.set("gl", "US");
   newsUrl.searchParams.set("ceid", "US:en");
 
-  // At the 15-minute Railway cadence this reserves the shared 190/day SEC
-  // budget: 96 urgent polls + 24 broad polls + 48 prioritized issuer lookups
-  // = 168 calls/day, leaving 22 calls of hard safety headroom.
+  // Current-filings and issuer-submissions requests have separate durable
+  // ledgers. The cadences below stay below both hard rolling-window fuses.
   await Promise.all([
     run("sec_broad", HOUR_MS, [broadUrl], async () => {
-      const parsed = parseSecAtomForSensor(await boundedText(fetchImpl, broadUrl, "application/atom+xml,text/xml"), { now, provider: "v3_sec_broad", requestedForm: null });
+      const parsed = parseSecAtomForSensor(await boundedText(fetchImpl, broadUrl, "application/atom+xml,text/xml", 25_000), { now, provider: "v3_sec_broad", requestedForm: null });
       return { status: parsed.status ?? "connected", recordsRead: parsed.recordsRead, events: parsed.events, error: parsed.error };
     }),
     run("sec_urgent", FIFTEEN_MINUTES_MS, [urgentUrl], async () => {
@@ -550,11 +598,16 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
     run("trade_halts", FIVE_MINUTES_MS, ["https://www.nyse.com/api/trade-halts/current", "https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts"], async () => {
       const result = await fetchNasdaqTradeHalts(fetchImpl, now); return { status: result.status, recordsRead: result.recordsRead, receipts: result.receipts, error: result.error };
     }),
-    run("official_all", FIFTEEN_MINUTES_MS, ["all_official_public_feeds"], async () => {
-      const rows: ProviderResult[] = await fetchOfficialFeeds(fetchImpl, now);
-      return { status: rows.every((item) => item.status === "connected") ? "connected" : rows.some((item) => item.status === "connected") ? "partial" : rows[0]?.status ?? "temporarily_unavailable", recordsRead: rows.reduce((sum, item) => sum + item.recordsRead, 0), receipts: rows.flatMap((item) => item.receipts), error: rows.map((item) => item.error).filter(Boolean).join(" | ").slice(0, 300) || null };
+    run("official_all", FIFTEEN_MINUTES_MS, ["rotating_official_public_feeds"], async () => {
+      const rows: ProviderResult[] = await fetchOfficialFeeds(fetchImpl, now, { offset: state.cursors.officialFeedIndex, limit: 3 });
+      return { status: rows.every((item) => item.status === "connected") ? "connected" : rows.some((item) => item.status === "connected") ? "partial" : rows[0]?.status ?? "temporarily_unavailable", recordsRead: rows.reduce((sum, item) => sum + item.recordsRead, 0), receipts: rows.flatMap((item) => item.receipts), error: rows.map((item) => item.error ? `${item.provider}:${item.error}` : null).filter(Boolean).join(" | ").slice(0, 300) || null };
     }),
-    run("fmp_news", TWO_HOURS_MS, [FMP_NEWS_URL], async () => runFmpNews(fetchImpl, exposure.entries, now).then((value) => ({ status: value.status, recordsRead: value.recordsRead, receipts: value.receipts, error: value.error }))),
+    ...(process.env.FMP_COMMERCIAL_USE_APPROVED?.trim().toLowerCase() === "true"
+      ? [run("fmp_news", TWO_HOURS_MS, [FMP_NEWS_URL], async () => runFmpNews(fetchImpl, exposure.entries, now).then((value) => ({ status: value.status, recordsRead: value.recordsRead, receipts: value.receipts, error: value.error })))]
+      : [Promise.resolve().then(() => {
+          delete state.sourceHealth.v3_fmp_news;
+          summaries.push({ provider: "fmp_news", attempted: false, status: "disabled_by_license", recordsRead: 0, newEvents: 0, error: null, nextRetryAt: null });
+        })]),
     run("market_watch", FIVE_MINUTES_MS, [TRADINGVIEW_SCAN], async () => {
       const market = await marketWatch(fetchImpl, exposure.entries, now);
       if (market.prices.length) liveWatchlistPriceSnapshot = { version: 1, checkedAt: now.toISOString(), source: "tradingview_market_watch", prices: market.prices };
@@ -603,6 +656,8 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
     investorWebsitesFound: 0,
     feedlessCompanies: 0,
     transientDiscoveryBacklog: 0,
+    transientDiscoveryDueNow: 0,
+    transientDiscoveryWaiting: 0,
     discoveryErrors: [] as string[],
   };
   try {
@@ -618,6 +673,8 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
       investorWebsitesFound: direct.investorWebsitesFound,
       feedlessCompanies: direct.feedlessCompanies,
       transientDiscoveryBacklog: direct.transientDiscoveryBacklog,
+      transientDiscoveryDueNow: direct.transientDiscoveryDueNow,
+      transientDiscoveryWaiting: direct.transientDiscoveryWaiting,
       discoveryErrors: direct.discoveryErrors,
     };
     events.push(...direct.events);
@@ -655,6 +712,7 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
   // Serious Signal queue and publish their compact current-price snapshot to the
   // authenticated Watchlist instead. This also retires legacy price-only backlog
   // during the next normal state write.
+  const retiredUnimportantPending = state.pending.filter((event) => event.priority < MIN_IMPORTANT_PRIORITY || researchOnlyPriceEvent(event));
   const importantPending = state.pending.filter((event) => event.priority >= MIN_IMPORTANT_PRIORITY && !researchOnlyPriceEvent(event));
   const actionablePending = importantPending.filter(canEnterIssuerEvidenceQueue);
   const legacyNonActionable = importantPending.filter((event) => !canEnterIssuerEvidenceQueue(event));
@@ -678,12 +736,15 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
       && !researchOnlyPriceEvent(event)
       && canEnterIssuerEvidenceQueue(event))
     .slice(0, MAX_FRESH);
-  const pending = partitionPr262PendingEvents([...actionablePending, ...fresh], now);
+  const partitioned = partitionPr262PendingEventsWithTelemetry([...actionablePending, ...fresh], now);
+  const pending = partitioned.pending;
   const retained = new Set(pending.map((event) => event.id));
+  for (const event of retiredUnimportantPending) known.add(event.id);
+  for (const eventId of partitioned.droppedEventIds) known.add(eventId);
   for (const event of contextualSectorFanouts) known.add(event.id);
   for (const event of priceResearchEvents) known.add(event.id);
   for (const event of nonActionableResearchEvents) known.add(event.id);
-  for (const event of fresh) if (retained.has(event.id)) known.add(event.id);
+  for (const event of fresh) if (retained.has(event.id) || partitioned.droppedEventIds.includes(event.id)) known.add(event.id);
 
   const next: CompatState = {
     ...state,
@@ -693,8 +754,15 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
     lastMarketWatchAt: state.sourceHealth.v3_market_watch?.lastSuccessAt ?? state.lastMarketWatchAt,
     cursors: {
       ...state.cursors,
-      secUrgentFormIndex: (state.cursors.secUrgentFormIndex + 1) % URGENT_SEC_FORMS.length,
-      newsQueryIndex: (state.cursors.newsQueryIndex + 1) % GOOGLE_QUERIES.length,
+      secUrgentFormIndex: summaries.some((item) => item.provider === "sec_urgent" && item.attempted)
+        ? (state.cursors.secUrgentFormIndex + 1) % URGENT_SEC_FORMS.length
+        : state.cursors.secUrgentFormIndex,
+      newsQueryIndex: summaries.some((item) => item.provider === "google_news" && item.attempted)
+        ? (state.cursors.newsQueryIndex + 1) % GOOGLE_QUERIES.length
+        : state.cursors.newsQueryIndex,
+      officialFeedIndex: summaries.some((item) => item.provider === "official_all" && item.attempted)
+        ? (state.cursors.officialFeedIndex + 3) % 9
+        : state.cursors.officialFeedIndex,
     },
     sourceHealth: state.sourceHealth,
     sensorReadiness: {
@@ -750,6 +818,7 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
     contextOnlySectorFanoutEvents: contextualSectorFanouts.length,
     directAnnouncementMonitoring,
     pendingEventCount: pending.length,
+    queueHygiene: partitioned.hygiene,
     r2Persistence: {
       queueKey: SENSOR_STATE_KEY,
       queueWritten: queuePersistence.written,
@@ -770,13 +839,14 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
       googleNewsMinutes: 5,
       tradeHaltMinutes: 5,
       priceWatchMinutes: 5,
-      allOfficialFeedsMinutes: 15,
+      officialFeedBatchMinutes: 15,
+      eachOfficialFeedMaximumMinutes: 45,
       gdeltMinutes: 15,
       marketauxMinutes: 15,
       commerceMinutes: 30,
       federalRegisterMinutes: 30,
       fdaMedwatchMinutes: 15,
-      fmpNewsMinutes: 120,
+      fmpNewsMinutes: process.env.FMP_COMMERCIAL_USE_APPROVED?.trim().toLowerCase() === "true" ? 120 : null,
       alphaNewsMinutes: 75,
       openFdaMinutes: 1440,
       macroMinutes: 720,

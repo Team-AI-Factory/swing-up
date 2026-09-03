@@ -1,6 +1,11 @@
 import crypto from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { internalApiScopeAuthorized } from "@/lib/internal-api-auth";
+import {
+  PR262_QUEUE_LOW_VALUE_PRIORITY,
+  PR262_QUEUE_STALE_COMPANY_NEWS_MS,
+  selectPr262PendingForOneTimeCleanup,
+} from "@/lib/opportunity-engine/pr262-queue-reset-policy";
 import { pr262StorageKey, resolvePr262StoragePrefix } from "@/lib/opportunity-engine/pr262-storage";
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 
@@ -8,7 +13,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 const PRODUCTION_PREFIX = "production/pr262/";
-const CONFIRMATION = "CLEAR_PR262_PENDING_QUEUE_KEEP_SEEN_V1";
+const CONFIRMATION = "REMOVE_STALE_OR_LOW_VALUE_COMPANY_NEWS_KEEP_AUTHORITY_V1";
 
 function hidden() {
   return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
@@ -30,6 +35,13 @@ function productionResetEnabled() {
   return process.env.SWING_UP_PR262_QUEUE_RESET_ENABLED?.trim().toLowerCase() === "true"
     && process.env.SWING_UP_R2_WRITE_PREFIX?.trim() === PRODUCTION_PREFIX
     && resolvePr262StoragePrefix() === PRODUCTION_PREFIX;
+}
+
+function withoutQueueFields(value: Record<string, unknown>) {
+  const next = { ...value };
+  delete next.pending;
+  delete next.updatedAt;
+  return next;
 }
 
 export async function POST(request: NextRequest) {
@@ -62,7 +74,10 @@ export async function POST(request: NextRequest) {
     }
 
     const resetAt = new Date().toISOString();
-    const removedCount = parsed.pending.length;
+    const selection = selectPr262PendingForOneTimeCleanup(parsed.pending, new Date(resetAt));
+    const originalPendingCount = parsed.pending.length;
+    const removedCount = selection.removed.length;
+    const retainedCount = selection.retained.length;
     const seenCount = parsed.seen.length;
     const digest = crypto.createHash("sha256").update(current.text).digest("hex").slice(0, 16);
     const backupKey = pr262StorageKey(
@@ -74,7 +89,19 @@ export async function POST(request: NextRequest) {
       createdAt: resetAt,
       sourceKey: stateKey,
       sourceEtag: current.etag,
+      cleanupPolicy: {
+        removesOnly: "company_news_older_than_6_hours_or_priority_below_80",
+        staleAfterMs: PR262_QUEUE_STALE_COMPANY_NEWS_MS,
+        lowValuePriorityBelow: PR262_QUEUE_LOW_VALUE_PRIORITY,
+        authoritativeAndDirectIssuerEventsAlwaysRetained: true,
+        unknownOrMalformedEventsRetained: true,
+      },
+      originalPendingCount,
       removedCount,
+      retainedCount,
+      removedCountsBySource: selection.removedCountsBySource,
+      retainedCountsBySource: selection.retainedCountsBySource,
+      removalReasons: selection.removalReasons,
       state: parsed,
     }, { createOnly: true });
     if (!backup.written) throw new Error("pr262_queue_reset_backup_conflict");
@@ -82,7 +109,7 @@ export async function POST(request: NextRequest) {
     const nextState = {
       ...parsed,
       updatedAt: resetAt,
-      pending: [],
+      pending: selection.retained,
     };
     const written = await writeVersionedJsonToR2(stateKey, nextState, { expectedEtag: current.etag });
     if (!written.written) {
@@ -91,36 +118,58 @@ export async function POST(request: NextRequest) {
         error: "pr262_queue_reset_state_changed",
         queueUntouched: true,
         backupKey,
+        originalPendingCount,
+        removedCount,
+        retainedCount,
       }, { status: 409 });
     }
 
     const verified = await readVersionedTextFromR2(stateKey);
     const verifiedState = verified.text ? record(JSON.parse(verified.text)) : null;
+    const preservedSeen = verifiedState !== null
+      && Array.isArray(verifiedState.seen)
+      && JSON.stringify(verifiedState.seen) === JSON.stringify(parsed.seen);
+    const preservedAllOtherState = verifiedState !== null
+      && JSON.stringify(withoutQueueFields(verifiedState)) === JSON.stringify(withoutQueueFields(parsed));
     const exactlyVerified = verified.found
       && verifiedState !== null
       && JSON.stringify(verifiedState) === JSON.stringify(nextState)
       && Array.isArray(verifiedState.pending)
-      && verifiedState.pending.length === 0
-      && Array.isArray(verifiedState.seen)
-      && verifiedState.seen.length === seenCount;
+      && verifiedState.pending.length === retainedCount
+      && JSON.stringify(verifiedState.pending) === JSON.stringify(selection.retained)
+      && preservedSeen
+      && preservedAllOtherState
+      && verified.etag === written.etag;
     if (!exactlyVerified) throw new Error("pr262_queue_reset_verification_failed");
 
     return NextResponse.json({
       ok: true,
-      mode: "pr262_pending_queue_reset",
+      mode: "pr262_selective_pending_queue_cleanup",
       resetAt,
       stateKey,
       backupKey,
+      originalPendingCount,
       removedCount,
-      pendingCount: 0,
+      retainedCount,
+      pendingCount: retainedCount,
+      removedCountsBySource: selection.removedCountsBySource,
+      retainedCountsBySource: selection.retainedCountsBySource,
+      removalReasons: selection.removalReasons,
       seenCount,
-      preservedSeen: true,
-      preservedAllOtherState: true,
+      preservedSeen,
+      preservedDiscovery: true,
+      discoveryStateWritten: false,
+      preservedAllOtherState,
+      removedOnlyDisposableCompanyNews: true,
+      authoritativeAndDirectIssuerEventsAlwaysRetained: true,
+      unknownOrMalformedEventsRetained: true,
+      staleCompanyNewsThresholdHours: PR262_QUEUE_STALE_COMPANY_NEWS_MS / 60 / 60_000,
+      lowValuePriorityBelow: PR262_QUEUE_LOW_VALUE_PRIORITY,
     });
   } catch (error) {
     return NextResponse.json({
       ok: false,
-      mode: "pr262_pending_queue_reset",
+      mode: "pr262_selective_pending_queue_cleanup",
       error: safeError(error),
     }, { status: 503 });
   }

@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 
 const PRODUCTION_PREFIX = "production/pr262/";
-const CONFIRMATION = "CLEAR_PR262_PENDING_QUEUE_KEEP_SEEN_V1";
+const CONFIRMATION = "REMOVE_STALE_OR_LOW_VALUE_COMPANY_NEWS_KEEP_AUTHORITY_V1";
 const port = process.env.PR262_QUEUE_RESET_PORT || "3017";
 const token = crypto.randomBytes(32).toString("hex");
 const baseUrl = `http://127.0.0.1:${port}`;
@@ -77,7 +77,20 @@ try {
   let body;
   try { body = JSON.parse(raw); } catch { body = { raw: raw.slice(0, 2_000) }; }
   console.log(`[pr262-queue-reset] status=${response.status} ${JSON.stringify(body).slice(0, 20_000)}`);
-  if (!response.ok || body.ok !== true || body.pendingCount !== 0 || body.preservedSeen !== true) {
+  const countsReconcile = Number.isInteger(body.originalPendingCount)
+    && Number.isInteger(body.removedCount)
+    && Number.isInteger(body.retainedCount)
+    && body.originalPendingCount === body.removedCount + body.retainedCount
+    && body.pendingCount === body.retainedCount;
+  if (!response.ok
+    || body.ok !== true
+    || body.mode !== "pr262_selective_pending_queue_cleanup"
+    || !countsReconcile
+    || body.preservedSeen !== true
+    || body.preservedDiscovery !== true
+    || body.preservedAllOtherState !== true
+    || body.removedOnlyDisposableCompanyNews !== true
+    || body.authoritativeAndDirectIssuerEventsAlwaysRetained !== true) {
     throw new Error(`pr262_queue_reset_route_http_${response.status}`);
   }
   exitCode = 0;

@@ -60,6 +60,7 @@ jobs:
           npm run smoke:pr262-provider-budget-durability
           npm run smoke:pr262-ai-daily-cost-fuse
           npm run smoke:pr262-analysis-only-orchestrator
+          npm run smoke:pr262-sensor-queue-hygiene
           npm run smoke:pr262-lightweight-sensor-v3-bootstrap
           npm run smoke:pr262-production-foundation
           npm run smoke:pr262-exposure-index-completeness

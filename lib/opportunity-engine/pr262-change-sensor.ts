@@ -13,9 +13,11 @@ const MAX_UNRESOLVED_PENDING = 500;
 const MAX_FRESH_PER_RUN = 500;
 const READY_EVENT_TTL_MS = 48 * 60 * 60_000;
 const UNRESOLVED_EVENT_TTL_MS = 24 * 60 * 60_000;
-const LOW_VALUE_COMPANY_NEWS_TTL_MS = 6 * 60 * 60_000;
 const FIVE_MINUTES_MS = 5 * 60_000;
 const FIFTEEN_MINUTES_MS = 15 * 60_000;
+export const PR262_SECONDARY_COMPANY_NEWS_TTL_MS = 6 * 60 * 60_000;
+export const PR262_SECONDARY_COMPANY_NEWS_MAX_TTL_MS = READY_EVENT_TTL_MS;
+export const PR262_SECONDARY_COMPANY_NEWS_RETRY_GRACE_MS = FIFTEEN_MINUTES_MS;
 const MAX_SOURCE_CLOCK_SKEW_MS = FIVE_MINUTES_MS;
 const FOUNDATION_VALUATION_FALLBACK_CUTOVER_MS = Date.parse("2026-08-28T20:20:00.000Z");
 const SEC_URGENT_FORMS = ["8-K", "6-K", "424B5", "S-3", "10-Q", "10-K"] as const;
@@ -193,8 +195,32 @@ function authoritativeEvent(event: Pr262SensorEvent) {
   return event.source === "sec" || event.source === "official" || directIssuerEvent(event);
 }
 
+export function isPr262SecondaryCompanyNewsEvent(event: Pr262SensorEvent) {
+  return event.source === "company_news" && !directIssuerEvent(event);
+}
+
+export function pr262SecondaryCompanyNewsExpiresAt(event: Pr262SensorEvent) {
+  if (!isPr262SecondaryCompanyNewsEvent(event)) return null;
+  const observedAt = Date.parse(event.observedAt);
+  if (!Number.isFinite(observedAt)) return Number.NEGATIVE_INFINITY;
+  const hardTtlMs = processingReady(event) ? READY_EVENT_TTL_MS : UNRESOLVED_EVENT_TTL_MS;
+  const hardExpiryAt = observedAt + hardTtlMs;
+  const retryAt = event.queueAttempts > 0 && event.queueNextAttemptAt
+    ? Date.parse(event.queueNextAttemptAt)
+    : Number.NaN;
+  const usefulExpiryAt = Number.isFinite(retryAt)
+    ? Math.max(observedAt + PR262_SECONDARY_COMPANY_NEWS_TTL_MS, retryAt + PR262_SECONDARY_COMPANY_NEWS_RETRY_GRACE_MS)
+    : observedAt + PR262_SECONDARY_COMPANY_NEWS_TTL_MS;
+  return Math.min(hardExpiryAt, usefulExpiryAt);
+}
+
+export function isPr262SecondaryCompanyNewsExpired(event: Pr262SensorEvent, nowMs: number) {
+  const expiresAt = pr262SecondaryCompanyNewsExpiresAt(event);
+  return expiresAt !== null && nowMs > expiresAt;
+}
+
 function lowValueCompanyNewsEvent(event: Pr262SensorEvent) {
-  return event.source === "company_news" && event.priority < 80;
+  return isPr262SecondaryCompanyNewsEvent(event) && event.priority < 80;
 }
 
 const COMPANY_NEWS_PUBLISHER_SUFFIX = /\s+(?:-|\||\u2013|\u2014)\s+(?:reuters|bloomberg|cnbc|yahoo(?: finance)?|marketwatch|seeking alpha|benzinga|globenewswire|business wire|pr newswire|barron'?s|the motley fool|investor'?s business daily|zacks)\s*$/i;
@@ -271,6 +297,9 @@ export type Pr262PendingQueueHygiene = {
   retainedDirectIssuerEventCount: number;
   droppedEventCount: number;
   duplicateLowValueCompanyNewsDropped: number;
+  staleSecondaryCompanyNewsDropped: number;
+  retryProtectedSecondaryCompanyNewsCount: number;
+  /** @deprecated Use staleSecondaryCompanyNewsDropped. */
   staleLowValueCompanyNewsDropped: number;
   permanentlyIneligibleDropped: number;
   capacityDropped: number;
@@ -311,7 +340,7 @@ function pendingOrder(left: Pr262SensorEvent, right: Pr262SensorEvent, nowMs: nu
 }
 
 export function partitionPr262PendingEventsWithTelemetry(events: Pr262SensorEvent[], now: Date): Pr262PendingPartitionResult {
-  type DropReason = "duplicate_low_value_company_news" | "stale_low_value_company_news" | "permanently_ineligible" | "capacity";
+  type DropReason = "duplicate_low_value_company_news" | "stale_secondary_company_news" | "stale_low_value_company_news" | "permanently_ineligible" | "capacity";
   const droppedReasons = new Map<string, DropReason>();
   const markDropped = (event: Pr262SensorEvent, reason: DropReason) => {
     if (event.id) droppedReasons.set(event.id, reason);
@@ -357,13 +386,19 @@ export function partitionPr262PendingEventsWithTelemetry(events: Pr262SensorEven
   const nowMs = now.getTime();
   const withinTtl = (event: Pr262SensorEvent, ttlMs: number) => {
     const observedAt = Date.parse(event.observedAt);
-    const retained = Number.isFinite(observedAt) && nowMs - observedAt <= ttlMs;
-    if (!retained) markDropped(event, lowValueCompanyNewsEvent(event) ? "stale_low_value_company_news" : "permanently_ineligible");
+    const retained = isPr262SecondaryCompanyNewsEvent(event)
+      ? !isPr262SecondaryCompanyNewsExpired(event, nowMs)
+      : Number.isFinite(observedAt) && nowMs - observedAt <= ttlMs;
+    if (!retained) {
+      markDropped(event, isPr262SecondaryCompanyNewsEvent(event)
+        ? lowValueCompanyNewsEvent(event) ? "stale_low_value_company_news" : "stale_secondary_company_news"
+        : "permanently_ineligible");
+    }
     return retained;
   };
   const readyCandidates = deduped
     .filter(processingReady)
-    .filter((event) => withinTtl(event, lowValueCompanyNewsEvent(event) ? LOW_VALUE_COMPANY_NEWS_TTL_MS : READY_EVENT_TTL_MS))
+    .filter((event) => withinTtl(event, isPr262SecondaryCompanyNewsEvent(event) ? PR262_SECONDARY_COMPANY_NEWS_TTL_MS : READY_EVENT_TTL_MS))
     .sort((left, right) => pendingOrder(left, right, nowMs));
   const ready = readyCandidates.slice(0, MAX_READY_PENDING);
   for (const event of readyCandidates.slice(MAX_READY_PENDING)) markDropped(event, "capacity");
@@ -374,7 +409,7 @@ export function partitionPr262PendingEventsWithTelemetry(events: Pr262SensorEven
       if (!retained) markDropped(event, "permanently_ineligible");
       return retained;
     })
-    .filter((event) => withinTtl(event, lowValueCompanyNewsEvent(event) ? LOW_VALUE_COMPANY_NEWS_TTL_MS : UNRESOLVED_EVENT_TTL_MS))
+    .filter((event) => withinTtl(event, isPr262SecondaryCompanyNewsEvent(event) ? PR262_SECONDARY_COMPANY_NEWS_TTL_MS : UNRESOLVED_EVENT_TTL_MS))
     .sort((left, right) => pendingOrder(left, right, nowMs));
   const unresolved = unresolvedCandidates.slice(0, MAX_UNRESOLVED_PENDING);
   for (const event of unresolvedCandidates.slice(MAX_UNRESOLVED_PENDING)) markDropped(event, "capacity");
@@ -383,6 +418,8 @@ export function partitionPr262PendingEventsWithTelemetry(events: Pr262SensorEven
   for (const id of retainedIds) droppedReasons.delete(id);
   const droppedEventIds = [...droppedReasons.keys()];
   const countReason = (reason: DropReason) => [...droppedReasons.values()].filter((value) => value === reason).length;
+  const staleLowValueCompanyNewsDropped = countReason("stale_low_value_company_news");
+  const staleSecondaryCompanyNewsDropped = staleLowValueCompanyNewsDropped + countReason("stale_secondary_company_news");
   return {
     pending,
     droppedEventIds,
@@ -393,7 +430,17 @@ export function partitionPr262PendingEventsWithTelemetry(events: Pr262SensorEven
       retainedDirectIssuerEventCount: pending.filter(directIssuerEvent).length,
       droppedEventCount: droppedEventIds.length,
       duplicateLowValueCompanyNewsDropped: countReason("duplicate_low_value_company_news"),
-      staleLowValueCompanyNewsDropped: countReason("stale_low_value_company_news"),
+      staleSecondaryCompanyNewsDropped,
+      retryProtectedSecondaryCompanyNewsCount: pending.filter((event) => {
+        if (!isPr262SecondaryCompanyNewsEvent(event)) return false;
+        const observedAt = Date.parse(event.observedAt);
+        return Number.isFinite(observedAt)
+          && nowMs - observedAt > PR262_SECONDARY_COMPANY_NEWS_TTL_MS
+          && !isPr262SecondaryCompanyNewsExpired(event, nowMs);
+      }).length,
+      // Retain the old field for response compatibility, but preserve its
+      // original meaning: only low-value secondary news is counted here.
+      staleLowValueCompanyNewsDropped,
       permanentlyIneligibleDropped: countReason("permanently_ineligible"),
       capacityDropped: countReason("capacity"),
     },
@@ -894,7 +941,7 @@ function normalizeHealth(value: unknown): Pr262SensorSourceHealth | null {
   };
 }
 
-function migrateState(value: unknown, now: Date): SensorState {
+function migrateState(value: unknown, now: Date): { state: SensorState; queueHygiene: Pr262PendingQueueHygiene } {
   const item = object(value);
   const fallback = emptyState();
   const cursors = object(item.cursors);
@@ -911,42 +958,45 @@ function migrateState(value: unknown, now: Date): SensorState {
     : [];
   const partitioned = partitionPr262PendingEventsWithTelemetry(pending, now);
   return {
-    version: 2,
-    updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : fallback.updatedAt,
-    seen: [...new Set([
-      ...(Array.isArray(item.seen) ? item.seen.filter((id): id is string => typeof id === "string") : []),
-      ...partitioned.droppedEventIds,
-    ])].slice(-MAX_SEEN),
-    pending: partitioned.pending,
-    lastMarketWatchAt: typeof item.lastMarketWatchAt === "string" ? item.lastMarketWatchAt : null,
-    cursors: {
-      secUrgentFormIndex: Math.max(0, Number(cursors.secUrgentFormIndex) || 0) % SEC_URGENT_FORMS.length,
-      newsQueryIndex: Math.max(0, Number(cursors.newsQueryIndex) || 0) % NEWS_QUERIES.length,
-      officialFeedIndex: Math.max(0, Number(cursors.officialFeedIndex) || 0) % OFFICIAL_FEEDS.length,
-      directIssuerFeedIndex: Math.max(0, Number(cursors.directIssuerFeedIndex) || 0),
+    state: {
+      version: 2,
+      updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : fallback.updatedAt,
+      seen: [...new Set([
+        ...(Array.isArray(item.seen) ? item.seen.filter((id): id is string => typeof id === "string") : []),
+        ...partitioned.droppedEventIds,
+      ])].slice(-MAX_SEEN),
+      pending: partitioned.pending,
+      lastMarketWatchAt: typeof item.lastMarketWatchAt === "string" ? item.lastMarketWatchAt : null,
+      cursors: {
+        secUrgentFormIndex: Math.max(0, Number(cursors.secUrgentFormIndex) || 0) % SEC_URGENT_FORMS.length,
+        newsQueryIndex: Math.max(0, Number(cursors.newsQueryIndex) || 0) % NEWS_QUERIES.length,
+        officialFeedIndex: Math.max(0, Number(cursors.officialFeedIndex) || 0) % OFFICIAL_FEEDS.length,
+        directIssuerFeedIndex: Math.max(0, Number(cursors.directIssuerFeedIndex) || 0),
+      },
+      sourceHealth,
+      sensorReadiness: {
+        version: 1,
+        checkedAt: typeof rawReadiness.checkedAt === "string" && Number.isFinite(Date.parse(rawReadiness.checkedAt))
+          ? rawReadiness.checkedAt
+          : fallback.sensorReadiness.checkedAt,
+        universeReady: rawReadiness.universeReady === true,
+        universeEntries: Math.max(0, Number(rawReadiness.universeEntries) || 0),
+        exposureReady: rawReadiness.exposureReady === true,
+        exposureEntries: Math.max(0, Number(rawReadiness.exposureEntries) || 0),
+      },
+      cloudflareSensor: rawCloudflare.version === 1 && rawCloudflare.owner === "cloudflare_worker"
+        ? {
+            version: 1,
+            owner: "cloudflare_worker",
+            lastScanId: typeof rawCloudflare.lastScanId === "string" ? rawCloudflare.lastScanId : null,
+            lastRunKey: typeof rawCloudflare.lastRunKey === "string" ? rawCloudflare.lastRunKey : null,
+            checkedAt: typeof rawCloudflare.checkedAt === "string" && Number.isFinite(Date.parse(rawCloudflare.checkedAt))
+              ? rawCloudflare.checkedAt
+              : null,
+          }
+        : null,
     },
-    sourceHealth,
-    sensorReadiness: {
-      version: 1,
-      checkedAt: typeof rawReadiness.checkedAt === "string" && Number.isFinite(Date.parse(rawReadiness.checkedAt))
-        ? rawReadiness.checkedAt
-        : fallback.sensorReadiness.checkedAt,
-      universeReady: rawReadiness.universeReady === true,
-      universeEntries: Math.max(0, Number(rawReadiness.universeEntries) || 0),
-      exposureReady: rawReadiness.exposureReady === true,
-      exposureEntries: Math.max(0, Number(rawReadiness.exposureEntries) || 0),
-    },
-    cloudflareSensor: rawCloudflare.version === 1 && rawCloudflare.owner === "cloudflare_worker"
-      ? {
-          version: 1,
-          owner: "cloudflare_worker",
-          lastScanId: typeof rawCloudflare.lastScanId === "string" ? rawCloudflare.lastScanId : null,
-          lastRunKey: typeof rawCloudflare.lastRunKey === "string" ? rawCloudflare.lastRunKey : null,
-          checkedAt: typeof rawCloudflare.checkedAt === "string" && Number.isFinite(Date.parse(rawCloudflare.checkedAt))
-            ? rawCloudflare.checkedAt
-            : null,
-        }
-      : null,
+    queueHygiene: partitioned.hygiene,
   };
 }
 
@@ -988,16 +1038,18 @@ function overlayCadence(state: SensorState, value: unknown): SensorState {
   };
 }
 
-async function loadSensorState(now = new Date()): Promise<{ state: SensorState; etag: string | null }> {
+async function loadSensorState(now = new Date()): Promise<{ state: SensorState; etag: string | null; queueHygiene: Pr262PendingQueueHygiene }> {
   const [current, cadence] = await Promise.all([
     readVersionedTextFromR2(SENSOR_STATE_KEY),
     readVersionedTextFromR2(SENSOR_CADENCE_KEY),
   ]);
-  const queueState = current.found && current.text ? migrateState(JSON.parse(current.text), now) : emptyState();
+  const migrated = current.found && current.text
+    ? migrateState(JSON.parse(current.text), now)
+    : { state: emptyState(), queueHygiene: partitionPr262PendingEventsWithTelemetry([], now).hygiene };
   const state = cadence.found && cadence.text
-    ? overlayCadence(queueState, JSON.parse(cadence.text))
-    : queueState;
-  return { state, etag: current.etag };
+    ? overlayCadence(migrated.state, JSON.parse(cadence.text))
+    : migrated.state;
+  return { state, etag: current.etag, queueHygiene: migrated.queueHygiene };
 }
 
 function failureStatus(error: unknown): { status: "temporarily_unavailable" | "rate_limited" | "failed"; error: string } {
@@ -1303,6 +1355,7 @@ export async function runPr262ChangeSensor(
       key: SENSOR_STATE_KEY,
       pendingEventCount: pending.length,
       seenIdentityCount: next.seen.length,
+      queueHygieneAtLoad: loaded.queueHygiene,
       queueHygiene: partitioned.hygiene,
       cursors: next.cursors,
       retryingProviders: sourceHealth.filter((item) => Boolean(item.nextRetryAt)).map((item) => ({ provider: item.provider, nextRetryAt: item.nextRetryAt })),

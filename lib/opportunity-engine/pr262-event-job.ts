@@ -33,6 +33,7 @@ import { hardenUsValueCompanyAnalysis } from "@/lib/opportunity-engine/us-value-
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 import { promotePr262SeriousWatchOut } from "@/lib/opportunity-engine/pr262-serious-watch-out-authority";
 import { createPr262SensorBudgetedFetch } from "@/lib/opportunity-engine/pr262-sensor-fetch-budget";
+import { safeFullSourceErrorTelemetry, safeNetworkErrorCodes } from "@/lib/network-error-telemetry";
 
 const STATE_KEY = pr262StorageKey("event-job/state-v1.json");
 const LEASE_KEY = pr262StorageKey("event-job/runtime/lease-v1.json");
@@ -40,6 +41,7 @@ const PROVIDER_BUDGET_KEY = pr262StorageKey("event-job/runtime/provider-budgets-
 const COMMITTEE_BUDGET_KEY = pr262StorageKey("event-job/runtime/committee-budgets-v1.json");
 const LATEST_KEY = pr262StorageKey("event-job/latest.json");
 const RUN_PREFIX = pr262StorageKey("event-job/runs");
+const NONTERMINAL_AUDIT_PREFIX = pr262StorageKey("event-job/nonterminal-audits");
 const OUTBOX_PREFIX = pr262StorageKey("serious-signal/outbox/event-job");
 const HISTORY_KEY = pr262StorageKey("serious-signal/equity-history-v1.json");
 const VALUE_REFRESH_PREFIX = pr262StorageKey("value-investing/event-refresh");
@@ -103,6 +105,7 @@ export type Pr262EventJobInput = {
   fetchImpl?: typeof fetch;
   allowOpenAi?: boolean;
   beforeOpenAiCall?: NonNullable<EquitySignalLabInput["beforeOpenAiCall"]>;
+  aiReservationRetryAt?: () => string | null;
   resolveHost?: (hostname: string) => Promise<string[]>;
   fullSourceTransport?: FullSourceTransport;
   clock?: () => Date;
@@ -149,6 +152,18 @@ function eventResultKey(event: Pr262SensorEvent) {
   const day = Number.isFinite(Date.parse(event.observedAt)) ? event.observedAt.slice(0, 10) : "undated";
   const digest = crypto.createHash("sha256").update(event.id).digest("hex").slice(0, 16);
   return `${RUN_PREFIX}/${day}/${safeSegment(event.id)}-${digest}.json`;
+}
+
+function nonterminalAuditIdentity(eventId: string, attemptCheckedAt: string, report: Json) {
+  return crypto.createHash("sha256")
+    .update(JSON.stringify({ eventId, attemptCheckedAt, report }))
+    .digest("hex");
+}
+
+function nonterminalAuditKey(event: Pr262SensorEvent, attemptCheckedAt: string, report: Json) {
+  const day = Number.isFinite(Date.parse(attemptCheckedAt)) ? attemptCheckedAt.slice(0, 10) : "undated";
+  const digest = nonterminalAuditIdentity(event.id, attemptCheckedAt, report).slice(0, 24);
+  return `${NONTERMINAL_AUDIT_PREFIX}/${day}/${safeSegment(event.id)}-${digest}.json`;
 }
 
 function fullSourceCacheKey(eventId: string) {
@@ -587,7 +602,13 @@ async function validatedPublicHttpsUrl(raw: string, resolveHost: (hostname: stri
   }
   const addresses = net.isIP(hostname) ? [hostname] : await resolveHost(hostname);
   if (!addresses.length || addresses.some(privateOrNonRoutableAddress)) throw new Error("full_source_address_blocked");
-  return { url, addresses: [...new Set(addresses)].slice(0, 4) };
+  const uniqueAddresses = [...new Set(addresses)];
+  const ipv4 = uniqueAddresses.filter((address) => net.isIP(address) === 4);
+  const ipv6 = uniqueAddresses.filter((address) => net.isIP(address) === 6);
+  const addressesWithDualStackFallback = ipv4.length > 0 && ipv6.length > 0
+    ? [...ipv4.slice(0, 3), ipv6[0], ...ipv6.slice(1), ...ipv4.slice(3)]
+    : [...ipv4, ...ipv6];
+  return { url, addresses: addressesWithDualStackFallback.slice(0, 4) };
 }
 
 async function defaultResolveHost(hostname: string) {
@@ -595,7 +616,7 @@ async function defaultResolveHost(hostname: string) {
 }
 
 async function pinnedHttpsTransport(url: URL, validatedAddresses: string[]) {
-  let lastError: unknown = null;
+  const failures: Array<{ family: "ipv4" | "ipv6" | "unknown"; error: unknown }> = [];
   for (const address of validatedAddresses) {
     try {
       return await new Promise<Response>((resolve, reject) => {
@@ -646,10 +667,17 @@ async function pinnedHttpsTransport(url: URL, validatedAddresses: string[]) {
         request.end();
       });
     } catch (error) {
-      lastError = error;
+      const family = net.isIP(address);
+      failures.push({ family: family === 4 ? "ipv4" : family === 6 ? "ipv6" : "unknown", error });
     }
   }
-  throw lastError instanceof Error ? lastError : new Error("full_source_transport_failed");
+  const safeFailures = [...new Set(failures.flatMap(({ family, error }) => (
+    safeNetworkErrorCodes(error).map((code) => `${family}_${code}`)
+  )))].sort();
+  if (safeFailures.length > 0) throw new Error(`full_source_transport_failed:${safeFailures.join(",")}`);
+  const lastError = failures.at(-1)?.error;
+  const safeFailure = safeFullSourceErrorTelemetry(lastError);
+  throw new Error(safeFailure.startsWith("full_source_") ? safeFailure : "full_source_transport_failed");
 }
 
 async function limitedResponseText(response: Response) {
@@ -812,7 +840,7 @@ async function fetchFullSource(
     };
     return { receipts: [enriched], providers: [provider], decisionGrade: true, diagnostics: { sourceTextBytes: bytes, sourceTextCharacters: sourceText.length, sourceBodyTruncated: truncated, redirects, finalUrl: current.toString(), ...evidence, officialPreserved } };
   } catch (error) {
-    const message = error instanceof Error ? error.message : "full_source_failed";
+    const message = safeFullSourceErrorTelemetry(error);
     const provider: ProviderResult = {
       provider: `pr262_full_source_${safeSegment(receipt.publisher)}`,
       status: /429|rate/i.test(message) ? "rate_limited" : "temporarily_unavailable",
@@ -1376,6 +1404,34 @@ async function readExistingResult(resultKey: string, eventId: string) {
   return validatedResultPayload(JSON.parse(existing.text), eventId, resultKey);
 }
 
+async function persistNonterminalAudit(input: {
+  auditKey: string;
+  auditId: string;
+  eventId: string;
+  attemptCheckedAt: string;
+  payload: Json;
+}) {
+  const created = await writeVersionedJsonToR2(input.auditKey, input.payload, { createOnly: true });
+  if (!created.conflict) return { written: true, recovered: false };
+
+  const existing = await readVersionedTextFromR2(input.auditKey);
+  if (!existing.found || !existing.text) throw new Error("pr262_event_nonterminal_audit_conflict_read_failed");
+  const payload = object(JSON.parse(existing.text));
+  const storedEvent = object(payload.event);
+  const storedReport = object(payload.report);
+  const storedCheckedAt = text(payload.attemptCheckedAt);
+  const storedAuditId = text(payload.auditId);
+  if (payload.kind !== "pr262_targeted_event_job_nonterminal_audit"
+    || payload.terminal !== false
+    || storedEvent.id !== input.eventId
+    || storedCheckedAt !== input.attemptCheckedAt
+    || storedAuditId !== input.auditId
+    || nonterminalAuditIdentity(input.eventId, input.attemptCheckedAt, storedReport) !== input.auditId) {
+    throw new Error("pr262_event_nonterminal_audit_conflict");
+  }
+  return { written: false, recovered: true };
+}
+
 async function finalizePersistedResult(input: {
   eventId: string;
   ownerId: string;
@@ -1458,6 +1514,13 @@ async function finalizePersistedResult(input: {
 
 function retryDelay(event: Pr262SensorEvent) {
   return Math.min(6 * 60 * 60_000, 5 * 60_000 * (2 ** Math.min(6, event.queueAttempts)));
+}
+
+function eventRetryAt(event: Pr262SensorEvent, now: Date, requestedRetryAt: string | null) {
+  const requestedMs = Date.parse(requestedRetryAt ?? "");
+  return new Date(Number.isFinite(requestedMs) && requestedMs > now.getTime()
+    ? requestedMs
+    : now.getTime() + retryDelay(event)).toISOString();
 }
 
 function retryableReport(report: Json, allowOpenAi: boolean) {
@@ -1714,7 +1777,10 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
     let committeeRetryAt: string | null = null;
     const beforeOpenAiCall: NonNullable<EquitySignalLabInput["beforeOpenAiCall"]> = async (reservation) => {
       assertJobActive();
-      if (input.beforeOpenAiCall && !await input.beforeOpenAiCall(reservation)) return false;
+      if (input.beforeOpenAiCall && !await input.beforeOpenAiCall(reservation)) {
+        committeeRetryAt = input.aiReservationRetryAt?.() ?? null;
+        return false;
+      }
       const decision = await reserveCommitteeCall({ eventId: event.id, ownerId, now, reservation });
       committeeRetryAt = decision.nextRetryAt;
       assertJobActive();
@@ -1758,9 +1824,6 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
         }));
     assertJobActive();
     const retryClassificationAllowsAi = event.source === "market_price" ? allowOpenAi : effectiveAllowOpenAi;
-    if (retryableReport(report, retryClassificationAllowsAi) && eventAgeMs <= 7 * 24 * 60 * 60_000) {
-      throw new RetryAtError(committeeRetryAt, `pr262_event_report_retry:${text(report.status) ?? "unknown"}`);
-    }
     const costControl = {
       companiesOpened: 1,
       fullCompanyWarehouseRebuilds: 0,
@@ -1775,6 +1838,132 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       optionalHistoryContextRequiredForCommittee: false,
       durableProviderBudgets: true,
     };
+    if (retryableReport(report, retryClassificationAllowsAi) && eventAgeMs <= 7 * 24 * 60 * 60_000) {
+      const reportStatus = text(report.status) ?? "unknown";
+      const retryReason = `pr262_event_report_retry:${reportStatus}`;
+      const paidAttempt = report.openAiCalled === true;
+      // A real or conservatively admitted paid Committee attempt must not be
+      // retried while its rolling 24-hour cost record remains active. The
+      // outer daily-cost ledger can replace this preliminary bound with its
+      // exact recorded-at expiry before the batched queue mutation is saved.
+      const preliminaryPaidRetryAt = paidAttempt
+        ? new Date(now.getTime() + COMMITTEE_WINDOW_MS).toISOString()
+        : null;
+      // A cycle-start full daily fuse prevents the runner from invoking the
+      // reservation callback. Only that exact status inherits the global
+      // capacity boundary; unrelated quote, source, and configuration retries
+      // keep their own shorter backoff.
+      const cycleStartBudgetRetryAt = reportStatus === "qualified_signal_openai_not_requested"
+        ? input.aiReservationRetryAt?.() ?? null
+        : null;
+      const nextRetryAt = eventRetryAt(event, now, committeeRetryAt ?? preliminaryPaidRetryAt ?? cycleStartBudgetRetryAt);
+      const attemptCheckedAt = text(report.checkedAt) ?? now.toISOString();
+      let auditKey: string | null = null;
+      let auditWrite: { written: boolean; recovered: boolean } | null = null;
+      if (paidAttempt) {
+        const auditId = nonterminalAuditIdentity(event.id, attemptCheckedAt, report);
+        auditKey = nonterminalAuditKey(event, attemptCheckedAt, report);
+        const auditPayload = {
+          version: 1,
+          kind: "pr262_targeted_event_job_nonterminal_audit",
+          terminal: false,
+          auditId,
+          createdAt: now.toISOString(),
+          attemptCheckedAt,
+          event: resolved.event,
+          companyPointer: {
+            ticker: resolved.directoryEntry.ticker,
+            cik: resolved.directoryEntry.cik,
+            batchKey: resolved.directoryEntry.batchKey,
+            analysisIndex: resolved.directoryEntry.analysisIndex,
+            valueCycleId: resolved.directoryEntry.valueCycleId,
+          },
+          sourceDecisionGrade: source.decisionGrade,
+          sourceDiagnostics: source.diagnostics,
+          valuationContext,
+          historicalContext: {
+            requiredForSeriousSignal: false,
+            available: history.available,
+            recordsLoaded: history.records.length,
+            error: history.error,
+          },
+          retry: {
+            reason: retryReason,
+            nextRetryAt,
+            queueAttempt: event.queueAttempts + 1,
+          },
+          report,
+          costAccounting: {
+            required: true,
+            source: "immutable_nonterminal_audit",
+            candidateFingerprint: text(report.candidateFingerprint),
+          },
+          safety: {
+            databaseWrites: false,
+            publishing: false,
+            notifications: false,
+            trades: false,
+            productionWrites: PRODUCTION_R2_WRITES,
+          },
+        };
+        await renewLease(event.id, ownerId, clock());
+        assertJobActive();
+        auditWrite = await persistNonterminalAudit({
+          auditKey,
+          auditId,
+          eventId: event.id,
+          attemptCheckedAt,
+          payload: auditPayload,
+        });
+      }
+      await stopHeartbeat();
+      await releaseLease(event.id, ownerId, clock());
+      await persistQueueMutation({
+        action: "retry",
+        eventId: event.id,
+        error: retryReason,
+        nextRetryAt,
+        attemptedAt: now,
+      }, input.queueMutationSink);
+      return {
+        ok: true,
+        mode: "pr262_targeted_event_job",
+        status: "event_job_deferred",
+        nonterminal: true,
+        error: `${retryReason}; event_id=${event.id}; ticker=${event.ticker ?? "unknown"}; cik=${event.cik ?? "unknown"}; next_retry_at=${nextRetryAt}`,
+        checkedAt: attemptCheckedAt,
+        eventsProcessed: 0,
+        recoveredPersistedResult: false,
+        ticker: resolved.directoryEntry.ticker,
+        cik: resolved.directoryEntry.cik,
+        eventId: event.id,
+        eventSource: event.source,
+        sourceProvider: event.sourceProvider,
+        mappingMethod: event.mappingMethod ?? null,
+        sourceFailureReason,
+        sourceDecisionGrade: source.decisionGrade,
+        openAiCalled: paidAttempt,
+        candidateFingerprint: text(report.candidateFingerprint),
+        seriousSignalFound: false,
+        actionableSignalFound: false,
+        alertType: null,
+        analysisDiagnostics: compactAnalysisDiagnostics(report),
+        resultKey: null,
+        nonterminalAuditKey: auditKey,
+        outboxKey: null,
+        historyWrite: { persisted: false, reason: "nonterminal_retry" },
+        r2Persistence: {
+          nonterminalAuditWritten: auditWrite?.written === true,
+          nonterminalAuditRecovered: auditWrite?.recovered === true,
+          terminalResultWritten: false,
+          companyRefreshWritten: false,
+          operationalLedgerWritten: false,
+          reason: paidAttempt ? "immutable_paid_attempt_audit_only" : "no_paid_attempt_audit_required",
+        },
+        costControl,
+        safety: { databaseWrites: false, publishing: false, notifications: false, trades: false },
+      };
+    }
     if (!detailedResultRequired(report)) {
       await stopHeartbeat();
       await releaseLease(event.id, ownerId, clock());
@@ -1905,10 +2094,10 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
     const message = effectiveError instanceof Error ? effectiveError.message.replace(/\s+/g, " ").slice(0, 240) : "pr262_event_job_failed";
     await stopHeartbeat().catch(() => null);
     await releaseLease(event.id, ownerId, clock()).catch(() => null);
-    const requestedRetryAt = effectiveError instanceof ProviderBudgetError || effectiveError instanceof RetryAtError ? Date.parse(effectiveError.nextRetryAt ?? "") : Number.NaN;
-    const nextRetryAt = new Date(Number.isFinite(requestedRetryAt) && requestedRetryAt > now.getTime()
-      ? requestedRetryAt
-      : now.getTime() + retryDelay(event)).toISOString();
+    const requestedRetryAt = effectiveError instanceof ProviderBudgetError || effectiveError instanceof RetryAtError
+      ? effectiveError.nextRetryAt
+      : null;
+    const nextRetryAt = eventRetryAt(event, now, requestedRetryAt);
     await persistQueueMutation({
       action: "retry",
       eventId: event.id,
@@ -1931,6 +2120,7 @@ export const PR262_EVENT_JOB_KEYS = {
   COMMITTEE_BUDGET_KEY,
   LATEST_KEY,
   RUN_PREFIX,
+  NONTERMINAL_AUDIT_PREFIX,
   OUTBOX_PREFIX,
   HISTORY_KEY,
 } as const;

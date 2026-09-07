@@ -1,4 +1,7 @@
 import crypto from "node:crypto";
+import { lookup } from "node:dns/promises";
+import https from "node:https";
+import net from "node:net";
 import { normalizeEquitySymbol, providerFailurePolicy, selectBalancedReceipts, type BranchNewsChannel } from "@/lib/branch-signal-lab-policy";
 import {
   enrichSecFilingDetails,
@@ -7,6 +10,7 @@ import {
   type SecFilingDetail,
 } from "@/lib/equity-signal/sec-filing-details";
 import type { EventReceipt, ProviderResult, ProviderStatus } from "@/lib/equity-signal/types";
+import { safeProviderErrorTelemetry } from "@/lib/network-error-telemetry";
 
 const SEC_AGENT = "SwingUp/1.0 support@swingup.app";
 const GOOGLE_NEWS_URL = "https://news.google.com/rss/search";
@@ -181,8 +185,8 @@ function parseRss(xml: string, input: { channel: BranchNewsChannel; publisher: s
 }
 
 function errorCategory(error: unknown) {
-  const message = error instanceof Error ? error.message : "request_failed";
-  if (/cadence_guard|rolling_quota_guard/.test(message)) return { status: "not_due" as ProviderStatus, error: null };
+  const message = safeProviderErrorTelemetry(error);
+  if (/cadence_guard|rolling_quota_guard|pr262_sensor_budget_guard/.test(message)) return { status: "not_due" as ProviderStatus, error: null };
   if (/rate.?limit|http_429/i.test(message)) return { status: "rate_limited" as ProviderStatus, error: "rate_limited" };
   if (/http_(?:401|402|403)|not_entitled/i.test(message)) return { status: "not_entitled" as ProviderStatus, error: "not_entitled" };
   return { status: "temporarily_unavailable" as ProviderStatus, error: message.slice(0, 160) };
@@ -362,10 +366,226 @@ function isSyndicationFeed(body: string) {
   return /<(?:rss|feed|(?:[a-z0-9_-]+:)?RDF)\b/i.test(body);
 }
 
-async function fetchText(fetchImpl: typeof fetch, url: URL | string, accept: string | null, timeoutMs = 20_000) {
+type ScopedDispatchOptions = {
+  origin?: string | URL;
+  path: string;
+  method: string;
+  body?: unknown;
+  headers?: unknown;
+};
+
+type ScopedDispatchHandler = {
+  onConnect?: (abort: () => void) => void;
+  onError?: (error: Error) => void;
+  onResponseStarted?: () => void;
+  onHeaders?: (statusCode: number, headers: Buffer[], resume: () => void, statusText: string) => boolean;
+  onData?: (chunk: Buffer) => boolean;
+  onComplete?: (trailers: string[] | null) => void;
+};
+
+type ScopedDispatcher = {
+  dispatch: (options: ScopedDispatchOptions, handler: ScopedDispatchHandler) => boolean;
+  close: () => Promise<void>;
+  destroy: () => Promise<void>;
+};
+
+type ScopedFetchInit = RequestInit & { dispatcher?: ScopedDispatcher };
+
+function gdeltAddressBlocked(address: string) {
+  const normalized = address.toLowerCase();
+  const kind = net.isIP(normalized);
+  if (kind === 4) {
+    const octets = normalized.split(".").map(Number);
+    const [a, b] = octets;
+    return octets.length !== 4
+      || octets.some((value) => !Number.isInteger(value) || value < 0 || value > 255)
+      || a === 0
+      || a === 10
+      || a === 127
+      || (a === 100 && b >= 64 && b <= 127)
+      || (a === 169 && b === 254)
+      || (a === 172 && b >= 16 && b <= 31)
+      || (a === 192 && [0, 168].includes(b))
+      || (a === 198 && [18, 19, 51].includes(b))
+      || (a === 203 && b === 0)
+      || a >= 224;
+  }
+  if (kind === 6) {
+    if (normalized === "::" || normalized === "::1") return true;
+    if (normalized.startsWith("::ffff:")) return gdeltAddressBlocked(normalized.slice(7));
+    return /^(?:fc|fd|fe[89ab]|ff)/.test(normalized) || normalized.startsWith("2001:db8:");
+  }
+  return true;
+}
+
+function boundedGdeltAddresses(addresses: string[]) {
+  const unique = [...new Set(addresses)];
+  if (!unique.length || unique.some(gdeltAddressBlocked)) throw new Error("gdelt_address_blocked");
+  const ipv4 = unique.filter((address) => net.isIP(address) === 4);
+  const ipv6 = unique.filter((address) => net.isIP(address) === 6);
+  const dualStack = ipv4.length > 0 && ipv6.length > 0
+    ? [...ipv4.slice(0, 3), ipv6[0], ...ipv6.slice(1), ...ipv4.slice(3)]
+    : [...ipv4, ...ipv6];
+  return dualStack.slice(0, 4);
+}
+
+function gdeltRequestHeaders(value: unknown, host: string) {
+  const headers = new Headers();
+  try {
+    if (Array.isArray(value)) {
+      for (let index = 0; index + 1 < value.length; index += 2) {
+        if (typeof value[index] === "string" && typeof value[index + 1] === "string") headers.append(value[index], value[index + 1]);
+      }
+    } else if (value && typeof value === "object") {
+      for (const [key, entry] of Object.entries(value)) {
+        if (typeof entry === "string") headers.append(key, entry);
+        else if (Array.isArray(entry)) entry.forEach((item) => { if (typeof item === "string") headers.append(key, item); });
+      }
+    }
+  } catch {
+    // Native fetch supplies a plain header list; malformed custom input is not
+    // allowed to weaken the fixed Host/SNI identity below.
+  }
+  headers.set("Host", host);
+  return Object.fromEntries(headers.entries());
+}
+
+function createGdeltScopedDispatcher(expectedUrl: URL): ScopedDispatcher {
+  let closed = false;
+  const activeRequests = new Set<ReturnType<typeof https.request>>();
+  const close = () => {
+    closed = true;
+    return Promise.resolve();
+  };
+  return {
+    dispatch(options, handler) {
+      let aborted = false;
+      let activeRequest: ReturnType<typeof https.request> | null = null;
+      let completed = false;
+      const fail = (error: unknown) => {
+        if (completed) return;
+        completed = true;
+        const safe = new Error("gdelt_transport_failed", {
+          cause: (typeof error === "object" || typeof error === "function") && error !== null ? error : undefined,
+        });
+        handler.onError?.(safe);
+      };
+      handler.onConnect?.(() => {
+        if (completed) return;
+        aborted = true;
+        const error = Object.assign(new Error("gdelt_request_aborted"), { code: "ABORT_ERR" });
+        if (activeRequest) activeRequest.destroy(error);
+        fail(error);
+      });
+      void (async () => {
+        let origin: URL;
+        try {
+          origin = new URL(options.origin ?? expectedUrl.origin);
+        } catch {
+          fail(new Error("gdelt_origin_invalid"));
+          return;
+        }
+        if (closed
+          || origin.origin !== expectedUrl.origin
+          || options.method !== "GET"
+          || options.body != null
+          || options.path !== `${expectedUrl.pathname}${expectedUrl.search}`) {
+          fail(new Error("gdelt_dispatch_rejected"));
+          return;
+        }
+        let addresses: string[];
+        try {
+          const resolved = await lookup(expectedUrl.hostname, { all: true, verbatim: true, order: "ipv4first" });
+          addresses = boundedGdeltAddresses(resolved.map((item) => item.address));
+        } catch (error) {
+          fail(error);
+          return;
+        }
+        const failures: unknown[] = [];
+        const attempt = (index: number) => {
+          if (completed || aborted) return;
+          const address = addresses[index];
+          if (!address) {
+            fail(new AggregateError(failures, "gdelt_transport_candidates_exhausted"));
+            return;
+          }
+          const family = net.isIP(address);
+          let responseStarted = false;
+          let request: ReturnType<typeof https.request>;
+          try {
+            request = https.request({
+              protocol: "https:",
+              hostname: address,
+              port: 443,
+              path: options.path,
+              method: "GET",
+              headers: gdeltRequestHeaders(options.headers, expectedUrl.host),
+              servername: expectedUrl.hostname,
+              family,
+            }, (incoming) => {
+              responseStarted = true;
+              handler.onResponseStarted?.();
+              const resume = () => incoming.resume();
+              const keepReading = handler.onHeaders?.(
+                incoming.statusCode ?? 502,
+                incoming.rawHeaders.map((header) => Buffer.from(header)),
+                resume,
+                incoming.statusMessage ?? "",
+              );
+              if (keepReading === false) incoming.pause();
+              incoming.on("data", (chunk: Buffer) => {
+                if (handler.onData?.(Buffer.from(chunk)) === false) incoming.pause();
+              });
+              incoming.once("end", () => {
+                if (completed) return;
+                completed = true;
+                handler.onComplete?.(incoming.rawTrailers.length ? incoming.rawTrailers : null);
+              });
+              incoming.once("error", fail);
+            });
+          } catch (error) {
+            failures.push(error);
+            attempt(index + 1);
+            return;
+          }
+          activeRequest = request;
+          activeRequests.add(request);
+          request.once("close", () => activeRequests.delete(request));
+          request.once("error", (error) => {
+            activeRequests.delete(request);
+            if (completed || aborted) return;
+            if (closed) {
+              fail(error);
+              return;
+            }
+            if (responseStarted) {
+              fail(error);
+              return;
+            }
+            failures.push(error);
+            attempt(index + 1);
+          });
+          request.end();
+        };
+        attempt(0);
+      })();
+      return true;
+    },
+    close,
+    destroy() {
+      closed = true;
+      const error = Object.assign(new Error("gdelt_dispatcher_destroyed"), { code: "ABORT_ERR" });
+      for (const request of activeRequests) request.destroy(error);
+      activeRequests.clear();
+      return Promise.resolve();
+    },
+  };
+}
+
+async function fetchText(fetchImpl: typeof fetch, url: URL | string, accept: string | null, timeoutMs = 20_000, scopedInit: ScopedFetchInit = {}) {
   const headers: Record<string, string> = { "user-agent": SEC_AGENT };
   if (accept) headers.Accept = accept;
-  const response = await fetchImpl(url, { headers, cache: "no-store", signal: AbortSignal.timeout(timeoutMs) });
+  const response = await fetchImpl(url, { ...scopedInit, headers, cache: "no-store", signal: AbortSignal.timeout(timeoutMs) });
   const body = await response.text();
   if (!response.ok) {
     const policy = providerFailurePolicy({ httpStatus: response.status, bodyText: body });
@@ -497,8 +717,9 @@ export async function fetchGdeltDiscovery(fetchImpl: typeof fetch, now: Date): P
   url.searchParams.set("timespan", "2h");
   url.searchParams.set("maxrecords", "75");
   url.searchParams.set("sort", "DateDesc");
+  const dispatcher = createGdeltScopedDispatcher(url);
   try {
-    const { body } = await fetchText(fetchImpl, url, "application/json", 25_000);
+    const { body } = await fetchText(fetchImpl, url, "application/json", 25_000, { dispatcher });
     const json = JSON.parse(body) as { articles?: Array<Record<string, unknown>> };
     if (!Array.isArray(json.articles)) throw new Error("invalid_gdelt_payload");
     const receipts = json.articles.flatMap((article): EventReceipt[] => {
@@ -515,6 +736,8 @@ export async function fetchGdeltDiscovery(fetchImpl: typeof fetch, now: Date): P
   } catch (error) {
     const failure = errorCategory(error);
     return result({ provider: "gdelt", status: failure.status, sourceUrls: [url.toString()], error: failure.error });
+  } finally {
+    await dispatcher.close();
   }
 }
 

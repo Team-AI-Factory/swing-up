@@ -11,6 +11,11 @@ import {
 import { enrichPr262SensorCompanyMappings } from "@/lib/opportunity-engine/pr262-company-directory";
 import {
   applyPr262PendingSensorEventMutations,
+  isPr262SecondaryCompanyNewsEvent,
+  isPr262SecondaryCompanyNewsExpired,
+  PR262_SECONDARY_COMPANY_NEWS_MAX_TTL_MS,
+  PR262_SECONDARY_COMPANY_NEWS_RETRY_GRACE_MS,
+  PR262_SECONDARY_COMPANY_NEWS_TTL_MS,
   readPr262ChangeSensorState,
   type Pr262PendingSensorEventMutation,
 } from "@/lib/opportunity-engine/pr262-change-sensor";
@@ -56,6 +61,10 @@ function dueReadyCount(state: Awaited<ReturnType<typeof readPr262ChangeSensorSta
   return state.pending.filter((event) => analysisReady(event, now)).length;
 }
 
+function directIssuerProvider(provider: string | null | undefined) {
+  return /^(?:issuer_ir_|issuer_sec_)/.test(provider ?? "");
+}
+
 function queueHealthSnapshot(state: Awaited<ReturnType<typeof readPr262ChangeSensorState>>, nowMs: number) {
   const due = state.pending.filter((event) => analysisReady(event, nowMs));
   const dueAges = due
@@ -65,16 +74,39 @@ function queueHealthSnapshot(state: Awaited<ReturnType<typeof readPr262ChangeSen
     const retryAt = event.queueNextAttemptAt ? Date.parse(event.queueNextAttemptAt) : Number.NaN;
     return Number.isFinite(retryAt) && retryAt > nowMs;
   });
-  const directIssuer = (provider: string | null | undefined) => /^(?:issuer_ir_|issuer_sec_)/.test(provider ?? "");
+  const secondaryCompanyNews = state.pending.filter(isPr262SecondaryCompanyNewsEvent);
+  const secondaryCompanyNewsAges = secondaryCompanyNews
+    .map((event) => nowMs - Date.parse(event.observedAt))
+    .filter((age) => Number.isFinite(age) && age >= 0);
+  const staleSecondaryCompanyNewsCount = secondaryCompanyNews
+    .filter((event) => isPr262SecondaryCompanyNewsExpired(event, nowMs))
+    .length;
+  const retryProtectedSecondaryCompanyNewsCount = secondaryCompanyNews
+    .filter((event) => {
+      const age = nowMs - Date.parse(event.observedAt);
+      return Number.isFinite(age)
+        && age > PR262_SECONDARY_COMPANY_NEWS_TTL_MS
+        && !isPr262SecondaryCompanyNewsExpired(event, nowMs);
+    })
+    .length;
   return {
     basis: "age_priority_and_retry_state",
     healthyQueueNeedNotBeEmpty: true,
     pendingCount: state.pending.length,
     dueReadyCount: due.length,
     waitingForScheduledRetryCount: waitingForScheduledRetry.length,
+    secondaryCompanyNewsCount: secondaryCompanyNews.length,
+    staleSecondaryCompanyNewsCount,
+    retryProtectedSecondaryCompanyNewsCount,
+    oldestSecondaryCompanyNewsAgeMinutes: secondaryCompanyNewsAges.length
+      ? Math.floor(Math.max(...secondaryCompanyNewsAges) / 60_000)
+      : null,
+    secondaryCompanyNewsBaseAgeMinutes: PR262_SECONDARY_COMPANY_NEWS_TTL_MS / 60_000,
+    secondaryCompanyNewsMaximumAgeMinutes: PR262_SECONDARY_COMPANY_NEWS_MAX_TTL_MS / 60_000,
+    secondaryCompanyNewsRetryGraceMinutes: PR262_SECONDARY_COMPANY_NEWS_RETRY_GRACE_MS / 60_000,
     highestDuePriority: due.length ? Math.max(...due.map((event) => event.priority)) : null,
     oldestDueEvidenceAgeMinutes: dueAges.length ? Math.floor(Math.max(...dueAges) / 60_000) : null,
-    dueAuthoritativeCount: due.filter((event) => event.source === "sec" || event.source === "official" || directIssuer(event.sourceProvider)).length,
+    dueAuthoritativeCount: due.filter((event) => event.source === "sec" || event.source === "official" || directIssuerProvider(event.sourceProvider)).length,
     duePriority90OrHigherCount: due.filter((event) => event.priority >= 90).length,
     duePriority90OlderThan30MinutesCount: due.filter((event) => {
       const age = nowMs - Date.parse(event.observedAt);
@@ -96,7 +128,7 @@ function asJson(value: unknown): Json {
 function isScheduledEventDeferral(message: string) {
   if (!/; next_retry_at=\d{4}-\d{2}-\d{2}T/.test(message)) return false;
   const reason = message.split(";")[0]?.trim() ?? "";
-  return /^(?:pr262_event_full_source_incomplete(?::[^;]+)?|pr262_authoritative_equity_universe_stale|pr262_event_report_retry:[^;]+|[a-z0-9_]+_(?:rolling_quota_guard|cadence_guard)|The operation was aborted due to timeout)$/.test(reason);
+  return /^(?:pr262_event_full_source_incomplete(?::[^;]+)?|pr262_authoritative_equity_universe_stale|pr262_trade_halt_state_unavailable:[a-z_]+|pr262_event_report_retry:[^;]+|pr262_sensor_budget_guard:[a-z0-9_]+:(?:minimum_interval|rolling_24h_budget)|[a-z0-9_]+_(?:rolling_quota_guard|cadence_guard)|The operation was aborted due to timeout)$/.test(reason);
 }
 
 class Pr262CycleDeadlineError extends Error {
@@ -128,6 +160,7 @@ async function safeAiBudgetStatus(): Promise<AiBudgetStatus> {
       warning: true,
       hardFuseTripped: true,
       nextReviewReservationUsd: Number(process.env.SWING_UP_PR262_AI_REVIEW_RESERVATION_USD) || 0.75,
+      nextBudgetAdmissionAt: null,
       reservationCheckedBeforePaidCommittee: true,
       activeReservations: 0,
       reviewsRecorded: 0,
@@ -182,7 +215,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
   const priorityEligibleAtStart = state.pending.filter((event) => event.priority >= 80).length;
   const officialOrSecAtStart = state.pending.filter((event) => event.source === "sec" || event.source === "official").length;
   const secAtStart = state.pending.filter((event) => event.source === "sec").length;
-  const directIssuerAtStart = state.pending.filter((event) => (event.sourceProvider ?? "").startsWith("issuer_ir_")).length;
+  const directIssuerAtStart = state.pending.filter((event) => directIssuerProvider(event.sourceProvider)).length;
   const issuerSpecificAtStart = state.pending.filter((event) => event.mappingMethod !== "deterministic_sector_fanout" && !event.id.includes(":fanout:") && Boolean(event.ticker)).length;
   const readyNow = Date.now();
   const readyBySourceAtStart = state.pending.filter((event) => analysisReady(event, readyNow)).reduce<Record<string, number>>((counts, event) => {
@@ -190,7 +223,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
     return counts;
   }, {});
   const readyOfficialOrSecAtStart = (readyBySourceAtStart.sec ?? 0) + (readyBySourceAtStart.official ?? 0);
-  const readyDirectIssuerAtStart = state.pending.filter((event) => analysisReady(event, readyNow) && (event.sourceProvider ?? "").startsWith("issuer_ir_")).length;
+  const readyDirectIssuerAtStart = state.pending.filter((event) => analysisReady(event, readyNow) && directIssuerProvider(event.sourceProvider)).length;
   const readyAtStart = dueReadyCount(state);
   const queueHealthAtStart = queueHealthSnapshot(state, readyNow);
   const capacity = capacityForQueue(readyAtStart);
@@ -215,6 +248,9 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
       break;
     }
     let aiReservationFingerprint: string | null = null;
+    let aiReservationRetryAt: string | null = typeof aiBudget.nextBudgetAdmissionAt === "string"
+      ? aiBudget.nextBudgetAdmissionAt
+      : null;
     try {
       const raw = await runPr262EventJob({
         allowOpenAi: aiBudget.allowed && aiBudget.accountingHealthy,
@@ -231,6 +267,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
               direction: reservation.direction,
             });
             aiCostResults.push(asJson(reserved));
+            aiReservationRetryAt = typeof reserved.nextRetryAt === "string" ? reserved.nextRetryAt : null;
             if (reserved.allowed) aiReservationFingerprint = reservation.candidateFingerprint;
             return reserved.allowed;
           } catch (error) {
@@ -240,9 +277,11 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
               accountingHealthy: false,
               accountingError: error instanceof Error ? error.message.slice(0, 180) : "ai_budget_reservation_failed",
             };
+            aiReservationRetryAt = null;
             return false;
           }
         },
+        aiReservationRetryAt: () => aiReservationRetryAt,
         signal: cycleSignal,
         deadlineAtMs: processingDeadlineAtMs,
       });
@@ -251,12 +290,16 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
       eventResults.push(result);
       const status = String(result.status ?? "");
       if (status === "idle" || status === "busy") break;
+      if (result.nonterminal === true || status === "event_job_deferred") eventDeferrals += 1;
       if (result.ok === false) eventFailures += 1;
       if (result.openAiCalled === true) {
         aiCalls += 1;
         let recorded: Json;
         try {
-          recorded = asJson(await recordPr262AiCommitteeCostFromResultKey(typeof result.resultKey === "string" ? result.resultKey : null));
+          const accountingKey = typeof result.resultKey === "string"
+            ? result.resultKey
+            : typeof result.nonterminalAuditKey === "string" ? result.nonterminalAuditKey : null;
+          recorded = asJson(await recordPr262AiCommitteeCostFromResultKey(accountingKey));
         } catch (error) {
           recorded = { recorded: false, error: error instanceof Error ? error.message : "ai_cost_record_failed" };
         }
@@ -274,8 +317,23 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
           };
         } else {
           aiBudget = await safeAiBudgetStatus();
+          const exactRetryAt = typeof recorded.nextRetryAt === "string" ? recorded.nextRetryAt : null;
+          const eventId = typeof result.eventId === "string" ? result.eventId : null;
+          if (result.nonterminal === true && eventId && exactRetryAt && Number.isFinite(Date.parse(exactRetryAt))) {
+            // The mutation sink is batched and de-duplicated by event ID. This
+            // replaces the event job's preliminary bound with the exact expiry
+            // of the durable rolling-cost entry without adding another retry.
+            queueMutations.push({
+              action: "retry",
+              eventId,
+              error: typeof result.error === "string"
+                ? result.error.replace(/; next_retry_at=[^;]+$/, `; next_retry_at=${exactRetryAt}`)
+                : "pr262_event_report_retry",
+              nextRetryAt: exactRetryAt,
+            });
+          }
         }
-      } else if (aiReservationFingerprint) {
+      } else if (result.openAiCalled === false && aiReservationFingerprint) {
         try {
           await releasePr262AiCommitteeBudgetReservation(aiReservationFingerprint);
           aiBudget = await safeAiBudgetStatus();
@@ -288,16 +346,20 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
           };
         }
       }
-      const watchOut = await promotePr262SeriousWatchOut(typeof result.resultKey === "string" ? result.resultKey : null)
-        .catch(() => ({ promoted: false, outboxKey: null as string | null }));
-      if (result.seriousSignalFound === true && result.alertType === "buy") seriousBuys += 1;
+      const watchOut = result.nonterminal === true
+        ? { promoted: false, outboxKey: null as string | null }
+        : await promotePr262SeriousWatchOut(typeof result.resultKey === "string" ? result.resultKey : null)
+          .catch(() => ({ promoted: false, outboxKey: null as string | null }));
+      if (result.nonterminal !== true && result.seriousSignalFound === true && result.alertType === "buy") seriousBuys += 1;
       if (watchOut.promoted) seriousWatchOuts += 1;
-      else if (result.seriousSignalFound === true && result.alertType === "sell") seriousSells += 1;
+      else if (result.nonterminal !== true && result.seriousSignalFound === true && result.alertType === "sell") seriousSells += 1;
 
-      const outboxKeys = [...new Set([
-        typeof result.outboxKey === "string" ? result.outboxKey : null,
-        typeof watchOut.outboxKey === "string" ? watchOut.outboxKey : null,
-      ].filter((value): value is string => Boolean(value)))];
+      const outboxKeys = result.nonterminal === true
+        ? []
+        : [...new Set([
+          typeof result.outboxKey === "string" ? result.outboxKey : null,
+          typeof watchOut.outboxKey === "string" ? watchOut.outboxKey : null,
+        ].filter((value): value is string => Boolean(value)))];
       for (const outboxKey of outboxKeys) {
         if (Date.now() >= processingDeadlineAtMs || cycleSignal.aborted) {
           deadlineStoppedAdmissions = true;
@@ -477,6 +539,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
       providerBudget: sourceBudget?.summary() ?? null,
       providerBudgetPersistence: budgetPersistence,
       directAnnouncementMonitoring: sensor.directAnnouncementMonitoring,
+      queueHygiene: sensor.queueHygiene,
       r2Persistence: sensor.r2Persistence,
     } : {
       skipped: true,

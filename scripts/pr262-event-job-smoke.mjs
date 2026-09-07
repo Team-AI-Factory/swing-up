@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
 import crypto from "node:crypto";
-import https from "node:https";
 import net from "node:net";
 import { Readable } from "node:stream";
 import ts from "typescript";
 
 const source = readFileSync(new URL("../lib/opportunity-engine/pr262-event-job.ts", import.meta.url), "utf8");
+const networkTelemetrySource = readFileSync(new URL("../lib/network-error-telemetry.ts", import.meta.url), "utf8");
 assert.match(source, /createPr262SensorBudgetedFetch\([\s\S]*?eventJobBudgetedFetch/, "Sensor and event-job calls must share one durable provider-account guard.");
 assert.match(source, /FULL_SOURCE_ABSOLUTE_TIMEOUT_MS = 15_000/, "Full-source reads need a fixed wall-clock deadline");
 assert.match(source, /LEASE_MS = 5 \* 60_000/, "A crashed event job must not retain the old two-hour global lease");
@@ -21,13 +22,44 @@ assert.match(source, /hostname: address,[\s\S]*Host: url\.host,[\s\S]*servername
 assert.doesNotMatch(source, /lookup: pinnedAddressLookup/, "Node 24 full-source requests must not enter the null TLS socket lookup path.");
 assert.doesNotMatch(source, /event\.queueAttempts\s*>=\s*2/, "Retry count alone must never turn a transient evidence failure into a permanent rejection.");
 assert.match(source, /quotaKey === "pr262_full_source_reads"[\s\S]*cadenceKey\.includes\(":fanout:"\)/, "Obsolete sector fan-out reads must not consume the issuer full-source allowance.");
+assert.match(source, /pr262_targeted_event_job_nonterminal_audit/, "Incomplete paid Committee outcomes must have a distinct immutable audit record.");
+assert.match(source, /terminalResultWritten: false/, "A retryable Committee outcome must not be mistaken for a terminal event result.");
 const testableSource = source
+  .replace("async function pinnedHttpsTransport(", "export async function pinnedHttpsTransport(")
   .replace("async function fetchFullSource(", "export async function fetchFullSource(")
   .replace("async function readCachedFullSource(", "export async function readCachedFullSource(")
   .replace("async function cacheFullSource(", "export async function cacheFullSource(");
 const output = ts.transpileModule(testableSource, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
 }).outputText;
+const networkTelemetryOutput = ts.transpileModule(networkTelemetrySource, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText;
+const networkTelemetry = { exports: {} };
+new Function("module", "exports", networkTelemetryOutput)(networkTelemetry, networkTelemetry.exports);
+assert.equal(
+  networkTelemetry.exports.safeFullSourceErrorTelemetry(new Error("full_source_transport_failed:ipv4_API_KEY_MUST_NOT_LEAK")),
+  "full_source_failed",
+  "A forged uppercase transport token must not bypass the fixed network-code allowlist.",
+);
+assert.equal(
+  networkTelemetry.exports.safeFullSourceErrorTelemetry(new Error("full_source_transport_failed:ipv4_ECONNREFUSED,ipv6_ENETUNREACH")),
+  "full_source_transport_failed:ipv4_ECONNREFUSED,ipv6_ENETUNREACH",
+);
+
+const pinnedRequestFamilies = [];
+const httpsStub = {
+  request: (options) => {
+    const request = new EventEmitter();
+    request.destroy = (error) => request.emit("error", error);
+    request.end = () => queueMicrotask(() => {
+      pinnedRequestFamilies.push(options.family);
+      const code = options.family === 4 ? "ECONNREFUSED" : "ENETUNREACH";
+      request.emit("error", Object.assign(new Error(`unsafe ${code} address detail`), { code }));
+    });
+    return request;
+  },
+};
 
 const event = {
   id: "sec:0000000000-26-000001",
@@ -159,6 +191,7 @@ let valueRefreshCalls = 0;
 let valueSafetyCalls = 0;
 let acknowledgements = 0;
 let retryCalls = 0;
+let lastRetryMutation = null;
 let decisionGradeSecSource = true;
 let failHistoryAccess = false;
 let committeeFingerprint = "fingerprint-1";
@@ -183,7 +216,7 @@ const haltProvider = {
 const stubs = {
   "node:crypto": crypto,
   "node:dns/promises": { lookup: async () => [{ address: "93.184.216.34" }] },
-  "node:https": https,
+  "node:https": httpsStub,
   "node:net": net,
   "node:stream": { Readable },
   "@/lib/branch-signal-lab": { branchProviderCallRequest: () => null },
@@ -280,7 +313,60 @@ const stubs = {
           committee: null,
         };
       }
+      if (runnerResultMode === "cycle_start_budget_denied") {
+        assert.equal(input.allowOpenAi, false, "A full cycle-start dollar fuse must prevent the paid reservation callback.");
+        return {
+          ok: true,
+          checkedAt: "2026-08-11T10:09:30.000Z",
+          status: "qualified_signal_openai_not_requested",
+          seriousSignalFound: false,
+          actionableSignalFound: false,
+          alertType: null,
+          openAiCalled: false,
+          candidateFingerprint: committeeFingerprint,
+          selectedCandidate: null,
+          historicalPilot: null,
+          tradingHaltSafety: { currentStateKnown: true },
+          committee: null,
+          blockers: ["The rolling OpenAI review budget is full."],
+        };
+      }
+      if (runnerResultMode === "market_quote_unavailable") {
+        return {
+          ok: true,
+          checkedAt: "2026-08-11T10:10:30.000Z",
+          status: "qualified_event_market_quote_unavailable",
+          seriousSignalFound: false,
+          actionableSignalFound: false,
+          alertType: null,
+          openAiCalled: false,
+          candidateFingerprint: committeeFingerprint,
+          selectedCandidate: null,
+          historicalPilot: null,
+          tradingHaltSafety: { currentStateKnown: true },
+          committee: null,
+          blockers: ["A current market quote is unavailable."],
+        };
+      }
       const reserved = await input.beforeOpenAiCall({ candidateFingerprint: committeeFingerprint, checkedAt: "2026-08-11T10:00:00.000Z", ticker: "EXCT", direction: "upside" });
+      if (runnerResultMode === "reservation_denied") {
+        assert.equal(reserved, false, "The runner must stop before OpenAI when the durable reservation is denied.");
+        return {
+          ok: true,
+          checkedAt: "2026-08-11T10:09:00.000Z",
+          status: "qualified_signal_openai_reservation_denied",
+          seriousSignalFound: false,
+          actionableSignalFound: false,
+          alertType: null,
+          openAiCalled: false,
+          candidateFingerprint: committeeFingerprint,
+          selectedCandidate: null,
+          historicalPilot: null,
+          tradingHaltSafety: { currentStateKnown: true },
+          committee: null,
+          blockers: ["The paid Committee reservation is already active or recorded."],
+        };
+      }
       assert.equal(reserved, true, "Committee reservation must be granted");
       const selectedCandidate = {
         ticker: "EXCT",
@@ -317,6 +403,37 @@ const stubs = {
           cacheAgeMs: 0,
         },
       };
+      if (runnerResultMode === "incomplete_committee") {
+        return {
+          ok: true,
+          checkedAt: "2026-08-11T10:08:00.000Z",
+          status: "candidate_needs_more_data",
+          seriousSignalFound: false,
+          actionableSignalFound: false,
+          alertType: null,
+          openAiCalled: true,
+          candidateFingerprint: committeeFingerprint,
+          selectedCandidate,
+          historicalPilot: null,
+          tradingHaltSafety: { currentStateKnown: true },
+          committee: {
+            ok: false,
+            agentsCompleted: 13,
+            agentsFailed: 1,
+            finalJudge: null,
+            output: {
+              overallRecommendation: "needs_more_data",
+              modelUsageSummary: {
+                actualOpenAiUsage: {
+                  responsesWithUsage: 13,
+                  tokens: { promptTokens: 1000, cachedPromptTokens: 0, completionTokens: 500 },
+                },
+              },
+            },
+          },
+          blockers: ["One required Committee role did not complete."],
+        };
+      }
       return {
         ok: true,
         checkedAt: "2026-08-11T10:00:00.000Z",
@@ -386,7 +503,11 @@ const stubs = {
   "@/lib/opportunity-engine/pr262-change-sensor": {
     readNextPr262PendingSensorEvent: async () => event,
     acknowledgePr262PendingSensorEvent: async () => { acknowledgements += 1; return { acknowledged: true, pendingCount: 0 }; },
-    retryPr262PendingSensorEvent: async () => { retryCalls += 1; return { retried: true }; },
+    retryPr262PendingSensorEvent: async (mutation) => {
+      retryCalls += 1;
+      lastRetryMutation = structuredClone(mutation);
+      return { retried: true };
+    },
   },
   "@/lib/opportunity-engine/pr262-company-directory": {
     readPr262ResolvedSensorCompany: async () => ({
@@ -411,6 +532,7 @@ const stubs = {
   "@/lib/opportunity-engine/pr262-sensor-fetch-budget": {
     createPr262SensorBudgetedFetch: async ({ fetchImpl }) => ({ fetchImpl, flush: async () => ({ persisted: true }), summary: () => ({}) }),
   },
+  "@/lib/network-error-telemetry": networkTelemetry.exports,
   "@/lib/opportunity-engine/us-value-investing-engine": {
     refreshUsValueCompany: async ({ ticker, now, beforeFetch }) => {
       valueRefreshCalls += 1;
@@ -432,7 +554,7 @@ new Function("require", "module", "exports", output)((name) => {
   throw new Error(`Unexpected event-job import: ${name}`);
 }, cjsModule, cjsModule.exports);
 
-const { cacheFullSource, fetchFullSource, readCachedFullSource, runPr262EventJob, PR262_EVENT_JOB_KEYS } = cjsModule.exports;
+const { cacheFullSource, fetchFullSource, pinnedHttpsTransport, readCachedFullSource, runPr262EventJob, PR262_EVENT_JOB_KEYS } = cjsModule.exports;
 
 const securityNow = new Date("2026-08-11T10:00:00.000Z");
 const publicDns = async () => ["93.184.216.34"];
@@ -496,6 +618,58 @@ const pinnedFullSource = await fetchFullSource(
 );
 assert.equal(pinnedFullSource.decisionGrade, true);
 assert.deepEqual(pinnedTransportAddresses, ["93.184.216.34"], "The production transport must receive and pin the already-validated DNS address");
+
+let mixedFamilyAddresses = [];
+const mixedFamilySource = await fetchFullSource(
+  sourceReceipt,
+  sourceEvent,
+  "Exact Issuer Corp",
+  "EXCT",
+  async () => { throw new Error("unpinned_fetch_must_not_run"); },
+  securityNow,
+  async () => [
+    "8.8.8.8",
+    "1.1.1.1",
+    "9.9.9.9",
+    "208.67.222.222",
+    "4.2.2.1",
+    "2606:4700:4700::1111",
+  ],
+  async (_url, addresses) => {
+    mixedFamilyAddresses = addresses;
+    return okTextResponse();
+  },
+);
+assert.equal(mixedFamilySource.decisionGrade, true);
+assert.deepEqual(
+  mixedFamilyAddresses,
+  ["8.8.8.8", "1.1.1.1", "9.9.9.9", "2606:4700:4700::1111"],
+  "At least one public IPv6 fallback must survive the four-address cap even when DNS returns many IPv4 addresses.",
+);
+
+await assert.rejects(
+  () => pinnedHttpsTransport(new URL(sourceReceipt.url), ["93.184.216.34", "2001:4860:4860::8888"]),
+  (error) => {
+    assert.equal(error.message, "full_source_transport_failed:ipv4_ECONNREFUSED,ipv6_ENETUNREACH");
+    assert.doesNotMatch(error.message, /unsafe|93\.184|2001:4860/);
+    return true;
+  },
+);
+assert.deepEqual(pinnedRequestFamilies, [4, 6], "A failed IPv4 connection may fall back to IPv6 without another logical source read.");
+
+const privateTransportFailure = await fetchFullSource(
+  sourceReceipt,
+  sourceEvent,
+  "Exact Issuer Corp",
+  "EXCT",
+  async () => { throw new Error("unpinned_fetch_must_not_run"); },
+  securityNow,
+  publicDns,
+  async () => { throw new Error("publisher.example at 198.51.100.9?token=must-not-leak"); },
+);
+assert.equal(privateTransportFailure.decisionGrade, false);
+assert.equal(privateTransportFailure.providers[0].error, "full_source_failed");
+assert.doesNotMatch(privateTransportFailure.providers[0].error, /publisher|198\.51|token|must-not-leak/);
 
 for (const blockedUrl of [
   "http://news.example.com/exact-guidance",
@@ -735,6 +909,94 @@ assert.ok(objects.has(withoutHistory.outboxKey), "Optional history failure must 
 failHistoryAccess = false;
 committeeFingerprint = "fingerprint-1";
 
+const completedRunsBeforeNonterminalRetries = objects.get(PR262_EVENT_JOB_KEYS.STATE_KEY).value.runs.length;
+const acknowledgementsBeforeNonterminalRetries = acknowledgements;
+const historyCountBeforeNonterminalRetries = objects.get(historyKey).value.records.length;
+const outboxCountBeforeNonterminalRetries = [...objects.keys()].filter((key) => key.startsWith(PR262_EVENT_JOB_KEYS.OUTBOX_PREFIX)).length;
+const terminalResultCountBeforeNonterminalRetries = [...objects.keys()].filter((key) => key.startsWith(PR262_EVENT_JOB_KEYS.RUN_PREFIX)).length;
+
+runnerResultMode = "incomplete_committee";
+committeeFingerprint = "fingerprint-incomplete-committee";
+setSecEventIdentity("000010", "2026-08-11T10:07:30.000Z");
+const paidIncomplete = await runPr262EventJob({
+  now: new Date("2026-08-11T10:08:00.000Z"),
+  allowOpenAi: true,
+  beforeOpenAiCall: async () => true,
+});
+assert.equal(paidIncomplete.status, "event_job_deferred");
+assert.equal(paidIncomplete.nonterminal, true);
+assert.equal(paidIncomplete.openAiCalled, true, "A Committee attempt that returned 13 of 14 roles must remain conservatively chargeable.");
+assert.equal(paidIncomplete.resultKey, null, "Incomplete Committee work must not create a terminal event result.");
+assert.ok(paidIncomplete.nonterminalAuditKey.startsWith(PR262_EVENT_JOB_KEYS.NONTERMINAL_AUDIT_PREFIX));
+assert.equal(paidIncomplete.r2Persistence.nonterminalAuditWritten, true);
+assert.equal(paidIncomplete.r2Persistence.terminalResultWritten, false);
+const paidAudit = objects.get(paidIncomplete.nonterminalAuditKey).value;
+assert.equal(paidAudit.kind, "pr262_targeted_event_job_nonterminal_audit");
+assert.equal(paidAudit.terminal, false);
+assert.equal(paidAudit.event.id, event.id);
+assert.equal(paidAudit.report.status, "candidate_needs_more_data");
+assert.equal(paidAudit.report.openAiCalled, true);
+assert.equal(paidAudit.report.committee.agentsCompleted, 13);
+assert.equal(lastRetryMutation.eventId, event.id);
+assert.equal(lastRetryMutation.nextRetryAt, "2026-08-12T10:08:00.000Z", "A paid incomplete fingerprint must not hot-retry inside the rolling cost window.");
+assert.equal(objects.get(PR262_EVENT_JOB_KEYS.STATE_KEY).value.runs.length, completedRunsBeforeNonterminalRetries, "A nonterminal audit must not mark the queue event complete.");
+assert.equal(acknowledgements, acknowledgementsBeforeNonterminalRetries, "A retryable Committee outcome must remain in the queue.");
+assert.equal(objects.get(historyKey).value.records.length, historyCountBeforeNonterminalRetries, "Incomplete Committee work must not enter signal history.");
+assert.equal([...objects.keys()].filter((key) => key.startsWith(PR262_EVENT_JOB_KEYS.OUTBOX_PREFIX)).length, outboxCountBeforeNonterminalRetries, "Incomplete Committee work must not create an alert outbox.");
+assert.equal([...objects.keys()].filter((key) => key.startsWith(PR262_EVENT_JOB_KEYS.RUN_PREFIX)).length, terminalResultCountBeforeNonterminalRetries, "The paid audit must live outside the terminal result namespace.");
+
+runnerResultMode = "cycle_start_budget_denied";
+committeeFingerprint = "fingerprint-cycle-start-full";
+setSecEventIdentity("000012", "2026-08-11T10:09:00.000Z");
+const exactGlobalBudgetRetryAt = "2026-08-11T19:00:00.000Z";
+let cycleStartReservationCalls = 0;
+const cycleStartBudgetDenied = await runPr262EventJob({
+  now: new Date("2026-08-11T10:10:00.000Z"),
+  allowOpenAi: false,
+  beforeOpenAiCall: async () => {
+    cycleStartReservationCalls += 1;
+    return true;
+  },
+  aiReservationRetryAt: () => exactGlobalBudgetRetryAt,
+});
+assert.equal(cycleStartBudgetDenied.status, "event_job_deferred");
+assert.equal(cycleStartBudgetDenied.openAiCalled, false);
+assert.equal(cycleStartReservationCalls, 0, "A cycle-start full fuse must not attempt a second reservation.");
+assert.equal(lastRetryMutation.nextRetryAt, exactGlobalBudgetRetryAt, "A cycle-start full fuse must wait for its exact cumulative capacity boundary.");
+
+runnerResultMode = "market_quote_unavailable";
+committeeFingerprint = "fingerprint-quote-unavailable";
+setSecEventIdentity("000013", "2026-08-11T10:10:00.000Z");
+await runPr262EventJob({
+  now: new Date("2026-08-11T10:11:00.000Z"),
+  allowOpenAi: false,
+  aiReservationRetryAt: () => exactGlobalBudgetRetryAt,
+});
+assert.equal(lastRetryMutation.nextRetryAt, "2026-08-11T10:16:00.000Z", "An unrelated quote retry must not inherit the much later AI-budget boundary.");
+
+const auditCountBeforeNoCall = [...objects.keys()].filter((key) => key.startsWith(PR262_EVENT_JOB_KEYS.NONTERMINAL_AUDIT_PREFIX)).length;
+runnerResultMode = "reservation_denied";
+committeeFingerprint = "fingerprint-already-reserved";
+setSecEventIdentity("000011", "2026-08-11T10:08:30.000Z");
+const exactReservationRetryAt = "2026-08-11T18:00:00.000Z";
+const deniedBeforeOpenAi = await runPr262EventJob({
+  now: new Date("2026-08-11T10:09:00.000Z"),
+  allowOpenAi: true,
+  beforeOpenAiCall: async () => false,
+  aiReservationRetryAt: () => exactReservationRetryAt,
+});
+assert.equal(deniedBeforeOpenAi.status, "event_job_deferred");
+assert.equal(deniedBeforeOpenAi.nonterminal, true);
+assert.equal(deniedBeforeOpenAi.openAiCalled, false, "A denied reservation is the proven no-OpenAI-call path.");
+assert.equal(deniedBeforeOpenAi.nonterminalAuditKey, null, "A no-call deferral needs no paid-attempt audit.");
+assert.equal(lastRetryMutation.nextRetryAt, exactReservationRetryAt, "An active reservation denial must use its exact expiry instead of generic backoff.");
+assert.equal([...objects.keys()].filter((key) => key.startsWith(PR262_EVENT_JOB_KEYS.NONTERMINAL_AUDIT_PREFIX)).length, auditCountBeforeNoCall);
+assert.equal(objects.get(PR262_EVENT_JOB_KEYS.STATE_KEY).value.runs.length, completedRunsBeforeNonterminalRetries);
+assert.equal(acknowledgements, acknowledgementsBeforeNonterminalRetries);
+
+runnerResultMode = "serious";
+committeeFingerprint = "fingerprint-1";
+
 const stateBeforeLegacyCompaction = objects.get(PR262_EVENT_JOB_KEYS.STATE_KEY).value;
 const legacyProviderReservations = objects.get(PR262_EVENT_JOB_KEYS.PROVIDER_BUDGET_KEY).value.reservations;
 const legacyCommitteeReservations = objects.get(PR262_EVENT_JOB_KEYS.COMMITTEE_BUDGET_KEY).value.reservations;
@@ -813,6 +1075,11 @@ console.log(JSON.stringify({
   routineNoSignalSkipsDetailedR2Writes: true,
   volatileEventRuntimeStateSplitFromFindingLedger: true,
   routineCompanyRefreshStaysInMemory: true,
+  incompletePaidCommitteeHasImmutableNonterminalAudit: true,
+  incompletePaidCommitteeCannotPublishOrTerminalize: true,
+  cycleStartGlobalFuseUsesExactRetry: true,
+  unrelatedRetryDoesNotInheritGlobalFuse: true,
+  activeFingerprintDefersToExactReservationExpiry: true,
   shortRenewableLeaseAndDeadlineRecovery: true,
   legacyEventLedgerCompactedWithoutLosingIdempotency: true,
 }, null, 2));

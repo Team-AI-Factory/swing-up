@@ -12,10 +12,17 @@ let revision = 0;
 let networkCalls = 0;
 let activeWrites = 0;
 let maximumConcurrentWrites = 0;
+let readBarrier = null;
 const stateKey = "branch-labs/pr-262/sensor/provider-budgets-v1.json";
 const r2 = {
   readVersionedTextFromR2: async (key) => {
     assert.equal(key, stateKey);
+    if (readBarrier) {
+      const barrier = readBarrier;
+      readBarrier = null;
+      barrier.started();
+      await barrier.wait;
+    }
     return stored
       ? { found: true, text: typeof stored.raw === "string" ? stored.raw : JSON.stringify(stored.value), etag: stored.etag }
       : { found: false, text: null, etag: null };
@@ -123,6 +130,31 @@ await Promise.all([
 assert.equal(maximumConcurrentWrites, 1, "Parallel providers must queue the shared R2 budget reservation instead of colliding.");
 assert.equal(networkCalls, 9, "Every independently budgeted provider and exact-symbol Alpha quote may start after its durable reservation.");
 
+stored = null;
+revision = 0;
+let releaseRead;
+let markReadStarted;
+const readStarted = new Promise((resolve) => { markReadStarted = resolve; });
+const readReleased = new Promise((resolve) => { releaseRead = resolve; });
+const cancelledController = new AbortController();
+const cancellationSafe = await createPr262SensorBudgetedFetch({
+  fetchImpl: async () => {
+    networkCalls += 1;
+    return new Response("must not be reached");
+  },
+});
+readBarrier = { started: markReadStarted, wait: readReleased };
+const cancelledRequest = cancellationSafe.fetchImpl(
+  "https://scanner.tradingview.com/america/scan",
+  { signal: cancelledController.signal },
+);
+await readStarted;
+cancelledController.abort(new Error("test_request_cancelled_while_budget_loading"));
+releaseRead();
+await assert.rejects(cancelledRequest, /test_request_cancelled/);
+assert.equal(stored, null, "A request cancelled while the shared budget is loading must not consume a provider slot.");
+assert.equal(networkCalls, 9, "A cancelled TradingView request must stop before the network.");
+
 stored = { raw: "{invalid-provider-ledger", etag: `etag-${++revision}` };
 const corrupted = await createPr262SensorBudgetedFetch({
   fetchImpl: async () => {
@@ -139,5 +171,6 @@ console.log(JSON.stringify({
   crashCannotEraseProviderUsage: true,
   restartedProcessHonorsDurableCadence: true,
   parallelProviderReservationsSerialized: true,
+  cancelledQueuedRequestDoesNotConsumeProviderSlot: true,
   corruptLedgerFailsClosed: true,
 }, null, 2));

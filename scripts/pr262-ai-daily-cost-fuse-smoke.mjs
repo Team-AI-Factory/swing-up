@@ -62,6 +62,29 @@ try {
   assert.equal(blocked.hardFuseTripped, true);
   assert.equal(blocked.nextReviewReservationUsd, 0.75);
 
+  state.payload.entries = [
+    { id: "long-lived-spend", recordedAt: now.toISOString(), ticker: "SAFE", alertType: "buy", costUsd: 9.2, source: "actual_tokens" },
+    { id: "first-small-release", recordedAt: "2026-08-19T11:00:00.000Z", ticker: "SAFE", alertType: "buy", costUsd: 0.3, source: "actual_tokens" },
+  ];
+  state.payload.reservations = [{
+    id: "second-small-release",
+    reservedAt: "2026-08-20T09:00:00.000Z",
+    expiresAt: "2026-08-20T12:00:00.000Z",
+    ticker: "SAFE",
+    direction: "upside",
+    amountUsd: 0.3,
+  }];
+  const cumulativelyBlocked = await getPr262AiDailyBudgetStatus(now);
+  assert.equal(cumulativelyBlocked.allowed, false);
+  assert.equal(cumulativelyBlocked.nextBudgetAdmissionAt, "2026-08-20T12:00:00.000Z", "Capacity must wait until enough entry and reservation amounts have cumulatively expired.");
+  const raceTimeFuseDenial = await reservePr262AiCommitteeBudget({ candidateFingerprint: "race-time-full-fuse", ticker: "SAFE", direction: "upside" }, now);
+  assert.equal(raceTimeFuseDenial.allowed, false);
+  assert.equal(raceTimeFuseDenial.reason, "daily_cost_fuse");
+  assert.equal(raceTimeFuseDenial.nextRetryAt, cumulativelyBlocked.nextBudgetAdmissionAt, "A race-time full fuse must return the exact global capacity boundary.");
+
+  state.payload.entries = [{ id: "prior", recordedAt: now.toISOString(), ticker: "SAFE", alertType: "buy", costUsd: 9.3, source: "actual_tokens" }];
+  state.payload.reservations = [];
+
   process.env.SWING_UP_PR262_AI_DAILY_LIMIT_USD = "1000";
   process.env.SWING_UP_PR262_AI_REVIEW_RESERVATION_USD = "0.01";
   const misconfigured = await getPr262AiDailyBudgetStatus(now);
@@ -72,6 +95,7 @@ try {
   const lowerLimit = await getPr262AiDailyBudgetStatus(now);
   assert.equal(lowerLimit.nextReviewReservationUsd, 0.75, "A lower daily limit must not shrink the per-review cost bound.");
   assert.equal(lowerLimit.allowed, false, "A daily limit below one conservative review must admit no paid review.");
+  assert.equal(lowerLimit.nextBudgetAdmissionAt, null, "No retry time may be invented when the configured limit cannot admit even one review.");
   process.env.SWING_UP_PR262_AI_DAILY_LIMIT_USD = "10";
   process.env.SWING_UP_PR262_AI_REVIEW_RESERVATION_USD = "0.75";
 
@@ -106,12 +130,21 @@ try {
   const reservation = await reservePr262AiCommitteeBudget({ candidateFingerprint: report.candidateFingerprint, ticker: "SAFE", direction: "upside" }, now);
   assert.equal(reservation.allowed, true);
   assert.equal(state.payload.reservations.length, 1);
+  const duplicateActiveReservation = await reservePr262AiCommitteeBudget({ candidateFingerprint: report.candidateFingerprint, ticker: "SAFE", direction: "upside" }, now);
+  assert.equal(duplicateActiveReservation.allowed, false);
+  assert.equal(duplicateActiveReservation.reason, "candidate_already_reserved");
+  assert.equal(duplicateActiveReservation.nextRetryAt, reservation.reservation.expiresAt, "An active fingerprint must retry only after its exact reservation expiry.");
   forcedConflicts = 2;
   const recorded = await recordPr262AiCommitteeCost(report, now);
   assert.equal(recorded.recorded, true, "Cost recording must retry optimistic-write conflicts.");
   assert.equal(state.payload.entries.length, 1);
   assert.equal(state.payload.reservations.length, 0, "Actual usage must atomically reconcile the pre-call reservation.");
   assert.equal(state.payload.entries[0].costUsd, 0.75);
+  assert.equal(recorded.nextRetryAt, "2026-08-21T10:00:00.000Z");
+  const duplicateRecordedReservation = await reservePr262AiCommitteeBudget({ candidateFingerprint: report.candidateFingerprint, ticker: "SAFE", direction: "upside" }, now);
+  assert.equal(duplicateRecordedReservation.allowed, false);
+  assert.equal(duplicateRecordedReservation.reason, "candidate_already_recorded");
+  assert.equal(duplicateRecordedReservation.nextRetryAt, recorded.nextRetryAt, "A recorded fingerprint must not be hot-retried inside its rolling cost window.");
   const duplicate = await recordPr262AiCommitteeCost(report, now);
   assert.equal(duplicate.reason, "already_recorded");
   assert.equal(state.payload.entries.length, 1);
@@ -167,5 +200,9 @@ console.log(JSON.stringify({
   safeReservationCannotBeLoweredByEnvironment: true,
   dailyLimitBelowReservationDeniesPaidReview: true,
   incompleteUsageRetainsFullReservation: true,
+  activeFingerprintUsesExactReservationExpiry: true,
+  recordedFingerprintUsesExactCostExpiry: true,
+  globalFuseUsesExactCumulativeCapacityExpiry: true,
+  raceTimeGlobalFuseUsesExactRetry: true,
   highVolumeCannotEvictInWindowSpend: true,
 }, null, 2));

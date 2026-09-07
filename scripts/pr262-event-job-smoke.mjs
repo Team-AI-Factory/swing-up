@@ -26,6 +26,7 @@ assert.match(source, /pr262_targeted_event_job_nonterminal_audit/, "Incomplete p
 assert.match(source, /terminalResultWritten: false/, "A retryable Committee outcome must not be mistaken for a terminal event result.");
 const testableSource = source
   .replace("async function pinnedHttpsTransport(", "export async function pinnedHttpsTransport(")
+  .replace("async function defaultResolveHost(", "export async function defaultResolveHost(")
   .replace("async function fetchFullSource(", "export async function fetchFullSource(")
   .replace("async function readCachedFullSource(", "export async function readCachedFullSource(")
   .replace("async function cacheFullSource(", "export async function cacheFullSource(");
@@ -48,6 +49,8 @@ assert.equal(
 );
 
 const pinnedRequestFamilies = [];
+let lookupAnswers = [{ address: "2606:4700:4700::1111", family: 6 }];
+let resolve4Answers = ["93.184.216.34"];
 const httpsStub = {
   request: (options) => {
     const request = new EventEmitter();
@@ -215,7 +218,10 @@ const haltProvider = {
 
 const stubs = {
   "node:crypto": crypto,
-  "node:dns/promises": { lookup: async () => [{ address: "93.184.216.34" }] },
+  "node:dns/promises": {
+    lookup: async () => lookupAnswers,
+    resolve4: async () => resolve4Answers,
+  },
   "node:https": httpsStub,
   "node:net": net,
   "node:stream": { Readable },
@@ -554,7 +560,15 @@ new Function("require", "module", "exports", output)((name) => {
   throw new Error(`Unexpected event-job import: ${name}`);
 }, cjsModule, cjsModule.exports);
 
-const { cacheFullSource, fetchFullSource, pinnedHttpsTransport, readCachedFullSource, runPr262EventJob, PR262_EVENT_JOB_KEYS } = cjsModule.exports;
+const { cacheFullSource, defaultResolveHost, fetchFullSource, pinnedHttpsTransport, readCachedFullSource, runPr262EventJob, PR262_EVENT_JOB_KEYS } = cjsModule.exports;
+
+assert.deepEqual(
+  await defaultResolveHost("publisher.example"),
+  ["2606:4700:4700::1111", "93.184.216.34"],
+  "An IPv6-only OS lookup must add an explicit A-record fallback before the pinned request.",
+);
+lookupAnswers = [{ address: "93.184.216.34", family: 4 }];
+resolve4Answers = [];
 
 const securityNow = new Date("2026-08-11T10:00:00.000Z");
 const publicDns = async () => ["93.184.216.34"];

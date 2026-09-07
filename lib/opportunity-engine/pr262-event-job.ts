@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { lookup } from "node:dns/promises";
+import { lookup, resolve4 } from "node:dns/promises";
 import * as https from "node:https";
 import net from "node:net";
 import { Readable } from "node:stream";
@@ -612,7 +612,28 @@ async function validatedPublicHttpsUrl(raw: string, resolveHost: (hostname: stri
 }
 
 async function defaultResolveHost(hostname: string) {
-  return (await lookup(hostname, { all: true, verbatim: true })).map((item) => item.address);
+  let lookupFailure: unknown = null;
+  let addresses: string[] = [];
+  try {
+    addresses = (await lookup(hostname, { all: true, verbatim: true })).map((item) => item.address);
+  } catch (error) {
+    lookupFailure = error;
+  }
+
+  // Railway's OS resolver can occasionally return only an AAAA record even
+  // though the publisher also has a working A record. Railway has no outbound
+  // IPv6 route in that case, so a pinned request would fail with ENETUNREACH.
+  // Ask DNS explicitly for the A record before giving up. The returned address
+  // still passes the same public-address validation and is pinned for the
+  // request, so this does not weaken the SSRF or DNS-rebinding boundary.
+  if (!addresses.some((address) => net.isIP(address) === 4)) {
+    const ipv4Fallback = await resolve4(hostname).catch(() => [] as string[]);
+    addresses = [...new Set([...addresses, ...ipv4Fallback])];
+  }
+
+  if (addresses.length > 0) return addresses;
+  if (lookupFailure) throw lookupFailure;
+  return [];
 }
 
 async function pinnedHttpsTransport(url: URL, validatedAddresses: string[]) {

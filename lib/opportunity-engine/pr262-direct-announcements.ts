@@ -7,7 +7,9 @@ import type { Pr262SensorEvent } from "@/lib/opportunity-engine/pr262-change-sen
 
 const REGISTRY_KEY = pr262StorageKey("sensor/direct-company-feeds-v1.json");
 const DISCOVERY_CADENCE_MS = 30 * 60_000;
-const NO_FEED_RETRY_MS = 24 * 60 * 60_000;
+const DAY_MS = 24 * 60 * 60_000;
+const OTHER_DISCOVERY_RETRY_MS = DAY_MS;
+const CONFIRMED_NO_FEED_RETRY_DAYS = [30, 60, 90] as const;
 const TRANSIENT_DISCOVERY_RETRY_MS = 60 * 60_000;
 const FEED_POLL_CADENCE_MS = 15 * 60_000;
 const MAX_FAILED_FEED_BACKOFF_MS = 6 * 60 * 60_000;
@@ -32,6 +34,7 @@ type RegistryEntry = {
   lastSuccessAt: string | null;
   nextCheckAt: string | null;
   error: string | null;
+  consecutiveConfirmedNoFeedDiscoveries?: number;
   consecutiveFailures?: number;
 };
 
@@ -52,12 +55,86 @@ function text(value: unknown) {
 }
 
 function transientDiscoveryError(value: string | null) {
-  return Boolean(value && /budget_guard|minimum_interval|rolling_24h_budget|timeout|temporarily_unavailable|rate_limit|http_429|http_5\d\d/i.test(value));
+  return Boolean(value && /budget_guard|minimum_interval|rolling_24h_budget|timeout|temporarily_unavailable|rate[_ ]?limit|http_429|http_5\d\d|fetch failed|enetunreach|econnreset|econnrefused|etimedout|enotfound|eai_again|sec_submissions_invalid_json|und_err/i.test(value));
+}
+
+function discoveryFailureMessage(error: unknown) {
+  const value = error && (typeof error === "object" || typeof error === "function")
+    ? error as { code?: unknown; message?: unknown }
+    : null;
+  const code = typeof value?.code === "string" ? value.code.toUpperCase() : "";
+  if (code === "ENOTFOUND" || code === "EAI_AGAIN") return `direct_feed_network_${code.toLowerCase()}`;
+  const message = typeof value?.message === "string" ? value.message : "direct_feed_discovery_failed";
+  if (/\bENOTFOUND\b/i.test(message)) return "direct_feed_network_enotfound";
+  if (/\bEAI_AGAIN\b/i.test(message)) return "direct_feed_network_eai_again";
+  return message.slice(0, 180);
+}
+
+function confirmedNoFeedError(value: string | null) {
+  return value === "issuer_rss_feed_not_discovered" || value === "issuer_website_missing_in_sec_submissions";
+}
+
+function embeddedProviderRetryAt(error: string | null) {
+  const value = error?.match(/;next_retry_at=([^;\s]+)/)?.[1];
+  const parsed = Date.parse(value ?? "");
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function discoveryRetryAt(error: string | null, now: Date) {
-  const delay = transientDiscoveryError(error) ? TRANSIENT_DISCOVERY_RETRY_MS : NO_FEED_RETRY_MS;
+  const providerRetryAt = embeddedProviderRetryAt(error);
+  if (providerRetryAt !== null && providerRetryAt > now.getTime()) return new Date(providerRetryAt).toISOString();
+  const delay = transientDiscoveryError(error) ? TRANSIENT_DISCOVERY_RETRY_MS : OTHER_DISCOVERY_RETRY_MS;
   return new Date(now.getTime() + delay).toISOString();
+}
+
+function confirmedNoFeedRetry(entry: RegistryEntry | undefined, now: Date) {
+  const consecutiveConfirmedNoFeedDiscoveries = Math.max(
+    1,
+    Math.floor(Number(entry?.consecutiveConfirmedNoFeedDiscoveries) || 0) + 1,
+  );
+  const retryDays = CONFIRMED_NO_FEED_RETRY_DAYS[
+    Math.min(CONFIRMED_NO_FEED_RETRY_DAYS.length - 1, consecutiveConfirmedNoFeedDiscoveries - 1)
+  ];
+  return {
+    consecutiveConfirmedNoFeedDiscoveries,
+    nextCheckAt: new Date(now.getTime() + retryDays * DAY_MS).toISOString(),
+  };
+}
+
+function effectiveDiscoveryRetryAt(entry: RegistryEntry) {
+  if (transientDiscoveryError(entry.error)) {
+    const providerRetryAt = embeddedProviderRetryAt(entry.error);
+    if (providerRetryAt !== null) return providerRetryAt;
+    const lastDiscoveryAt = Date.parse(entry.lastDiscoveryAt);
+    return Number.isFinite(lastDiscoveryAt) ? lastDiscoveryAt + TRANSIENT_DISCOVERY_RETRY_MS : Number.NEGATIVE_INFINITY;
+  }
+  const nextCheckAt = Date.parse(entry.nextCheckAt ?? "");
+  return Number.isFinite(nextCheckAt) ? nextCheckAt : Number.NEGATIVE_INFINITY;
+}
+
+function normalizeLegacyConfirmedNoFeed(entry: RegistryEntry) {
+  if (entry.feedUrl || !confirmedNoFeedError(entry.error)) return entry;
+  // Version-one rows used a daily retry and have no miss counter. Upgrade them
+  // in place during the ordinary CAS write, without spending a network call.
+  const consecutiveConfirmedNoFeedDiscoveries = Math.max(
+    1,
+    Math.floor(Number(entry.consecutiveConfirmedNoFeedDiscoveries) || 0),
+  );
+  const lastDiscoveryAt = Date.parse(entry.lastDiscoveryAt);
+  const existingNextCheckAt = Date.parse(entry.nextCheckAt ?? "");
+  const retryDays = CONFIRMED_NO_FEED_RETRY_DAYS[
+    Math.min(CONFIRMED_NO_FEED_RETRY_DAYS.length - 1, consecutiveConfirmedNoFeedDiscoveries - 1)
+  ];
+  const minimumNextCheckAt = Number.isFinite(lastDiscoveryAt)
+    ? lastDiscoveryAt + retryDays * DAY_MS
+    : Number.NEGATIVE_INFINITY;
+  return {
+    ...entry,
+    consecutiveConfirmedNoFeedDiscoveries,
+    nextCheckAt: Number.isFinite(minimumNextCheckAt)
+      ? new Date(Math.max(minimumNextCheckAt, Number.isFinite(existingNextCheckAt) ? existingNextCheckAt : minimumNextCheckAt)).toISOString()
+      : entry.nextCheckAt,
+  };
 }
 
 function failedFeedRetry(entry: RegistryEntry, now: Date) {
@@ -326,16 +403,25 @@ function parseFeed(feed: string, entry: RegistryEntry, now: Date): Pr262SensorEv
 
 async function loadRegistry() {
   const current = await readVersionedTextFromR2(REGISTRY_KEY);
-  if (!current.found || !current.text) return { registry: emptyRegistry(), etag: current.etag };
-  const parsed = JSON.parse(current.text) as Partial<Registry>;
+  if (!current.found || !current.text) return { registry: emptyRegistry(), etag: current.etag, found: false };
+  let parsed: Partial<Registry>;
+  try {
+    parsed = JSON.parse(current.text) as Partial<Registry>;
+  } catch {
+    throw new Error("pr262_direct_feed_registry_invalid_json");
+  }
   const registry: Registry = {
     version: 1,
     updatedAt: text(parsed.updatedAt) ?? new Date(0).toISOString(),
     discoveryCursor: Math.max(0, Number(parsed.discoveryCursor) || 0),
     lastDiscoveryCycleAt: text(parsed.lastDiscoveryCycleAt),
-    entries: Array.isArray(parsed.entries) ? parsed.entries.filter((entry): entry is RegistryEntry => Boolean(entry && typeof entry.ticker === "string" && typeof entry.cik === "string")) : [],
+    entries: Array.isArray(parsed.entries)
+      ? parsed.entries
+        .filter((entry): entry is RegistryEntry => Boolean(entry && typeof entry.ticker === "string" && typeof entry.cik === "string"))
+        .map(normalizeLegacyConfirmedNoFeed)
+      : [],
   };
-  return { registry, etag: current.etag };
+  return { registry, etag: current.etag, found: true };
 }
 
 async function seedEnv(registry: Registry, exposure: Pr262ExposureEntry[]) {
@@ -357,6 +443,7 @@ async function seedEnv(registry: Registry, exposure: Pr262ExposureEntry[]) {
     if (existing) {
       const feedChanged = existing.feedUrl !== feedUrl;
       const websiteChanged = Boolean(investorWebsite && existing.investorWebsite !== investorWebsite);
+      existing.consecutiveConfirmedNoFeedDiscoveries = 0;
       if (!feedChanged && !websiteChanged) continue;
       existing.company = company.company;
       existing.cik = company.cik;
@@ -382,6 +469,7 @@ async function seedEnv(registry: Registry, exposure: Pr262ExposureEntry[]) {
       lastSuccessAt: null,
       nextCheckAt: null,
       error: null,
+      consecutiveConfirmedNoFeedDiscoveries: 0,
       consecutiveFailures: 0,
     });
   }
@@ -391,12 +479,22 @@ async function discoverOne(
   fetchImpl: typeof fetch,
   company: Pr262ExposureEntry,
   now: Date,
+  existing?: RegistryEntry,
 ): Promise<{ entry: RegistryEntry; secEvents: Pr262SensorEvent[] }> {
   if (!company.cik) throw new Error("direct_feed_company_cik_missing");
   const submissionsUrl = `https://data.sec.gov/submissions/CIK${company.cik}.json`;
   const response = await fetchImpl(submissionsUrl, { headers: { Accept: "application/json", "user-agent": SEC_AGENT }, cache: "no-store", signal: AbortSignal.timeout(10_000) });
   if (!response.ok) throw new Error(`direct_feed_sec_submissions_http_${response.status}`);
-  const body = await response.json() as Record<string, unknown>;
+  let body: Record<string, unknown>;
+  try {
+    const parsed = await response.json() as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid_shape");
+    body = parsed as Record<string, unknown>;
+  } catch {
+    // A truncated/corrupt SEC response is an upstream transport failure, not a
+    // confirmed statement that this issuer has no website or feed.
+    throw new Error("direct_feed_sec_submissions_invalid_json");
+  }
   const secEvents = recentSecFilingEvents(body, company, submissionsUrl, now);
   const investorWebsite = text(body.investorWebsite) ?? text(body.website);
   let feedUrl: string | null = null;
@@ -415,16 +513,20 @@ async function discoverOne(
             if (!discovered) continue;
             feedUrl = (await safePublicHttps(discovered)).toString();
             break;
-          } catch {}
+          } catch (cause) {
+            if (!error) error = discoveryFailureMessage(cause);
+          }
         }
       }
     } catch (cause) {
-      error = cause instanceof Error ? cause.message.slice(0, 180) : "direct_feed_discovery_failed";
+      error = discoveryFailureMessage(cause);
     }
   }
   const missingFeedReason = investorWebsite
     ? "issuer_rss_feed_not_discovered"
     : "issuer_website_missing_in_sec_submissions";
+  const finalError = feedUrl ? null : error ?? missingFeedReason;
+  const confirmedRetry = confirmedNoFeedError(finalError) ? confirmedNoFeedRetry(existing, now) : null;
   return {
     entry: {
       ticker: company.ticker,
@@ -432,16 +534,75 @@ async function discoverOne(
       cik: company.cik,
       investorWebsite,
       feedUrl,
-      discoveredAt: now.toISOString(),
+      discoveredAt: existing?.discoveredAt ?? now.toISOString(),
       lastDiscoveryAt: now.toISOString(),
-      lastCheckedAt: null,
-      lastSuccessAt: null,
-      nextCheckAt: feedUrl ? null : discoveryRetryAt(error ?? missingFeedReason, now),
-      error: feedUrl ? null : error ?? missingFeedReason,
-      consecutiveFailures: 0,
+      lastCheckedAt: existing?.lastCheckedAt ?? null,
+      lastSuccessAt: existing?.lastSuccessAt ?? null,
+      nextCheckAt: feedUrl ? null : confirmedRetry?.nextCheckAt ?? discoveryRetryAt(finalError, now),
+      error: finalError,
+      consecutiveConfirmedNoFeedDiscoveries: feedUrl
+        ? 0
+        : confirmedRetry?.consecutiveConfirmedNoFeedDiscoveries
+          ?? existing?.consecutiveConfirmedNoFeedDiscoveries
+          ?? 0,
+      consecutiveFailures: existing?.consecutiveFailures ?? 0,
     },
     secEvents,
   };
+}
+
+type DiscoveryWorkClass = "unseen" | "transient_retry" | "confirmed_no_feed_recheck" | "other_recheck";
+
+type DiscoveryTarget = {
+  company: Pr262ExposureEntry;
+  existing: RegistryEntry | undefined;
+  workClass: DiscoveryWorkClass;
+  watchlistRank: number;
+};
+
+function companyWatchlistRank(company: Pr262ExposureEntry) {
+  const price = company.currentPrice;
+  if (price === null) return 2;
+  if (company.strongBuyBelowPrice !== null && price <= company.strongBuyBelowPrice) return 0;
+  if ((company.buyBelowPrice !== null && price <= company.buyBelowPrice)
+    || (company.trimAbovePrice !== null && price >= company.trimAbovePrice)) return 1;
+  return 2;
+}
+
+function discoveryTarget(company: Pr262ExposureEntry, existing: RegistryEntry | undefined, now: Date): DiscoveryTarget | null {
+  if (existing?.feedUrl) return null;
+  const watchlistRank = companyWatchlistRank(company);
+  if (!existing) return { company, existing, workClass: "unseen", watchlistRank };
+  if (effectiveDiscoveryRetryAt(existing) > now.getTime()) return null;
+  const workClass: DiscoveryWorkClass = transientDiscoveryError(existing.error)
+    ? "transient_retry"
+    : confirmedNoFeedError(existing.error)
+      ? "confirmed_no_feed_recheck"
+      : "other_recheck";
+  return { company, existing, workClass, watchlistRank };
+}
+
+function discoveryTier(target: DiscoveryTarget) {
+  // A confirmed absence is cheap to remember and expensive to rediscover.
+  // Every unresolved/new/transient row must run before every confirmed miss,
+  // even when that confirmed miss is on the valuation watchlist.
+  if (target.workClass !== "confirmed_no_feed_recheck" && target.watchlistRank < 2) return 0;
+  if (target.workClass === "transient_retry") return 1;
+  if (target.workClass === "unseen") return 2;
+  if (target.workClass === "other_recheck") return 3;
+  return 4;
+}
+
+function compareDiscoveryTargets(left: DiscoveryTarget, right: DiscoveryTarget) {
+  const tierDifference = discoveryTier(left) - discoveryTier(right);
+  if (tierDifference) return tierDifference;
+  const leftRetryAt = left.existing ? effectiveDiscoveryRetryAt(left.existing) : Number.POSITIVE_INFINITY;
+  const rightRetryAt = right.existing ? effectiveDiscoveryRetryAt(right.existing) : Number.POSITIVE_INFINITY;
+  return left.watchlistRank - right.watchlistRank
+    || leftRetryAt - rightRetryAt
+    || right.company.businessQuality - left.company.businessQuality
+    || (right.company.marketCap ?? 0) - (left.company.marketCap ?? 0)
+    || left.company.ticker.localeCompare(right.company.ticker);
 }
 
 export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262ExposureEntry[]; now?: Date; fetchImpl?: typeof fetch }) {
@@ -451,56 +612,63 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
   const registry = loaded.registry;
   await seedEnv(registry, input.exposure);
   const byTicker = new Map(registry.entries.map((entry) => [entry.ticker, entry]));
+  const eligibleCompanies = input.exposure.filter((company) => company.cik);
   const events: Pr262SensorEvent[] = [];
   let secSubmissionsChecked = 0;
   let secFilingsFound = 0;
+  let discoverySuccesses = 0;
+  let discoveryFailures = 0;
+  const attemptErrors: string[] = [];
+  const discoverySelection = {
+    total: 0,
+    highPriority: 0,
+    unseen: 0,
+    transientRetry: 0,
+    confirmedNoFeedRecheck: 0,
+    otherRecheck: 0,
+  };
 
   const lastDiscoveryMs = registry.lastDiscoveryCycleAt ? Date.parse(registry.lastDiscoveryCycleAt) : 0;
   let discovered = 0;
   if (!Number.isFinite(lastDiscoveryMs) || now.getTime() - lastDiscoveryMs >= DISCOVERY_CADENCE_MS) {
-    const candidates = input.exposure.filter((company) => company.cik).sort((left, right) => {
-      const watchlistRank = (company: Pr262ExposureEntry) => {
-        const price = company.currentPrice;
-        if (price === null) return 2;
-        if (company.strongBuyBelowPrice !== null && price <= company.strongBuyBelowPrice) return 0;
-        if ((company.buyBelowPrice !== null && price <= company.buyBelowPrice)
-          || (company.trimAbovePrice !== null && price >= company.trimAbovePrice)) return 1;
-        return 2;
-      };
-      return watchlistRank(left) - watchlistRank(right)
-        || right.businessQuality - left.businessQuality
-        || (right.marketCap ?? 0) - (left.marketCap ?? 0);
-    });
-    if (candidates.length) {
-      let cursor = registry.discoveryCursor % candidates.length;
-      let inspected = 0;
-      const discoveryTargets: Array<{ company: Pr262ExposureEntry; existing: RegistryEntry | undefined }> = [];
+    if (eligibleCompanies.length) {
+      const prioritized = eligibleCompanies
+        .map((company) => discoveryTarget(company, byTicker.get(company.ticker), now))
+        .filter((target): target is DiscoveryTarget => target !== null)
+        .sort(compareDiscoveryTargets);
+      const discoveryTargets: DiscoveryTarget[] = [];
       const selectedCiks = new Set<string>();
-      while (inspected < candidates.length && discoveryTargets.length < MAX_DISCOVERIES_PER_CYCLE) {
-        const company = candidates[cursor];
-        cursor = (cursor + 1) % candidates.length;
-        inspected += 1;
-        const existing = byTicker.get(company.ticker);
-        const lastAt = existing?.lastDiscoveryAt ? Date.parse(existing.lastDiscoveryAt) : Number.NaN;
-        const nextAt = existing?.nextCheckAt ? Date.parse(existing.nextCheckAt) : Number.NaN;
-        const retryDue = !existing
-          || (transientDiscoveryError(existing.error)
-            ? !Number.isFinite(lastAt) || now.getTime() - lastAt >= TRANSIENT_DISCOVERY_RETRY_MS
-            : !Number.isFinite(nextAt) || nextAt <= now.getTime());
-        if (existing?.feedUrl || !retryDue) continue;
-        if (!company.cik || selectedCiks.has(company.cik)) continue;
-        selectedCiks.add(company.cik);
-        discoveryTargets.push({ company, existing });
+      for (const target of prioritized) {
+        if (discoveryTargets.length >= MAX_DISCOVERIES_PER_CYCLE) break;
+        if (!target.company.cik || selectedCiks.has(target.company.cik)) continue;
+        selectedCiks.add(target.company.cik);
+        discoveryTargets.push(target);
       }
+      // discoveryCursor remains in the version-one document for backward
+      // compatibility. Selection now scans all eligible work before taking
+      // three, so a cursor cannot strand transient rows behind unseen ones.
+      discoverySelection.total = discoveryTargets.length;
+      discoverySelection.highPriority = discoveryTargets.filter((target) => target.watchlistRank < 2).length;
+      discoverySelection.unseen = discoveryTargets.filter((target) => target.workClass === "unseen").length;
+      discoverySelection.transientRetry = discoveryTargets.filter((target) => target.workClass === "transient_retry").length;
+      discoverySelection.confirmedNoFeedRecheck = discoveryTargets.filter((target) => target.workClass === "confirmed_no_feed_recheck").length;
+      discoverySelection.otherRecheck = discoveryTargets.filter((target) => target.workClass === "other_recheck").length;
       for (let start = 0; start < discoveryTargets.length; start += DISCOVERY_CONCURRENCY) {
         await Promise.all(discoveryTargets.slice(start, start + DISCOVERY_CONCURRENCY).map(async ({ company, existing }) => {
           try {
-            const result = await discoverOne(fetchImpl, company, now);
+            const result = await discoverOne(fetchImpl, company, now, existing);
             byTicker.set(company.ticker, result.entry);
             events.push(...result.secEvents);
             secSubmissionsChecked += 1;
             secFilingsFound += result.secEvents.length;
+            if (!result.entry.error || confirmedNoFeedError(result.entry.error)) {
+              discoverySuccesses += 1;
+            } else {
+              discoveryFailures += 1;
+              attemptErrors.push(result.entry.error);
+            }
           } catch (error) {
+            const message = discoveryFailureMessage(error);
             byTicker.set(company.ticker, {
               ticker: company.ticker,
               company: company.company,
@@ -511,18 +679,17 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
               lastDiscoveryAt: now.toISOString(),
               lastCheckedAt: existing?.lastCheckedAt ?? null,
               lastSuccessAt: existing?.lastSuccessAt ?? null,
-              nextCheckAt: discoveryRetryAt(
-                error instanceof Error ? error.message : "direct_feed_discovery_failed",
-                now,
-              ),
-              error: error instanceof Error ? error.message.slice(0, 180) : "direct_feed_discovery_failed",
+              nextCheckAt: discoveryRetryAt(message, now),
+              error: message,
+              consecutiveConfirmedNoFeedDiscoveries: existing?.consecutiveConfirmedNoFeedDiscoveries ?? 0,
               consecutiveFailures: existing?.consecutiveFailures ?? 0,
             });
+            discoveryFailures += 1;
+            attemptErrors.push(message);
           }
           discovered += 1;
         }));
       }
-      registry.discoveryCursor = cursor;
       registry.lastDiscoveryCycleAt = now.toISOString();
     }
   }
@@ -538,6 +705,7 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
     .slice(0, MAX_FEEDS_POLLED_PER_CYCLE);
 
   let feedSuccesses = 0;
+  let feedFailures = 0;
   for (const entry of due) {
     try {
       const feed = await fetchBounded(fetchImpl, entry.feedUrl!, "application/rss+xml,application/atom+xml,text/xml", 8_000);
@@ -550,40 +718,94 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
       feedSuccesses += 1;
     } catch (error) {
       const retry = failedFeedRetry(entry, now);
+      const message = discoveryFailureMessage(error);
       entry.lastCheckedAt = now.toISOString();
       entry.nextCheckAt = retry.nextCheckAt;
-      entry.error = error instanceof Error ? error.message.slice(0, 180) : "direct_feed_poll_failed";
+      entry.error = message === "direct_feed_discovery_failed" ? "direct_feed_poll_failed" : message;
       entry.consecutiveFailures = retry.consecutiveFailures;
+      feedFailures += 1;
+      attemptErrors.push(entry.error);
     }
   }
 
   registry.updatedAt = now.toISOString();
   const written = await writeVersionedJsonToR2(REGISTRY_KEY, registry, loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true });
-  if (written.conflict) throw new Error("pr262_direct_feed_registry_conflict");
+  // Another monitor may finish first. Re-read its committed winner exactly once
+  // for truthful registry/backlog telemetry; never repeat provider work or issue
+  // a second write from the stale loser.
+  const winner = written.conflict ? await loadRegistry() : null;
+  if (winner && !winner.found) throw new Error("pr262_direct_feed_registry_conflict_winner_missing");
+  const persistedRegistry = winner?.registry ?? registry;
+  const eligibleTickers = new Set(eligibleCompanies.map((company) => company.ticker));
+  const currentEntries = persistedRegistry.entries.filter((entry) => eligibleTickers.has(entry.ticker));
+  const retainedHistoricalEntries = persistedRegistry.entries.filter((entry) => !eligibleTickers.has(entry.ticker));
+  const persistedByTicker = new Map(persistedRegistry.entries.map((entry) => [entry.ticker, entry]));
   return {
     events,
-    registeredFeeds: registry.entries.filter((entry) => entry.feedUrl).length,
+    // Most issuers do not publish an RSS/Atom investor-relations feed. That
+    // optional count must never be mistaken for official issuer coverage:
+    // every eligible CIK remains covered by the broad SEC feed and can also be
+    // checked through its exact SEC submissions endpoint in this rotation.
+    officialSecIdentityMappedCompanies: eligibleCompanies.length,
+    directIrRssFeeds: currentEntries.filter((entry) => entry.feedUrl).length,
+    rssIsOptionalEnrichment: true as const,
+    seriousSignalCoverageDependsOnRss: false as const,
+    registeredFeeds: persistedRegistry.entries.filter((entry) => entry.feedUrl).length,
     feedsPolled: due.length,
     feedSuccesses,
+    feedFailures,
     discoveriesAttempted: discovered,
+    discoverySuccesses,
+    discoveryFailures,
+    attemptCount: due.length + discovered,
+    successCount: feedSuccesses + discoverySuccesses,
+    failureCount: feedFailures + discoveryFailures,
+    attemptErrors: [...new Set(attemptErrors)].slice(0, 8),
     secSubmissionsChecked,
     secFilingsFound,
-    companiesKnown: registry.entries.length,
-    investorWebsitesFound: registry.entries.filter((entry) => entry.investorWebsite).length,
-    feedlessCompanies: registry.entries.filter((entry) => !entry.feedUrl).length,
-    transientDiscoveryBacklog: registry.entries.filter((entry) => !entry.feedUrl && transientDiscoveryError(entry.error)).length,
-    transientDiscoveryDueNow: registry.entries.filter((entry) => {
+    eligibleCompanies: eligibleCompanies.length,
+    companiesKnown: persistedRegistry.entries.length,
+    currentEligibleCompaniesKnown: currentEntries.length,
+    retainedHistoricalCompanies: retainedHistoricalEntries.length,
+    retainedHistoricalFeedlessCompanies: retainedHistoricalEntries.filter((entry) => !entry.feedUrl).length,
+    unseenCompanies: eligibleCompanies.filter((company) => !persistedByTicker.has(company.ticker)).length,
+    investorWebsitesFound: persistedRegistry.entries.filter((entry) => entry.investorWebsite).length,
+    feedlessCompanies: persistedRegistry.entries.filter((entry) => !entry.feedUrl).length,
+    transientDiscoveryBacklog: currentEntries.filter((entry) => !entry.feedUrl && transientDiscoveryError(entry.error)).length,
+    transientDiscoveryDueNow: currentEntries.filter((entry) => {
       if (entry.feedUrl || !transientDiscoveryError(entry.error)) return false;
-      const lastAt = Date.parse(entry.lastDiscoveryAt);
-      return !Number.isFinite(lastAt) || now.getTime() - lastAt >= TRANSIENT_DISCOVERY_RETRY_MS;
+      return effectiveDiscoveryRetryAt(entry) <= now.getTime();
     }).length,
-    transientDiscoveryWaiting: registry.entries.filter((entry) => {
+    transientDiscoveryWaiting: currentEntries.filter((entry) => {
       if (entry.feedUrl || !transientDiscoveryError(entry.error)) return false;
-      const lastAt = Date.parse(entry.lastDiscoveryAt);
-      return Number.isFinite(lastAt) && now.getTime() - lastAt < TRANSIENT_DISCOVERY_RETRY_MS;
+      return effectiveDiscoveryRetryAt(entry) > now.getTime();
     }).length,
-    failedFeedsInBackoff: registry.entries.filter((entry) => Boolean(entry.feedUrl && entry.error && (entry.consecutiveFailures ?? 0) > 0 && Date.parse(entry.nextCheckAt ?? "") > now.getTime())).length,
-    discoveryErrors: [...new Set(registry.entries.map((entry) => entry.error).filter((value): value is string => Boolean(value)))].slice(0, 8),
+    confirmedNoFeedBacklog: currentEntries.filter((entry) => !entry.feedUrl && confirmedNoFeedError(entry.error)).length,
+    confirmedNoFeedDueNow: currentEntries.filter((entry) => !entry.feedUrl
+      && confirmedNoFeedError(entry.error)
+      && effectiveDiscoveryRetryAt(entry) <= now.getTime()).length,
+    confirmedNoFeedWaiting: currentEntries.filter((entry) => !entry.feedUrl
+      && confirmedNoFeedError(entry.error)
+      && effectiveDiscoveryRetryAt(entry) > now.getTime()).length,
+    otherDiscoveryFailureBacklog: currentEntries.filter((entry) => !entry.feedUrl
+      && !transientDiscoveryError(entry.error)
+      && !confirmedNoFeedError(entry.error)).length,
+    otherDiscoveryFailureDueNow: currentEntries.filter((entry) => !entry.feedUrl
+      && !transientDiscoveryError(entry.error)
+      && !confirmedNoFeedError(entry.error)
+      && effectiveDiscoveryRetryAt(entry) <= now.getTime()).length,
+    otherDiscoveryFailureWaiting: currentEntries.filter((entry) => !entry.feedUrl
+      && !transientDiscoveryError(entry.error)
+      && !confirmedNoFeedError(entry.error)
+      && effectiveDiscoveryRetryAt(entry) > now.getTime()).length,
+    discoverySelection,
+    failedFeedsInBackoff: persistedRegistry.entries.filter((entry) => Boolean(entry.feedUrl && entry.error && (entry.consecutiveFailures ?? 0) > 0 && Date.parse(entry.nextCheckAt ?? "") > now.getTime())).length,
+    discoveryErrors: [...new Set(currentEntries.map((entry) => entry.error).filter((value): value is string => Boolean(value)))].slice(0, 8),
+    registryPersistence: {
+      written: written.written,
+      conflict: written.conflict,
+      winnerLoaded: Boolean(winner),
+    },
     registryKey: REGISTRY_KEY,
   };
 }

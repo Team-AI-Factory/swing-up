@@ -92,6 +92,9 @@ type SourceSummary = {
   newEvents: number;
   error: string | null;
   nextRetryAt: string | null;
+  attemptCount?: number | null;
+  successCount?: number | null;
+  failureCount?: number | null;
 };
 
 type LiveWatchlistPrice = {
@@ -646,61 +649,126 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
   } else summaries.push({ provider: "macro", attempted: false, status: "not_due", recordsRead: 0, newEvents: 0, error: null, nextRetryAt: null });
 
   let directAnnouncementMonitoring = {
-    registeredFeeds: 0,
-    feedsPolled: 0,
-    feedSuccesses: 0,
-    discoveriesAttempted: 0,
-    secSubmissionsChecked: 0,
-    secFilingsFound: 0,
-    companiesKnown: 0,
-    investorWebsitesFound: 0,
-    feedlessCompanies: 0,
-    transientDiscoveryBacklog: 0,
-    transientDiscoveryDueNow: 0,
-    transientDiscoveryWaiting: 0,
-    discoveryErrors: [] as string[],
+    telemetryAvailable: false,
+    telemetryError: null as string | null,
+    officialSecIdentityMappedCompanies: null as number | null,
+    directIrRssFeeds: null as number | null,
+    rssIsOptionalEnrichment: true as const,
+    seriousSignalCoverageDependsOnRss: false as const,
+    registeredFeeds: null as number | null,
+    feedsPolled: null as number | null,
+    feedSuccesses: null as number | null,
+    feedFailures: null as number | null,
+    discoveriesAttempted: null as number | null,
+    discoverySuccesses: null as number | null,
+    discoveryFailures: null as number | null,
+    attemptCount: null as number | null,
+    successCount: null as number | null,
+    failureCount: null as number | null,
+    secSubmissionsChecked: null as number | null,
+    secFilingsFound: null as number | null,
+    eligibleCompanies: null as number | null,
+    companiesKnown: null as number | null,
+    currentEligibleCompaniesKnown: null as number | null,
+    retainedHistoricalCompanies: null as number | null,
+    retainedHistoricalFeedlessCompanies: null as number | null,
+    unseenCompanies: null as number | null,
+    investorWebsitesFound: null as number | null,
+    feedlessCompanies: null as number | null,
+    transientDiscoveryBacklog: null as number | null,
+    transientDiscoveryDueNow: null as number | null,
+    transientDiscoveryWaiting: null as number | null,
+    confirmedNoFeedBacklog: null as number | null,
+    confirmedNoFeedDueNow: null as number | null,
+    confirmedNoFeedWaiting: null as number | null,
+    otherDiscoveryFailureBacklog: null as number | null,
+    otherDiscoveryFailureDueNow: null as number | null,
+    otherDiscoveryFailureWaiting: null as number | null,
+    discoverySelection: null as {
+      total: number;
+      highPriority: number;
+      unseen: number;
+      transientRetry: number;
+      confirmedNoFeedRecheck: number;
+      otherRecheck: number;
+    } | null,
+    discoveryErrors: null as string[] | null,
+    attemptErrors: null as string[] | null,
+    registryPersistence: null as { written: boolean; conflict: boolean; winnerLoaded: boolean } | null,
   };
   try {
     const direct = await runPr262DirectAnnouncementMonitor({ exposure: exposure.entries, now, fetchImpl });
     directAnnouncementMonitoring = {
+      telemetryAvailable: true,
+      telemetryError: null,
+      officialSecIdentityMappedCompanies: direct.officialSecIdentityMappedCompanies,
+      directIrRssFeeds: direct.directIrRssFeeds,
+      rssIsOptionalEnrichment: direct.rssIsOptionalEnrichment,
+      seriousSignalCoverageDependsOnRss: direct.seriousSignalCoverageDependsOnRss,
       registeredFeeds: direct.registeredFeeds,
       feedsPolled: direct.feedsPolled,
       feedSuccesses: direct.feedSuccesses,
+      feedFailures: direct.feedFailures,
       discoveriesAttempted: direct.discoveriesAttempted,
+      discoverySuccesses: direct.discoverySuccesses,
+      discoveryFailures: direct.discoveryFailures,
+      attemptCount: direct.attemptCount,
+      successCount: direct.successCount,
+      failureCount: direct.failureCount,
       secSubmissionsChecked: direct.secSubmissionsChecked,
       secFilingsFound: direct.secFilingsFound,
+      eligibleCompanies: direct.eligibleCompanies,
       companiesKnown: direct.companiesKnown,
+      currentEligibleCompaniesKnown: direct.currentEligibleCompaniesKnown,
+      retainedHistoricalCompanies: direct.retainedHistoricalCompanies,
+      retainedHistoricalFeedlessCompanies: direct.retainedHistoricalFeedlessCompanies,
+      unseenCompanies: direct.unseenCompanies,
       investorWebsitesFound: direct.investorWebsitesFound,
       feedlessCompanies: direct.feedlessCompanies,
       transientDiscoveryBacklog: direct.transientDiscoveryBacklog,
       transientDiscoveryDueNow: direct.transientDiscoveryDueNow,
       transientDiscoveryWaiting: direct.transientDiscoveryWaiting,
+      confirmedNoFeedBacklog: direct.confirmedNoFeedBacklog,
+      confirmedNoFeedDueNow: direct.confirmedNoFeedDueNow,
+      confirmedNoFeedWaiting: direct.confirmedNoFeedWaiting,
+      otherDiscoveryFailureBacklog: direct.otherDiscoveryFailureBacklog,
+      otherDiscoveryFailureDueNow: direct.otherDiscoveryFailureDueNow,
+      otherDiscoveryFailureWaiting: direct.otherDiscoveryFailureWaiting,
+      discoverySelection: direct.discoverySelection,
       discoveryErrors: direct.discoveryErrors,
+      attemptErrors: direct.attemptErrors,
+      registryPersistence: direct.registryPersistence,
     };
     events.push(...direct.events);
-    const directStatus = direct.secSubmissionsChecked > 0
-      || (direct.feedsPolled > 0 && direct.feedSuccesses === direct.feedsPolled)
-      ? "connected"
-      : direct.feedSuccesses > 0
-        ? "partial"
-        : direct.feedsPolled
-          ? "temporarily_unavailable"
-          : direct.registeredFeeds > 0
-            ? "not_due"
-            : "not_ready";
+    const directStatus = direct.attemptCount > 0
+      ? direct.successCount === 0
+        ? "temporarily_unavailable"
+        : direct.failureCount > 0
+          ? "partial"
+          : "connected"
+      : direct.eligibleCompanies > 0 || direct.registeredFeeds > 0
+        ? "not_due"
+        : "not_ready";
     summaries.push({
       provider: "direct_issuer_feeds",
-      attempted: direct.feedsPolled > 0 || direct.discoveriesAttempted > 0,
+      attempted: direct.attemptCount > 0,
       status: directStatus,
       recordsRead: direct.feedsPolled + direct.secSubmissionsChecked,
       newEvents: direct.events.length,
-      error: direct.registeredFeeds === 0 && direct.secSubmissionsChecked === 0
-        ? "no_direct_issuer_evidence_available"
-        : null,
+      error: direct.failureCount > 0
+        ? direct.attemptErrors.join(" | ").slice(0, 300) || "direct_issuer_attempt_failed"
+        : directStatus === "not_ready"
+          ? "no_direct_issuer_evidence_available"
+          : null,
       nextRetryAt: null,
+      attemptCount: direct.attemptCount,
+      successCount: direct.successCount,
+      failureCount: direct.failureCount,
     });
   } catch (error) {
-    summaries.push({ provider: "direct_issuer_feeds", attempted: true, status: "temporarily_unavailable", recordsRead: 0, newEvents: 0, error: error instanceof Error ? error.message.slice(0, 200) : "direct_issuer_feeds_failed", nextRetryAt: null });
+    const message = error instanceof Error ? error.message.slice(0, 200) : "direct_issuer_feeds_failed";
+    directAnnouncementMonitoring.telemetryError = message;
+    summaries.push({ provider: "direct_issuer_feeds", attempted: true, status: "temporarily_unavailable", recordsRead: 0, newEvents: 0, error: message, nextRetryAt: null, attemptCount: null, successCount: null, failureCount: null });
   }
 
   const fanout = events.flatMap((event) => fanOut(event, exposure.entries));

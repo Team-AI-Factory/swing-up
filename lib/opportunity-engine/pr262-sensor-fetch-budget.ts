@@ -156,9 +156,11 @@ export async function createPr262SensorBudgetedFetch(input: { now?: Date; fetchI
   const blocked: Array<{ provider: string; reason: string; nextEligibleAt: string | null }> = [];
   let reservationTail: Promise<void> = Promise.resolve();
 
-  const reserveBeforeNetwork = async (policy: Policy, currentMs: number) => {
+  const reserveBeforeNetwork = async (policy: Policy, currentMs: number, signal?: AbortSignal) => {
     for (let attempt = 0; attempt < 5; attempt += 1) {
+      signal?.throwIfAborted();
       loaded = await load(new Date(currentMs));
+      signal?.throwIfAborted();
       if (loaded.corrupt) throw new Error("pr262_sensor_provider_budget_state_invalid");
       const candidate = loaded.state;
       prune(candidate, currentMs);
@@ -177,6 +179,10 @@ export async function createPr262SensorBudgetedFetch(input: { now?: Date; fetchI
       addCount(candidate, policy.quotaKey, currentMs);
       candidate.lastCadenceAt[policy.cadenceKey] = new Date(currentMs).toISOString();
       candidate.updatedAt = new Date(currentMs).toISOString();
+      // A request may be cancelled while waiting behind another provider's
+      // short R2 reservation. Do not spend a provider slot when the network
+      // request will never be allowed to start.
+      signal?.throwIfAborted();
       const written = await writeVersionedJsonToR2(
         STATE_KEY,
         candidate,
@@ -193,18 +199,19 @@ export async function createPr262SensorBudgetedFetch(input: { now?: Date; fetchI
 
   const fetchImpl: typeof fetch = async (request, init) => {
     const policy = policyFor(request);
+    const requestSignal = init?.signal ?? undefined;
     const signal = input.signal
-      ? init?.signal ? AbortSignal.any([input.signal, init.signal]) : input.signal
-      : init?.signal;
+      ? requestSignal ? AbortSignal.any([input.signal, requestSignal]) : input.signal
+      : requestSignal;
     if (!policy) return rawFetch(request, { ...init, signal });
     signal?.throwIfAborted();
-    const currentMs = Date.now();
     // Source reads run concurrently, but their compact R2 budget ledger is one
     // shared document. Serialize only this short reservation step so parallel
     // providers do not exhaust CAS retries by colliding with one another.
-    const reservation = reservationTail.then(() => reserveBeforeNetwork(policy, currentMs));
+    const reservation = reservationTail.then(() => reserveBeforeNetwork(policy, Date.now(), signal));
     reservationTail = reservation.then(() => undefined, () => undefined);
     await reservation;
+    signal?.throwIfAborted();
     return rawFetch(request, { ...init, signal });
   };
 

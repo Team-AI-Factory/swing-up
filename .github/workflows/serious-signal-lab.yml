@@ -58,7 +58,7 @@ jobs:
         run: npm run smoke:pr262-runtime-pause
 
       - name: Verify PR #262 sensor-to-committee authority path
-        run: npm run smoke:pr262-sensor-foundation && npm run smoke:pr262-lightweight-sensor-v3-bootstrap && npm run smoke:pr262-event-job && npm run smoke:pr262-committee-authority
+        run: npm run smoke:pr262-sensor-foundation && npm run smoke:pr262-sensor-queue-hygiene && npm run smoke:pr262-lightweight-sensor-v3-bootstrap && npm run smoke:pr262-event-job && npm run smoke:pr262-committee-authority
 
       - name: Verify Railway and R2 production contracts
         run: npm run smoke:pr262-storage-namespace && npm run smoke:pr262-provider-budget-durability && npm run smoke:pr262-ai-daily-cost-fuse && npm run smoke:pr262-analysis-only-orchestrator && npm run smoke:pr262-route-auth && npm run smoke:r2-prefix-list && npm run smoke:serious-signal-delivery && npm run smoke:pr262-live-serious-signal-surface

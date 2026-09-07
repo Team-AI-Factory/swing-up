@@ -110,6 +110,46 @@ const inverseMeaning = mappedEvent({
 });
 const highValueOne = mappedEvent({ id: "news:material-one", priority: 90 });
 const highValueTwo = mappedEvent({ id: "news:material-two", priority: 90, observedAt: new Date(now.getTime() - 30 * 60_000).toISOString() });
+const boundaryHighValue = mappedEvent({
+  id: "news:material-at-six-hour-boundary",
+  priority: 80,
+  observedAt: new Date(now.getTime() - 6 * 60 * 60_000).toISOString(),
+});
+const retryProtectedHighValue = mappedEvent({
+  id: "news:material-retry-after-six-hours",
+  priority: 100,
+  observedAt: new Date(now.getTime() - 6 * 60 * 60_000 - 1).toISOString(),
+  queueAttempts: 4,
+  queueNextAttemptAt: new Date(now.getTime() + 60 * 60_000).toISOString(),
+});
+const retryGraceProtectedHighValue = mappedEvent({
+  id: "news:material-within-retry-grace",
+  priority: 100,
+  observedAt: new Date(now.getTime() - 7 * 60 * 60_000).toISOString(),
+  queueAttempts: 4,
+  queueNextAttemptAt: new Date(now.getTime() - 5 * 60_000).toISOString(),
+});
+const expiredAfterRetryGrace = mappedEvent({
+  id: "news:material-retry-grace-expired",
+  priority: 100,
+  observedAt: new Date(now.getTime() - 7 * 60 * 60_000).toISOString(),
+  queueAttempts: 4,
+  queueNextAttemptAt: new Date(now.getTime() - 16 * 60_000).toISOString(),
+});
+const expiredAtHardMaximum = mappedEvent({
+  id: "news:material-over-forty-eight-hours-old",
+  priority: 100,
+  observedAt: new Date(now.getTime() - 48 * 60 * 60_000 - 1).toISOString(),
+  queueAttempts: 4,
+  queueNextAttemptAt: new Date(now.getTime() + 60 * 60_000).toISOString(),
+});
+const staleUnresolvedHighValue = mappedEvent({
+  id: "news:unresolved-material-over-six-hours-old",
+  priority: 100,
+  observedAt: new Date(now.getTime() - 7 * 60 * 60_000).toISOString(),
+  mappingStatus: "unmapped",
+  mappingMethod: undefined,
+});
 const staleLowValue = mappedEvent({
   id: "news:stale-low-value",
   title: "$TWST hosts routine community event",
@@ -145,6 +185,22 @@ const governmentOfficial = mappedEvent({
   priority: 80,
   observedAt: new Date(now.getTime() - 7 * 60 * 60_000).toISOString(),
 });
+const legacyDirectIssuerNews = mappedEvent({
+  id: "issuer-sec:TWST:legacy-guidance",
+  source: "company_news",
+  sourceProvider: "issuer_sec_twst",
+  title: "Twist Bioscience official issuer filing",
+  priority: 80,
+  observedAt: new Date(now.getTime() - 7 * 60 * 60_000).toISOString(),
+});
+const legacyDirectIrNews = mappedEvent({
+  id: "issuer-ir:TWST:legacy-guidance",
+  source: "company_news",
+  sourceProvider: "issuer_ir_twst",
+  title: "Twist Bioscience official investor-relations announcement",
+  priority: 80,
+  observedAt: new Date(now.getTime() - 8 * 60 * 60_000).toISOString(),
+});
 const noisyHighPriorityRetry = mappedEvent({
   id: "news:noisy-retry",
   priority: 100,
@@ -160,16 +216,24 @@ const result = sensor.partitionPr262PendingEventsWithTelemetry([
   inverseMeaning,
   highValueOne,
   highValueTwo,
+  boundaryHighValue,
+  retryProtectedHighValue,
+  retryGraceProtectedHighValue,
+  expiredAfterRetryGrace,
+  expiredAtHardMaximum,
+  staleUnresolvedHighValue,
   staleLowValue,
   noisyHighPriorityRetry,
   governmentOfficial,
   directIssuer,
+  legacyDirectIssuerNews,
+  legacyDirectIrNews,
   sec,
 ], now);
 
 assert.deepEqual(
-  result.pending.slice(0, 3).map((event) => event.id),
-  [sec.id, directIssuer.id, governmentOfficial.id],
+  result.pending.slice(0, 5).map((event) => event.id),
+  [sec.id, directIssuer.id, legacyDirectIssuerNews.id, legacyDirectIrNews.id, governmentOfficial.id],
   "Fresh SEC, direct-company, and official-government evidence must lead the queue even ahead of a p100 secondary retry.",
 );
 assert.equal(result.pending.some((event) => event.id === olderDuplicate.id), false);
@@ -179,22 +243,53 @@ assert.equal(result.pending.some((event) => event.id === priorDay.id), true, "A 
 assert.equal(result.pending.some((event) => event.id === inverseMeaning.id), true, "Token order is preserved so inverse meanings cannot collapse.");
 assert.equal(result.pending.some((event) => event.id === highValueOne.id), true, "Potentially material company news is never semantic-deduplicated.");
 assert.equal(result.pending.some((event) => event.id === highValueTwo.id), true, "Every high-value evidence ID must remain independent.");
+assert.equal(result.pending.some((event) => event.id === boundaryHighValue.id), true, "Fresh high-value secondary news remains eligible through the exact six-hour boundary.");
+assert.equal(result.pending.some((event) => event.id === retryProtectedHighValue.id), true, "A valid scheduled retry must keep secondary news through the retry plus one sensor-cycle grace.");
+assert.equal(result.pending.some((event) => event.id === retryGraceProtectedHighValue.id), true, "Secondary news must remain available during the full sensor-cycle grace after its retry became due.");
+assert.equal(result.pending.some((event) => event.id === expiredAfterRetryGrace.id), false, "Secondary news must expire once its scheduled retry grace has passed.");
+assert.equal(result.pending.some((event) => event.id === expiredAtHardMaximum.id), false, "A scheduled retry must never extend secondary news beyond the original forty-eight-hour ready-event ceiling.");
+assert.equal(result.pending.some((event) => event.id === staleUnresolvedHighValue.id), false, "Unresolved secondary news must obey the same six-hour age bound.");
 assert.equal(result.pending.some((event) => event.id === staleLowValue.id), false, "Low-value secondary news must expire after six hours.");
 assert.equal(result.pending.some((event) => event.id === sec.id), true, "Fresh SEC evidence must not use the six-hour news TTL.");
 assert.equal(result.pending.some((event) => event.id === directIssuer.id), true, "Fresh direct-company evidence must not use the six-hour news TTL.");
+assert.equal(result.pending.some((event) => event.id === legacyDirectIssuerNews.id), true, "A legacy direct-issuer row classified as company news must still be protected from the secondary-news TTL.");
+assert.equal(result.pending.some((event) => event.id === legacyDirectIrNews.id), true, "A legacy investor-relations row classified as company news must still be protected from the secondary-news TTL.");
 assert.equal(result.pending.some((event) => event.id === governmentOfficial.id), true, "Fresh official-government evidence must not use the six-hour news TTL.");
-assert.deepEqual(new Set(result.droppedEventIds), new Set([olderDuplicate.id, staleLowValue.id]));
+assert.deepEqual(new Set(result.droppedEventIds), new Set([
+  olderDuplicate.id,
+  expiredAfterRetryGrace.id,
+  expiredAtHardMaximum.id,
+  staleUnresolvedHighValue.id,
+  staleLowValue.id,
+]));
 assert.equal(result.hygiene.duplicateLowValueCompanyNewsDropped, 1);
-assert.equal(result.hygiene.staleLowValueCompanyNewsDropped, 1);
-assert.equal(result.hygiene.retainedAuthoritativeEventCount, 3);
-assert.equal(result.hygiene.retainedDirectIssuerEventCount, 1);
+assert.equal(result.hygiene.staleSecondaryCompanyNewsDropped, 4);
+assert.equal(result.hygiene.retryProtectedSecondaryCompanyNewsCount, 2);
+assert.equal(result.hygiene.staleLowValueCompanyNewsDropped, 1, "The compatibility field must retain its original low-value-only meaning.");
+assert.equal(result.hygiene.retainedAuthoritativeEventCount, 5);
+assert.equal(result.hygiene.retainedDirectIssuerEventCount, 3);
 
 putObject(valueStateKey, { qualityPriceWatchlist: [] });
 putObject(sensorStateKey, {
   version: 2,
   updatedAt: now.toISOString(),
   seen: [],
-  pending: [olderDuplicate, bestDuplicate, staleLowValue],
+  pending: [
+    olderDuplicate,
+    bestDuplicate,
+    boundaryHighValue,
+    retryProtectedHighValue,
+    retryGraceProtectedHighValue,
+    expiredAfterRetryGrace,
+    expiredAtHardMaximum,
+    staleUnresolvedHighValue,
+    staleLowValue,
+    sec,
+    directIssuer,
+    legacyDirectIssuerNews,
+    legacyDirectIrNews,
+    governmentOfficial,
+  ],
   lastMarketWatchAt: null,
   cursors: { secUrgentFormIndex: 0, newsQueryIndex: 0, officialFeedIndex: 0, directIssuerFeedIndex: 0 },
   sourceHealth: {},
@@ -209,18 +304,31 @@ const emptyFeedFetch = async (input) => {
     : "<rss><channel></channel></rss>";
   return { ok: true, status: 200, text: async () => body };
 };
-await sensor.runPr262ChangeSensor(now, { fetchImpl: emptyFeedFetch });
+const cleanupCycle = await sensor.runPr262ChangeSensor(now, { fetchImpl: emptyFeedFetch });
 const persisted = JSON.parse(objects.get(sensorStateKey).text);
-assert.deepEqual(persisted.pending.map((event) => event.id), [bestDuplicate.id]);
+assert.deepEqual(
+  new Set(persisted.pending.map((event) => event.id)),
+  new Set([bestDuplicate.id, boundaryHighValue.id, retryProtectedHighValue.id, retryGraceProtectedHighValue.id, sec.id, directIssuer.id, legacyDirectIssuerNews.id, legacyDirectIrNews.id, governmentOfficial.id]),
+);
 assert.equal(persisted.seen.includes(olderDuplicate.id), true, "A collapsed identity must be tombstoned in seen IDs.");
 assert.equal(persisted.seen.includes(staleLowValue.id), true, "An expired identity must be tombstoned in seen IDs.");
+assert.equal(persisted.seen.includes(expiredAfterRetryGrace.id), true, "Expired p100 secondary news must be tombstoned after its retry grace.");
+assert.equal(persisted.seen.includes(expiredAtHardMaximum.id), true, "The hard forty-eight-hour ceiling must tombstone even a future-scheduled secondary retry.");
+assert.equal(persisted.seen.includes(staleUnresolvedHighValue.id), true, "Expired unresolved secondary news must be tombstoned too.");
+assert.equal(cleanupCycle.persistedState.queueHygieneAtLoad.duplicateLowValueCompanyNewsDropped, 1, "Load-time migration must expose deduplication that occurs before the provider cycle.");
+assert.equal(cleanupCycle.persistedState.queueHygieneAtLoad.staleSecondaryCompanyNewsDropped, 4, "Load-time migration must expose all stale secondary trimming instead of returning a clean-looking zero.");
+assert.equal(cleanupCycle.persistedState.queueHygieneAtLoad.staleLowValueCompanyNewsDropped, 1);
+assert.equal(cleanupCycle.persistedState.queueHygieneAtLoad.retryProtectedSecondaryCompanyNewsCount, 2);
 
 console.log(JSON.stringify({
   ok: true,
   authoritativeEvidencePrioritized: true,
   lowValueCompanyNewsNormalizedDuplicatesCollapsed: true,
   inverseMeaningsRemainSeparate: true,
-  staleLowValueCompanyNewsExpiresAfterSixHours: true,
-  highValueCompanyNewsUnaffected: true,
+  unscheduledSecondaryCompanyNewsExpiresAfterSixHours: true,
+  scheduledSecondaryCompanyNewsSurvivesThroughRetryGrace: true,
+  scheduledSecondaryCompanyNewsStillHonorsFortyEightHourCeiling: true,
+  freshHighValueCompanyNewsUnaffected: true,
+  directIssuerRowsProtectedFromSecondaryNewsExpiry: true,
   trimmedIdsPersistInSeenState: true,
 }, null, 2));

@@ -143,6 +143,27 @@ function totalReservations(reservations: CostReservation[]) {
   return Math.round(reservations.reduce((sum, item) => sum + item.amountUsd, 0) * 1_000_000) / 1_000_000;
 }
 
+function nextBudgetAdmissionAt(state: State, amountUsd: number, limit: number) {
+  let exposureUsd = total(state.entries) + totalReservations(state.reservations);
+  if (exposureUsd + amountUsd <= limit + Number.EPSILON) return null;
+  if (amountUsd > limit + Number.EPSILON) return null;
+
+  const releases = new Map<number, number>();
+  for (const entry of state.entries) {
+    const expiresAt = Date.parse(entry.recordedAt) + WINDOW_MS;
+    releases.set(expiresAt, (releases.get(expiresAt) ?? 0) + entry.costUsd);
+  }
+  for (const reservation of state.reservations) {
+    const expiresAt = Date.parse(reservation.expiresAt);
+    releases.set(expiresAt, (releases.get(expiresAt) ?? 0) + reservation.amountUsd);
+  }
+  for (const [expiresAt, releasedUsd] of [...releases.entries()].sort((left, right) => left[0] - right[0])) {
+    exposureUsd = Math.max(0, exposureUsd - releasedUsd);
+    if (exposureUsd + amountUsd <= limit + Number.EPSILON) return new Date(expiresAt).toISOString();
+  }
+  return null;
+}
+
 export async function getPr262AiDailyBudgetStatus(now = new Date()) {
   const loaded = await load(now);
   const spentUsd = total(loaded.state.entries);
@@ -163,6 +184,7 @@ export async function getPr262AiDailyBudgetStatus(now = new Date()) {
     warning: exposureUsd >= warning,
     hardFuseTripped: !allowed,
     nextReviewReservationUsd,
+    nextBudgetAdmissionAt: nextBudgetAdmissionAt(loaded.state, nextReviewReservationUsd, limit),
     reservationCheckedBeforePaidCommittee: true,
     activeReservations: loaded.state.reservations.length,
     reviewsRecorded: loaded.state.entries.length,
@@ -176,24 +198,29 @@ export async function reservePr262AiCommitteeBudget(input: {
   direction?: "upside" | "downside" | null;
 }, now = new Date()) {
   const id = input.candidateFingerprint.trim();
-  const denied = async (reason: string) => {
+  const denied = async (reason: string, nextRetryAt: string | null = null) => {
     const status = await getPr262AiDailyBudgetStatus(now);
-    return { ...status, budgetAdmissionAvailable: status.allowed, allowed: false as const, reason };
+    return { ...status, budgetAdmissionAvailable: status.allowed, allowed: false as const, reason, nextRetryAt };
   };
   if (!id) return denied("candidate_fingerprint_missing");
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const loaded = await load(now);
-    if (loaded.state.entries.some((item) => item.id === id)) {
-      return denied("candidate_already_recorded");
+    const recorded = loaded.state.entries.find((item) => item.id === id);
+    if (recorded) {
+      return denied(
+        "candidate_already_recorded",
+        new Date(Date.parse(recorded.recordedAt) + WINDOW_MS).toISOString(),
+      );
     }
-    if (loaded.state.reservations.some((item) => item.id === id)) {
-      return denied("candidate_already_reserved");
+    const activeReservation = loaded.state.reservations.find((item) => item.id === id);
+    if (activeReservation) {
+      return denied("candidate_already_reserved", activeReservation.expiresAt);
     }
     const limit = limitUsd();
     const amountUsd = reviewReservationUsd(limit);
     const exposureUsd = total(loaded.state.entries) + totalReservations(loaded.state.reservations);
     if (exposureUsd + amountUsd > limit + Number.EPSILON) {
-      return denied("daily_cost_fuse");
+      return denied("daily_cost_fuse", nextBudgetAdmissionAt(loaded.state, amountUsd, limit));
     }
     const reservation: CostReservation = {
       id,
@@ -214,7 +241,7 @@ export async function reservePr262AiCommitteeBudget(input: {
       next,
       loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true },
     );
-    if (!written.conflict) return { allowed: true as const, reason: "reserved", reservation };
+    if (!written.conflict) return { allowed: true as const, reason: "reserved", reservation, nextRetryAt: null };
   }
   throw new Error("pr262_ai_daily_cost_reservation_conflict");
 }
@@ -273,8 +300,14 @@ export async function recordPr262AiCommitteeCost(reportValue: unknown, now = new
   const candidate = object(report.selectedCandidate);
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const loaded = await load(now);
-    if (loaded.state.entries.some((item) => item.id === id)) {
-      return { recorded: false, reason: "already_recorded", ...(await getPr262AiDailyBudgetStatus(now)) };
+    const existingEntry = loaded.state.entries.find((item) => item.id === id);
+    if (existingEntry) {
+      return {
+        recorded: false,
+        reason: "already_recorded",
+        nextRetryAt: new Date(Date.parse(existingEntry.recordedAt) + WINDOW_MS).toISOString(),
+        ...(await getPr262AiDailyBudgetStatus(now)),
+      };
     }
     const reservedAmount = loaded.state.reservations.find((item) => item.id === id)?.amountUsd
       ?? reviewReservationUsd(limitUsd());
@@ -306,7 +339,14 @@ export async function recordPr262AiCommitteeCost(reportValue: unknown, now = new
       next,
       loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true },
     );
-    if (!written.conflict) return { recorded: true, entry, ...(await getPr262AiDailyBudgetStatus(now)) };
+    if (!written.conflict) {
+      return {
+        recorded: true,
+        entry,
+        nextRetryAt: new Date(Date.parse(entry.recordedAt) + WINDOW_MS).toISOString(),
+        ...(await getPr262AiDailyBudgetStatus(now)),
+      };
+    }
   }
   throw new Error("pr262_ai_daily_cost_state_conflict");
 }

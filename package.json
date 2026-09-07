@@ -54,6 +54,7 @@
     "smoke:us-value-investing-safety": "node scripts/us-value-investing-safety-smoke.mjs",
     "smoke:catalyst-company-diligence": "node scripts/catalyst-company-diligence-smoke.mjs",
     "smoke:pr262-sensor-foundation": "node scripts/pr262-sensor-foundation-smoke.mjs",
+    "smoke:pr262-sensor-queue-hygiene": "node scripts/pr262-sensor-queue-hygiene-smoke.mjs",
     "smoke:pr262-lightweight-sensor-v3-bootstrap": "node scripts/pr262-lightweight-sensor-v3-bootstrap-smoke.mjs",
     "smoke:pr262-production-foundation": "node scripts/pr262-production-foundation-smoke.mjs",
     "smoke:pr262-exposure-index-completeness": "node scripts/pr262-exposure-index-completeness-smoke.mjs",

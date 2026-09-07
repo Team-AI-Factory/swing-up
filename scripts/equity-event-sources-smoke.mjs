@@ -1,13 +1,20 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
 
 const source = readFileSync(new URL("../lib/equity-signal/event-sources.ts", import.meta.url), "utf8");
+const networkTelemetrySource = readFileSync(new URL("../lib/network-error-telemetry.ts", import.meta.url), "utf8");
+assert.doesNotMatch(source, /setDefaultResultOrder/, "GDELT routing must not mutate process-global DNS behavior.");
 const quotaSource = readFileSync(new URL("../lib/branch-signal-lab.ts", import.meta.url), "utf8");
 const marketSource = readFileSync(new URL("../lib/equity-signal/market.ts", import.meta.url), "utf8");
 const output = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
   fileName: "event-sources.ts",
+}).outputText;
+const networkTelemetryOutput = ts.transpileModule(networkTelemetrySource, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  fileName: "network-error-telemetry.ts",
 }).outputText;
 const marketOutput = ts.transpileModule(marketSource, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
@@ -15,9 +22,56 @@ const marketOutput = ts.transpileModule(marketSource, {
 }).outputText;
 
 const loaded = { exports: {} };
+const networkTelemetry = { exports: {} };
+new Function("module", "exports", networkTelemetryOutput)(networkTelemetry, networkTelemetry.exports);
 let detailProviderStatus = "not_due";
+let gdeltLookupOptions = null;
+const gdeltAddresses = [
+  { address: "8.8.8.8", family: 4 },
+  { address: "1.1.1.1", family: 4 },
+  { address: "9.9.9.9", family: 4 },
+  { address: "208.67.222.222", family: 4 },
+  { address: "2606:4700:4700::1111", family: 6 },
+];
+const gdeltTransportAttempts = [];
+const httpsStub = {
+  request: (options, onResponse) => {
+    const request = new EventEmitter();
+    request.destroy = (error) => queueMicrotask(() => request.emit("error", error));
+    request.end = () => queueMicrotask(() => {
+      gdeltTransportAttempts.push(options);
+      if (options.family === 4) {
+        request.emit("error", Object.assign(new Error("unsafe address must not escape"), { code: "ENETUNREACH" }));
+        request.emit("close");
+        return;
+      }
+      const incoming = new EventEmitter();
+      incoming.statusCode = 200;
+      incoming.statusMessage = "OK";
+      incoming.rawHeaders = ["content-type", "application/json"];
+      incoming.rawTrailers = [];
+      incoming.pause = () => undefined;
+      incoming.resume = () => undefined;
+      onResponse(incoming);
+      queueMicrotask(() => {
+        incoming.emit("data", Buffer.from('{"transport":"ok"}'));
+        incoming.emit("end");
+        request.emit("close");
+      });
+    });
+    return request;
+  },
+};
 const stubs = {
   "node:crypto": await import("node:crypto"),
+  "node:dns/promises": {
+    lookup: async (_hostname, options) => {
+      gdeltLookupOptions = options;
+      return gdeltAddresses;
+    },
+  },
+  "node:https": httpsStub,
+  "node:net": await import("node:net"),
   "@/lib/branch-signal-lab-policy": {
     normalizeEquitySymbol: (value) => {
       const ticker = String(value ?? "").trim().toUpperCase();
@@ -39,6 +93,7 @@ const stubs = {
       diagnostics: { selected: 0, enriched: 0, failed: 0, scheduledForThisRun: false },
     }),
   },
+  "@/lib/network-error-telemetry": networkTelemetry.exports,
 };
 new Function("require", "module", "exports", output)((name) => {
   if (name in stubs) return stubs[name];
@@ -104,8 +159,34 @@ assert.equal(mergedCachedReplay[0].publisher, "U.S. Securities and Exchange Comm
 assert.equal((mergedCachedReplay[0].summary.match(/Official filing content:/g) ?? []).length, 1);
 
 let gdeltUrl;
-const gdelt = await fetchGdeltDiscovery(async (value) => {
+let gdeltLogicalCalls = 0;
+const gdelt = await fetchGdeltDiscovery(async (value, init) => {
+  gdeltLogicalCalls += 1;
   gdeltUrl = new URL(String(value));
+  assert.ok(init?.dispatcher, "GDELT must use a request-scoped dispatcher rather than mutate process-global DNS order.");
+  const scopedBody = await new Promise((resolve, reject) => {
+    const chunks = [];
+    init.dispatcher.dispatch({
+      origin: gdeltUrl.origin,
+      path: `${gdeltUrl.pathname}${gdeltUrl.search}`,
+      method: "GET",
+      headers: ["accept", "application/json"],
+    }, {
+      onConnect: () => undefined,
+      onHeaders: (status, _headers, resume) => {
+        assert.equal(status, 200);
+        resume();
+        return true;
+      },
+      onData: (chunk) => {
+        chunks.push(chunk);
+        return true;
+      },
+      onComplete: () => resolve(Buffer.concat(chunks).toString("utf8")),
+      onError: reject,
+    });
+  });
+  assert.equal(scopedBody, '{"transport":"ok"}');
   return new Response(JSON.stringify({
     articles: [{
       title: "Company raises guidance after major contract award",
@@ -121,6 +202,59 @@ assert.equal(gdeltUrl.searchParams.get("maxrecords"), "75");
 assert.equal(gdeltUrl.searchParams.get("timespan"), "2h");
 assert.ok(gdeltUrl.searchParams.get("query").length < 220);
 assert.doesNotMatch(gdeltUrl.searchParams.get("query"), /\bwar\b/i);
+assert.equal(gdeltLogicalCalls, 1, "Transport fallback must remain one logical provider fetch and one budget reservation.");
+assert.equal(gdeltLookupOptions?.order, "ipv4first");
+assert.equal(gdeltLookupOptions?.all, true);
+assert.deepEqual(gdeltTransportAttempts.map((options) => options.hostname), ["8.8.8.8", "1.1.1.1", "9.9.9.9", "2606:4700:4700::1111"]);
+assert.deepEqual(gdeltTransportAttempts.map((options) => options.family), [4, 4, 4, 6]);
+assert.ok(gdeltTransportAttempts.every((options) => options.servername === "api.gdeltproject.org"));
+assert.ok(gdeltTransportAttempts.every((options) => options.headers.host === "api.gdeltproject.org"));
+assert.ok(gdeltTransportAttempts.every((options) => options.path === `${gdeltUrl.pathname}${gdeltUrl.search}`), "The scoped transport must preserve the exact GDELT query.");
+
+const nestedGdeltFailure = Object.assign(new TypeError("fetch failed"), {
+  cause: new AggregateError([
+    Object.assign(new Error("connect ENETUNREACH 2001:db8::1"), { code: "ENETUNREACH" }),
+    Object.assign(new Error("must not leak"), { code: "NOT_ALLOWLISTED" }),
+  ]),
+});
+let failedGdeltNetworkCalls = 0;
+const failedGdelt = await fetchGdeltDiscovery(async () => {
+  failedGdeltNetworkCalls += 1;
+  throw nestedGdeltFailure;
+}, now);
+assert.equal(failedGdelt.status, "temporarily_unavailable");
+assert.equal(failedGdelt.error, "network_failure:ENETUNREACH");
+assert.doesNotMatch(failedGdelt.error, /2001:db8|must not leak/);
+assert.equal(failedGdeltNetworkCalls, 1, "IPv4 preference and error telemetry must not create another logical provider request.");
+
+const unknownGdeltFailure = await fetchGdeltDiscovery(async () => {
+  throw new Error("connect api.gdeltproject.org at 198.51.100.7?api_key=must-not-leak");
+}, now);
+assert.equal(unknownGdeltFailure.error, "request_failed");
+assert.doesNotMatch(unknownGdeltFailure.error, /gdeltproject|198\.51|api_key|must-not-leak/);
+
+const cyclicFailure = { code: "ECONNRESET" };
+cyclicFailure.cause = cyclicFailure;
+assert.deepEqual(networkTelemetry.exports.safeNetworkErrorCodes(cyclicFailure), ["ECONNRESET"]);
+const throwingFailure = Object.create(null, {
+  code: { get() { throw new Error("secret code getter"); } },
+  name: { get() { throw new Error("secret name getter"); } },
+  cause: { get() { throw new Error("secret cause getter"); } },
+  errors: { get() { throw new Error("secret errors getter"); } },
+  message: { get() { throw new Error("secret message getter"); } },
+});
+assert.doesNotThrow(() => networkTelemetry.exports.safeNetworkErrorCodes(throwingFailure));
+assert.equal(networkTelemetry.exports.safeProviderErrorTelemetry(throwingFailure), "request_failed");
+const revokedFailure = Proxy.revocable({ code: "ENOTFOUND" }, {});
+revokedFailure.revoke();
+assert.doesNotThrow(() => networkTelemetry.exports.safeNetworkErrorCodes(revokedFailure.proxy));
+assert.deepEqual(networkTelemetry.exports.safeNetworkErrorCodes(revokedFailure.proxy), []);
+const revokedErrors = Proxy.revocable([], {});
+revokedErrors.revoke();
+assert.doesNotThrow(() => networkTelemetry.exports.safeNetworkErrorCodes({ errors: revokedErrors.proxy }));
+let deepFailure = Object.assign(new Error("private hostname and query"), { code: "ENOTFOUND" });
+for (let depth = 0; depth < 10; depth += 1) deepFailure = { cause: deepFailure };
+assert.deepEqual(networkTelemetry.exports.safeNetworkErrorCodes(deepFailure), [], "Error traversal must stop at its fixed depth bound.");
 
 const previousAlphaKey = process.env.ALPHA_VANTAGE_API_KEY;
 process.env.ALPHA_VANTAGE_API_KEY = "test-key-not-a-secret";
@@ -252,7 +386,8 @@ const maskedPrimaryFailure = await fetchNasdaqTradeHalts(async (value) => {
   throw new Error("nasdaq_trader_cadence_guard");
 }, now);
 assert.equal(maskedPrimaryFailure.status, "temporarily_unavailable");
-assert.match(maskedPrimaryFailure.error, /NYSE transport timeout/);
+assert.equal(maskedPrimaryFailure.error, "request_failed");
+assert.doesNotMatch(maskedPrimaryFailure.error, /NYSE|timeout/);
 
 let haltMode = "active";
 const haltUrls = [];

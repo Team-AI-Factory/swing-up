@@ -28,6 +28,7 @@ const testableSource = source
   .replace("async function pinnedHttpsTransport(", "export async function pinnedHttpsTransport(")
   .replace("async function defaultResolveHost(", "export async function defaultResolveHost(")
   .replace("async function fetchFullSource(", "export async function fetchFullSource(")
+  .replace("function permanentlyUnreadableFullSource(", "export function permanentlyUnreadableFullSource(")
   .replace("async function readCachedFullSource(", "export async function readCachedFullSource(")
   .replace("async function cacheFullSource(", "export async function cacheFullSource(");
 const output = ts.transpileModule(testableSource, {
@@ -200,6 +201,7 @@ let failHistoryAccess = false;
 let committeeFingerprint = "fingerprint-1";
 let runnerResultMode = "serious";
 let targetedValueBudgetAllowed = true;
+let resolutionAvailable = true;
 let lastStoredCompanyAnalysis = null;
 let expectEmptyStoredCompanyAnalysis = false;
 let lastSecDetailOptions = null;
@@ -275,10 +277,17 @@ const stubs = {
           tradingHaltSafety: { currentStateKnown: true },
           candidateFunnel: {
             realEventReceipts: 1,
+            receiptsConsidered: 1,
+            receiptsFilteredAsNoise: 0,
+            receiptsWithDirectionUnresolved: 0,
+            receiptsUnmapped: 0,
             mappedRelationships: 1,
             eventClusters: 1,
             directCandidates: 1,
             knockOnCandidates: 0,
+            shadowNearMissCandidates: 1,
+            rejectedCandidates: 0,
+            failedGateCounts: { materialEvent: 1 },
             candidatesPassingEventFirstGate: 0,
             candidatesWithMarketQuote: 0,
             candidatesSkippedBecauseRecentlyReviewed: 0,
@@ -286,6 +295,7 @@ const stubs = {
             committeeCandidates: 0,
           },
           qualityScore: 61,
+          noSignalReason: "permission_gate_failed:materialEvent",
           rankedCandidates: [{
             ticker: "EXCT",
             direction: "upside",
@@ -516,7 +526,7 @@ const stubs = {
     },
   },
   "@/lib/opportunity-engine/pr262-company-directory": {
-    readPr262ResolvedSensorCompany: async () => ({
+    readPr262ResolvedSensorCompany: async () => resolutionAvailable ? ({
       event,
       directoryEntry: {
         ticker: "EXCT",
@@ -533,7 +543,7 @@ const stubs = {
         universeRefreshedAt: "2026-08-11T00:00:00.000Z",
       },
       valueAnalysis: analysis,
-    }),
+    }) : null,
   },
   "@/lib/opportunity-engine/pr262-sensor-fetch-budget": {
     createPr262SensorBudgetedFetch: async ({ fetchImpl }) => ({ fetchImpl, flush: async () => ({ persisted: true }), summary: () => ({}) }),
@@ -560,7 +570,7 @@ new Function("require", "module", "exports", output)((name) => {
   throw new Error(`Unexpected event-job import: ${name}`);
 }, cjsModule, cjsModule.exports);
 
-const { cacheFullSource, defaultResolveHost, fetchFullSource, pinnedHttpsTransport, readCachedFullSource, runPr262EventJob, PR262_EVENT_JOB_KEYS } = cjsModule.exports;
+const { cacheFullSource, defaultResolveHost, fetchFullSource, permanentlyUnreadableFullSource, pinnedHttpsTransport, readCachedFullSource, runPr262EventJob, PR262_EVENT_JOB_KEYS } = cjsModule.exports;
 
 assert.deepEqual(
   await defaultResolveHost("publisher.example"),
@@ -753,6 +763,49 @@ const unrelatedPage = await fetchFullSource(sourceReceipt, sourceEvent, "Exact I
 assert.equal(unrelatedPage.decisionGrade, false, "A long but issuer/event-unconfirmed page must remain discovery-only");
 assert.equal(unrelatedPage.providers[0].error, "full_source_issuer_or_event_unconfirmed");
 
+let compatibilityAttempts = 0;
+const compatibilityProfiles = [];
+const compatibilityRecovered = await fetchFullSource(
+  sourceReceipt,
+  sourceEvent,
+  "Exact Issuer Corp",
+  "EXCT",
+  async () => { throw new Error("The pinned transport must be used in this test."); },
+  securityNow,
+  publicDns,
+  async (_url, _addresses, profile) => {
+    compatibilityAttempts += 1;
+    compatibilityProfiles.push(profile);
+    return compatibilityAttempts === 1
+      ? new Response("Not acceptable", { status: 406 })
+      : okTextResponse();
+  },
+);
+assert.equal(compatibilityRecovered.decisionGrade, true, "A public article that rejects narrow content negotiation must get one compatible retry.");
+assert.equal(compatibilityAttempts, 2, "HTTP 406 recovery must be bounded to one extra request.");
+assert.deepEqual(compatibilityProfiles, ["standard", "compatibility"]);
+assert.equal(compatibilityRecovered.diagnostics.compatibilityRetryUsed, true);
+
+let persistentForbiddenAttempts = 0;
+const persistentForbidden = await fetchFullSource(
+  sourceReceipt,
+  sourceEvent,
+  "Exact Issuer Corp",
+  "EXCT",
+  async () => { throw new Error("The pinned transport must be used in this test."); },
+  securityNow,
+  publicDns,
+  async () => {
+    persistentForbiddenAttempts += 1;
+    return new Response("Forbidden", { status: 403 });
+  },
+);
+assert.equal(persistentForbidden.decisionGrade, false);
+assert.equal(persistentForbiddenAttempts, 2, "A persistent publisher refusal must stop after one compatibility retry.");
+assert.equal(persistentForbidden.providers[0].error, "full_source_http_403");
+assert.equal(permanentlyUnreadableFullSource("full_source_http_403", sourceEvent), false, "HTTP 403 must remain retryable because publisher access policies can recover.");
+assert.equal(permanentlyUnreadableFullSource("full_source_http_404", sourceEvent), true, "A confirmed missing article remains a permanent source outcome.");
+
 const first = await runPr262EventJob({ now: new Date("2026-08-11T10:00:00.000Z"), allowOpenAi: true });
 assert.equal(first.ok, true);
 assert.deepEqual(lastSecDetailOptions?.priorityReceiptIds, [event.id], "The exact current SEC accession must be prioritized over process-wide filing backlog.");
@@ -821,6 +874,18 @@ assert.equal(runnerCalls, 1, "A fresh unread source must not reach analysis or h
 assert.equal(valueRefreshCalls, 1, "A fresh unread source must not refresh valuation");
 assert.equal(retryCalls, 1, "A fresh unread source must remain retryable");
 
+resolutionAvailable = false;
+setSecEventIdentity("000014", "2026-08-11T10:03:05.000Z");
+const retriesBeforeUnresolvedIdentity = retryCalls;
+const unresolvedIdentity = await runPr262EventJob({ now: new Date("2026-08-11T10:03:15.000Z"), allowOpenAi: true });
+assert.equal(unresolvedIdentity.status, "event_job_deferred");
+assert.equal(unresolvedIdentity.ok, true, "An unresolved exact company must be a nonterminal data deferral, not a worker crash.");
+assert.equal(unresolvedIdentity.eventsProcessed, 0);
+assert.equal(unresolvedIdentity.analysisDiagnostics.status, "issuer_resolution_deferred");
+assert.equal(retryCalls, retriesBeforeUnresolvedIdentity + 1);
+assert.equal(lastRetryMutation.error, "pr262_event_exact_company_not_resolved");
+resolutionAvailable = true;
+
 const retriesBeforeUnsupportedForm = retryCalls;
 setSecEventIdentity("000009", "2026-08-11T10:03:30.000Z");
 event.form = "4";
@@ -859,7 +924,11 @@ assert.equal(routineNoSignal.r2Persistence.detailedResultWritten, false);
 assert.equal(routineNoSignal.r2Persistence.companyRefreshWritten, false, "A routine valuation refresh must stay in memory unless it supports an important finding.");
 assert.equal(routineNoSignal.analysisDiagnostics.qualityScore, 61);
 assert.equal(routineNoSignal.analysisDiagnostics.funnel.realEventReceipts, 1);
+assert.equal(routineNoSignal.analysisDiagnostics.funnel.receiptsConsidered, 1);
+assert.equal(routineNoSignal.analysisDiagnostics.funnel.shadowNearMissCandidates, 1);
+assert.equal(routineNoSignal.analysisDiagnostics.funnel.failedGateCounts.materialEvent, 1);
 assert.equal(routineNoSignal.analysisDiagnostics.funnel.candidatesPassingEventFirstGate, 0);
+assert.equal(routineNoSignal.analysisDiagnostics.noSignalReason, "permission_gate_failed:materialEvent");
 assert.equal(routineNoSignal.analysisDiagnostics.topNearMiss.ticker, "EXCT");
 assert.deepEqual(routineNoSignal.analysisDiagnostics.topNearMiss.failedGateChecks, ["materialEvent"]);
 assert.deepEqual(routineNoSignal.analysisDiagnostics.blockers, [

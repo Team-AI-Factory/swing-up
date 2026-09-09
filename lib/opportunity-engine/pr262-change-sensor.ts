@@ -259,7 +259,7 @@ function normalizedCompanyNewsTokens(value: string) {
 }
 
 function companyNewsSemanticKey(event: Pr262SensorEvent) {
-  if (!lowValueCompanyNewsEvent(event) || !event.ticker) return null;
+  if (!isPr262SecondaryCompanyNewsEvent(event) || !event.ticker) return null;
   const observedDay = event.observedAt.slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(observedDay)) return null;
   const ticker = event.ticker.toUpperCase();
@@ -296,6 +296,8 @@ export type Pr262PendingQueueHygiene = {
   retainedAuthoritativeEventCount: number;
   retainedDirectIssuerEventCount: number;
   droppedEventCount: number;
+  duplicateSecondaryCompanyNewsDropped?: number;
+  /** @deprecated Use duplicateSecondaryCompanyNewsDropped. */
   duplicateLowValueCompanyNewsDropped: number;
   staleSecondaryCompanyNewsDropped: number;
   retryProtectedSecondaryCompanyNewsCount: number;
@@ -361,9 +363,10 @@ export function partitionPr262PendingEventsWithTelemetry(events: Pr262SensorEven
     return map;
   }, new Map<string, Pr262SensorEvent>()).values()];
   const deduped = [...idDeduped.reduce((map, event) => {
-    // Older sensor versions included the live price and minute in market-event
-    // IDs. Collapse those legacy duplicates by their actual meaning so a normal
-    // state write repairs the queue without deleting R2 data by hand.
+    // Collapse the same exact-ticker/day secondary headline when aggregators
+    // rediscover it under different IDs. Priority is not evidence that two
+    // semantically identical headlines are independent events; retaining both
+    // spends scarce article reads and delays genuinely new evidence.
     const observedDay = event.observedAt.slice(0, 10);
     const companyNewsKey = companyNewsSemanticKey(event);
     const semanticKey = companyNewsKey ?? (event.source === "market_price"
@@ -429,6 +432,7 @@ export function partitionPr262PendingEventsWithTelemetry(events: Pr262SensorEven
       retainedAuthoritativeEventCount: pending.filter(authoritativeEvent).length,
       retainedDirectIssuerEventCount: pending.filter(directIssuerEvent).length,
       droppedEventCount: droppedEventIds.length,
+      duplicateSecondaryCompanyNewsDropped: countReason("duplicate_low_value_company_news"),
       duplicateLowValueCompanyNewsDropped: countReason("duplicate_low_value_company_news"),
       staleSecondaryCompanyNewsDropped,
       retryProtectedSecondaryCompanyNewsCount: pending.filter((event) => {

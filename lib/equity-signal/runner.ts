@@ -68,6 +68,38 @@ function round(value: number, digits = 2) {
   return Math.round(value * factor) / factor;
 }
 
+function failedGateCounts(candidates: ImpactCandidate[]) {
+  const counts: Record<string, number> = {};
+  for (const candidate of candidates) {
+    for (const gate of candidate.failedGateChecks) counts[gate] = (counts[gate] ?? 0) + 1;
+  }
+  return Object.fromEntries(Object.entries(counts).sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0])));
+}
+
+function noSignalReason(
+  receiptCount: number,
+  diagnostics: { noiseRejected: number; directionUnknown: number; unmapped: number; mappedRelationships: number },
+  candidates: ImpactCandidate[],
+) {
+  if (receiptCount === 0) return "no_current_event_receipts";
+  if (diagnostics.mappedRelationships === 0) {
+    if (diagnostics.directionUnknown > 0) return "event_direction_unresolved";
+    if (diagnostics.unmapped > 0) return "issuer_or_causal_mapping_unresolved";
+    if (diagnostics.noiseRejected > 0) return "all_receipts_filtered_as_noise";
+    return "no_mapped_candidate";
+  }
+  const failures = failedGateCounts(candidates);
+  const dominantGate = Object.keys(failures)[0];
+  return dominantGate ? `permission_gate_failed:${dominantGate}` : "no_candidate_passed_event_first_gate";
+}
+
+function quoteFreshnessBlocker(quote: MarketQuote) {
+  const age = (value: number | null | undefined) => value === null || value === undefined
+    ? "unknown"
+    : `${Math.round(value / 60_000)} minutes`;
+  return `The market observation is ${age(quote.quoteAgeMs)} old and the provider response is ${age(quote.cacheAgeMs)} old, so it remains visible for Watch only and no committee budget is spent.`;
+}
+
 function withPriceForecast(candidate: ImpactCandidate, now: Date): ImpactCandidate {
   const analog = candidate.historicalAnalog;
   const quote = candidate.quote;
@@ -340,6 +372,8 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
     }
     const ranked = quoted.candidates.map((candidate) => withPriceForecast(candidate, now));
     const gatePassed = ranked.filter((candidate) => candidate.gatePassed);
+    const gateFailures = failedGateCounts(ranked);
+    const noSignalClassification = noSignalReason(eventResult.receipts.length, mapped.diagnostics, ranked);
     const reviewedFingerprints = new Set(input.skipOpenAiCandidateFingerprints ?? []);
     const qualifiedWithFingerprints = gatePassed.map((candidate) => ({ candidate, fingerprint: fingerprintCandidate(candidate) }));
     const quotedQualified = qualifiedWithFingerprints.filter((item) => item.candidate.quote);
@@ -398,7 +432,26 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       },
       providerConfiguration: providerConfiguration(),
       universe: { constructionMode: universeResult.snapshot.constructionMode, refreshedAt: universeResult.snapshot.refreshedAt, cache: universeResult.cache, refreshedThisRun: universeResult.refreshed, r2Write: universeResult.r2Write, coverage: universeResult.snapshot.coverage, sources: universeResult.snapshot.sources },
-      candidateFunnel: { stocksInUniverse: universeResult.snapshot.entries.length, realEventReceipts: eventResult.receipts.length, mappedRelationships: mapped.diagnostics.mappedRelationships, eventClusters: mapped.diagnostics.eventClusters, directCandidates: mapped.diagnostics.directCandidates, knockOnCandidates: mapped.diagnostics.rippleCandidates, candidatesPassingEventFirstGate: gatePassed.length, candidatesWithMarketQuote: quotedQualified.length, candidatesSkippedBecauseRecentlyReviewed: quotedQualified.length - unreviewedQuoted.length, unreviewedCandidatesAvailable: unreviewedQuoted.length, committeeCandidates: best?.quote && !reviewedFingerprints.has(fingerprintCandidate(best)) ? 1 : 0 },
+      candidateFunnel: {
+        stocksInUniverse: universeResult.snapshot.entries.length,
+        realEventReceipts: eventResult.receipts.length,
+        receiptsConsidered: mapped.diagnostics.receiptsConsidered,
+        receiptsFilteredAsNoise: mapped.diagnostics.noiseRejected,
+        receiptsWithDirectionUnresolved: mapped.diagnostics.directionUnknown,
+        receiptsUnmapped: mapped.diagnostics.unmapped,
+        mappedRelationships: mapped.diagnostics.mappedRelationships,
+        eventClusters: mapped.diagnostics.eventClusters,
+        directCandidates: mapped.diagnostics.directCandidates,
+        knockOnCandidates: mapped.diagnostics.rippleCandidates,
+        shadowNearMissCandidates: ranked.filter((candidate) => candidate.trackingDisposition === "shadow_near_miss").length,
+        rejectedCandidates: ranked.filter((candidate) => candidate.trackingDisposition === "rejected").length,
+        failedGateCounts: gateFailures,
+        candidatesPassingEventFirstGate: gatePassed.length,
+        candidatesWithMarketQuote: quotedQualified.length,
+        candidatesSkippedBecauseRecentlyReviewed: quotedQualified.length - unreviewedQuoted.length,
+        unreviewedCandidatesAvailable: unreviewedQuoted.length,
+        committeeCandidates: best?.quote && !reviewedFingerprints.has(fingerprintCandidate(best)) ? 1 : 0,
+      },
       historicalLearning: {
         realPointInTimeSignalsAvailable: realHistoricalSignals.length,
         swingUpTrackedFindingsAvailable: swingUpTrackedFindings.length,
@@ -439,7 +492,7 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       sourceFailures: providers.filter((provider) => !["connected", "not_due"].includes(provider.status)).map((provider) => ({ provider: provider.provider, status: provider.status, error: provider.error, nextRetryAt: provider.nextRetryAt })),
     };
     if (!best) {
-      return { ...common, status: "no_qualified_signal", seriousSignalFound: false, openAiCalled: false, qualityScore: ranked[0]?.score ?? 0, blockers: ["No current event passed verified event truth, exact issuer mapping, materiality, causal transmission, freshness, and contradiction gates. Price movement was not required."], technicalFailureFingerprint: null };
+      return { ...common, status: "no_qualified_signal", noSignalReason: noSignalClassification, seriousSignalFound: false, openAiCalled: false, qualityScore: ranked[0]?.score ?? 0, blockers: [`No Committee candidate was produced (${noSignalClassification}). The candidate funnel and failed-gate counts identify the exact stage; price movement was not required.`], technicalFailureFingerprint: null };
     }
     const fingerprint = fingerprintCandidate(best);
     const selectedCandidate = {
@@ -485,7 +538,7 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
     if (!best.quote) return { ...common, status: "qualified_event_market_quote_unavailable", seriousSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, blockers: ["The event qualified before the market moved, but no usable price anchor was available for a safe entry or outcome record. The event remains on the watch queue; no OpenAI budget was spent."], technicalFailureFingerprint: null };
     if (input.skipOpenAiCandidateFingerprints?.includes(fingerprint)) return { ...common, status: "qualified_candidate_already_reviewed", seriousSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, blockers: ["The same event evidence was reviewed recently, so OpenAI was not called again."], technicalFailureFingerprint: null };
     const watchOnlyBlocker = best.quote.actionableForSeriousSignal !== true
-      ? `The latest available quote is ${best.quote.cacheAgeMs === null || best.quote.cacheAgeMs === undefined ? "of unknown age" : `${Math.round(best.quote.cacheAgeMs / 60_000)} minutes old`}, so it remains visible for Watch only and no committee budget is spent.`
+      ? quoteFreshnessBlocker(best.quote)
       : best.quote.marketSession === "halted"
       ? "Trading is currently halted, so the event is retained as Watch-only and no committee budget is spent."
       : best.quote.marketSession === "unknown"

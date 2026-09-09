@@ -471,8 +471,8 @@ const batchMappedBase = {
   canonicalSecIndexUrl: null,
   identityMethod: "not_applicable",
 };
-const batchAcknowledged = { ...batchMappedBase, id: "sec:batch-acknowledged", queueAttempts: 0 };
-const batchRetried = { ...batchMappedBase, id: "sec:batch-retried", queueAttempts: 1 };
+const batchAcknowledged = { ...batchMappedBase, id: "sec:batch-acknowledged", title: "TWST announces first independent batch event", queueAttempts: 0 };
+const batchRetried = { ...batchMappedBase, id: "sec:batch-retried", title: "TWST announces second independent batch event", queueAttempts: 1 };
 putObject(sensorStateKey, { ...afterAcknowledgement, pending: [batchAcknowledged, batchRetried] });
 const revisionBeforeBatch = revision;
 const batchRetryAt = new Date(now.getTime() + 45 * 60_000).toISOString();

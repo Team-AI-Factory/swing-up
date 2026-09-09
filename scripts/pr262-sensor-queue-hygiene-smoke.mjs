@@ -108,15 +108,17 @@ const inverseMeaning = mappedEvent({
   id: "news:inverse-meaning",
   title: "$TWST research facility opens new | Yahoo Finance",
 });
-const highValueOne = mappedEvent({ id: "news:material-one", priority: 90 });
-const highValueTwo = mappedEvent({ id: "news:material-two", priority: 90, observedAt: new Date(now.getTime() - 30 * 60_000).toISOString() });
+const highValueOne = mappedEvent({ id: "news:material-one", title: "$TWST raises full-year revenue guidance - Reuters", priority: 90 });
+const highValueTwo = mappedEvent({ id: "news:material-two", title: "NASDAQ: TWST boosts FY sales outlook | Yahoo Finance", priority: 90, observedAt: new Date(now.getTime() - 30 * 60_000).toISOString() });
 const boundaryHighValue = mappedEvent({
   id: "news:material-at-six-hour-boundary",
+  title: "$TWST announces boundary clinical trial result",
   priority: 80,
   observedAt: new Date(now.getTime() - 6 * 60 * 60_000).toISOString(),
 });
 const retryProtectedHighValue = mappedEvent({
   id: "news:material-retry-after-six-hours",
+  title: "$TWST wins material multiyear contract",
   priority: 100,
   observedAt: new Date(now.getTime() - 6 * 60 * 60_000 - 1).toISOString(),
   queueAttempts: 4,
@@ -124,6 +126,7 @@ const retryProtectedHighValue = mappedEvent({
 });
 const retryGraceProtectedHighValue = mappedEvent({
   id: "news:material-within-retry-grace",
+  title: "$TWST receives FDA approval for assay",
   priority: 100,
   observedAt: new Date(now.getTime() - 7 * 60 * 60_000).toISOString(),
   queueAttempts: 4,
@@ -131,6 +134,7 @@ const retryGraceProtectedHighValue = mappedEvent({
 });
 const expiredAfterRetryGrace = mappedEvent({
   id: "news:material-retry-grace-expired",
+  title: "$TWST announces expired acquisition",
   priority: 100,
   observedAt: new Date(now.getTime() - 7 * 60 * 60_000).toISOString(),
   queueAttempts: 4,
@@ -138,6 +142,7 @@ const expiredAfterRetryGrace = mappedEvent({
 });
 const expiredAtHardMaximum = mappedEvent({
   id: "news:material-over-forty-eight-hours-old",
+  title: "$TWST announces old product launch",
   priority: 100,
   observedAt: new Date(now.getTime() - 48 * 60 * 60_000 - 1).toISOString(),
   queueAttempts: 4,
@@ -145,6 +150,7 @@ const expiredAtHardMaximum = mappedEvent({
 });
 const staleUnresolvedHighValue = mappedEvent({
   id: "news:unresolved-material-over-six-hours-old",
+  title: "$TWST reports unresolved cyber incident",
   priority: 100,
   observedAt: new Date(now.getTime() - 7 * 60 * 60_000).toISOString(),
   mappingStatus: "unmapped",
@@ -203,6 +209,7 @@ const legacyDirectIrNews = mappedEvent({
 });
 const noisyHighPriorityRetry = mappedEvent({
   id: "news:noisy-retry",
+  title: "$TWST announces high-priority retry event",
   priority: 100,
   queueAttempts: 3,
   queueNextAttemptAt: now.toISOString(),
@@ -241,8 +248,8 @@ assert.equal(result.pending.some((event) => event.id === bestDuplicate.id), true
 assert.equal(result.pending.some((event) => event.id === otherTicker.id), true, "A different exact ticker must remain separate.");
 assert.equal(result.pending.some((event) => event.id === priorDay.id), true, "A different UTC day must remain separate.");
 assert.equal(result.pending.some((event) => event.id === inverseMeaning.id), true, "Token order is preserved so inverse meanings cannot collapse.");
-assert.equal(result.pending.some((event) => event.id === highValueOne.id), true, "Potentially material company news is never semantic-deduplicated.");
-assert.equal(result.pending.some((event) => event.id === highValueTwo.id), true, "Every high-value evidence ID must remain independent.");
+assert.equal(result.pending.some((event) => event.id === highValueOne.id), false, "An older aggregator copy of the same material headline must not spend a second article read.");
+assert.equal(result.pending.some((event) => event.id === highValueTwo.id), true, "The newer equivalent material headline must survive semantic deduplication.");
 assert.equal(result.pending.some((event) => event.id === boundaryHighValue.id), true, "Fresh high-value secondary news remains eligible through the exact six-hour boundary.");
 assert.equal(result.pending.some((event) => event.id === retryProtectedHighValue.id), true, "A valid scheduled retry must keep secondary news through the retry plus one sensor-cycle grace.");
 assert.equal(result.pending.some((event) => event.id === retryGraceProtectedHighValue.id), true, "Secondary news must remain available during the full sensor-cycle grace after its retry became due.");
@@ -257,12 +264,14 @@ assert.equal(result.pending.some((event) => event.id === legacyDirectIrNews.id),
 assert.equal(result.pending.some((event) => event.id === governmentOfficial.id), true, "Fresh official-government evidence must not use the six-hour news TTL.");
 assert.deepEqual(new Set(result.droppedEventIds), new Set([
   olderDuplicate.id,
+  highValueOne.id,
   expiredAfterRetryGrace.id,
   expiredAtHardMaximum.id,
   staleUnresolvedHighValue.id,
   staleLowValue.id,
 ]));
-assert.equal(result.hygiene.duplicateLowValueCompanyNewsDropped, 1);
+assert.equal(result.hygiene.duplicateSecondaryCompanyNewsDropped, 2);
+assert.equal(result.hygiene.duplicateLowValueCompanyNewsDropped, 2, "The compatibility field now mirrors all exact semantic secondary-news duplicates.");
 assert.equal(result.hygiene.staleSecondaryCompanyNewsDropped, 4);
 assert.equal(result.hygiene.retryProtectedSecondaryCompanyNewsCount, 2);
 assert.equal(result.hygiene.staleLowValueCompanyNewsDropped, 1, "The compatibility field must retain its original low-value-only meaning.");
@@ -323,12 +332,12 @@ assert.equal(cleanupCycle.persistedState.queueHygieneAtLoad.retryProtectedSecond
 console.log(JSON.stringify({
   ok: true,
   authoritativeEvidencePrioritized: true,
-  lowValueCompanyNewsNormalizedDuplicatesCollapsed: true,
+  secondaryCompanyNewsNormalizedDuplicatesCollapsed: true,
   inverseMeaningsRemainSeparate: true,
   unscheduledSecondaryCompanyNewsExpiresAfterSixHours: true,
   scheduledSecondaryCompanyNewsSurvivesThroughRetryGrace: true,
   scheduledSecondaryCompanyNewsStillHonorsFortyEightHourCeiling: true,
-  freshHighValueCompanyNewsUnaffected: true,
+  distinctFreshHighValueCompanyNewsUnaffected: true,
   directIssuerRowsProtectedFromSecondaryNewsExpiry: true,
   trimmedIdsPersistInSeenState: true,
 }, null, 2));

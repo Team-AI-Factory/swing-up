@@ -920,7 +920,7 @@ export async function fetchOfficialFeeds(
   const selected = Array.from({ length: limit }, (_, index) => OFFICIAL_FEEDS[(offset + index) % OFFICIAL_FEEDS.length]);
   const settled = await Promise.allSettled(selected.map(async (feed) => {
     const startedAt = Date.now();
-    const { body } = await fetchText(fetchImpl, feed.url, "application/rss+xml,application/atom+xml,text/xml", 15_000);
+    const { body } = await fetchText(fetchImpl, feed.url, "application/rss+xml,application/atom+xml,text/xml", 25_000);
     if (!isSyndicationFeed(body)) throw new Error("invalid_feed_payload");
     const receipts = parseRss(body, { channel: feed.channel, publisher: feed.publisher, official: true, now });
     return result({ provider: feed.provider, status: "connected", checkedAt: now.toISOString(), sourceUrls: [feed.url], receipts, recordsRead: receipts.length, entitlementVerified: true, responseTimeMs: Date.now() - startedAt });
@@ -1014,8 +1014,10 @@ export async function fetchNasdaqTradeHalts(fetchImpl: typeof fetch, now: Date):
     const haltRows = json.results.tradeHalts;
     const declaredCount = typeof json.totalCount === "number" && Number.isFinite(json.totalCount) ? json.totalCount : null;
     if (declaredCount !== null && declaredCount > 0 && haltRows.length === 0) throw new Error("incomplete_trade_halt_payload");
+    let invalidCommonEquityRows = 0;
     const parsedReceipts = haltRows.flatMap((row): EventReceipt[] => {
-      const symbol = normalizeEquitySymbol(text(row.symbol, 20));
+      const rawSymbol = text(row.symbol, 20);
+      const symbol = normalizeEquitySymbol(rawSymbol);
       const company = text(row.issuerName, 180);
       const exchange = text(row.sourceExchange, 80);
       const reason = text(row.reason, 80);
@@ -1028,7 +1030,18 @@ export async function fetchNasdaqTradeHalts(fetchImpl: typeof fetch, now: Date):
         now,
         resumed ? 3 * 24 * 60 * 60 * 1000 : NASDAQ_ACTIVE_HALT_MAX_AGE_MS,
       );
-      if (!symbol || !publishedAt) return [];
+      if (!symbol || !publishedAt) {
+        const unsupportedInstrument = /\s(?:WS|WT|WTS|U|UN|RT|RTS)$/i.test(rawSymbol)
+          || /\b(?:warrants?|rights?|units?)\b/i.test(company);
+        // The consolidated NYSE service includes warrants, rights, and units.
+        // They are outside the common-equity/ADR universe, so an explicitly
+        // identified unsupported instrument must be skipped rather than making
+        // the complete U.S. halt safety feed look broken. Unknown malformed
+        // common-equity rows still fail closed and trigger the backup feed.
+        if (unsupportedInstrument) return [];
+        invalidCommonEquityRows += 1;
+        return [];
+      }
       return [makeReceipt({
         title: `${symbol} ${resumed ? "trading halt resumed" : "official trading halt"}${reason ? ` (${reason})` : ""}`,
         summary: `${company || symbol} is listed in the NYSE's official consolidated U.S. trade-halt service${exchange ? ` for ${exchange}` : ""}${reason ? ` with reason ${reason}` : ""}.${resumed ? " A resumption time is present." : " No resumption time is present."}`,
@@ -1044,7 +1057,7 @@ export async function fetchNasdaqTradeHalts(fetchImpl: typeof fetch, now: Date):
         rawEventType: `halt:${reasonCode || "UNKNOWN"}:${resumed ? "resumed" : "active"}`,
       })];
     });
-    if (parsedReceipts.length !== haltRows.length) throw new Error("invalid_trade_halt_rows");
+    if (invalidCommonEquityRows > 0) throw new Error("invalid_trade_halt_rows");
     const receipts = latestTradeHaltReceipts(parsedReceipts);
     return result({ provider: "nasdaq_trade_halts", status: "connected", checkedAt: now.toISOString(), sourceUrls: [NYSE_TRADE_HALTS_URL], receipts, recordsRead: receipts.length, entitlementVerified: true });
   } catch (error) {

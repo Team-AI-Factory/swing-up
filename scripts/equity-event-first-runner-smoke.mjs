@@ -65,6 +65,7 @@ const agentResults = Array.from({ length: 13 }, (_, index) => ({ agentId: `agent
 let committeeCalls = 0;
 let committeeThrows = false;
 let quoteActionable = true;
+let candidateGatePassed = true;
 const stubs = {
   "@/lib/ai-committee/orchestrator": { TRUSTED_IN_MEMORY_EVIDENCE: trusted, runAiCommittee: async (input) => {
     committeeCalls += 1;
@@ -74,6 +75,10 @@ const stubs = {
   "@/lib/ai-committee/provider": { getAiCommitteeProviderStatus: () => ({ configured: true, enabled: true }) },
   "@/lib/equity-signal/analysis": { buildImpactCandidates: (_receipts, _universe, _macro, _now, historicalSignals = []) => {
     const value = structuredClone(candidate);
+    value.gatePassed = candidateGatePassed;
+    value.trackingDisposition = candidateGatePassed ? "qualified" : "rejected";
+    value.failedGateChecks = candidateGatePassed ? [] : ["eventMagnitudeActionable"];
+    value.gateChecks.eventMagnitudeActionable = candidateGatePassed;
     if (historicalSignals.length >= 5) value.historicalAnalog = {
       ...value.historicalAnalog,
       available: true,
@@ -88,7 +93,7 @@ const stubs = {
       marketRelative: { sampleSize: historicalSignals.length, posteriorHitProbabilityPercent: 65 },
       summary: "Independent point-in-time outcomes.",
     };
-    return { candidates: [value], diagnostics: { mappedRelationships: 1, eventClusters: 1, directCandidates: 1, rippleCandidates: 0 } };
+    return { candidates: [value], diagnostics: { receiptsConsidered: 1, noiseRejected: 0, directionUnknown: 0, unmapped: 0, mappedRelationships: 1, eventClusters: 1, directCandidates: 1, rippleCandidates: 0 } };
   }, fingerprintCandidate: () => "event-fingerprint" },
   "@/lib/equity-signal/event-sources": { collectEventSources: async () => ({ providers: [provider("official_events"), haltProvider], receipts: [receipt], secFilingDetails: { selected: 0, enriched: 0, failed: 0 } }) },
   "@/lib/equity-signal/fundamentals": { enrichCandidateFundamentals: async (value) => ({ candidate: value, provider: provider("sec_company_facts") }) },
@@ -101,7 +106,8 @@ const stubs = {
     for (const value of values) value.quote = value.quote ? {
       ...value.quote,
       providerFetchedAt: "2026-07-22T10:00:00.000Z",
-      cacheAgeMs: quoteActionable ? 0 : 16 * 60 * 1000,
+      cacheAgeMs: 0,
+      quoteAgeMs: quoteActionable ? 0 : 16 * 60 * 1000,
       actionableForSeriousSignal: quoteActionable,
     } : null;
     const benchmarkQuote = { ticker: "SPY", price: 600, previousClose: 600, changePercent: 0, volume: 1000, averageVolume: null, marketCap: null, observedAt: "2026-07-22T10:00:00.000Z", source: "test benchmark", delayedMinutes: 0, providerFetchedAt: "2026-07-22T10:00:00.000Z", cacheAgeMs: 0, actionableForSeriousSignal: true };
@@ -135,6 +141,15 @@ assert.equal(held.liveSourcePolicy.priorTwoPercentMoveRequired, false);
 assert.equal(held.liveSourcePolicy.postEventOnePercentMoveRequired, false);
 assert.equal(held.selectedCandidate.quote.changePercent, 0);
 assert.equal(held.status, "qualified_signal_openai_not_requested");
+
+candidateGatePassed = false;
+const rejected = await runEquitySignalLab({ now: new Date("2026-07-22T10:00:00.000Z"), allowOpenAi: true });
+assert.equal(rejected.status, "no_qualified_signal");
+assert.equal(rejected.noSignalReason, "permission_gate_failed:eventMagnitudeActionable");
+assert.equal(rejected.candidateFunnel.receiptsConsidered, 1);
+assert.equal(rejected.candidateFunnel.rejectedCandidates, 1);
+assert.equal(rejected.candidateFunnel.failedGateCounts.eventMagnitudeActionable, 1);
+candidateGatePassed = true;
 
 const targetedUniverse = {
   version: 1,
@@ -207,7 +222,9 @@ assert.equal(staleQuoteWatch.alertType, null);
 assert.equal(staleQuoteWatch.openAiCalled, false);
 assert.equal(staleQuoteWatch.status, "qualified_event_watch_only");
 assert.equal(staleQuoteWatch.selectedCandidate.quote.actionableForSeriousSignal, false);
-assert.equal(staleQuoteWatch.selectedCandidate.quote.cacheAgeMs, 16 * 60 * 1000);
+assert.equal(staleQuoteWatch.selectedCandidate.quote.cacheAgeMs, 0);
+assert.equal(staleQuoteWatch.selectedCandidate.quote.quoteAgeMs, 16 * 60 * 1000);
+assert.match(staleQuoteWatch.blockers[0], /market observation is 16 minutes old and the provider response is 0 minutes old/);
 assert.equal(committeeCalls, 3);
 quoteActionable = true;
 

@@ -322,7 +322,7 @@ const activeHaltFeed = `<?xml version="1.0"?>
     <ndaq:ResumptionTradeTime>10:05:00</ndaq:ResumptionTradeTime>
   </item></channel></rss>`;
 const nyseHaltPayload = JSON.stringify({
-  totalCount: 4,
+  totalCount: 5,
   results: {
     lastUpdatedTime: "2026-07-22 14:00:00",
     tradeHalts: [
@@ -330,6 +330,7 @@ const nyseHaltPayload = JSON.stringify({
       { formatedHaltDate: "2026-07-01", formatedHaltTime: "13:55:00", symbol: "OLD", issuerName: "Older Active Halt Corporation", sourceExchange: "NYSE American", reason: "Regulatory Concern", formatedResumptionDate: null, formatedResumptionTime: null },
       { formatedHaltDate: "2026-07-22", formatedHaltTime: "13:50:00", symbol: "RES", issuerName: "Resumption Test Corporation", sourceExchange: "Nasdaq", reason: "News Pending", formatedResumptionDate: null, formatedResumptionTime: null },
       { formatedHaltDate: "2026-07-22", formatedHaltTime: "13:50:00", symbol: "RES", issuerName: "Resumption Test Corporation", sourceExchange: "Nasdaq", reason: "News Pending", formatedResumptionDate: "2026-07-22", formatedResumptionTime: "14:05:00" },
+      { formatedHaltDate: "2026-07-22", formatedHaltTime: "13:45:00", symbol: "ACHR WS", issuerName: "Archer Aviation Inc. Redeemable Warrants", sourceExchange: "NYSE", reason: "News Pending", formatedResumptionDate: null, formatedResumptionTime: null },
     ],
   },
 });
@@ -355,6 +356,7 @@ assert.ok(now.getTime() - Date.parse(oldActiveHalt.publishedAt) > 24 * 60 * 60 *
 const resumedHalt = tradeHalts.receipts.find((receipt) => receipt.symbolHints.includes("RES"));
 assert.equal(resumedHalt?.rawEventType, "halt:NEWS_PENDING:resumed");
 assert.equal(tradeHalts.receipts.filter((receipt) => receipt.symbolHints.includes("RES")).length, 1);
+assert.equal(tradeHalts.receipts.some((receipt) => receipt.symbolHints.includes("ACHR WS")), false, "An explicitly identified warrant row must not invalidate the common-equity halt feed.");
 
 const fallbackHaltUrls = [];
 const fallbackTradeHalts = await fetchNasdaqTradeHalts(async (value) => {

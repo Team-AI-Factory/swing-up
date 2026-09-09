@@ -76,7 +76,8 @@ type ProviderReservation = ProviderBudgetReservation & {
   maximumCallsInWindow: number;
   minimumIntervalMs: number;
 };
-type FullSourceTransport = (url: URL, validatedAddresses: string[]) => Promise<Response>;
+type FullSourceHeaderProfile = "standard" | "compatibility";
+type FullSourceTransport = (url: URL, validatedAddresses: string[], headerProfile?: FullSourceHeaderProfile) => Promise<Response>;
 type EventLease = { eventId: string; ownerId: string; acquiredAt: string; expiresAt: string };
 type EventJobState = {
   version: 1;
@@ -636,7 +637,29 @@ async function defaultResolveHost(hostname: string) {
   return [];
 }
 
-async function pinnedHttpsTransport(url: URL, validatedAddresses: string[]) {
+function fullSourceRequestHeaders(profile: FullSourceHeaderProfile): Record<string, string> {
+  if (profile === "compatibility") {
+    // Some public publishers reject an otherwise valid document request when
+    // Accept is too narrow. Keep an honest crawler identity while using the
+    // same broad content negotiation a normal browser sends. This is one
+    // bounded retry of the same logical source read, not a quota bypass.
+    return {
+      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.5",
+      "Accept-Language": "en-US,en;q=0.8",
+      "user-agent": "Mozilla/5.0 (compatible; SwingUpResearchBot/1.0; +https://swingup.app)",
+    };
+  }
+  return {
+    Accept: "text/html,application/xhtml+xml,text/plain,application/xml",
+    "user-agent": "SwingUp/1.0 support@swingup.app",
+  };
+}
+
+async function pinnedHttpsTransport(
+  url: URL,
+  validatedAddresses: string[],
+  headerProfile: FullSourceHeaderProfile = "standard",
+) {
   const failures: Array<{ family: "ipv4" | "ipv6" | "unknown"; error: unknown }> = [];
   for (const address of validatedAddresses) {
     try {
@@ -659,9 +682,8 @@ async function pinnedHttpsTransport(url: URL, validatedAddresses: string[]) {
           path: `${url.pathname}${url.search}`,
           method: "GET",
           headers: {
-            Accept: "text/html,application/xhtml+xml,text/plain,application/xml",
+            ...fullSourceRequestHeaders(headerProfile),
             Host: url.host,
-            "user-agent": "SwingUp/1.0 support@swingup.app",
           },
           servername: url.hostname,
           family,
@@ -807,15 +829,22 @@ async function fetchFullSource(
     let current = validated.url;
     let response: Response | null = null;
     let redirects = 0;
+    let compatibilityRetryUsed = false;
     while (true) {
+      const headerProfile: FullSourceHeaderProfile = compatibilityRetryUsed ? "compatibility" : "standard";
       response = transport
-        ? await transport(current, validated.addresses)
+        ? await transport(current, validated.addresses, headerProfile)
         : await fetchImpl(current, {
-            headers: { Accept: "text/html,application/xhtml+xml,text/plain,application/xml", "user-agent": "SwingUp/1.0 support@swingup.app" },
+            headers: fullSourceRequestHeaders(headerProfile),
             cache: "no-store",
             redirect: "manual",
             signal: AbortSignal.timeout(15_000),
           });
+      if ([403, 406].includes(response.status) && !compatibilityRetryUsed) {
+        await response.body?.cancel().catch(() => null);
+        compatibilityRetryUsed = true;
+        continue;
+      }
       if (![301, 302, 303, 307, 308].includes(response.status)) break;
       if (redirects >= FULL_SOURCE_MAX_REDIRECTS) throw new Error("full_source_too_many_redirects");
       const location = response.headers.get("location");
@@ -859,7 +888,7 @@ async function fetchFullSource(
       cached: false,
       responseTimeMs: Date.now() - startedAt,
     };
-    return { receipts: [enriched], providers: [provider], decisionGrade: true, diagnostics: { sourceTextBytes: bytes, sourceTextCharacters: sourceText.length, sourceBodyTruncated: truncated, redirects, finalUrl: current.toString(), ...evidence, officialPreserved } };
+    return { receipts: [enriched], providers: [provider], decisionGrade: true, diagnostics: { sourceTextBytes: bytes, sourceTextCharacters: sourceText.length, sourceBodyTruncated: truncated, redirects, compatibilityRetryUsed, finalUrl: current.toString(), ...evidence, officialPreserved } };
   } catch (error) {
     const message = safeFullSourceErrorTelemetry(error);
     const provider: ProviderResult = {
@@ -987,7 +1016,7 @@ function permanentlyUnreadableFullSource(reason: string | null, event: Pr262Sens
   // transient DNS, rate-limit, or provider outage may span several attempts;
   // only explicit permanent failures (or the separate 48-hour expiry) may
   // archive the event without analysis.
-  return Boolean(reason && /(?:unsupported_form|url_invalid|url_not_public_https|host_blocked|address_blocked|content_type_unsupported|body_too_large|issuer_or_event_unconfirmed|http_40[0134]|http_410)/i.test(reason));
+  return Boolean(reason && /(?:unsupported_form|url_invalid|url_not_public_https|host_blocked|address_blocked|content_type_unsupported|body_too_large|issuer_or_event_unconfirmed|http_(?:400|401|404|410))/i.test(reason));
 }
 
 function exactIssuerUniverse(resolved: Pr262ResolvedSensorCompany, now: Date): EquityUniverseSnapshot {
@@ -1271,16 +1300,26 @@ function compactAnalysisDiagnostics(report: Json) {
     qualityScore: finiteDiagnosticNumber(report.qualityScore),
     funnel: {
       realEventReceipts: finiteDiagnosticNumber(funnel.realEventReceipts),
+      receiptsConsidered: finiteDiagnosticNumber(funnel.receiptsConsidered),
+      receiptsFilteredAsNoise: finiteDiagnosticNumber(funnel.receiptsFilteredAsNoise),
+      receiptsWithDirectionUnresolved: finiteDiagnosticNumber(funnel.receiptsWithDirectionUnresolved),
+      receiptsUnmapped: finiteDiagnosticNumber(funnel.receiptsUnmapped),
       mappedRelationships: finiteDiagnosticNumber(funnel.mappedRelationships),
       eventClusters: finiteDiagnosticNumber(funnel.eventClusters),
       directCandidates: finiteDiagnosticNumber(funnel.directCandidates),
       knockOnCandidates: finiteDiagnosticNumber(funnel.knockOnCandidates),
+      shadowNearMissCandidates: finiteDiagnosticNumber(funnel.shadowNearMissCandidates),
+      rejectedCandidates: finiteDiagnosticNumber(funnel.rejectedCandidates),
+      failedGateCounts: Object.fromEntries(Object.entries(object(funnel.failedGateCounts))
+        .map(([name, count]) => [name, finiteDiagnosticNumber(count)] as const)
+        .filter((entry): entry is readonly [string, number] => entry[1] !== null)),
       candidatesPassingEventFirstGate: finiteDiagnosticNumber(funnel.candidatesPassingEventFirstGate),
       candidatesWithMarketQuote: finiteDiagnosticNumber(funnel.candidatesWithMarketQuote),
       candidatesSkippedBecauseRecentlyReviewed: finiteDiagnosticNumber(funnel.candidatesSkippedBecauseRecentlyReviewed),
       unreviewedCandidatesAvailable: finiteDiagnosticNumber(funnel.unreviewedCandidatesAvailable),
       committeeCandidates: finiteDiagnosticNumber(funnel.committeeCandidates),
     },
+    noSignalReason: text(report.noSignalReason),
     topNearMiss: topTicker ? {
       ticker: topTicker,
       direction: text(top.direction),
@@ -1666,7 +1705,54 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
 
     assertJobActive();
     const resolved = await readPr262ResolvedSensorCompany(event.id);
-    if (!resolved) throw new Error("pr262_event_exact_company_not_resolved");
+    if (!resolved) {
+      // An unresolved secondary headline is a data-readiness condition, not a
+      // worker crash. Preserve it for a bounded retry and let the orchestrator
+      // continue to the next independent event in the same cycle.
+      const retryReason = "pr262_event_exact_company_not_resolved";
+      const nextRetryAt = eventRetryAt(event, now, null);
+      await stopHeartbeat();
+      await releaseLease(event.id, ownerId, clock());
+      await persistQueueMutation({
+        action: "retry",
+        eventId: event.id,
+        error: retryReason,
+        nextRetryAt,
+        attemptedAt: now,
+      }, input.queueMutationSink);
+      return {
+        ok: true,
+        mode: "pr262_targeted_event_job",
+        status: "event_job_deferred",
+        nonterminal: true,
+        error: `${retryReason}; event_id=${event.id}; ticker=${event.ticker ?? "unknown"}; cik=${event.cik ?? "unknown"}; next_retry_at=${nextRetryAt}`,
+        checkedAt: now.toISOString(),
+        eventsProcessed: 0,
+        recoveredPersistedResult: false,
+        ticker: event.ticker,
+        cik: event.cik,
+        eventId: event.id,
+        eventSource: event.source,
+        sourceProvider: event.sourceProvider,
+        mappingMethod: event.mappingMethod ?? null,
+        sourceFailureReason: retryReason,
+        sourceDecisionGrade: false,
+        openAiCalled: false,
+        seriousSignalFound: false,
+        actionableSignalFound: false,
+        alertType: null,
+        analysisDiagnostics: {
+          status: "issuer_resolution_deferred",
+          noSignalReason: retryReason,
+          blockers: ["The event is retained until its exact listed-company identity can be resolved."],
+        },
+        resultKey: null,
+        outboxKey: null,
+        historyWrite: { persisted: false, reason: "nonterminal_retry" },
+        r2Persistence: { terminalResultWritten: false, reason: "unresolved_company_retry" },
+        safety: { databaseWrites: false, publishing: false, notifications: false, trades: false },
+      };
+    }
     assertSecEventIdentity(resolved.event);
     if (event.source === "sec" && (!event.cik || resolved.directoryEntry.cik !== event.cik)) {
       throw new Error("pr262_event_sec_cik_mismatch");

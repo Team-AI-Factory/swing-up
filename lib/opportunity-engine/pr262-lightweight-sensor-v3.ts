@@ -450,7 +450,7 @@ async function marketWatch(fetchImpl: typeof fetch, exposure: Pr262ExposureEntry
   const watch = exposure.filter((item) => item.tradingViewSymbol && (item.buyBelowPrice !== null || item.strongBuyBelowPrice !== null || item.trimAbovePrice !== null || item.businessQuality >= 70))
     .sort((left, right) => right.businessQuality - left.businessQuality || (right.marketCap ?? 0) - (left.marketCap ?? 0)).slice(0, 500);
   if (!watch.length) return { events: [] as Pr262SensorEvent[], prices: [] as LiveWatchlistPrice[] };
-  const response = await fetchImpl(TRADINGVIEW_SCAN, { method: "POST", headers: { "content-type": "application/json", Accept: "application/json" }, body: JSON.stringify({ symbols: { tickers: watch.map((item) => item.tradingViewSymbol), query: { types: [] } }, columns: ["name", "description", "close", "change", "volume", "relative_volume_10d_calc"] }), cache: "no-store", signal: AbortSignal.timeout(15_000) });
+  const response = await fetchImpl(TRADINGVIEW_SCAN, { method: "POST", headers: { "content-type": "application/json", Accept: "application/json" }, body: JSON.stringify({ symbols: { tickers: watch.map((item) => item.tradingViewSymbol), query: { types: [] } }, columns: ["name", "description", "close", "change", "volume", "relative_volume_10d_calc"] }), cache: "no-store", signal: AbortSignal.timeout(25_000) });
   if (!response.ok) throw new Error(`pr262_v3_market_http_${response.status}`);
   const body = await response.json() as { data?: Array<{ s?: string; d?: unknown[] }> };
   const byTicker = new Map(watch.map((item) => [item.ticker, item]));
@@ -566,7 +566,7 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
       return { status: parsed.status ?? "connected", recordsRead: parsed.recordsRead, events: parsed.events, error: parsed.error };
     }),
     run("sec_urgent", FIFTEEN_MINUTES_MS, [urgentUrl], async () => {
-      const parsed = parseSecAtomForSensor(await boundedText(fetchImpl, urgentUrl, "application/atom+xml,text/xml"), { now, provider: `v3_sec_${urgentForm.toLowerCase()}`, requestedForm: urgentForm });
+      const parsed = parseSecAtomForSensor(await boundedText(fetchImpl, urgentUrl, "application/atom+xml,text/xml", 25_000), { now, provider: `v3_sec_${urgentForm.toLowerCase()}`, requestedForm: urgentForm });
       return { status: parsed.status ?? "connected", recordsRead: parsed.recordsRead, events: parsed.events, error: parsed.error };
     }),
     run("google_news", FIVE_MINUTES_MS, [newsUrl.toString()], async () => {
@@ -592,7 +592,7 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
       const result = await fetchFederalRegister(fetchImpl, now); return { status: result.status, recordsRead: result.recordsRead, receipts: result.receipts, error: result.error };
     }),
     run("fda_medwatch", FIFTEEN_MINUTES_MS, [FDA_MEDWATCH_RSS_URL], async () => {
-      const parsed = parseRssForPr262Sensor(await boundedText(fetchImpl, FDA_MEDWATCH_RSS_URL, "application/rss+xml,text/xml"), "official", "v3_fda_medwatch", "fda_medwatch_safety", now);
+      const parsed = parseRssForPr262Sensor(await boundedText(fetchImpl, FDA_MEDWATCH_RSS_URL, "application/rss+xml,text/xml", 25_000), "official", "v3_fda_medwatch", "fda_medwatch_safety", now);
       return { status: parsed.status ?? "connected", recordsRead: parsed.recordsRead, events: parsed.events, error: parsed.error };
     }),
     run("openfda", DAY_MS, ["https://api.fda.gov/drug/enforcement.json"], async () => {

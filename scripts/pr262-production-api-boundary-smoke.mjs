@@ -29,7 +29,15 @@ for (const path of ["/dashboard", "/serious-signals"]) {
   const html = await response.text();
   if (!response.ok) throw new Error(`live_serious_signal_surface_unavailable:${path}:${response.status}`);
   if (path === "/dashboard" && !html.includes("Latest verified results")) throw new Error("dashboard_missing_live_serious_signal_feed");
-  if (path === "/serious-signals" && !html.includes("Connect the live Serious Signal feed")) throw new Error("serious_signal_page_missing_read_only_connection");
+  if (path === "/serious-signals" && !html.includes("Connect the Committee-approved Serious Signal feed")) throw new Error("serious_signal_page_missing_read_only_connection");
+}
+
+const publicWatchlist = await request("/api/public/valuation-watchlist?limit=60");
+if (![200, 503].includes(publicWatchlist.response.status)) {
+  throw new Error(`public_valuation_watchlist_requires_authentication:${publicWatchlist.response.status}`);
+}
+if (publicWatchlist.body?.sanitized !== true || publicWatchlist.body?.provisionalResearchOnly !== true) {
+  throw new Error("public_valuation_watchlist_safety_contract_missing");
 }
 
 const unauthenticatedFeed = await request("/api/internal/serious-signal-status?hours=48&limit=100");
@@ -95,6 +103,7 @@ console.log(JSON.stringify({
   protectedRoutesHiddenWithoutToken: protectedRoutes.length,
   internalTokenCrossesBoundary: true,
   liveSeriousSignalSurfacesAvailable: true,
+  publicSanitizedValuationWatchlistAvailableWithoutKey: true,
   readTokenCrossesOnlyFeedBoundary: true,
   missingR2FailsHonestlyWith503: authenticatedFeed.response.status === 503,
   branchWideProductionApiShutdown: false,

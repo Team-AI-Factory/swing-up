@@ -230,7 +230,8 @@ export async function getValuationWatchlistStatus(options: { limit?: number } = 
 export const VALUATION_WATCHLIST_POLICY = Object.freeze({
   sourceKey: LATEST_FOUNDATION_SUMMARY_KEY,
   livePriceKey: LIVE_WATCHLIST_PRICE_KEY,
-  authenticated: true,
+  publicSanitizedRead: true,
+  internalDiagnosticsProtected: true,
   sanitized: true,
   provisionalResearchOnly: true,
   committeeApproved: false,

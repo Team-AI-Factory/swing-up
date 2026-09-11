@@ -65,6 +65,7 @@ export type Pr262SensorEvent = {
   title: string;
   url: string;
   sourceUrl: string;
+  alternateSourceUrls?: string[];
   ticker: string | null;
   company: string | null;
   kind: string;
@@ -290,6 +291,17 @@ function preferredSemanticDuplicate(left: Pr262SensorEvent, right: Pr262SensorEv
   return left.id.localeCompare(right.id) <= 0 ? left : right;
 }
 
+function mergeSemanticDuplicateUrls(preferred: Pr262SensorEvent, discarded: Pr262SensorEvent) {
+  const alternateSourceUrls = [...new Set([
+    ...(preferred.alternateSourceUrls ?? []),
+    discarded.url,
+    ...(discarded.alternateSourceUrls ?? []),
+  ])]
+    .filter((url) => typeof url === "string" && url.length > 0 && url !== preferred.url)
+    .slice(0, 4);
+  return alternateSourceUrls.length > 0 ? { ...preferred, alternateSourceUrls } : preferred;
+}
+
 export type Pr262PendingQueueHygiene = {
   inputEventCount: number;
   retainedEventCount: number;
@@ -382,7 +394,7 @@ export function partitionPr262PendingEventsWithTelemetry(events: Pr262SensorEven
       const preferred = preferredSemanticDuplicate(current, event);
       const discarded = preferred === current ? event : current;
       markDropped(discarded, "duplicate_low_value_company_news");
-      map.set(semanticKey, preferred);
+      map.set(semanticKey, mergeSemanticDuplicateUrls(preferred, discarded));
     }
     return map;
   }, new Map<string, Pr262SensorEvent>()).values()];
@@ -897,6 +909,12 @@ function normalizePersistedEvent(value: unknown, now: Date): Pr262SensorEvent | 
     title,
     url: canonicalSecIndexUrl ?? (typeof item.url === "string" ? item.url : rawUrl),
     sourceUrl: rawUrl,
+    ...(Array.isArray(item.alternateSourceUrls) ? {
+      alternateSourceUrls: [...new Set(item.alternateSourceUrls
+        .filter((url): url is string => typeof url === "string" && url.length > 0))]
+        .filter((url) => url !== (canonicalSecIndexUrl ?? (typeof item.url === "string" ? item.url : rawUrl)))
+        .slice(0, 4),
+    } : {}),
     ticker: source === "sec" && !trustedSecMapping ? null : typeof item.ticker === "string" ? item.ticker.toUpperCase() : null,
     company: source === "sec" && !trustedSecMapping ? null : typeof item.company === "string" ? item.company : null,
     kind: typeof item.kind === "string" ? item.kind : form ?? "unknown",

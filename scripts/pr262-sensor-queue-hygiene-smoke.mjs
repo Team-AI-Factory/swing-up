@@ -108,8 +108,8 @@ const inverseMeaning = mappedEvent({
   id: "news:inverse-meaning",
   title: "$TWST research facility opens new | Yahoo Finance",
 });
-const highValueOne = mappedEvent({ id: "news:material-one", title: "$TWST raises full-year revenue guidance - Reuters", priority: 90 });
-const highValueTwo = mappedEvent({ id: "news:material-two", title: "NASDAQ: TWST boosts FY sales outlook | Yahoo Finance", priority: 90, observedAt: new Date(now.getTime() - 30 * 60_000).toISOString() });
+const highValueOne = mappedEvent({ id: "news:material-one", title: "$TWST raises full-year revenue guidance - Reuters", url: "https://accessible.example.test/twst-guidance", sourceUrl: "https://accessible.example.test/twst-guidance", priority: 90 });
+const highValueTwo = mappedEvent({ id: "news:material-two", title: "NASDAQ: TWST boosts FY sales outlook | Yahoo Finance", url: "https://paywall.example.test/twst-guidance", sourceUrl: "https://paywall.example.test/twst-guidance", priority: 90, observedAt: new Date(now.getTime() - 30 * 60_000).toISOString() });
 const boundaryHighValue = mappedEvent({
   id: "news:material-at-six-hour-boundary",
   title: "$TWST announces boundary clinical trial result",
@@ -250,6 +250,11 @@ assert.equal(result.pending.some((event) => event.id === priorDay.id), true, "A 
 assert.equal(result.pending.some((event) => event.id === inverseMeaning.id), true, "Token order is preserved so inverse meanings cannot collapse.");
 assert.equal(result.pending.some((event) => event.id === highValueOne.id), false, "An older aggregator copy of the same material headline must not spend a second article read.");
 assert.equal(result.pending.some((event) => event.id === highValueTwo.id), true, "The newer equivalent material headline must survive semantic deduplication.");
+assert.deepEqual(
+  result.pending.find((event) => event.id === highValueTwo.id)?.alternateSourceUrls,
+  [highValueOne.url],
+  "A discarded material-news duplicate must remain available as a bounded source fallback.",
+);
 assert.equal(result.pending.some((event) => event.id === boundaryHighValue.id), true, "Fresh high-value secondary news remains eligible through the exact six-hour boundary.");
 assert.equal(result.pending.some((event) => event.id === retryProtectedHighValue.id), true, "A valid scheduled retry must keep secondary news through the retry plus one sensor-cycle grace.");
 assert.equal(result.pending.some((event) => event.id === retryGraceProtectedHighValue.id), true, "Secondary news must remain available during the full sensor-cycle grace after its retry became due.");
@@ -286,6 +291,8 @@ putObject(sensorStateKey, {
   pending: [
     olderDuplicate,
     bestDuplicate,
+    highValueOne,
+    highValueTwo,
     boundaryHighValue,
     retryProtectedHighValue,
     retryGraceProtectedHighValue,
@@ -316,15 +323,20 @@ const emptyFeedFetch = async (input) => {
 const cleanupCycle = await sensor.runPr262ChangeSensor(now, { fetchImpl: emptyFeedFetch });
 const persisted = JSON.parse(objects.get(sensorStateKey).text);
 assert.deepEqual(
+  persisted.pending.find((event) => event.id === highValueTwo.id)?.alternateSourceUrls,
+  [highValueOne.url],
+  "Alternate article evidence must survive the R2 state migration and write cycle.",
+);
+assert.deepEqual(
   new Set(persisted.pending.map((event) => event.id)),
-  new Set([bestDuplicate.id, boundaryHighValue.id, retryProtectedHighValue.id, retryGraceProtectedHighValue.id, sec.id, directIssuer.id, legacyDirectIssuerNews.id, legacyDirectIrNews.id, governmentOfficial.id]),
+  new Set([bestDuplicate.id, highValueTwo.id, boundaryHighValue.id, retryProtectedHighValue.id, retryGraceProtectedHighValue.id, sec.id, directIssuer.id, legacyDirectIssuerNews.id, legacyDirectIrNews.id, governmentOfficial.id]),
 );
 assert.equal(persisted.seen.includes(olderDuplicate.id), true, "A collapsed identity must be tombstoned in seen IDs.");
 assert.equal(persisted.seen.includes(staleLowValue.id), true, "An expired identity must be tombstoned in seen IDs.");
 assert.equal(persisted.seen.includes(expiredAfterRetryGrace.id), true, "Expired p100 secondary news must be tombstoned after its retry grace.");
 assert.equal(persisted.seen.includes(expiredAtHardMaximum.id), true, "The hard forty-eight-hour ceiling must tombstone even a future-scheduled secondary retry.");
 assert.equal(persisted.seen.includes(staleUnresolvedHighValue.id), true, "Expired unresolved secondary news must be tombstoned too.");
-assert.equal(cleanupCycle.persistedState.queueHygieneAtLoad.duplicateLowValueCompanyNewsDropped, 1, "Load-time migration must expose deduplication that occurs before the provider cycle.");
+assert.equal(cleanupCycle.persistedState.queueHygieneAtLoad.duplicateLowValueCompanyNewsDropped, 2, "Load-time migration must expose deduplication that occurs before the provider cycle.");
 assert.equal(cleanupCycle.persistedState.queueHygieneAtLoad.staleSecondaryCompanyNewsDropped, 4, "Load-time migration must expose all stale secondary trimming instead of returning a clean-looking zero.");
 assert.equal(cleanupCycle.persistedState.queueHygieneAtLoad.staleLowValueCompanyNewsDropped, 1);
 assert.equal(cleanupCycle.persistedState.queueHygieneAtLoad.retryProtectedSecondaryCompanyNewsCount, 2);

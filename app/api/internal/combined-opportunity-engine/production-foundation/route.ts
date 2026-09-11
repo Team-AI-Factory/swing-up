@@ -5,7 +5,8 @@ import {
   readResumableUsValueState,
   runResumableUsValueBatch,
 } from "@/lib/opportunity-engine/us-value-investing-resumable";
-import { resolvePr262StoragePrefix } from "@/lib/opportunity-engine/pr262-storage";
+import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
+import { pr262StorageKey, resolvePr262StoragePrefix } from "@/lib/opportunity-engine/pr262-storage";
 import { isPr262ApprovedPremergeProductionRollout } from "@/lib/opportunity-engine/pr262-runtime";
 import { getValuationWatchlistStatus } from "@/lib/opportunity-engine/valuation-watchlist-feed";
 
@@ -13,6 +14,7 @@ export const dynamic = "force-dynamic";
 
 const PR262_BRANCH = "agent/combined-opportunity-engine";
 const REFRESH_AFTER_MS = 20 * 60 * 60_000;
+const FORCE_ONCE_STATE_KEY = pr262StorageKey("value-investing/runtime/force-foundation-once-v1.json");
 
 const runtime = globalThis as typeof globalThis & {
   __swingUpProductionFoundationRun?: Promise<Awaited<ReturnType<typeof runResumableUsValueBatch>>>;
@@ -40,6 +42,38 @@ function freshComplete(state: Awaited<ReturnType<typeof readResumableUsValueStat
   return Number.isFinite(completedAt)
     && completedAt <= now + 5 * 60_000
     && now - completedAt < REFRESH_AFTER_MS;
+}
+
+async function consumeForceOnceGate(request: NextRequest, now = new Date()) {
+  const enabled = process.env.SWING_UP_PR262_FORCE_FOUNDATION_ONCE?.trim().toLowerCase() === "true";
+  const requested = request.nextUrl.searchParams.get("force") === "true";
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const current = await readVersionedTextFromR2(FORCE_ONCE_STATE_KEY);
+    const prior = current.found && current.text
+      ? JSON.parse(current.text) as { enabled?: unknown; consumedAt?: unknown }
+      : null;
+    if (!enabled) {
+      if (!prior || prior.enabled === false) return false;
+      const reset = await writeVersionedJsonToR2(FORCE_ONCE_STATE_KEY, {
+        version: 1,
+        enabled: false,
+        consumedAt: null,
+        updatedAt: now.toISOString(),
+      }, current.etag ? { expectedEtag: current.etag } : { createOnly: true });
+      if (!reset.conflict) return false;
+      continue;
+    }
+    if (!requested) return false;
+    if (prior?.enabled === true && typeof prior.consumedAt === "string") return false;
+    const consumed = await writeVersionedJsonToR2(FORCE_ONCE_STATE_KEY, {
+      version: 1,
+      enabled: true,
+      consumedAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+    }, current.etag ? { expectedEtag: current.etag } : { createOnly: true });
+    if (!consumed.conflict) return true;
+  }
+  throw new Error("production_foundation_force_once_gate_conflict");
 }
 
 async function completeExposure() {
@@ -92,8 +126,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const prior = await readResumableUsValueState();
-    const forceOnce = request.nextUrl.searchParams.get("force") === "true"
-      && process.env.SWING_UP_PR262_FORCE_FOUNDATION_ONCE?.trim().toLowerCase() === "true";
+    const forceOnce = freshComplete(prior) ? await consumeForceOnceGate(request) : false;
     if (freshComplete(prior) && !forceOnce) {
       const [exposure, candidateSummary] = await Promise.all([
         completeExposure(),

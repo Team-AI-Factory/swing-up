@@ -85,6 +85,36 @@ assert.match(
   "An ordinary pull-request preview must visibly prove that provider polling and queue processing were skipped.",
 );
 
+const inheritedProductionPreviewSkip = spawnSync(process.execPath, [fileURLToPath(new URL("./pr262-cron-cycle.mjs", import.meta.url))], {
+  encoding: "utf8",
+  env: {
+    ...process.env,
+    RAILWAY_GIT_BRANCH: "codex/unrelated-pull-request",
+    RAILWAY_ENVIRONMENT_NAME: "production",
+    SWING_UP_PR262_STORAGE_PREFIX: "production/pr262/",
+  },
+  timeout: 5_000,
+});
+assert.equal(inheritedProductionPreviewSkip.status, 0, "An ordinary preview must skip before validating an inherited production storage prefix.");
+assert.match(
+  `${inheritedProductionPreviewSkip.stdout ?? ""}${inheritedProductionPreviewSkip.stderr ?? ""}`,
+  /preview_runtime_skipped branch=codex\/unrelated-pull-request reason=non_pr262_branch/,
+);
+
+const guardedBranchProductionName = spawnSync(process.execPath, [fileURLToPath(new URL("./pr262-cron-cycle.mjs", import.meta.url))], {
+  encoding: "utf8",
+  env: {
+    ...process.env,
+    RAILWAY_GIT_BRANCH: "agent/combined-opportunity-engine",
+    RAILWAY_ENVIRONMENT_NAME: "production",
+    SWING_UP_PR262_STORAGE_PREFIX: "branch-labs/pr-262/",
+    SWING_UP_PR262_PROJECTED_RAILWAY_MONTHLY_COST_USD: "30.01",
+  },
+  timeout: 5_000,
+});
+assert.equal(guardedBranchProductionName.status, 0, "The guarded branch must remain preview-scoped without the exact premerge approval.");
+assert.match(`${guardedBranchProductionName.stdout ?? ""}${guardedBranchProductionName.stderr ?? ""}`, /sensor_paused_projected_monthly_cost_usd=30\.01/);
+
 assert.match(middleware, /\/api\/health/, "Health route must remain available");
 assert.match(middleware, /INTERNAL_API_PATHS\.pr262Cron/, "The scoped V3 cron route may cross the PR262 runtime boundary");
 assert.match(middleware, /approvedPremergeRollout && path === INTERNAL_API_PATHS\.pr262ProductionFoundation/, "The foundation route may cross the PR boundary only under the exact pre-merge rollout gate");

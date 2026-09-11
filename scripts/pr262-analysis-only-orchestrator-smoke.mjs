@@ -95,6 +95,9 @@ const stubs = {
   "@/lib/opportunity-engine/pr262-company-directory": {
     enrichPr262SensorCompanyMappings: async () => {
       mappingCalls += 1;
+      if (mappingHealthy === "stale") {
+        return { mapped: 0, directoryCompanies: 0, directoryUpdatedAt: null, error: "pr262_authoritative_equity_universe_stale; next_retry_at=2026-08-28T07:30:40.815Z" };
+      }
       return mappingHealthy
         ? { mapped: 1, directoryCompanies: 1, directoryUpdatedAt: new Date().toISOString() }
         : { mapped: 0, directoryCompanies: 0, directoryUpdatedAt: null, error: "directory_unavailable" };
@@ -145,6 +148,10 @@ const stubs = {
       if (eventMode === "evidence_deferred") {
         eventMode = "idle";
         throw new Error("pr262_event_full_source_incomplete:provider_budget_not_due; event_id=sec:0001213900-26-094677; ticker=MBAI; cik=0001610590; next_retry_at=2026-08-27T07:53:02.028Z");
+      }
+      if (eventMode === "long_evidence_deferred") {
+        eventMode = "idle";
+        throw new Error(`pr262_event_full_source_incomplete:${"transport_detail_".repeat(30)}; event_id=long-event; ticker=LONG; cik=unknown; next_retry_at=2026-08-27T08:53:02.028Z`);
       }
       if (eventMode === "rolling_quota_deferred") {
         eventMode = "idle";
@@ -369,6 +376,12 @@ assert.equal(deferredStaleUniverse.processing.eventFailures, 0);
 assert.equal(deferredStaleUniverse.processing.eventDeferrals, 1);
 assert.equal(deferredStaleUniverse.processing.eventResults[0].status, "event_job_deferred");
 
+eventMode = "long_evidence_deferred";
+const deferredLongEvidence = await loaded.exports.runPr262AnalysisOnlyCycle({ maxCycleMs: 90_000 });
+assert.equal(deferredLongEvidence.ok, true, "A long transport detail must be classified before its display text is truncated.");
+assert.equal(deferredLongEvidence.processing.eventFailures, 0);
+assert.match(deferredLongEvidence.processing.eventResults[0].error, /; next_retry_at=2026-08-27T08:53:02\.028Z$/);
+
 eventMode = "trade_halt_state_deferred";
 const deferredTradeHaltState = await loaded.exports.runPr262AnalysisOnlyCycle({ maxCycleMs: 90_000 });
 assert.equal(deferredTradeHaltState.ok, true, "A trade-halt status waiting on its scheduled provider retry must not crash recovery.");
@@ -386,6 +399,10 @@ eventMode = "idle";
 mappingHealthy = false;
 const degraded = await loaded.exports.runPr262AnalysisOnlyCycle({ maxCycleMs: 90_000 });
 assert.equal(degraded.ok, false, "A failed final issuer-mapping pass must not be acknowledged as a successful analysis cycle.");
+mappingHealthy = "stale";
+const staleMapping = await loaded.exports.runPr262AnalysisOnlyCycle({ maxCycleMs: 90_000 });
+assert.equal(staleMapping.ok, true, "A mapping pass waiting on its durable stale-universe retry must be a healthy scheduled deferral.");
+assert.equal(staleMapping.mapping.scheduledDeferral, true);
 mappingHealthy = true;
 
 deliveryHealthy = false;

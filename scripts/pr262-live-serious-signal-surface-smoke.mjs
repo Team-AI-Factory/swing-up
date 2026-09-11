@@ -6,6 +6,7 @@ const page = readFileSync(new URL("../app/serious-signals/page.tsx", import.meta
 const feed = readFileSync(new URL("../app/serious-signals/SeriousSignalFeed.tsx", import.meta.url), "utf8");
 const route = readFileSync(new URL("../app/api/internal/serious-signal-status/route.ts", import.meta.url), "utf8");
 const watchlistRoute = readFileSync(new URL("../app/api/internal/valuation-watchlist-status/route.ts", import.meta.url), "utf8");
+const publicWatchlistRoute = readFileSync(new URL("../app/api/public/valuation-watchlist/route.ts", import.meta.url), "utf8");
 const watchlistFeed = readFileSync(new URL("../lib/opportunity-engine/valuation-watchlist-feed.ts", import.meta.url), "utf8");
 const delivery = readFileSync(new URL("../lib/notifications/serious-signal-delivery.ts", import.meta.url), "utf8");
 
@@ -20,13 +21,15 @@ assert.match(feed, /href=\{evidence\.url\}/, "Sanitized evidence objects must re
 assert.match(feed, /No Committee-approved Serious Signal was found in the latest 48 hours/);
 assert.match(feed, /complete critical-source, universe, and exposure coverage/);
 assert.match(feed, /coverageVerified/);
-assert.match(feed, /valuation-watchlist-status\?limit=60/);
-assert.match(feed, /Live foundation research · not a Serious Signal/);
+assert.match(feed, /\/api\/public\/valuation-watchlist\?limit=60/);
+assert.match(feed, /Live foundation research · no access key needed · not a Serious Signal/);
 assert.match(feed, /Link to this item/);
 assert.match(feed, /refreshes within one minute/);
 assert.match(route, /internalApiScopeAuthorized\(request\.headers, "serious_signal_read"\)/);
 assert.match(watchlistRoute, /internalApiScopeAuthorized\(request\.headers, "serious_signal_read"\)/);
 assert.match(watchlistRoute, /cache-control": "private, no-store"/);
+assert.doesNotMatch(publicWatchlistRoute, /internalApiScopeAuthorized|internal-api-auth/);
+assert.match(publicWatchlistRoute, /cache-control": "public, max-age=30, stale-while-revalidate=60"/);
 assert.match(watchlistFeed, /provisionalResearchOnly: true/);
 assert.match(watchlistFeed, /userAlertEligible: false/);
 assert.doesNotMatch(watchlistFeed, /TELEGRAM_BOT_TOKEN|SWING_UP_SERIOUS_SIGNAL_WEBHOOK_URL/);
@@ -44,5 +47,6 @@ console.log(JSON.stringify({
   tokenStoredForSessionOnly: true,
   sanitizedOutputContract: true,
   separateValuationWatchlist: true,
+  publicWatchlistNeedsNoKey: true,
   watchlistLinksAndMinuteRefresh: true,
 }, null, 2));

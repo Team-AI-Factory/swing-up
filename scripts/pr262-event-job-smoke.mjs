@@ -28,6 +28,7 @@ const testableSource = source
   .replace("async function pinnedHttpsTransport(", "export async function pinnedHttpsTransport(")
   .replace("async function defaultResolveHost(", "export async function defaultResolveHost(")
   .replace("async function fetchFullSource(", "export async function fetchFullSource(")
+  .replace("async function readDecisionGradeSource(", "export async function readDecisionGradeSource(")
   .replace("function permanentlyUnreadableFullSource(", "export function permanentlyUnreadableFullSource(")
   .replace("async function readCachedFullSource(", "export async function readCachedFullSource(")
   .replace("async function cacheFullSource(", "export async function cacheFullSource(");
@@ -570,13 +571,21 @@ new Function("require", "module", "exports", output)((name) => {
   throw new Error(`Unexpected event-job import: ${name}`);
 }, cjsModule, cjsModule.exports);
 
-const { cacheFullSource, defaultResolveHost, fetchFullSource, permanentlyUnreadableFullSource, pinnedHttpsTransport, readCachedFullSource, runPr262EventJob, PR262_EVENT_JOB_KEYS } = cjsModule.exports;
+const { cacheFullSource, defaultResolveHost, fetchFullSource, permanentlyUnreadableFullSource, pinnedHttpsTransport, readCachedFullSource, readDecisionGradeSource, runPr262EventJob, PR262_EVENT_JOB_KEYS } = cjsModule.exports;
 
 assert.deepEqual(
   await defaultResolveHost("publisher.example"),
   ["2606:4700:4700::1111", "93.184.216.34"],
   "An IPv6-only OS lookup must add an explicit A-record fallback before the pinned request.",
 );
+resolve4Answers = new Promise(() => {});
+const fallbackStartedAt = Date.now();
+assert.deepEqual(
+  await defaultResolveHost("publisher.example", 5),
+  ["2606:4700:4700::1111"],
+  "A stalled explicit A-record lookup must time out and preserve the usable OS-resolver result.",
+);
+assert.ok(Date.now() - fallbackStartedAt < 500, "A stalled A-record fallback must not outlive the bounded DNS deadline.");
 lookupAnswers = [{ address: "93.184.216.34", family: 4 }];
 resolve4Answers = [];
 
@@ -765,6 +774,7 @@ assert.equal(unrelatedPage.providers[0].error, "full_source_issuer_or_event_unco
 
 let compatibilityAttempts = 0;
 const compatibilityProfiles = [];
+const compatibilityBudgetReservations = [];
 const compatibilityRecovered = await fetchFullSource(
   sourceReceipt,
   sourceEvent,
@@ -780,11 +790,45 @@ const compatibilityRecovered = await fetchFullSource(
       ? new Response("Not acceptable", { status: 406 })
       : okTextResponse();
   },
+  async (request) => { compatibilityBudgetReservations.push(request); },
 );
 assert.equal(compatibilityRecovered.decisionGrade, true, "A public article that rejects narrow content negotiation must get one compatible retry.");
 assert.equal(compatibilityAttempts, 2, "HTTP 406 recovery must be bounded to one extra request.");
 assert.deepEqual(compatibilityProfiles, ["standard", "compatibility"]);
+assert.deepEqual(
+  compatibilityBudgetReservations.map((request) => request.headerProfile),
+  ["standard", "compatibility"],
+  "Every outbound compatibility retry must reserve its own source-read unit.",
+);
 assert.equal(compatibilityRecovered.diagnostics.compatibilityRetryUsed, true);
+
+let fallbackNetworkAttempts = 0;
+const fallbackBudgetReservations = [];
+const fallbackSource = await readDecisionGradeSource(
+  { ...sourceReceipt, url: "https://paywall.example.com/exact-guidance" },
+  {
+    ...sourceEvent,
+    url: "https://paywall.example.com/exact-guidance",
+    alternateSourceUrls: ["https://accessible.example.com/exact-guidance"],
+  },
+  "Exact Issuer Corp",
+  "EXCT",
+  async () => { throw new Error("The pinned transport must be used in this test."); },
+  securityNow,
+  publicDns,
+  async (url) => {
+    fallbackNetworkAttempts += 1;
+    return url.hostname === "paywall.example.com"
+      ? new Response("Forbidden", { status: 403 })
+      : okTextResponse();
+  },
+  async (request) => { fallbackBudgetReservations.push(request); },
+);
+assert.equal(fallbackSource.decisionGrade, true, "An accessible semantic-duplicate URL must rescue a blocked preferred article.");
+assert.equal(fallbackSource.diagnostics.alternateSourceFallbackUsed, true);
+assert.equal(fallbackSource.diagnostics.sourceUrlsAttempted, 2);
+assert.equal(fallbackNetworkAttempts, 3, "The blocked source gets one compatibility retry before the alternate URL is tried.");
+assert.equal(fallbackBudgetReservations.length, 3, "Every real outbound article request must consume one budget reservation.");
 
 let persistentForbiddenAttempts = 0;
 const persistentForbidden = await fetchFullSource(

@@ -131,6 +131,14 @@ function isScheduledEventDeferral(message: string) {
   return /^(?:pr262_event_full_source_incomplete(?::[^;]+)?|pr262_authoritative_equity_universe_stale|pr262_trade_halt_state_unavailable:[a-z_]+|pr262_event_report_retry:[^;]+|pr262_sensor_budget_guard:[a-z0-9_]+:(?:minimum_interval|rolling_24h_budget)|[a-z0-9_]+_(?:rolling_quota_guard|cadence_guard)|The operation was aborted due to timeout)$/.test(reason);
 }
 
+function compactEventError(message: string, maximum = 260) {
+  const normalized = message.replace(/\s+/g, " ");
+  if (normalized.length <= maximum) return normalized;
+  const retrySuffix = normalized.match(/; next_retry_at=\d{4}-\d{2}-\d{2}T[^;\s]+/)?.[0] ?? "";
+  if (!retrySuffix || retrySuffix.length >= maximum) return normalized.slice(0, maximum);
+  return `${normalized.slice(0, maximum - retrySuffix.length - 1).trimEnd()} ${retrySuffix}`;
+}
+
 class Pr262CycleDeadlineError extends Error {
   constructor() {
     super("pr262_cycle_deadline_exceeded");
@@ -377,8 +385,9 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
         notificationResults.push(asJson(delivery));
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message.slice(0, 260) : "event_job_failed";
-      const retryableEvidenceDeferral = isScheduledEventDeferral(message);
+      const rawMessage = error instanceof Error ? error.message : "event_job_failed";
+      const retryableEvidenceDeferral = isScheduledEventDeferral(rawMessage);
+      const message = compactEventError(rawMessage);
       if (retryableEvidenceDeferral) eventDeferrals += 1;
       else eventFailures += 1;
       eventResults.push({
@@ -473,7 +482,9 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
       }).catch((error) => ({ error: error instanceof Error ? error.message : "cost_metrics_failed" }))
     : { persisted: false, reason: "quiet_cycle_logged_to_railway_only" };
 
-  const mappingHealthy = !("error" in mapping);
+  const mappingError = "error" in mapping ? String(mapping.error ?? "mapping_failed") : null;
+  const mappingScheduledDeferral = mappingError ? isScheduledEventDeferral(mappingError) : false;
+  const mappingHealthy = mappingError === null || mappingScheduledDeferral;
   const notificationFailures = notificationResults.filter((result) => result.seriousSignal === true && result.ok !== true).length;
   const recoveryStatus = asJson(deliveryRecovery);
   const deliveryHealthy = notificationFailures === 0
@@ -547,7 +558,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
       reason: "railway_analysis_recovery_reads_existing_r2_queue",
       pendingEvents: state.pending.length,
     },
-    mapping,
+    mapping: mappingScheduledDeferral ? { ...mapping, scheduledDeferral: true } : mapping,
     processing: {
       readyAtStart,
       queueHealthAtStart,

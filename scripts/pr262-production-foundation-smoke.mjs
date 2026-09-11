@@ -13,6 +13,8 @@ let storedState = null;
 let runInput = null;
 let runCount = 0;
 let exposureBuilds = 0;
+let forceGateRevision = 0;
+const forceGateObjects = new Map();
 const stubs = {
   "next/server": {
     NextResponse: {
@@ -52,7 +54,24 @@ const stubs = {
     },
   },
   "@/lib/opportunity-engine/pr262-storage": {
+    pr262StorageKey: (relative) => `production/pr262/${relative}`,
     resolvePr262StoragePrefix: () => "production/pr262/",
+  },
+  "@/lib/r2-warehouse": {
+    readVersionedTextFromR2: async (key) => {
+      const current = forceGateObjects.get(key);
+      return current
+        ? { found: true, text: JSON.stringify(current.value), etag: current.etag }
+        : { found: false, text: null, etag: null };
+    },
+    writeVersionedJsonToR2: async (key, value, options = {}) => {
+      const current = forceGateObjects.get(key);
+      if (options.createOnly && current) return { written: false, conflict: true, etag: current.etag };
+      if (options.expectedEtag && current?.etag !== options.expectedEtag) return { written: false, conflict: true, etag: current?.etag ?? null };
+      const etag = `force-gate-${++forceGateRevision}`;
+      forceGateObjects.set(key, { value: structuredClone(value), etag });
+      return { written: true, conflict: false, etag };
+    },
   },
   "@/lib/opportunity-engine/pr262-runtime": {
     isPr262ApprovedPremergeProductionRollout: () => process.env.SWING_UP_PR262_PREMERGE_PRODUCTION_ROLLOUT === "true",
@@ -128,6 +147,14 @@ try {
   assert.equal(forced.status, 200);
   assert.equal(forced.body.foundationOnly, true);
   assert.equal(runCount, 2, "The explicit service-scoped one-time force gate must rebuild a fresh foundation.");
+  const duplicateForced = await loaded.exports.POST({ ...request, nextUrl: new URL(`${request.nextUrl}?force=true`) });
+  assert.equal(duplicateForced.body.reason, "production_foundation_fresh", "A consumed one-time gate must not run again while the service flag remains enabled.");
+  assert.equal(runCount, 2, "A rerun or redeploy with the same enabled flag must not rebuild the fresh foundation twice.");
+  process.env.SWING_UP_PR262_FORCE_FOUNDATION_ONCE = "false";
+  await loaded.exports.POST(request);
+  process.env.SWING_UP_PR262_FORCE_FOUNDATION_ONCE = "true";
+  await loaded.exports.POST({ ...request, nextUrl: new URL(`${request.nextUrl}?force=true`) });
+  assert.equal(runCount, 3, "Observing the disabled service flag must safely re-arm one later explicit force request.");
   process.env.SWING_UP_PR262_FORCE_FOUNDATION_ONCE = "false";
 
   process.env.RAILWAY_GIT_BRANCH = "agent/combined-opportunity-engine";

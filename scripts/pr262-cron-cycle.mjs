@@ -23,13 +23,25 @@ const baseUrl = `http://127.0.0.1:${port}`;
 const branch = (process.env.RAILWAY_GIT_BRANCH || "").trim();
 const railwayEnvironment = (process.env.RAILWAY_ENVIRONMENT_NAME || "").trim().toLowerCase();
 const approvedPremergeRollout = isApprovedPr262PremergeProductionRollout();
+const production = approvedPremergeRollout
+  || branch === "main"
+  || (railwayEnvironment === "production" && !branch);
+const preview = !production;
+
+// Railway can instantiate this config for every pull-request environment. Only
+// the dedicated PR262 branch lab may run a real preview scan; all other PR
+// previews must exit before inherited production storage or notification
+// variables are validated or used.
+if (preview && branch !== PR262_BRANCH) {
+  console.log(`[pr262-cron] preview_runtime_skipped branch=${branch || "unknown"} reason=non_pr262_branch`);
+  process.exit(0);
+}
+
 if (deliveryTest && (!approvedPremergeRollout
   || process.env.SWING_UP_PR262_APPROVED_DELIVERY_TEST?.trim().toLowerCase() !== "true"
   || !/^[a-z0-9][a-z0-9-]{11,63}$/i.test(deliveryTestRunId))) {
   throw new Error("pr262_delivery_test_not_approved");
 }
-const production = approvedPremergeRollout || branch === "main" || railwayEnvironment === "production";
-const preview = !production;
 const configuredStoragePrefix = (process.env.SWING_UP_PR262_STORAGE_PREFIX || "").trim();
 const storagePrefix = configuredStoragePrefix || (production ? PRODUCTION_STORAGE_PREFIX : PREVIEW_STORAGE_PREFIX);
 if (storagePrefix.startsWith("/")
@@ -41,15 +53,6 @@ if (storagePrefix.startsWith("/")
 if (preview && storagePrefix !== PREVIEW_STORAGE_PREFIX) throw new Error("pr262_cron_preview_storage_prefix_mismatch");
 if (production && storagePrefix.startsWith("branch-labs/")) throw new Error("pr262_cron_production_storage_prefix_is_branch_data");
 if (production && storagePrefix !== PRODUCTION_STORAGE_PREFIX) throw new Error("pr262_cron_production_storage_prefix_mismatch");
-
-// Railway can instantiate this config for every pull-request environment. Only
-// the dedicated PR262 branch lab may run a real preview scan; all other PR
-// previews must build successfully without polling providers, touching the
-// queue, or retaining any path to production notifications.
-if (preview && branch !== PR262_BRANCH) {
-  console.log(`[pr262-cron] preview_runtime_skipped branch=${branch || "unknown"} reason=non_pr262_branch`);
-  process.exit(0);
-}
 
 const projectedMonthlyCostUsd = Number(process.env.SWING_UP_PR262_PROJECTED_RAILWAY_MONTHLY_COST_USD);
 if (!deliveryTest && Number.isFinite(projectedMonthlyCostUsd) && projectedMonthlyCostUsd > 30) {

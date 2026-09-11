@@ -78,10 +78,12 @@ assert.equal(result.candidates[0].committeeApproved, false);
 assert.match(result.candidates[0].anchor, /^valuation-watchlist-buy_research-bank$/);
 assert.ok(result.candidates[0].links.some((link) => link.url === "https://www.tradingview.com/symbols/NYSE-BANK/"));
 assert.ok(result.candidates[0].links.some((link) => link.url.startsWith("https://www.sec.gov/edgar/search/")));
+assert.equal(cjsModule.exports.VALUATION_WATCHLIST_POLICY.publicSanitizedRead, true);
+assert.equal(cjsModule.exports.VALUATION_WATCHLIST_POLICY.internalDiagnosticsProtected, true);
 
 console.log(JSON.stringify({
   ok: true,
-  authenticatedRoutePayloadIsSanitized: true,
+  publicRoutePayloadIsSanitized: true,
   provisionalResearchCannotMasqueradeAsSeriousSignal: true,
   specialistModelIsVisible: true,
   livePriceOverlayIsVisible: true,

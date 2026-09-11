@@ -151,24 +151,111 @@ function money(value: number | null) {
   return value === null ? "—" : `$${value.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
 }
 
+function ValuationWatchlistPanel({
+  watchlist,
+  error,
+  loading,
+}: {
+  watchlist: ValuationWatchlist | null;
+  error: string | null;
+  loading: boolean;
+}) {
+  return (
+    <section id="valuation-watchlist" style={{ marginTop: 36 }}>
+      <div className="eyebrow">Live foundation research · no access key needed · not a Serious Signal</div>
+      <h2>Valuation Watchlist</h2>
+      <p>
+        These are apparent valuation opportunities from the daily foundation screen. They are shown immediately for research,
+        but they have not passed current-event evidence, all 14 Committee roles, or the Final Judge.
+      </p>
+      <p className="muted">
+        Permanent link: <a href="/serious-signals#valuation-watchlist">/serious-signals#valuation-watchlist</a> · refreshes within one minute of new R2 foundation or live-price data.
+      </p>
+      {error ? <section className="card"><strong>Watchlist unavailable:</strong> {error}</section> : null}
+      {watchlist ? (
+        <>
+          <div className="grid three">
+            <div className="card"><span className="muted">Provisional Buy / Sell / Risk</span><div className="kpi">{watchlist.summary.buyResearch} / {watchlist.summary.sellResearch} / {watchlist.summary.watchOutResearch}</div></div>
+            <div className="card"><span className="muted">Quality price watches</span><div className="kpi">{watchlist.summary.priceWatch}</div></div>
+            <div className="card"><span className="muted">Specialist sector model</span><div className="kpi">{watchlist.summary.specialistModelApplied}</div></div>
+          </div>
+          <p className="muted">
+            Foundation {watchlist.foundation.complete ? "complete" : "still building"}
+            {watchlist.foundation.completedAt ? ` · completed ${formatTime(watchlist.foundation.completedAt)}` : ""}
+            {watchlist.foundation.coverage?.percent !== null && watchlist.foundation.coverage?.percent !== undefined ? ` · ${watchlist.foundation.coverage.percent}% coverage` : ""}.
+            {watchlist.livePricing.available && watchlist.livePricing.checkedAt ? ` Live prices checked ${formatTime(watchlist.livePricing.checkedAt)}.` : ""}
+          </p>
+          {watchlist.candidates.length === 0 ? (
+            <section className="card"><h3>No provisional valuation candidate is available in the latest complete foundation run.</h3></section>
+          ) : (
+            <div className="grid">
+              {watchlist.candidates.map((item) => (
+                <article className="card alert-card" id={item.anchor} key={item.id}>
+                  <div className="button-row">
+                    <span className="badge">{watchlistLabel(item.action)}</span>
+                    <span className="badge">Not Committee approved</span>
+                    {item.specialistModelApplied ? <span className="badge">Sector specialist</span> : null}
+                    {item.livePriceAlert ? <span className="badge">{livePriceAlertLabel(item.livePriceAlert)}</span> : null}
+                  </div>
+                  <h3>{item.ticker} · {item.company}</h3>
+                  <p><strong>Current / conservative / base / optimistic:</strong> {money(item.currentPrice)} / {money(item.fairValue.conservative)} / {money(item.fairValue.base)} / {money(item.fairValue.optimistic)}</p>
+                  <p className="muted">Price checked {formatTime(item.priceObservedAt)}{item.livePriceFresh ? " · live sensor snapshot" : " · latest foundation snapshot"}.</p>
+                  {item.livePriceAlert ? <p><strong>Live market move:</strong> {item.livePriceAlert.changePercent !== null ? `${item.livePriceAlert.changePercent.toFixed(1)}%` : "change unavailable"}{item.livePriceAlert.relativeVolume !== null ? ` · ${item.livePriceAlert.relativeVolume.toFixed(1)}x relative volume` : ""}. This remains provisional research until current evidence and the Committee approve it.</p> : null}
+                  <p><strong>Quality / risk / evidence:</strong> {item.scores.quality ?? "—"} / {item.scores.risk ?? "—"} / {item.scores.evidence ?? "—"}</p>
+                  {item.reasons.length ? <p><strong>Why it reached the watchlist:</strong> {item.reasons.join(" ")}</p> : null}
+                  {item.blockers.length ? <p><strong>Why it is not a Serious Signal:</strong> {item.blockers.join(" ")}</p> : null}
+                  <div className="button-row">
+                    <a className="button" href={`/serious-signals#${item.anchor}`}>Link to this item</a>
+                    {item.links.map((link) => <a className="button" href={link.url} key={link.url} rel="noreferrer" target="_blank">{link.label}</a>)}
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+          {watchlist.truncated ? <p className="muted">More research candidates exist than this screen currently displays.</p> : null}
+        </>
+      ) : loading ? <section className="card">Loading the Valuation Watchlist…</section> : null}
+    </section>
+  );
+}
+
 export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
   const [token, setToken] = useState("");
   const [draftToken, setDraftToken] = useState("");
   const [feed, setFeed] = useState<LiveFeed | null>(null);
   const [watchlist, setWatchlist] = useState<ValuationWatchlist | null>(null);
   const [loading, setLoading] = useState(false);
+  const [watchlistLoading, setWatchlistLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [watchlistError, setWatchlistError] = useState<string | null>(null);
+
+  const loadWatchlist = useCallback(async (background = false) => {
+    if (!background) setWatchlistLoading(true);
+    try {
+      const response = await fetch("/api/public/valuation-watchlist?limit=60", { cache: "no-store" });
+      if (!response.ok) throw new Error("The Valuation Watchlist is temporarily unavailable.");
+      const payload = await response.json() as ValuationWatchlist;
+      if (!payload.ok
+        || payload.sanitized !== true
+        || payload.provisionalResearchOnly !== true
+        || !Array.isArray(payload.candidates)) {
+        throw new Error("The Valuation Watchlist response failed its safety check.");
+      }
+      setWatchlist(payload);
+      setWatchlistError(null);
+    } catch (caught) {
+      setWatchlistError(caught instanceof Error ? caught.message : "The Valuation Watchlist is temporarily unavailable.");
+    } finally {
+      if (!background) setWatchlistLoading(false);
+    }
+  }, []);
 
   const load = useCallback(async (readToken: string, background = false) => {
     if (!readToken) return;
     if (!background) setLoading(true);
     try {
       const headers = { "x-swing-up-serious-signal-read-token": readToken };
-      const [response, watchlistResponse] = await Promise.all([
-        fetch("/api/internal/serious-signal-status?hours=48&limit=100", { headers, cache: "no-store" }),
-        fetch("/api/internal/valuation-watchlist-status?limit=60", { headers, cache: "no-store" }),
-      ]);
+      const response = await fetch("/api/internal/serious-signal-status?hours=48&limit=100", { headers, cache: "no-store" });
       if (response.status === 404) throw new Error("The read-only access key was not accepted.");
       if (!response.ok) throw new Error("The live alert store is temporarily unavailable.");
       const payload = await response.json() as LiveFeed;
@@ -177,20 +264,6 @@ export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
       }
       setFeed(payload);
       setError(null);
-      if (watchlistResponse.ok) {
-        const watchlistPayload = await watchlistResponse.json() as ValuationWatchlist;
-        if (watchlistPayload.ok
-          && watchlistPayload.sanitized === true
-          && watchlistPayload.provisionalResearchOnly === true
-          && Array.isArray(watchlistPayload.candidates)) {
-          setWatchlist(watchlistPayload);
-          setWatchlistError(null);
-        } else {
-          setWatchlistError("The Valuation Watchlist response failed its safety check.");
-        }
-      } else {
-        setWatchlistError("The Valuation Watchlist is temporarily unavailable.");
-      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to load live Serious Signals.");
     } finally {
@@ -199,12 +272,19 @@ export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
   }, []);
 
   useEffect(() => {
+    if (!compact) void loadWatchlist();
     const saved = window.sessionStorage.getItem(TOKEN_STORAGE_KEY)?.trim() ?? "";
     if (!saved) return;
     setToken(saved);
     setDraftToken(saved);
     void load(saved);
-  }, [load]);
+  }, [compact, load, loadWatchlist]);
+
+  useEffect(() => {
+    if (compact) return;
+    const timer = window.setInterval(() => void loadWatchlist(true), 60_000);
+    return () => window.clearInterval(timer);
+  }, [compact, loadWatchlist]);
 
   useEffect(() => {
     if (!token) return;
@@ -229,31 +309,32 @@ export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
     setToken("");
     setDraftToken("");
     setFeed(null);
-    setWatchlist(null);
     setError(null);
-    setWatchlistError(null);
   }
 
   if (!token) {
     return (
-      <section className="card" aria-label="Connect to live Serious Signals">
-        <span className="badge">Real data only</span>
-        <h2>Connect the live Serious Signal feed</h2>
-        <p>This screen never substitutes examples or test alerts. The read-only key unlocks sanitized, Committee-approved results from R2.</p>
-        <form className="form" onSubmit={connect}>
-          <label htmlFor="serious-signal-read-token"><strong>Read-only access key</strong></label>
-          <input
-            id="serious-signal-read-token"
-            className="input"
-            type="password"
-            autoComplete="off"
-            value={draftToken}
-            onChange={(event) => setDraftToken(event.target.value)}
-            placeholder="Enter access key"
-          />
-          <button className="button primary" type="submit">Open live alerts</button>
-        </form>
-        {error ? <p role="alert"><strong>Unable to connect:</strong> {error}</p> : null}
+      <section aria-live="polite" aria-busy={watchlistLoading}>
+        {!compact ? <ValuationWatchlistPanel watchlist={watchlist} error={watchlistError} loading={watchlistLoading} /> : null}
+        <section className="card" aria-label="Connect to live Serious Signals" style={{ marginTop: 36 }}>
+          <span className="badge">Real data only</span>
+          <h2>Connect the Committee-approved Serious Signal feed</h2>
+          <p>The Valuation Watchlist above is public and needs no key. Only the private, Committee-approved alert record remains protected by its read-only access key.</p>
+          <form className="form" onSubmit={connect}>
+            <label htmlFor="serious-signal-read-token"><strong>Serious Signal read-only access key</strong></label>
+            <input
+              id="serious-signal-read-token"
+              className="input"
+              type="password"
+              autoComplete="off"
+              value={draftToken}
+              onChange={(event) => setDraftToken(event.target.value)}
+              placeholder="Enter access key"
+            />
+            <button className="button primary" type="submit">Open Committee-approved alerts</button>
+          </form>
+          {error ? <p role="alert"><strong>Unable to connect:</strong> {error}</p> : null}
+        </section>
       </section>
     );
   }
@@ -261,7 +342,10 @@ export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
   return (
     <section aria-live="polite" aria-busy={loading}>
       <div className="button-row">
-        <button className="button" type="button" onClick={() => void load(token)} disabled={loading}>
+        <button className="button" type="button" onClick={() => {
+          void load(token);
+          if (!compact) void loadWatchlist();
+        }} disabled={loading || watchlistLoading}>
           {loading ? "Refreshing…" : "Refresh now"}
         </button>
         <button className="button" type="button" onClick={disconnect}>Lock feed</button>
@@ -328,65 +412,9 @@ export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
           )}
           {feed.truncated ? <p className="muted">More verified records exist than this page currently displays.</p> : null}
 
-          {!compact ? (
-            <section id="valuation-watchlist" style={{ marginTop: 36 }}>
-              <div className="eyebrow">Live foundation research · not a Serious Signal</div>
-              <h2>Valuation Watchlist</h2>
-              <p>
-                These are apparent valuation opportunities from the daily foundation screen. They are shown immediately for research,
-                but they have not passed current-event evidence, all 14 Committee roles, or the Final Judge.
-              </p>
-              <p className="muted">
-                Permanent link: <a href="/serious-signals#valuation-watchlist">/serious-signals#valuation-watchlist</a> · refreshes within one minute of new R2 foundation or live-price data.
-              </p>
-              {watchlistError ? <section className="card"><strong>Watchlist unavailable:</strong> {watchlistError}</section> : null}
-              {watchlist ? (
-                <>
-                  <div className="grid three">
-                    <div className="card"><span className="muted">Provisional Buy / Sell / Risk</span><div className="kpi">{watchlist.summary.buyResearch} / {watchlist.summary.sellResearch} / {watchlist.summary.watchOutResearch}</div></div>
-                    <div className="card"><span className="muted">Quality price watches</span><div className="kpi">{watchlist.summary.priceWatch}</div></div>
-                    <div className="card"><span className="muted">Specialist sector model</span><div className="kpi">{watchlist.summary.specialistModelApplied}</div></div>
-                  </div>
-                  <p className="muted">
-                    Foundation {watchlist.foundation.complete ? "complete" : "still building"}
-                    {watchlist.foundation.completedAt ? ` · completed ${formatTime(watchlist.foundation.completedAt)}` : ""}
-                    {watchlist.foundation.coverage?.percent !== null && watchlist.foundation.coverage?.percent !== undefined ? ` · ${watchlist.foundation.coverage.percent}% coverage` : ""}.
-                    {watchlist.livePricing.available && watchlist.livePricing.checkedAt ? ` Live prices checked ${formatTime(watchlist.livePricing.checkedAt)}.` : ""}
-                  </p>
-                  {watchlist.candidates.length === 0 ? (
-                    <section className="card"><h3>No provisional valuation candidate is available in the latest complete foundation run.</h3></section>
-                  ) : (
-                    <div className="grid">
-                      {watchlist.candidates.map((item) => (
-                        <article className="card alert-card" id={item.anchor} key={item.id}>
-                          <div className="button-row">
-                            <span className="badge">{watchlistLabel(item.action)}</span>
-                            <span className="badge">Not Committee approved</span>
-                            {item.specialistModelApplied ? <span className="badge">Sector specialist</span> : null}
-                            {item.livePriceAlert ? <span className="badge">{livePriceAlertLabel(item.livePriceAlert)}</span> : null}
-                          </div>
-                          <h3>{item.ticker} · {item.company}</h3>
-                          <p><strong>Current / conservative / base / optimistic:</strong> {money(item.currentPrice)} / {money(item.fairValue.conservative)} / {money(item.fairValue.base)} / {money(item.fairValue.optimistic)}</p>
-                          <p className="muted">Price checked {formatTime(item.priceObservedAt)}{item.livePriceFresh ? " · live sensor snapshot" : " · latest foundation snapshot"}.</p>
-                          {item.livePriceAlert ? <p><strong>Live market move:</strong> {item.livePriceAlert.changePercent !== null ? `${item.livePriceAlert.changePercent.toFixed(1)}%` : "change unavailable"}{item.livePriceAlert.relativeVolume !== null ? ` · ${item.livePriceAlert.relativeVolume.toFixed(1)}x relative volume` : ""}. This remains provisional research until current evidence and the Committee approve it.</p> : null}
-                          <p><strong>Quality / risk / evidence:</strong> {item.scores.quality ?? "—"} / {item.scores.risk ?? "—"} / {item.scores.evidence ?? "—"}</p>
-                          {item.reasons.length ? <p><strong>Why it reached the watchlist:</strong> {item.reasons.join(" ")}</p> : null}
-                          {item.blockers.length ? <p><strong>Why it is not a Serious Signal:</strong> {item.blockers.join(" ")}</p> : null}
-                          <div className="button-row">
-                            <a className="button" href={`/serious-signals#${item.anchor}`}>Link to this item</a>
-                            {item.links.map((link) => <a className="button" href={link.url} key={link.url} rel="noreferrer" target="_blank">{link.label}</a>)}
-                          </div>
-                        </article>
-                      ))}
-                    </div>
-                  )}
-                  {watchlist.truncated ? <p className="muted">More research candidates exist than this screen currently displays.</p> : null}
-                </>
-              ) : loading ? <section className="card">Loading the Valuation Watchlist…</section> : null}
-            </section>
-          ) : null}
         </>
       ) : loading ? <section className="card">Loading the verified R2 feed…</section> : null}
+      {!compact ? <ValuationWatchlistPanel watchlist={watchlist} error={watchlistError} loading={watchlistLoading} /> : null}
     </section>
   );
 }

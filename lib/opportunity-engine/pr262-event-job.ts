@@ -59,6 +59,7 @@ const PROVIDER_RESERVATION_RETENTION_MS = 2 * 24 * 60 * 60_000;
 const FULL_SOURCE_MAX_BYTES = 500_000;
 const FULL_SOURCE_MAX_REDIRECTS = 3;
 const FULL_SOURCE_ABSOLUTE_TIMEOUT_MS = 15_000;
+const DNS_IPV4_FALLBACK_TIMEOUT_MS = 2_000;
 const FULL_SOURCE_CACHE_TTL_MS = 7 * 24 * 60 * 60_000;
 const FOUNDATION_ANALYSIS_MAX_AGE_MS = 30 * 60 * 60_000;
 
@@ -78,6 +79,11 @@ type ProviderReservation = ProviderBudgetReservation & {
 };
 type FullSourceHeaderProfile = "standard" | "compatibility";
 type FullSourceTransport = (url: URL, validatedAddresses: string[], headerProfile?: FullSourceHeaderProfile) => Promise<Response>;
+type BeforeFullSourceRequest = (request: {
+  url: string;
+  headerProfile: FullSourceHeaderProfile;
+  requestKind: "initial" | "redirect" | "compatibility";
+}) => Promise<void>;
 type EventLease = { eventId: string; ownerId: string; acquiredAt: string; expiresAt: string };
 type EventJobState = {
   version: 1;
@@ -612,7 +618,21 @@ async function validatedPublicHttpsUrl(raw: string, resolveHost: (hostname: stri
   return { url, addresses: addressesWithDualStackFallback.slice(0, 4) };
 }
 
-async function defaultResolveHost(hostname: string) {
+async function resolve4Within(hostname: string, timeoutMs = DNS_IPV4_FALLBACK_TIMEOUT_MS) {
+  return new Promise<string[]>((resolve) => {
+    let settled = false;
+    const finish = (addresses: string[]) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(addresses);
+    };
+    const timer = setTimeout(() => finish([]), timeoutMs);
+    void resolve4(hostname).then((addresses) => finish(addresses), () => finish([]));
+  });
+}
+
+async function defaultResolveHost(hostname: string, ipv4FallbackTimeoutMs = DNS_IPV4_FALLBACK_TIMEOUT_MS) {
   let lookupFailure: unknown = null;
   let addresses: string[] = [];
   try {
@@ -628,7 +648,7 @@ async function defaultResolveHost(hostname: string) {
   // still passes the same public-address validation and is pinned for the
   // request, so this does not weaken the SSRF or DNS-rebinding boundary.
   if (!addresses.some((address) => net.isIP(address) === 4)) {
-    const ipv4Fallback = await resolve4(hostname).catch(() => [] as string[]);
+    const ipv4Fallback = await resolve4Within(hostname, ipv4FallbackTimeoutMs);
     addresses = [...new Set([...addresses, ...ipv4Fallback])];
   }
 
@@ -822,6 +842,7 @@ async function fetchFullSource(
   now: Date,
   resolveHost: (hostname: string) => Promise<string[]>,
   transport?: FullSourceTransport,
+  beforeRequest?: BeforeFullSourceRequest,
 ) {
   const startedAt = Date.now();
   try {
@@ -832,6 +853,11 @@ async function fetchFullSource(
     let compatibilityRetryUsed = false;
     while (true) {
       const headerProfile: FullSourceHeaderProfile = compatibilityRetryUsed ? "compatibility" : "standard";
+      await beforeRequest?.({
+        url: current.toString(),
+        headerProfile,
+        requestKind: compatibilityRetryUsed ? "compatibility" : redirects > 0 ? "redirect" : "initial",
+      });
       response = transport
         ? await transport(current, validated.addresses, headerProfile)
         : await fetchImpl(current, {
@@ -890,6 +916,7 @@ async function fetchFullSource(
     };
     return { receipts: [enriched], providers: [provider], decisionGrade: true, diagnostics: { sourceTextBytes: bytes, sourceTextCharacters: sourceText.length, sourceBodyTruncated: truncated, redirects, compatibilityRetryUsed, finalUrl: current.toString(), ...evidence, officialPreserved } };
   } catch (error) {
+    if (error instanceof ProviderBudgetError || error instanceof RetryAtError) throw error;
     const message = safeFullSourceErrorTelemetry(error);
     const provider: ProviderResult = {
       provider: `pr262_full_source_${safeSegment(receipt.publisher)}`,
@@ -917,6 +944,7 @@ async function readDecisionGradeSource(
   now: Date,
   resolveHost: (hostname: string) => Promise<string[]>,
   fullSourceTransport: FullSourceTransport,
+  beforeFullSourceRequest?: BeforeFullSourceRequest,
 ) {
   if (event.source !== "sec") {
     if (event.source === "market_price") {
@@ -934,7 +962,44 @@ async function readDecisionGradeSource(
       };
       return { receipts: [receipt], providers: [provider], decisionGrade: false, diagnostics: { reason: "price_threshold_is_not_event_evidence" } };
     }
-    return fetchFullSource(receipt, event, company, ticker, fetchImpl, now, resolveHost, fullSourceTransport);
+    const urls = [...new Set([receipt.url, ...(event.alternateSourceUrls ?? [])])].slice(0, 5);
+    let last: Awaited<ReturnType<typeof fetchFullSource>> | null = null;
+    for (let index = 0; index < urls.length; index += 1) {
+      const candidateReceipt = index === 0 ? receipt : { ...receipt, url: urls[index] };
+      const result = await fetchFullSource(
+        candidateReceipt,
+        event,
+        company,
+        ticker,
+        fetchImpl,
+        now,
+        resolveHost,
+        fullSourceTransport,
+        beforeFullSourceRequest,
+      );
+      if (result.decisionGrade) {
+        return {
+          ...result,
+          diagnostics: {
+            ...result.diagnostics,
+            sourceUrlsAttempted: index + 1,
+            alternateSourceFallbackUsed: index > 0,
+          },
+        };
+      }
+      last = result;
+    }
+    return last ?? fetchFullSource(
+      receipt,
+      event,
+      company,
+      ticker,
+      fetchImpl,
+      now,
+      resolveHost,
+      fullSourceTransport,
+      beforeFullSourceRequest,
+    );
   }
   const details = await enrichSecFilingDetails(
     [receipt],
@@ -1777,7 +1842,8 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
     const cachedFullSource = !["sec", "market_price"].includes(resolved.event.source)
       ? await readCachedFullSource(resolved.event, now).catch(() => null)
       : null;
-    if (!["sec", "market_price"].includes(resolved.event.source) && !cachedFullSource) {
+    const beforeFullSourceRequest: BeforeFullSourceRequest = async (request) => {
+      const urlFingerprint = crypto.createHash("sha256").update(request.url).digest("hex").slice(0, 16);
       await reserveProviderCall({
         eventId: event.id,
         ownerId,
@@ -1785,14 +1851,15 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
         request: {
           provider: "pr262_full_source",
           quotaKey: "pr262_full_source_reads",
-          cadenceKey: `pr262_full_source:${event.id}`,
+          cadenceKey: `pr262_full_source:${event.id}:${urlFingerprint}:${request.headerProfile}`,
           checkedAt: now.toISOString(),
           rollingWindowMs: 24 * 60 * 60_000,
           maximumCallsInWindow: 100,
           minimumIntervalMs: FULL_SOURCE_RETRY_COOLDOWN_MS,
+          reservationUnits: 1,
         },
       });
-    }
+    };
     assertJobActive();
     const baseReceipt = eventReceipt(resolved.event, resolved.directoryEntry.company, resolved.directoryEntry.ticker);
     const [source, haltProvider, history] = await Promise.all([
@@ -1805,6 +1872,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
         now,
         input.resolveHost ?? defaultResolveHost,
         input.fullSourceTransport ?? pinnedHttpsTransport,
+        beforeFullSourceRequest,
       ),
       fetchNasdaqTradeHalts(quotaAwareFetch, now),
       loadOptionalHistoricalLibrary(),

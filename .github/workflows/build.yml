@@ -64,3 +64,35 @@ jobs:
 
       - name: Build application
         run: npm run build
+
+  growth:
+    name: Early access and publishing integration
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: growth_test_only
+          POSTGRES_DB: swing_up_growth_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:growth_test_only@127.0.0.1:5432/swing_up_growth_test?connection_limit=4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --no-audit --fund=false
+      - name: Apply the additive growth migration to the disposable database
+        run: npx prisma db execute --file prisma/migrations/20260914110000_early_access_growth/migration.sql --schema prisma/schema.prisma
+      - run: node scripts/growth-smoke.mjs
+      - run: node scripts/valuation-watchlist-feed-smoke.mjs
+      - run: node scripts/growth-integration-smoke.mjs

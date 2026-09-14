@@ -519,3 +519,76 @@ model MarketPriceSnapshot {
   @@index([ticker, dataQuality, capturedAt(sort: Desc)])
   @@map("market_price_snapshots")
 }
+
+// Early access is separate from product authentication. No password or payment data.
+model EarlyAccessLead {
+  id             String   @id @default(cuid())
+  email          String   @unique
+  goal           String   @default("")
+  planIntent     String   @default("free")
+  priceCents     Int      @default(0)
+  currency       String   @default("USD")
+  source         String   @default("direct")
+  content        String   @default("")
+  consentVersion String
+  consentedAt    DateTime @default(now())
+  verifiedAt     DateTime?
+  manageHash     String   @unique
+  createdAt      DateTime @default(now())
+  @@index([source, createdAt])
+}
+
+model GrowthVisit {
+  id        String   @id @default(cuid())
+  visitKey  String   @unique
+  source    String
+  content   String   @default("")
+  createdAt DateTime @default(now())
+  @@index([source, createdAt])
+}
+
+model GrowthRateLimit {
+  key       String   @id
+  count     Int      @default(1)
+  expiresAt DateTime
+  @@index([expiresAt])
+}
+
+model GrowthRuntime {
+  key         String   @id
+  leaseId     String   @default("")
+  leaseUntil  DateTime @default(now())
+  checkedAt   DateTime @default(now())
+  status      String   @default("starting")
+  detail      String   @default("")
+}
+
+model SocialSignal {
+  id          String   @id @default(cuid())
+  scheduleKey String   @unique
+  ticker      String
+  sourceId    String
+  snapshot    Json
+  scheduledAt DateTime
+  createdAt   DateTime @default(now())
+  deliveries  SocialDelivery[]
+  @@index([createdAt])
+  @@index([ticker, scheduledAt])
+}
+
+model SocialDelivery {
+  id             String   @id @default(cuid())
+  signalId       String
+  channel        String
+  caption        String
+  status         String   @default("awaiting_connection")
+  providerPostId String?
+  externalUrl    String?
+  failure        String?
+  checkedAt      DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  signal         SocialSignal @relation(fields: [signalId], references: [id], onDelete: Restrict)
+  @@unique([signalId, channel])
+  @@index([status, updatedAt])
+}

@@ -38,7 +38,7 @@ function pathMatches(path: string, prefix: string) {
 
 export function requiredInternalApiScope(path: string, method: string): InternalApiScope | null {
   const normalizedMethod = method.trim().toUpperCase();
-  if (path === SERIOUS_SIGNAL_STATUS_PATH || path === VALUATION_WATCHLIST_STATUS_PATH) return "serious_signal_read";
+  if (path === SERIOUS_SIGNAL_STATUS_PATH || path === VALUATION_WATCHLIST_STATUS_PATH || path === "/api/internal/growth") return "serious_signal_read";
   if (path === PR262_CRON_PATH && normalizedMethod === "POST") return "cron_runtime";
   if (path === PR262_SENSOR_HANDOFF_PATH && normalizedMethod === "POST") return "sensor_handoff";
   if (path === PR262_PRODUCTION_FOUNDATION_PATH && normalizedMethod === "POST") return "foundation_runtime";

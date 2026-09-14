@@ -1,16 +1,9 @@
 import Link from "next/link";
 
 const links = [
-  ["Dashboard", "/dashboard"],
-  ["Serious Signals", "/serious-signals"],
-  ["Alerts", "/alerts"],
+  ["Research", "/research"],
   ["Methodology", "/methodology"],
-  ["Ledger", "/ledger"],
-  ["Health", "/source-health"],
   ["Pricing", "/pricing"],
-  ["Support", "/support"],
-  ["Status", "/status"],
-  ["Admin", "/admin"],
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -20,7 +13,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <div className="nav-inner">
           <Link href="/" className="brand"><span className="logo">↗</span><span>Swing Up</span></Link>
           <nav className="nav-links">{links.map(([label, href]) => <Link key={href} href={href}>{label}</Link>)}</nav>
-          <div className="nav-actions"><Link className="button" href="/login">Log in</Link><Link className="button primary" href="/signup">Join</Link></div>
+          <div className="nav-actions"><Link className="button primary" href="/signup">Early access</Link></div>
         </div>
       </header>
       <main>{children}</main>

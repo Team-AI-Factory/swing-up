@@ -19,7 +19,7 @@ const candidate = {
   fairValue: { conservativeValue: 58, baseValue: 65, optimisticValue: 72, buyBelowPrice: 46, trimAbovePrice: 100, upsideToBasePercent: 62.5 },
   scores: { businessQuality: 82, risk: 28, evidenceCompleteness: 100, fairValueConfidence: 90 },
   decision: {
-    reasons: ["Applied bank specialist model instead of the generic corporate earnings/FCF framework."],
+    reasons: ["Applied bank specialist model instead of the generic corporate earnings/FCF framework.", "The price is 136.6% below the lowest fair-value estimate."],
     blockers: ["Current-event evidence and Committee review have not run."],
   },
 };
@@ -72,6 +72,7 @@ assert.equal(result.candidates[0].priceObservedAt, livePriceCheckedAt);
 assert.equal(result.candidates[0].livePriceFresh, true);
 assert.equal(result.candidates[0].livePriceAlert.threshold, "buy_price_crossed");
 assert.equal(result.candidates[0].fairValue.upsideToBasePercent, 54.76);
+assert.ok(result.candidates[0].reasons.every((reason) => !reason.includes("136.6% below")), "Historical upside must not be repeated as a discount");
 assert.equal(result.candidates[0].publicationStatus, "provisional_research_only");
 assert.equal(result.candidates[0].userAlertEligible, false);
 assert.equal(result.candidates[0].committeeApproved, false);

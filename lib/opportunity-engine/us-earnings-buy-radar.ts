@@ -410,8 +410,8 @@ function evaluateCandidate(
     ...(receipt ? [`Official ${receipt.form} earnings evidence was found from ${receipt.filingDate}; this lane did not depend on the generic news queue.`] : []),
     ...(strongReaction ? [`The stock reacted +${(quote.changePercent ?? 0).toFixed(1)}% in the live market, so the system investigated the cause directly.`] : []),
     ...(operatingGrowth ? [`Revenue growth is ${growth.revenue?.toFixed(1)}% and earnings growth is ${growth.earnings?.toFixed(1)}% on the stored company fundamentals.`] : []),
-    ...(baseMargin ? [`Reaching base fair value would require a ${(upsideToBase ?? 0).toFixed(1)}% rise from the current price after the reaction.`] : []),
-    ...(belowConservative ? [`Reaching the lowest accepted fair-value estimate would require a ${(upsideToConservative ?? 0).toFixed(1)}% rise from the current price.`] : []),
+    ...(baseMargin ? [`The current price remains ${(upsideToBase ?? 0).toFixed(1)}% below base fair value even after the reaction.`] : []),
+    ...(belowConservative ? [`The price is also ${(upsideToConservative ?? 0).toFixed(1)}% below the lowest accepted fair-value estimate.`] : []),
     ...(durable ? ["Five-year SEC normalization indicates repeatable profit and free-cash-flow quality rather than a one-quarter spike."] : []),
   ];
   const blockers = [

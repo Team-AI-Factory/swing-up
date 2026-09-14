@@ -4,7 +4,7 @@ import { AppShell } from "@/components/AppShell";
 
 export const metadata: Metadata = {
   title: "Swing Up",
-  description: "AI market radar with receipts",
+  description: "Know your moves before the market does. Provisional stock research with model valuations, reasoning and risk. Join Swing Up early access.",
   manifest: "/manifest.webmanifest",
   appleWebApp: {
     capable: true,

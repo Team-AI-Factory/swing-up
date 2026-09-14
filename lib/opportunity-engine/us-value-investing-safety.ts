@@ -214,7 +214,7 @@ export function hardenUsValueCompanyAnalysis(item: UsValueCompanyAnalysis): UsVa
     action = "buy";
     tier = "serious_foundation_buy";
     publicationStatus = "serious_internal_review_only";
-    reasons.push(`Current price $${assessed.currentPrice.toFixed(2)} is below every accepted valuation method and ${(diagnostics.conservativeUpsidePercent ?? 0).toFixed(1)}% below the lowest fair-value estimate.`);
+    reasons.push(`Current price $${assessed.currentPrice.toFixed(2)} is below every accepted valuation method; reaching the lowest fair-value estimate would require a ${(diagnostics.conservativeUpsidePercent ?? 0).toFixed(1)}% price rise.`);
     reasons.push(`Base fair value is $${assessed.fairValue.baseValue!.toFixed(2)}, implying ${(assessed.fairValue.upsideToBasePercent ?? 0).toFixed(1)}% potential upside before any new catalyst.`);
     reasons.push(`Business quality is ${assessed.scores.businessQuality}/100, risk is ${assessed.scores.risk}/100, and valuation-method spread is ${(diagnostics.methodSpreadPercent ?? 0).toFixed(1)}%.`);
   } else if (seriousSell) {

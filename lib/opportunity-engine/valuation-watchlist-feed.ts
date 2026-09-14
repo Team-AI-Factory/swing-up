@@ -55,6 +55,8 @@ function sanitizeReasons(value: unknown, maximum = 4) {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
       .map((item) => item.replace(/\s+/g, " ").trim().slice(0, 280))
+      // Older persisted screens mislabeled upside (denominator: price) as discount.
+      .filter((item) => !/\d+(?:\.\d+)?% below (?:the lowest|base)/i.test(item))
       .slice(0, maximum)
     : [];
 }
@@ -85,6 +87,13 @@ function sanitizeCandidate(item: UsValueCompanyAnalysis, action: WatchlistAction
     observedAt: item.observedAt,
     ticker,
     company: String(item.company ?? ticker).replace(/\s+/g, " ").trim().slice(0, 160),
+    currency: text(item.currency),
+    fundamentals: {
+      revenueGrowthTtmPercent: finite(item.fundamentals?.revenueGrowthTtmPercent),
+      netMarginPercent: finite(item.fundamentals?.netMarginPercent),
+      freeCashFlow: finite(item.fundamentals?.freeCashFlow),
+    },
+    valuationMethods: Array.isArray(item.fairValue?.methods) ? item.fairValue.methods.slice(0, 6).map((method) => ({ method: String(method.method).slice(0, 100), assumption: String(method.assumption).slice(0, 240) })) : [],
     sector: text(item.sector),
     industry: text(item.industry),
     action,
@@ -129,7 +138,7 @@ function arrayOfAnalyses(value: unknown) {
     : [];
 }
 
-export async function getValuationWatchlistStatus(options: { limit?: number } = {}) {
+export async function getValuationWatchlistStatus(options: { limit?: number; action?: WatchlistAction } = {}) {
   const requestedLimit = Number(options.limit ?? 60);
   const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(200, Math.floor(requestedLimit))) : 60;
   const [current, livePriceCurrent] = await Promise.all([
@@ -188,7 +197,8 @@ export async function getValuationWatchlistStatus(options: { limit?: number } = 
   const all = groups.flatMap(([action, items]) => items.map((item) => ({ action, item, rank: rank(item, action) })))
     .sort((left, right) => right.rank - left.rank)
     .flatMap(({ action, item }) => sanitizeCandidate(item, action, cycleId, livePrices.get(item.ticker.toUpperCase())) ?? []);
-  const candidates = all.slice(0, limit);
+  const filtered = options.action ? all.filter((item) => item.action === options.action) : all;
+  const candidates = filtered.slice(0, limit);
   const coverage = object(parsed.coverage);
   return {
     ok: true as const,
@@ -220,7 +230,7 @@ export async function getValuationWatchlistStatus(options: { limit?: number } = 
       specialistModelApplied: all.filter((item) => item.specialistModelApplied).length,
     },
     candidates,
-    truncated: all.length > candidates.length,
+    truncated: filtered.length > candidates.length,
     sanitized: true as const,
     provisionalResearchOnly: true as const,
     userAlertEligible: false as const,

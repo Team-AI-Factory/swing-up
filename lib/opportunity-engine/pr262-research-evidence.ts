@@ -146,7 +146,7 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
       updatedAt: now.toISOString(), lastCollectionAt: now.toISOString(), nextEvidenceCheckAt: null, quality },
       current.etag ? { expectedEtag: current.etag } : { createOnly: true });
   }
-  if (previousFollowup.status === "collecting_evidence" && (output.overallRecommendation === "reject" || input.approvedResultKey)) {
+  if ((previousFollowup.status === "collecting_evidence" || previousFollowup.status === "awaiting_committee_capacity") && (output.overallRecommendation === "reject" || input.approvedResultKey)) {
     const key = `${ROOT}/followups/${hash(eventId)}.json`;
     const current = await readVersionedTextFromR2(key);
     await writeVersionedJsonToR2(key, { ...previousFollowup, status: output.overallRecommendation === "reject" ? "rejected" : "completed",
@@ -184,7 +184,7 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
       const prior = current.found && current.text ? object(JSON.parse(current.text)) : {};
       const rows = Array.isArray(prior.alerts) ? prior.alerts.map(object) : [];
       const previous = rows.find(x => x.id === alert.id);
-      if (!paid && previous) {
+      if (!paid && previous && output.overallRecommendation !== "reject" && !input.approvedResultKey) {
         alert.committee = previous.committee as typeof alert.committee;
         alert.committeeApproved = previous.committeeApproved === true;
         alert.committeeStatus = collectionComplete && previous.committeeApproved !== true

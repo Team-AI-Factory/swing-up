@@ -9,12 +9,19 @@ const { PrismaClient } = nodeRequire("@prisma/client");
 const db = new PrismaClient();
 const day = new Date().toISOString().slice(0,10);
 const now = new Date(`${day}T16:01:00Z`);
+// Keep module clocks aligned with the injected scheduler time. Mixing real early-
+// morning writes with a simulated afternoon tick prematurely reconciles delivery.
+let testClock = now.getTime();
+class TestDate extends Date {
+  constructor(...args) { super(...(args.length ? args : [testClock])); }
+  static now() { return testClock; }
+}
 const cache = new Map();
 function load(file) {
   if (cache.has(file)) return cache.get(file).exports;
   const cjsModule = { exports: {} }; cache.set(file, cjsModule);
   const output = ts.transpileModule(readFileSync(file, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
-  new Function("require", "module", "exports", output)((name) => {
+  new Function("require", "module", "exports", "Date", output)((name) => {
     if (name === "@/lib/db/client") return { prisma: db };
     if (name === "@/lib/opportunity-engine/valuation-watchlist-feed") return { getValuationWatchlistStatus: async ({ action }) => ({ candidates: [1,2,3].map((i) => ({
       id: `test:${action}:${i}`, ticker: `${action === "buy_research" ? "BUY" : action === "sell_research" ? "SELL" : "RISK"}${i}`, company: "Test Fixture Company", currency: "USD", action,
@@ -24,7 +31,7 @@ function load(file) {
       fundamentals: { revenueGrowthTtmPercent: 8.2, netMarginPercent: 5.1 }, valuationMethods: [], links: [],
     })) }) };
     return name.startsWith("@/") ? load(resolve(name.slice(2) + ".ts")) : nodeRequire(name);
-  }, cjsModule, cjsModule.exports);
+  }, cjsModule, cjsModule.exports, TestDate);
   return cjsModule.exports;
 }
 process.env.SWING_UP_SERIOUS_SIGNAL_READ_TOKEN = "local-test-reader";
@@ -84,15 +91,16 @@ globalThis.fetch = async (_url, options) => {
 };
 try {
   const runtime = load(resolve("lib/growth/runtime.ts"));
-  const concurrent = await Promise.all([runtime.runGrowthTick(now), runtime.runGrowthTick(now)]);
+  const tick = (at) => { testClock = at.getTime(); return runtime.runGrowthTick(at); };
+  const concurrent = await Promise.all([tick(now), tick(now)]);
   assert.ok(concurrent.some((result) => result.status === "busy"), "Only one scheduler can lease a tick");
   assert.equal(mutations, 3, "A slot creates one post per channel");
   assert.equal(await db.socialSignal.count({ where: { scheduleKey: `${day}-2` } }), 1);
-  await runtime.runGrowthTick(new Date(now.getTime() + 60_000));
+  await tick(new Date(now.getTime() + 60_000));
   assert.equal(mutations, 3, "Repeated ticks never resend accepted or uncertain posts");
   assert.equal(await db.socialDelivery.count({ where: { status: "unknown" } }), 1);
   await db.socialDelivery.updateMany({ where: { status: "unknown" }, data: { checkedAt: new Date(now.getTime() - 3_600_000) } });
-  await runtime.runGrowthTick(new Date(now.getTime() + 2 * 3_600_000));
+  await tick(new Date(now.getTime() + 2 * 3_600_000));
   assert.equal(mutations, 3); assert.equal(reads, 1); assert.equal(await db.socialDelivery.count({ where: { status: "unknown" } }), 0);
   const record = await db.socialSignal.findFirst(); writeFileSync("/tmp/swing-up-test-card-id", record.id);
   console.log(JSON.stringify({ ok: true, checks: ["additive migration accepted by PostgreSQL", "concurrent signup uniqueness", "consent and price persisted", "repeat signup cannot overwrite preferences", "private deletion works", "rate limit enforced", "visits deduplicated", "owner dashboard protected", "concurrent scheduler lease", "one delivery per channel", "ambiguous timeout reconciled without resending"] }, null, 2));

@@ -45,6 +45,7 @@ const body = { cik: 1, facts: { "us-gaap": {
 } } };
 const enriched = await fundamentals.enrichCandidateFundamentals(candidate, async () => Response.json(body), now);
 assert.equal(enriched.candidate.eventMagnitude.relativeToCompany.ratioPercent, 10);
+assert.equal(enriched.candidate.eventMagnitude.relativeToCompany.companyPeriodEnd, "2025-12-31");
 assert.equal(enriched.candidate.eventMagnitude.relativeToCompany.eventMetricSourceReceiptId, "contract");
 assert.equal(enriched.candidate.gatePassed, true, "Real scale evidence must repair the earlier magnitude gap");
 const mismatch = await fundamentals.enrichCandidateFundamentals(structuredClone(candidate), async () => Response.json({ ...body, cik: 2 }), now);

@@ -140,6 +140,8 @@ export type EventMagnitudeEvidence = {
     eventValue: number;
     eventMetricSourceReceiptId?: string;
     companyValue: number;
+    companyPeriodEnd?: string | null;
+    companyFiledAt?: string | null;
     ratioPercent: number;
     sourceUrl: string;
   } | null;

@@ -63,7 +63,7 @@ function applyCompanyScale(candidate: ImpactCandidate, annualRevenue: ReturnType
     candidate.eventMagnitude.relativeToCompany = {
       metric: kind === "offering_shares" ? "shares_outstanding" : "annual_revenue",
       eventValue: metric.value, eventMetricSourceReceiptId: metric.sourceReceiptId,
-      companyValue: denominator.value, ratioPercent: metric.value / denominator.value * 100, sourceUrl,
+      companyValue: denominator.value, companyPeriodEnd: denominator.periodEnd, companyFiledAt: denominator.filedAt, ratioPercent: metric.value / denominator.value * 100, sourceUrl,
     };
   }
   return reassessCandidateAfterFundamentals(candidate, now);

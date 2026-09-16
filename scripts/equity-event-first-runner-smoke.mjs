@@ -288,6 +288,11 @@ const unresolved = await heldResearch("unknown direction", () => {
   candidate.receipts[0].summary = "The company published an earnings range without a prior comparison. ".repeat(5);
 });
 assert.equal(unresolved.selectedCandidate.direction, "unknown", "Unresolved must never be silently relabelled upside");
+await heldResearch("generic issuer event at the research boundary", () => {
+  candidateGatePassed = false; candidate.direction = "unknown";
+  candidate.eventFamily = "other_material"; candidate.materiality = 45; candidate.score = 55;
+  candidate.receipts[0].summary = "The issuer reports operating changes with uncertain financial effects. ".repeat(5);
+});
 restore();
 candidateGatePassed = false; candidate.mappingConfidence = 70;
 candidate.receipts[0].summary = "Substantive source text with an ambiguous issuer. ".repeat(6);

@@ -35,6 +35,21 @@ assert.equal(fundamentals.latestFact(facts, ["Revenues", "RevenueFromContractWit
 const receipt = { id: "contract", title: "Example Corp wins $100 million contract", summary: "Example Corp signed a committed $100 million contract for one year of services.", url: "https://issuer.example/contract", publisher: "Example Corp", publishedAt: now.toISOString(), channel: "direct_issuer_feed", official: true, primarySource: true, scheduled: false, symbolHints: ["EXM"], companyHints: ["Example Corp"], rawEventType: null };
 const universe = { entries: [{ ticker: "EXM", name: "Example Corp", aliases: ["Example Corp"], cik: "0000000001", exchange: "NASDAQ", securityType: "common_stock" }] };
 const macro = { regime: [] };
+const genericReceipt = { ...receipt, id: "generic-material", title: "Example Corp provides operating update", summary: "Example Corp describes changes to its operating structure, customer arrangements and expected resource needs. The update explains the affected business activities, while the net financial effect and investment direction remain uncertain." };
+assert.equal(analysis.buildImpactCandidates([genericReceipt], universe, macro, now).candidates.length, 0);
+const genericCandidate = analysis.buildImpactCandidates([genericReceipt], universe, macro, now, [], true).candidates[0];
+assert.ok(genericCandidate, "Substantive issuer events must reach the research admission check even without a recognized directional phrase");
+assert.equal(genericCandidate.eventFamily, "other_material");
+assert.equal(genericCandidate.materiality, 45);
+assert.ok(genericCandidate.score >= 55);
+assert.equal(genericCandidate.direction, "unknown");
+assert.equal(genericCandidate.gatePassed, false, "Research mapping must not make an unresolved event publishable");
+const unmappedReceipt = { ...genericReceipt, title: "Unlisted Enterprise provides operating update", summary: genericReceipt.summary.replaceAll("Example Corp", "Unlisted Enterprise"), publisher: "Unlisted Enterprise", symbolHints: ["ZZZZZ"], companyHints: ["Unlisted Enterprise"] };
+for (const inclusive of [false, true]) {
+  const unmapped = analysis.buildImpactCandidates([unmappedReceipt], universe, macro, now, [], inclusive);
+  assert.equal(unmapped.candidates.length, 0);
+  assert.equal(unmapped.diagnostics.unmapped, 1, "One unmapped receipt must count once in both admission modes");
+}
 const candidate = analysis.buildImpactCandidates([receipt], universe, macro, now, [], true).candidates[0];
 assert.ok(candidate);
 assert.equal(candidate.gatePassed, false, "A raw contract amount alone cannot establish company scale");

@@ -31,7 +31,8 @@ const testableSource = source
   .replace("async function readDecisionGradeSource(", "export async function readDecisionGradeSource(")
   .replace("function permanentlyUnreadableFullSource(", "export function permanentlyUnreadableFullSource(")
   .replace("async function readCachedFullSource(", "export async function readCachedFullSource(")
-  .replace("async function cacheFullSource(", "export async function cacheFullSource(");
+  .replace("async function cacheFullSource(", "export async function cacheFullSource(")
+  .replace("function retryableReport(", "export function retryableReport(");
 const output = ts.transpileModule(testableSource, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
 }).outputText;
@@ -251,6 +252,7 @@ const stubs = {
     runEquitySignalLab: async (input) => {
       runnerCalls += 1;
       assert.ok(input.signal instanceof AbortSignal, "The paid Committee must inherit the event-job deadline signal");
+      assert.equal(input.allowIncompleteCommitteeReview, true);
       assert.equal(input.requirePilotBeforeOpenAi, false, "Historical cases must remain optional context rather than a committee gate");
       assert.equal(input.targetedContext.universe.entries.length, 1, "Only one company may enter the runner");
       assert.equal(input.targetedContext.universe.entries[0].cik, "0001234567", "Exact CIK must survive");
@@ -1176,6 +1178,13 @@ assert.equal("committeeReservations" in objects.get(PR262_EVENT_JOB_KEYS.STATE_K
 assert.ok(objects.get(PR262_EVENT_JOB_KEYS.PROVIDER_BUDGET_KEY).value.reservations.length >= legacyProviderReservations.length, "Legacy provider reservations must survive the runtime-state split.");
 assert.ok(objects.get(PR262_EVENT_JOB_KEYS.COMMITTEE_BUDGET_KEY).value.reservations.length >= legacyCommitteeReservations.length, "Legacy Committee reservations must survive the runtime-state split.");
 
+
+assert.equal(cjsModule.exports.retryableReport({ status: "candidate_needs_more_data", openAiCalled: true,
+  researchReview: { admitted: true }, committee: { ok: true, agentsCompleted: 14, agentsFailed: 0, output: { overallRecommendation: "needs_more_data" } } }, true), true,
+  "A completed Committee asking for missing data must remain retryable");
+assert.equal(cjsModule.exports.retryableReport({ status: "candidate_needs_more_data", openAiCalled: true,
+  researchReview: { admitted: true }, committee: { ok: true, agentsCompleted: 14, agentsFailed: 0, output: { overallRecommendation: "reject" } } }, true), false,
+  "A substantive Committee rejection must not consume repeated paid reviews");
 console.log(JSON.stringify({
   ok: true,
   exactCikCompanyOnly: true,

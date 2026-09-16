@@ -257,4 +257,50 @@ assert.equal(paidCommitteeFailure.openAiCalled, true, "A failure after paid-comm
 assert.equal(paidCommitteeFailure.candidateFingerprint, "event-fingerprint");
 committeeThrows = false;
 
+
+const researchInput = {
+  now: new Date("2026-07-22T10:00:00.000Z"), allowOpenAi: true, allowIncompleteCommitteeReview: true,
+  beforeOpenAiCall: async () => true,
+  targetedContext: { universe: targetedUniverse, receipts: [receipt], providers: [provider("targeted_full_source"), haltProvider], historicalSignalsComplete: true },
+};
+const originalCandidate = structuredClone(candidate);
+const restore = () => { Object.assign(candidate, structuredClone(originalCandidate)); candidateGatePassed = true; quoteActionable = true; };
+const heldResearch = async (label, change, overrides = {}) => {
+  restore(); change();
+  const result = await runEquitySignalLab({ ...researchInput, ...overrides });
+  assert.equal(result.openAiCalled, true, `${label} must reach Committee`);
+  assert.equal(result.seriousSignalFound, false, `${label} must not become an alert even if mocked Committee approves`);
+  assert.equal(result.alertType, null);
+  assert.equal(result.researchReview.publicationHeld, true);
+  assert.ok(result.researchReview.gaps.length > 0);
+  return result;
+};
+await heldResearch("stale price", () => { quoteActionable = false; });
+await heldResearch("missing price", () => { candidate.quote = null; });
+await heldResearch("unknown halt state", () => {}, { targetedContext: { ...researchInput.targetedContext, providers: [provider("targeted_full_source")] } });
+await heldResearch("partial source", () => {}, { targetedContext: { ...researchInput.targetedContext, sourceEvidenceIncomplete: true } });
+await heldResearch("materiality near miss", () => {
+  candidateGatePassed = false; candidate.score = 60; candidate.materiality = 55;
+  candidate.receipts[0].summary = "A documented issuer event has an uncertain financial effect. ".repeat(6);
+});
+const unresolved = await heldResearch("unknown direction", () => {
+  candidateGatePassed = false; candidate.direction = "unknown";
+  candidate.receipts[0].summary = "The company published an earnings range without a prior comparison. ".repeat(5);
+});
+assert.equal(unresolved.selectedCandidate.direction, "unknown", "Unresolved must never be silently relabelled upside");
+restore();
+candidateGatePassed = false; candidate.mappingConfidence = 70;
+candidate.receipts[0].summary = "Substantive source text with an ambiguous issuer. ".repeat(6);
+const ambiguous = await runEquitySignalLab(researchInput);
+assert.equal(ambiguous.openAiCalled, false, "Wrong-company risk must still block admission");
+restore(); candidateGatePassed = false;
+const headlineOnly = await runEquitySignalLab(researchInput);
+assert.equal(headlineOnly.openAiCalled, false, "A headline alone must not consume a full Committee");
+restore();
+const reservationDenied = await runEquitySignalLab({ ...researchInput, beforeOpenAiCall: async () => false });
+assert.equal(reservationDenied.openAiCalled, false, "Research cannot bypass the shared spending reservation");
+const duplicate = await runEquitySignalLab({ ...researchInput, skipOpenAiCandidateFingerprints: ["event-fingerprint"] });
+assert.equal(duplicate.openAiCalled, false);
+const ready = await runEquitySignalLab(researchInput);
+assert.equal(ready.status, "serious_buy", "Complete current evidence retains its approved publication route");
 console.log(JSON.stringify({ ok: true, eventQualifiedAtZeroPercentMove: true, cryptoDisabled: true, priorMoveNotRequired: true, strictCommitteeStillRequired: true, historyNeverBlocksCurrentEvidence: true, targetedCurrentEvidenceCanReachCommitteeWithoutHistory: true, paidCommitteeFailureRetainsCostReservation: true, staleQuoteCannotBecomeActionable: true, unknownHaltStateForcesWatch: true, historyStillStoredAndRefined: true, strongHistoryStillImprovesForecastContext: true, noWritesOrPublishing: true }, null, 2));

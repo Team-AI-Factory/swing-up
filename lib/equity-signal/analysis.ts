@@ -874,6 +874,7 @@ function canonicalRootEventIdentity(cluster: MappedEvent[], eventMagnitude: Even
 }
 
 export const PERMISSION_GATE_KEYS = [
+  "directionResolved",
   "verifiedEventTruth",
   "reliableTickerMapping",
   "materialEvent",
@@ -1042,7 +1043,7 @@ function candidateFromCluster(cluster: MappedEvent[], macro: MacroContext, histo
     macroRegime: macro.regime,
     asOf: now.toISOString(),
     featuresAsOf: now.toISOString(),
-  }, historicalSignals);
+  }, classification.direction === "unknown" ? [] : historicalSignals);
   // Historical outcomes are optional supporting context. They must never block a
   // current verified event or turn absence of history into contradictory evidence.
   const contradiction = 0;
@@ -1050,7 +1051,7 @@ function candidateFromCluster(cluster: MappedEvent[], macro: MacroContext, histo
   const pricedInPenalty = 0;
   const gate = eventFirstGate({ eventTruth, mappingConfidence, materiality, transmissionConfidence, fresh, primarySource, independentPublishers: publishers.size, unresolvedSevereContradiction: false, rumour });
   const score = computeEventFirstStrength({ eventTruth, mappingConfidence, materiality, transmissionConfidence, historicalSupport, evidenceIndependence, contradictionPenalty: contradiction, pricedInPenalty, rumour });
-  const direction = anchor.classification.direction === "downside" ? "downside" : "upside";
+  const direction = anchor.classification.direction;
   const knockOnCausalPathVerified = relationship === "direct"
     || (causalExposure.eligibleForSeriousSignal
       && mappingConfidence >= 95
@@ -1058,6 +1059,7 @@ function candidateFromCluster(cluster: MappedEvent[], macro: MacroContext, histo
       && causalChain.length >= 3);
   const gateChecks = {
     ...gate.checks,
+    directionResolved: direction !== "unknown",
     knockOnCausalPathVerified,
     eventMagnitudeActionable: eventMagnitudeActionable(classification.family, eventMagnitude, receipts),
     currentEvidenceScoreAtLeast72: score >= 72,
@@ -1104,7 +1106,7 @@ function candidateFromCluster(cluster: MappedEvent[], macro: MacroContext, histo
   };
 }
 
-export function buildImpactCandidates(receipts: EventReceipt[], universe: EquityUniverseSnapshot, macro: MacroContext, now: Date, historicalSignals: HistoricalSignalRecord[] = []) {
+export function buildImpactCandidates(receipts: EventReceipt[], universe: EquityUniverseSnapshot, macro: MacroContext, now: Date, historicalSignals: HistoricalSignalRecord[] = [], includeResearchCandidates = false) {
   const index = buildIndex(universe.entries);
   const mapped: MappedEvent[] = [];
   let noiseRejected = 0;
@@ -1114,7 +1116,8 @@ export function buildImpactCandidates(receipts: EventReceipt[], universe: Equity
     if (NOISE.test(receipt.title) && !receipt.primarySource) { noiseRejected += 1; continue; }
     const classification = classify(receipt);
     const direct = mapDirect(receipt, index);
-    if (classification.direction !== "unknown") {
+    if (classification.direction === "unknown") directionUnknown += 1;
+    if (classification.direction !== "unknown" || (includeResearchCandidates && classification.materiality >= 55)) {
       for (const value of direct) {
         const causalExposure = directExposure(receipt, classification, value.equity);
         const relationship = causalExposure.status === "direct_issuer" ? "direct" as const : "second_order" as const;
@@ -1128,7 +1131,7 @@ export function buildImpactCandidates(receipts: EventReceipt[], universe: Equity
           relationship,
           mappingConfidence: Math.min(value.confidence, causalExposure.confidence),
           causalChain: relationship === "direct"
-            ? [classification.terms[0] || "verified company event", "revenue/cost/capital or valuation impact", `${value.equity.ticker} expected ${classification.direction} sensitivity`]
+            ? [classification.terms[0] || "verified company event", "revenue/cost/capital or valuation impact", classification.direction === "unknown" ? "Investment direction unresolved; Committee research required" : `${value.equity.ticker} expected ${classification.direction} sensitivity`]
             : [classification.terms[0] || "verified external event", causalExposure.evidenceText, `${value.equity.ticker} explicitly evidenced ${mappedClassification.direction} company effect`],
           causalExposure,
         });
@@ -1136,7 +1139,7 @@ export function buildImpactCandidates(receipts: EventReceipt[], universe: Equity
       const ripples = rippleMappings(receipt, classification, index);
       mapped.push(...ripples);
       if (!direct.length && !ripples.length) unmapped += 1;
-    } else directionUnknown += 1;
+    }
     if (classification.direction === "unknown" && !direct.length) unmapped += 1;
   }
   const clusters: MappedEvent[][] = [];
@@ -1149,6 +1152,7 @@ export function buildImpactCandidates(receipts: EventReceipt[], universe: Equity
     const severeContradiction = candidates.some((other) => other !== candidate
       && other.ticker === candidate.ticker
       && other.eventFamily === candidate.eventFamily
+      && other.direction !== "unknown" && candidate.direction !== "unknown"
       && other.direction !== candidate.direction
       && other.mappingConfidence >= 95
       && other.causalExposure.status !== "generic_sector_proxy"
@@ -1244,6 +1248,7 @@ export function reassessCandidateAfterFundamentals(candidate: ImpactCandidate | 
   candidate.gateChecks = {
     ...candidate.gateChecks,
     ...gate.checks,
+    directionResolved: candidate.direction !== "unknown",
     knockOnCausalPathVerified: candidate.relationship === "direct"
       || (candidate.causalExposure.eligibleForSeriousSignal
         && candidate.mappingConfidence >= 95

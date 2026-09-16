@@ -1018,6 +1018,7 @@ async function executePost(request: NextRequest) {
     historicalSignals: mergeHistoricalSignals(historicalLibrary.library.records, historicalSignalRecords(history)),
     skipOpenAiCandidateFingerprints: reviewedFingerprints,
     beforeOpenAiCall: async (candidate) => {
+      if (candidate.direction === "unknown") return false;
       const reservationNow = Date.now();
       if (!r2StateReady(storage) || openAiAttemptsInWindow(history, reservationNow, 24 * 60 * 60 * 1000) >= MAX_OPENAI_RUNS_PER_24_HOURS) return false;
       if (reviewedFingerprintsInWindow(history, reservationNow, OPENAI_EVIDENCE_COOLDOWN_MS).includes(candidate.candidateFingerprint)) return false;

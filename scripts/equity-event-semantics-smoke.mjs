@@ -1400,6 +1400,17 @@ assert.equal(archivedProof.title, archivedOnlyFinding.eventHeadline);
 assert.equal(archivedProof.publisher, "Official Source");
 assert.match(archivedProof.url, /^https:\/\/official\.example\/investigation-/);
 
+
+const researchEarnings = analysis.buildImpactCandidates([receipt({
+  title: "Conmed forecasts 2026 adjusted EPS of $4.48 to $4.60 while targeting 5% to 6% organic growth",
+  summary: "Management reported a guidance range without a verified comparison to prior guidance. ".repeat(4),
+  symbolHints: ["CNMD"], companyHints: ["CONMED Corp"],
+})], universe, macro, new Date("2026-07-22T13:00:00.000Z"), [], true);
+assert.equal(researchEarnings.candidates.length, 1);
+assert.equal(researchEarnings.candidates[0].direction, "unknown");
+assert.equal(researchEarnings.candidates[0].gatePassed, false);
+assert.equal(researchEarnings.candidates[0].gateChecks.directionResolved, false);
+assert.equal(researchEarnings.candidates[0].historicalAnalog.sampleSize, 0);
 console.log(JSON.stringify({
   ok: true,
   warAnniversaryRejected: true,

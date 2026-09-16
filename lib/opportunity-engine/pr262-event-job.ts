@@ -69,7 +69,7 @@ type CommitteeReservation = {
   candidateFingerprint: string;
   reservedAt: string;
   ticker: string;
-  direction: "upside" | "downside";
+  direction: "upside" | "downside" | "unknown";
 };
 type ProviderReservation = ProviderBudgetReservation & {
   provider: string;
@@ -215,7 +215,7 @@ function normalizeState(value: unknown, now: Date): EventJobState {
           && typeof reservation.candidateFingerprint === "string"
           && typeof reservation.reservedAt === "string"
           && typeof reservation.ticker === "string"
-          && (reservation.direction === "upside" || reservation.direction === "downside")
+          && (reservation.direction === "upside" || reservation.direction === "downside" || reservation.direction === "unknown")
           && now.getTime() - Date.parse(reservation.reservedAt) < 31 * 24 * 60 * 60_000;
       })
     : [];
@@ -474,7 +474,7 @@ async function reserveCommitteeCall(input: {
   eventId: string;
   ownerId: string;
   now: Date;
-  reservation: { candidateFingerprint: string; ticker: string; direction: "upside" | "downside" };
+  reservation: { candidateFingerprint: string; ticker: string; direction: "upside" | "downside" | "unknown" };
 }) {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
@@ -1383,6 +1383,8 @@ function compactAnalysisDiagnostics(report: Json) {
       candidatesSkippedBecauseRecentlyReviewed: finiteDiagnosticNumber(funnel.candidatesSkippedBecauseRecentlyReviewed),
       unreviewedCandidatesAvailable: finiteDiagnosticNumber(funnel.unreviewedCandidatesAvailable),
       committeeCandidates: finiteDiagnosticNumber(funnel.committeeCandidates),
+      researchEligibleCandidates: finiteDiagnosticNumber(funnel.researchEligibleCandidates),
+      researchAdmissionEnabled: funnel.researchAdmissionEnabled === true,
     },
     noSignalReason: text(report.noSignalReason),
     topNearMiss: topTicker ? {
@@ -1448,6 +1450,7 @@ function committeeApproved(report: Json, pointer: Json) {
     && text(candidate.evidenceFingerprint) !== null
     && candidate.evidenceFingerprint === report.candidateFingerprint
     && candidate.direction === (report.alertType === "buy" ? "upside" : "downside")
+    && object(report.researchReview).publicationHeld !== true
     && candidate.gatePassed === true
     && Number(candidate.eventTruth) >= 80
     && Number(candidate.mappingConfidence) >= 95
@@ -1656,6 +1659,8 @@ function retryableReport(report: Json, allowOpenAi: boolean) {
   const halt = object(report.tradingHaltSafety);
   if (report.openAiCalled === true
     && (committee.ok !== true || Number(committee.agentsCompleted) !== 14 || Number(committee.agentsFailed) !== 0)) return true;
+  if (status === "candidate_needs_more_data" && object(report.researchReview).admitted === true
+    && object(committee.output).overallRecommendation !== "reject") return true;
   if (status === "qualified_event_market_quote_unavailable") return true;
   if (status === "qualified_event_watch_only"
     && (halt.currentStateKnown !== true || quote.actionableForSeriousSignal !== true)) return true;
@@ -1889,7 +1894,9 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
     const sourceExpiredWithoutEvidence = !source.decisionGrade
       && event.source !== "market_price"
       && (eventAgeMs > 48 * 60 * 60_000 || permanentlyUnreadableFullSource(sourceFailureReason, event));
-    if (!source.decisionGrade && event.source !== "market_price" && !sourceExpiredWithoutEvidence) {
+    const researchSourceUsable = !sourceExpiredWithoutEvidence && event.source !== "market_price"
+      && source.receipts.some((receipt) => (receipt.summary?.trim().length ?? 0) >= 200);
+    if (!source.decisionGrade && !researchSourceUsable && event.source !== "market_price" && !sourceExpiredWithoutEvidence) {
       throw new RetryAtError(null, `pr262_event_full_source_incomplete:${sourceFailureReason ?? "temporary_source_failure"}`);
     }
     let companyRefresh: Awaited<ReturnType<typeof refreshAffectedCompany>> | null = null;
@@ -1961,7 +1968,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       assertJobActive();
       return decision.allowed;
     };
-    const effectiveAllowOpenAi = allowOpenAi && source.decisionGrade && !sourceExpiredWithoutEvidence;
+    const effectiveAllowOpenAi = allowOpenAi && (source.decisionGrade || researchSourceUsable) && !sourceExpiredWithoutEvidence;
     const report = sourceExpiredWithoutEvidence
       ? object({
           ok: true,
@@ -1982,6 +1989,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
         })
       : object(await runEquitySignalLab({
           allowOpenAi: effectiveAllowOpenAi,
+          allowIncompleteCommitteeReview: true,
           fetchImpl: quotaAwareFetch,
           signal: jobAbort.signal,
           now,
@@ -1990,6 +1998,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
           beforeOpenAiCall,
           targetedContext: {
             universe: exactIssuerUniverse(resolved, now),
+            sourceEvidenceIncomplete: !source.decisionGrade,
             receipts: eventReceipts,
             providers: [...source.providers, haltProvider],
             secFilingDetails: object(source.diagnostics),

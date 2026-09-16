@@ -272,7 +272,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
             const reserved = await reservePr262AiCommitteeBudget({
               candidateFingerprint: reservation.candidateFingerprint,
               ticker: reservation.ticker,
-              direction: reservation.direction,
+              direction: reservation.direction === "unknown" ? null : reservation.direction,
             });
             aiCostResults.push(asJson(reserved));
             aiReservationRetryAt = typeof reserved.nextRetryAt === "string" ? reserved.nextRetryAt : null;

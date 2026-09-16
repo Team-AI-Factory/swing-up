@@ -71,7 +71,8 @@
     "smoke:equity-event-sources": "node scripts/equity-event-sources-smoke.mjs",
     "smoke:ai-committee-crypto-policy": "node scripts/ai-committee-crypto-policy-smoke.mjs",
     "smoke:ai-committee-provider-guardrails": "node scripts/ai-committee-provider-guardrails-smoke.mjs",
-    "smoke:branch-lab-policy": "node scripts/branch-signal-lab-policy-smoke.mjs"
+    "smoke:branch-lab-policy": "node scripts/branch-signal-lab-policy-smoke.mjs",
+    "smoke:inclusive-committee-quality": "node scripts/inclusive-committee-quality-smoke.mjs"
   },
   "dependencies": {
     "next": "^15.1.3",

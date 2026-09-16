@@ -140,6 +140,8 @@ export type EventMagnitudeEvidence = {
     eventValue: number;
     eventMetricSourceReceiptId?: string;
     companyValue: number;
+    companyPeriodEnd?: string | null;
+    companyFiledAt?: string | null;
     ratioPercent: number;
     sourceUrl: string;
   } | null;
@@ -166,7 +168,7 @@ export type ImpactCandidate = {
   cik: string | null;
   rootEventKey: string;
   eventFamily: EventFamily;
-  direction: Exclude<EventDirection, "mixed" | "unknown">;
+  direction: Exclude<EventDirection, "mixed">;
   relationship: "direct" | "second_order" | "third_order";
   eventHeadline: string;
   whatHappened: string;
@@ -200,7 +202,7 @@ export type ImpactCandidate = {
     checkedAt: string | null;
     latestFiledAt: string | null;
     fiscalPeriodEnd: string | null;
-    items: Array<{ metric: string; value: number; unit: string; filedAt: string | null; periodEnd: string | null; form: string | null }>;
+    items: Array<{ metric: string; value: number; unit: string; periodStart?: string | null; filedAt: string | null; periodEnd: string | null; form: string | null }>;
     error: string | null;
   } | null;
   historicalAnalog: HistoricalAnalogAnalysis & { source: string };

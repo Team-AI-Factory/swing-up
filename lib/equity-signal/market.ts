@@ -329,8 +329,9 @@ export async function enrichCandidateQuotes(
   now: Date,
   maximum = 3,
   outcomeTickers: string[] = [],
+  researchTickers: string[] = [],
 ) {
-  const qualified = candidates.filter((candidate) => candidate.gatePassed).slice(0, maximum);
+  const qualified = candidates.filter((candidate) => candidate.gatePassed || researchTickers.includes(candidate.ticker)).slice(0, maximum);
   const shadow = candidates
     .filter((candidate) => candidate.trackingDisposition === "shadow_near_miss")
     .slice(0, 2);
@@ -353,7 +354,7 @@ export async function enrichCandidateQuotes(
   const quotesByTicker = new Map(settled.map((item) => [item.ticker, quoteForConsumer(item.outcome, now)]));
   for (const candidate of shortlisted) {
     candidate.quote = quotesByTicker.get(candidate.ticker) ?? null;
-    recordDirectionalRepricing(candidate);
+    if (candidate.direction !== "unknown") recordDirectionalRepricing(candidate);
   }
   const statuses = settled.map((item) => item.outcome.status);
   const connected = settled.filter((item) => item.outcome.quote && item.outcome.status === "connected");

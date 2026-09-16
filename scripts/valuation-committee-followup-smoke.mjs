@@ -113,3 +113,11 @@ for (let i = 100; i < 130; i++) assert.equal(await evidence.reserveRejectionAudi
 
 const unconfirmedCurrency = valuationHelpers.buildValuationCandidate({ ...analysis, currency: null }, "0000000001", receipt, now);
 assert.equal(unconfirmedCurrency.gateChecks.valuationCurrencyConfirmed, false, "Unknown currency can be researched but cannot certify a price-to-value comparison");
+
+const staleEventAlert = { kind: "event", createdAt: now.toISOString(), eventObservedAt: "2026-09-12T15:00:00Z" };
+assert.equal(evidence.isResearchAlertCurrent(staleEventAlert, now.getTime()), false, "Retrying today cannot renew a four-day-old event");
+assert.equal(evidence.isResearchAlertCurrent({ ...staleEventAlert, eventObservedAt: "2026-09-16T14:00:00Z" }, now.getTime()), true);
+assert.equal(evidence.isResearchAlertCurrent({ kind: "valuation", createdAt: now.toISOString(), eventObservedAt: now.toISOString(), valuationObservedAt: "2026-09-15T14:59:00Z" }, now.getTime()), false, "A fresh retry cannot renew an expired valuation snapshot");
+assert.equal(evidence.isResearchAlertCurrent({ kind: "valuation", valuationObservedAt: now.toISOString() }, now.getTime()), true);
+assert.equal(evidence.isResearchAlertCurrent({ kind: "event", createdAt: now.toISOString() }, now.getTime()), false, "An update timestamp cannot substitute for missing evidence time");
+assert.equal(evidence.isResearchAlertCurrent({ kind: "event", eventObservedAt: "2026-09-17T15:00:00Z" }, now.getTime()), false);

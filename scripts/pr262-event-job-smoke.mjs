@@ -1231,3 +1231,18 @@ console.log(JSON.stringify({
   shortRenewableLeaseAndDeadlineRecovery: true,
   legacyEventLedgerCompactedWithoutLosingIdempotency: true,
 }, null, 2));
+
+targetedValueBudgetAllowed = false;
+runnerResultMode = "serious";
+committeeFingerprint = "fingerprint-approved-foundation-fallback";
+setSecEventIdentity("000099", "2026-08-11T10:14:00.000Z");
+const approvedFoundationFallback = await runPr262EventJob({ now: new Date("2026-08-11T10:15:00.000Z"), allowOpenAi: true });
+assert.equal(approvedFoundationFallback.seriousSignalFound, true);
+const approvedFallbackPayload = objects.get(approvedFoundationFallback.resultKey).value;
+assert.equal(approvedFallbackPayload.companyRefresh, null, "The test must exercise a quota-blocked targeted refresh");
+assert.deepEqual(approvedFallbackPayload.valuationAnalysis, lastStoredCompanyAnalysis, "Persist the exact valuation used by the Committee");
+const fallbackEvidence = loadTsModule("@/lib/opportunity-engine/pr262-research-evidence", stubs);
+const fallbackPublicAlert = (await fallbackEvidence.readResearchAlerts()).find(row => row.eventId === event.id);
+assert.equal(fallbackPublicAlert.committeeApproved, true);
+assert.equal(fallbackPublicAlert.fairValue, analysis.fairValue.baseValue, "Finalizing approval must not erase the fallback fair value");
+assert.equal(fallbackPublicAlert.valuationObservedAt, analysis.observedAt, "Finalizing approval must retain the original valuation time");

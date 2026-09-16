@@ -1,14 +1,13 @@
 import { NextResponse } from "next/server";
 import { getValuationWatchlistStatus } from "@/lib/opportunity-engine/valuation-watchlist-feed";
-import { readResearchAlerts, readEvidenceQuality } from "@/lib/opportunity-engine/pr262-research-evidence";
+import { readResearchAlerts, readEvidenceQuality, isResearchAlertCurrent } from "@/lib/opportunity-engine/pr262-research-evidence";
 
 export const dynamic = "force-dynamic";
 export async function GET() {
   try {
     const [valuation, reviewed, dataQuality] = await Promise.all([getValuationWatchlistStatus({ limit: 200 }), readResearchAlerts(), readEvidenceQuality()]);
     const now = Date.now();
-    const recent = reviewed.filter(r => Number.isFinite(Date.parse(String(r.createdAt)))
-      && now - Date.parse(String(r.createdAt)) <= (r.kind === "valuation" ? 24 : 72) * 3600000);
+    const recent = reviewed.filter(r => isResearchAlertCurrent(r, now));
     const reviewedValuations = new Set(recent.filter(r => r.kind === "valuation").map(r => String(r.ticker)));
     const events = recent.filter(r => r.userAlertEligible === true).map(r => ({
       id: r.id, ticker: r.ticker, company: r.company, action: r.action, createdAt: r.createdAt,

@@ -1647,7 +1647,7 @@ async function finalizePersistedResult(input: {
   }
   if (report.seriousSignalFound === true && outboxKey) {
     await recordResearchEvidence({ event: object(input.payload.event), report,
-      companyAnalysis: object(object(input.payload.companyRefresh).analysis), sourceDecisionGrade: input.payload.sourceDecisionGrade === true,
+      companyAnalysis: object(input.payload.valuationAnalysis ?? object(input.payload.companyRefresh).analysis), sourceDecisionGrade: input.payload.sourceDecisionGrade === true,
       sourceFailureReason: null, now: input.now, approvedResultKey: input.resultKey });
   }
   await renewLease(input.eventId, input.ownerId, input.clock());
@@ -2258,6 +2258,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       sourceDecisionGrade: source.decisionGrade,
       sourceDiagnostics: source.diagnostics,
       valuationContext,
+      valuationAnalysis: valuationAnalysis ? object(valuationAnalysis) : null,
       companyRefresh: persistedCompanyRefresh ? {
         immutableKey: persistedCompanyRefresh.immutableKey,
         latestKey: persistedCompanyRefresh.latestKey,

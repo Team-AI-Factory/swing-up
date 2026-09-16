@@ -45,6 +45,17 @@ export async function readResearchAlerts() {
   return Array.isArray(body.alerts) ? body.alerts.map(object).slice(0, 100) : [];
 }
 
+export function isResearchAlertCurrent(alert: Json, nowMs = Date.now()) {
+  // Collection attempts update the card, but cannot renew the underlying evidence.
+  const observedAt = alert.kind === "valuation"
+    ? alert.valuationObservedAt ?? alert.eventObservedAt
+    : alert.eventObservedAt;
+  const observedMs = Date.parse(text(observedAt));
+  const ageMs = nowMs - observedMs;
+  return Number.isFinite(observedMs) && ageMs >= 0
+    && ageMs <= (alert.kind === "valuation" ? 24 : 72) * 3600000;
+}
+
 export async function readEvidenceQuality(now = new Date()) {
   const stored = await readVersionedTextFromR2(`${ROOT}/quality/${now.toISOString().slice(0, 10)}.json`);
   if (!stored.found || !stored.text) return { available: false as const };

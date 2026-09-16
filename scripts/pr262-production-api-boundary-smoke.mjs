@@ -36,8 +36,21 @@ const publicWatchlist = await request("/api/public/valuation-watchlist?limit=60"
 if (![200, 503].includes(publicWatchlist.response.status)) {
   throw new Error(`public_valuation_watchlist_requires_authentication:${publicWatchlist.response.status}`);
 }
-if (publicWatchlist.body?.sanitized !== true || publicWatchlist.body?.provisionalResearchOnly !== true) {
+if (publicWatchlist.body?.sanitized !== true || publicWatchlist.body?.provisionalResearchOnly !== false) {
   throw new Error("public_valuation_watchlist_safety_contract_missing");
+}
+
+const publicSignals = await request("/api/public/signals");
+if (![200, 503].includes(publicSignals.response.status) || publicSignals.body?.sanitized !== true || !Array.isArray(publicSignals.body?.alerts)) {
+  throw new Error("public_signal_feed_keyless_sanitized_contract_missing");
+}
+if (publicSignals.response.status === 503 && (publicSignals.body.ok !== false || publicSignals.body.alerts.length !== 0)) {
+  throw new Error("unavailable_public_signal_feed_must_not_fabricate_alerts");
+}
+for (const alert of publicSignals.body.alerts) {
+  if (alert.committeeApproved === true && (alert.committeeStatus !== "approved" || alert.publicationStatus !== "committee_approved_alert")) {
+    throw new Error("public_signal_approval_status_inconsistent");
+  }
 }
 
 const unauthenticatedFeed = await request("/api/internal/serious-signal-status?hours=48&limit=100");

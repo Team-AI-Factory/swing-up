@@ -11,6 +11,12 @@ const METRICS = [
   { label: "liabilities", concepts: ["Liabilities"], units: ["USD"] },
   { label: "equity", concepts: ["StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest", "Equity"], units: ["USD"] },
   { label: "shares_outstanding", concepts: ["CommonStockSharesOutstanding", "EntityCommonStockSharesOutstanding"], units: ["shares"] },
+  { label: "diluted_eps", concepts: ["EarningsPerShareDiluted", "DilutedEarningsLossPerShare"], units: ["USD/shares"] },
+  { label: "operating_cash_flow", concepts: ["NetCashProvidedByUsedInOperatingActivities", "CashFlowsFromUsedInOperatingActivities"], units: ["USD"] },
+  { label: "capital_expenditure", concepts: ["PaymentsToAcquirePropertyPlantAndEquipment", "PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities"], units: ["USD"] },
+  { label: "long_term_debt_noncurrent", concepts: ["LongTermDebtNoncurrent"], units: ["USD"] },
+  { label: "long_term_debt_current", concepts: ["LongTermDebtCurrent"], units: ["USD"] },
+  { label: "gross_profit", concepts: ["GrossProfit"], units: ["USD"] },
 ] as const;
 
 type FactUnit = { val?: unknown; filed?: unknown; end?: unknown; start?: unknown; form?: unknown; fy?: unknown; fp?: unknown; frame?: unknown };
@@ -69,13 +75,31 @@ function applyCompanyScale(candidate: ImpactCandidate, annualRevenue: ReturnType
   return reassessCandidateAfterFundamentals(candidate, now);
 }
 
-export async function enrichCandidateFundamentals(candidate: ImpactCandidate | null, fetchImpl: typeof fetch, now: Date) {
+export type VerifiedFactsSnapshot = { cik: string; fundamentals: NonNullable<ImpactCandidate["fundamentals"]>; annualRevenue: ReturnType<typeof latestFact> };
+export type VerifiedFactsCache = { requiredMetrics?: string[]; read: (cik: string) => Promise<VerifiedFactsSnapshot | null>; write: (snapshot: VerifiedFactsSnapshot) => Promise<void> };
+
+export async function enrichCandidateFundamentals(candidate: ImpactCandidate | null, fetchImpl: typeof fetch, now: Date, cache?: VerifiedFactsCache) {
   const sourceUrl = candidate?.cik ? `https://data.sec.gov/api/xbrl/companyfacts/CIK${candidate.cik}.json` : null;
   if (!candidate || !candidate.cik || !sourceUrl) {
     const provider: ProviderResult = { provider: "sec_company_facts", status: candidate ? "not_configured" : "not_due", checkedAt: null, nextRetryAt: null, sourceUrls: sourceUrl ? [sourceUrl] : [], receipts: [], recordsRead: 0, error: candidate ? "candidate_has_no_sec_cik_mapping" : null, entitlementVerified: true, cached: false };
     return { candidate, provider };
   }
   try {
+    const saved = await cache?.read(candidate.cik).catch(() => null);
+    const checked = Date.parse(saved?.fundamentals.checkedAt ?? "");
+    const eventAt = Date.parse(candidate.eventObservedAt);
+    const datedFacts = saved?.fundamentals.items.every(item => Number.isFinite(item.value)
+      && Number.isFinite(Date.parse(item.filedAt ?? "")) && Date.parse(item.filedAt!) <= now.getTime()
+      && Number.isFinite(Date.parse(item.periodEnd ?? "")) && Date.parse(item.periodEnd!) <= now.getTime());
+    const requestedFactsPresent = (cache?.requiredMetrics ?? []).every(metric => saved?.fundamentals.items.some(item => item.metric === metric));
+    if (saved?.cik === candidate.cik && saved.fundamentals.sourceUrl === sourceUrl && saved.fundamentals.available && datedFacts && requestedFactsPresent && Number.isFinite(checked)
+      && checked <= now.getTime() && now.getTime() - checked <= 6 * 60 * 60_000
+      && (candidate.eventFamily === "valuation_gap" || checked >= eventAt)) {
+      candidate.fundamentals = structuredClone(saved.fundamentals);
+      if (candidate.eventFamily !== "valuation_gap") applyCompanyScale(candidate, saved.annualRevenue, sourceUrl, now);
+      const provider: ProviderResult = { provider: "sec_company_facts", status: "connected", checkedAt: saved.fundamentals.checkedAt, nextRetryAt: null, sourceUrls: [sourceUrl], receipts: [], recordsRead: saved.fundamentals.items.length, error: null, entitlementVerified: true, cached: true, cacheAgeMs: now.getTime() - checked };
+      return { candidate, provider };
+    }
     const response = await fetchImpl(sourceUrl, { headers: { Accept: "application/json", "user-agent": SEC_AGENT }, cache: "no-store", signal: AbortSignal.timeout(20_000) });
     if (!response.ok) throw new Error(`sec_company_facts_http_${response.status}`);
     const body = await response.json() as Record<string, unknown>;
@@ -93,7 +117,8 @@ export async function enrichCandidateFundamentals(candidate: ImpactCandidate | n
     const fiscalPeriodEnd = items.map((item) => item.periodEnd).filter((value): value is string => Boolean(value)).sort().at(-1) ?? null;
     candidate.fundamentals = { available: items.length >= 3, sourceUrl, checkedAt: now.toISOString(), latestFiledAt, fiscalPeriodEnd, items, error: items.length ? null : "no_supported_company_facts" };
     const annualRevenue = latestFact(facts, METRICS[0].concepts, ["USD"], now, true);
-    applyCompanyScale(candidate, annualRevenue, sourceUrl, now);
+    if (candidate.eventFamily !== "valuation_gap") applyCompanyScale(candidate, annualRevenue, sourceUrl, now);
+    if (candidate.fundamentals.available) await cache?.write({ cik: candidate.cik, fundamentals: candidate.fundamentals, annualRevenue }).catch(() => undefined);
     const provider: ProviderResult = { provider: "sec_company_facts", status: items.length ? "connected" : "temporarily_unavailable", checkedAt: now.toISOString(), nextRetryAt: null, sourceUrls: [sourceUrl], receipts: [], recordsRead: items.length, error: items.length ? null : "no_supported_company_facts", entitlementVerified: true, cached: false };
     return { candidate, provider };
   } catch (error) {

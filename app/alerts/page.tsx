@@ -1,3 +1,4 @@
+import { PublicSignalFeed } from "@/components/PublicSignalFeed";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { prisma } from "@/lib/db/client";
@@ -41,13 +42,15 @@ export default async function AlertsPage() {
   return (
     <div className="page">
       <div className="eyebrow">Public Alert Archive</div>
-      <h1>Published research alerts</h1>
-      <p>Only published public alerts appear here. Candidate, draft, rejected, mock, preview, private, and admin alerts are not exposed as crawlable public archive items.</p>
+      <h1>Live stock alerts</h1>
+      <PublicSignalFeed />
+      <h2>Earlier published alerts</h2>
+      <p>The archive below contains earlier published alerts. Live provisional and Committee-reviewed alerts appear above.</p>
       <section className={styles.previewNotice} aria-label="Filters">
         <strong>Simple filters supported by page text</strong>
         <div className="button-row"><FilterHint label="Open" /><FilterHint label="Win" /><FilterHint label="Loss" /><FilterHint label="Watch" /><FilterHint label="Buy Candidate" /><FilterHint label="Avoid" /><FilterHint label="Sector" /><FilterHint label="Ticker" /></div>
       </section>
-      {alerts.length === 0 && <section className={styles.emptyState}><span className="badge">No public alerts yet</span><h2>No public alerts yet. Published alerts will appear here once tracking starts.</h2></section>}
+      {alerts.length === 0 && <p className="muted">There are no earlier archive entries.</p>}
       <div className="grid" aria-label="Published alerts">
         {alerts.map((alert) => {
           const score = alert.scores[0];

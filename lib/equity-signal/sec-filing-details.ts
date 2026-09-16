@@ -393,12 +393,29 @@ function eventExhibit(documents: FilingDocument[], preferredType: "EX-99.1" | "E
       || left.url.localeCompare(right.url))[0] ?? null;
 }
 
-function primaryNeedsEventExhibit(form: string, text: string) {
+export function primaryNeedsEventExhibit(form: string, text: string) {
   if (form !== "8-K" && form !== "6-K") return false;
   const merelyReferencesExhibit = /(?:incorporat(?:e|ed|es|ing)\s+by\s+reference|furnish(?:ed|es|ing)?|attach(?:ed|es|ing)?)\b[\s\S]{0,180}\bexhibit\s+99\.[12]\b/i.test(text)
     || /\bexhibit\s+99\.[12]\b[\s\S]{0,180}(?:incorporat(?:e|ed|es|ing)\s+by\s+reference|furnish(?:ed|es|ing)?|attach(?:ed|es|ing)?)/i.test(text);
-  const containsSubstantiveEventFact = /\b(?:entered into|completed|acquired|disposed|terminated|appointed|resigned|departure of|results of operations|financial condition|material definitive agreement|bankruptcy|delisting|regulation fd disclosure|public offering|priced at|guidance|revenue|earnings)\b/i.test(text);
-  return merelyReferencesExhibit || (text.length < 1_200 && !containsSubstantiveEventFact);
+  // A short, self-contained filing is not evidence of a missing attachment.
+  // Historical incorporation references also do not promise a new exhibit.
+  const historicalOnly = [...text.matchAll(/\bexhibit\s+99\.[12]\b/gi)].length === 1
+    && /previously filed[^.]{0,180}exhibit\s+99\.[12]|exhibit\s+99\.[12][^.]{0,180}previously filed/i.test(text)
+    && !/furnish(?:ed|es|ing)?|attach(?:ed|es|ing)?|herewith|hereto|accompanying this/i.test(text);
+  return merelyReferencesExhibit && !historicalOnly;
+}
+
+export function inlineEventExhibit(html: string, primaryUrl: string, preferred: "EX-99.1" | "EX-99.2" | null) {
+  const directory = new URL(".", primaryUrl).pathname;
+  for (const match of html.matchAll(/<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
+    const label = plainText(match[2]);
+    const type = referencedEventExhibitType(label);
+    const url = safeSecUrl(decodeHtml(match[1]), primaryUrl);
+    if (!type || (preferred && type !== preferred) || !url || new URL(".", url).pathname !== directory) continue;
+    if (!/\.html?$/i.test(url.pathname) || url.toString() === primaryUrl) continue;
+    return { url: url.toString(), documentType: type };
+  }
+  return null;
 }
 
 function composeFilingText(primaryText: string, exhibitText: string | null, exhibitType: "EX-99.1" | "EX-99.2" | null) {
@@ -751,7 +768,7 @@ export async function enrichSecFilingDetails(
       let exhibitText: string | null = null;
       if (primaryNeedsEventExhibit(selectedReceipt.form, primaryText)) {
         const preferredType = referencedEventExhibitType(primaryText);
-        const exhibit = eventExhibit(documents, preferredType);
+        const exhibit = eventExhibit(documents, preferredType) ?? inlineEventExhibit(documentHtml, primaryUrl, preferredType);
         if (!exhibit) {
           // Keep factual primary text available as incomplete evidence rather
           // than discarding it, but surface the missing exhibit as a partial

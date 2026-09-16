@@ -1,3 +1,4 @@
+import { recordResearchEvidence, readEvidenceFollowup, verifiedFactsCache, reserveRejectionAudit } from "@/lib/opportunity-engine/pr262-research-evidence";
 import crypto from "node:crypto";
 import { lookup, resolve4 } from "node:dns/promises";
 import * as https from "node:https";
@@ -1075,13 +1076,27 @@ async function cacheFullSource(event: Pr262SensorEvent, source: DecisionGradeSou
   return { written: written.written, conflict: written.conflict, key };
 }
 
+async function retainedPartialSource(event: Pr262SensorEvent, now: Date, source?: DecisionGradeSourceResult) {
+  const key = `${fullSourceCacheKey(event.id)}.partial`;
+  const current = await readVersionedTextFromR2(key);
+  const prior = current.found && current.text ? object(JSON.parse(current.text)) : {};
+  if (source && !source.decisionGrade && source.receipts.some(receipt => (receipt.summary?.length ?? 0) >= 200)) {
+    await writeVersionedJsonToR2(key, { eventId: event.id, source, expiresAt: new Date(now.getTime() + 72 * 3600000).toISOString() }, current.etag ? { expectedEtag: current.etag } : { createOnly: true });
+    return source;
+  }
+  const saved = object(prior.source);
+  return prior.eventId === event.id && Date.parse(String(prior.expiresAt ?? "")) > now.getTime()
+    && saved.decisionGrade === false && Array.isArray(saved.receipts) && Array.isArray(saved.providers)
+    ? saved as DecisionGradeSourceResult : null;
+}
+
 function permanentlyUnreadableFullSource(reason: string | null, event: Pr262SensorEvent) {
   void event;
   // Retry count is not evidence that a source is permanently unreadable. A
   // transient DNS, rate-limit, or provider outage may span several attempts;
   // only explicit permanent failures (or the separate 48-hour expiry) may
   // archive the event without analysis.
-  return Boolean(reason && /(?:unsupported_form|url_invalid|url_not_public_https|host_blocked|address_blocked|content_type_unsupported|body_too_large|issuer_or_event_unconfirmed|http_(?:400|401|404|410))/i.test(reason));
+  return Boolean(reason && /(?:unsupported_form|url_invalid|url_not_public_https|host_blocked|address_blocked|content_type_unsupported|issuer_or_event_unconfirmed|http_(?:400|401|404|410))/i.test(reason));
 }
 
 function exactIssuerUniverse(resolved: Pr262ResolvedSensorCompany, now: Date): EquityUniverseSnapshot {
@@ -1630,6 +1645,11 @@ async function finalizePersistedResult(input: {
       }
     }
   }
+  if (report.seriousSignalFound === true && outboxKey) {
+    await recordResearchEvidence({ event: object(input.payload.event), report,
+      companyAnalysis: object(object(input.payload.companyRefresh).analysis), sourceDecisionGrade: input.payload.sourceDecisionGrade === true,
+      sourceFailureReason: null, now: input.now, approvedResultKey: input.resultKey });
+  }
   await renewLease(input.eventId, input.ownerId, input.clock());
   await input.stopHeartbeat();
   await completeState(input.eventId, input.ownerId, input.resultKey, report, input.clock());
@@ -1844,7 +1864,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       signal: jobAbort.signal,
     });
     const quotaAwareFetch = sharedProviderBudget.fetchImpl;
-    const cachedFullSource = !["sec", "market_price"].includes(resolved.event.source)
+    const cachedFullSource = resolved.event.source !== "market_price"
       ? await readCachedFullSource(resolved.event, now).catch(() => null)
       : null;
     const beforeFullSourceRequest: BeforeFullSourceRequest = async (request) => {
@@ -1867,7 +1887,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
     };
     assertJobActive();
     const baseReceipt = eventReceipt(resolved.event, resolved.directoryEntry.company, resolved.directoryEntry.ticker);
-    const [source, haltProvider, history] = await Promise.all([
+    const [collectedSource, haltProvider, history] = await Promise.all([
       cachedFullSource ?? readDecisionGradeSource(
         baseReceipt,
         resolved.event,
@@ -1883,6 +1903,14 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       loadOptionalHistoricalLibrary(),
     ]);
     assertJobActive();
+    const retained = !collectedSource.decisionGrade && resolved.event.source !== "market_price"
+      ? await retainedPartialSource(resolved.event, now, collectedSource).catch(() => null) : null;
+    // A provider cooldown must not erase facts already read. Keep the original
+    // partial text, explicitly incomplete, while collecting other missing fields.
+    const source = retained && !collectedSource.receipts.some(receipt => (receipt.summary?.length ?? 0) >= 200)
+      ? { ...retained, providers: [...collectedSource.providers, ...retained.providers.map(provider => ({ ...provider, cached: true }))],
+          diagnostics: { ...retained.diagnostics, followupFailureReason: object(collectedSource.diagnostics).failureReason, retainedPartialEvidence: true } }
+      : collectedSource;
     const fullSourceCacheWrite = cachedFullSource || !source.decisionGrade
       ? { written: false, reason: cachedFullSource ? "cache_hit" : "not_decision_grade" }
       : await cacheFullSource(resolved.event, source, now).catch((error) => ({
@@ -1902,7 +1930,8 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
     let companyRefresh: Awaited<ReturnType<typeof refreshAffectedCompany>> | null = null;
     let foundationAnalysisFallback: UsValueCompanyAnalysis | null = null;
     let targetedValueRefreshBlockedByQuota = false;
-    if (source.decisionGrade && !sourceExpiredWithoutEvidence) {
+    const valuationReview = resolved.event.source === "market_price" && resolved.event.kind === "valuation_review";
+    if ((source.decisionGrade || researchSourceUsable || valuationReview) && !sourceExpiredWithoutEvidence) {
       try {
         companyRefresh = await refreshAffectedCompany({
           event: resolved.event,
@@ -1940,7 +1969,14 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
         if (fallback) foundationAnalysisFallback = fallback;
       }
     }
-    const valuationAnalysis = companyRefresh?.analysis ?? foundationAnalysisFallback;
+    const valuationAnalysis = companyRefresh?.analysis ?? foundationAnalysisFallback
+      ?? validatedFoundationValueAnalysis(resolved.valueAnalysis, resolved.directoryEntry.ticker, now);
+    if (valuationReview && valuationAnalysis) {
+      source.receipts[0] = { ...baseReceipt, rawEventType: "valuation_review", primarySource: false, official: false,
+        summary: `Company-first valuation assessment. ${JSON.stringify({ company: valuationAnalysis.company, sector: valuationAnalysis.sector, industry: valuationAnalysis.industry, observedAt: valuationAnalysis.observedAt, currentPrice: valuationAnalysis.currentPrice, fairValue: valuationAnalysis.fairValue, fundamentals: valuationAnalysis.fundamentals, scores: valuationAnalysis.scores })}` };
+      source.decisionGrade = true;
+    }
+    const priorFollowup = await readEvidenceFollowup(event.id).catch(() => ({} as Json));
     const valuationContext = {
       source: companyRefresh
         ? "event_targeted_refresh"
@@ -1959,6 +1995,11 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
     let committeeRetryAt: string | null = null;
     const beforeOpenAiCall: NonNullable<EquitySignalLabInput["beforeOpenAiCall"]> = async (reservation) => {
       assertJobActive();
+      if (priorFollowup.candidateFingerprint === reservation.candidateFingerprint
+        && Date.parse(String(priorFollowup.paidReviewNotBefore ?? "")) > now.getTime()) {
+        committeeRetryAt = String(priorFollowup.paidReviewNotBefore);
+        return false;
+      }
       if (input.beforeOpenAiCall && !await input.beforeOpenAiCall(reservation)) {
         committeeRetryAt = input.aiReservationRetryAt?.() ?? null;
         return false;
@@ -1990,6 +2031,8 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       : object(await runEquitySignalLab({
           allowOpenAi: effectiveAllowOpenAi,
           allowIncompleteCommitteeReview: true,
+          verifiedFactsCache: { ...verifiedFactsCache, requiredMetrics: (Array.isArray(priorFollowup.tasks) ? priorFollowup.tasks : []).flatMap(task => Array.isArray(object(task).fields) ? object(task).fields as string[] : []) },
+          reserveRejectionAudit: () => reserveRejectionAudit(event.id, now),
           fetchImpl: quotaAwareFetch,
           signal: jobAbort.signal,
           now,
@@ -1997,6 +2040,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
           requirePilotBeforeOpenAi: false,
           beforeOpenAiCall,
           targetedContext: {
+            analysisKind: valuationReview ? "valuation" : "event",
             universe: exactIssuerUniverse(resolved, now),
             sourceEvidenceIncomplete: !source.decisionGrade,
             receipts: eventReceipts,
@@ -2007,8 +2051,13 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
           },
         }));
     assertJobActive();
+    const evidenceProgress = await recordResearchEvidence({ event: object(resolved.event), report,
+      companyAnalysis: valuationAnalysis ? object(valuationAnalysis) : undefined,
+      sourceDecisionGrade: source.decisionGrade, sourceFailureReason, now,
+    }).catch(error => ({ evidenceFollowupScheduled: Boolean(priorFollowup.status === "collecting_evidence" || report.status === "candidate_needs_more_data"), nextEvidenceCheckAt: new Date(now.getTime() + 15 * 60000).toISOString(), error: error instanceof Error ? error.message.slice(0, 180) : "evidence_progress_write_failed" }));
     const retryClassificationAllowsAi = event.source === "market_price" ? allowOpenAi : effectiveAllowOpenAi;
     const costControl = {
+      evidenceProgress,
       companiesOpened: 1,
       fullCompanyWarehouseRebuilds: 0,
       broadEventFeedPolls: 0,
@@ -2040,7 +2089,8 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       const cycleStartBudgetRetryAt = reportStatus === "qualified_signal_openai_not_requested"
         ? input.aiReservationRetryAt?.() ?? null
         : null;
-      const nextRetryAt = eventRetryAt(event, now, committeeRetryAt ?? preliminaryPaidRetryAt ?? cycleStartBudgetRetryAt);
+      const nextRetryAt = eventRetryAt(event, now, evidenceProgress.evidenceFollowupScheduled
+        ? evidenceProgress.nextEvidenceCheckAt : committeeRetryAt ?? preliminaryPaidRetryAt ?? cycleStartBudgetRetryAt);
       const attemptCheckedAt = text(report.checkedAt) ?? now.toISOString();
       let auditKey: string | null = null;
       let auditWrite: { written: boolean; recovered: boolean } | null = null;
@@ -2114,6 +2164,8 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
         mode: "pr262_targeted_event_job",
         status: "event_job_deferred",
         nonterminal: true,
+        evidenceFollowupScheduled: evidenceProgress.evidenceFollowupScheduled,
+        evidenceProgress,
         error: `${retryReason}; event_id=${event.id}; ticker=${event.ticker ?? "unknown"}; cik=${event.cik ?? "unknown"}; next_retry_at=${nextRetryAt}`,
         checkedAt: attemptCheckedAt,
         eventsProcessed: 0,

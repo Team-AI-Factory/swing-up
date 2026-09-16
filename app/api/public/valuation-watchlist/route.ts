@@ -22,7 +22,7 @@ export async function GET(request: NextRequest) {
       error: "valuation_watchlist_temporarily_unavailable",
       candidates: [],
       sanitized: true,
-      provisionalResearchOnly: true,
+      provisionalResearchOnly: false,
     }, { status: 503, headers: { "cache-control": "no-store" } });
   }
 }

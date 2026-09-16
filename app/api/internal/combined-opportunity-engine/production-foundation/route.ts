@@ -101,7 +101,9 @@ async function foundationCandidateSummary() {
       baseValue: candidate.fairValue.base,
       upsideToBasePercent: candidate.fairValue.upsideToBasePercent,
       specialistModelApplied: candidate.specialistModelApplied,
-      userAlertEligible: false as const,
+      userAlertEligible: candidate.userAlertEligible,
+      committeeApproved: candidate.committeeApproved,
+      committeeStatus: candidate.committeeStatus,
     }));
   return {
     cycleId: watchlist.foundation.cycleId,
@@ -112,7 +114,7 @@ async function foundationCandidateSummary() {
     candidates,
     candidatesComplete: !watchlist.truncated
       || candidates.length >= watchlist.summary.buyResearch + watchlist.summary.sellResearch + watchlist.summary.watchOutResearch,
-    provisionalResearchOnly: true as const,
+    provisionalResearchOnly: false as const,
   };
 }
 

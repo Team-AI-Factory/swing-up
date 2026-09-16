@@ -12,7 +12,7 @@ const delivery = readFileSync(new URL("../lib/notifications/serious-signal-deliv
 
 assert.match(dashboard, /<SeriousSignalFeed compact \/>/);
 assert.doesNotMatch(dashboard, /mockAlerts|AlertCard/);
-assert.match(page, /No mock fallback/);
+assert.match(page, /Approval status shown/);
 assert.match(feed, /hours=48&limit=100/);
 assert.match(feed, /x-swing-up-serious-signal-read-token/);
 assert.match(feed, /sessionStorage/);
@@ -22,7 +22,7 @@ assert.match(feed, /No Committee-approved Serious Signal was found in the latest
 assert.match(feed, /complete critical-source, universe, and exposure coverage/);
 assert.match(feed, /coverageVerified/);
 assert.match(feed, /\/api\/public\/valuation-watchlist\?limit=60/);
-assert.match(feed, /Live foundation research · no access key needed · not a Serious Signal/);
+assert.match(feed, /Live valuation alerts/);
 assert.match(feed, /Link to this item/);
 assert.match(feed, /refreshes within one minute/);
 assert.match(route, /internalApiScopeAuthorized\(request\.headers, "serious_signal_read"\)/);
@@ -30,8 +30,8 @@ assert.match(watchlistRoute, /internalApiScopeAuthorized\(request\.headers, "ser
 assert.match(watchlistRoute, /cache-control": "private, no-store"/);
 assert.doesNotMatch(publicWatchlistRoute, /internalApiScopeAuthorized|internal-api-auth/);
 assert.match(publicWatchlistRoute, /cache-control": "public, max-age=30, stale-while-revalidate=60"/);
-assert.match(watchlistFeed, /provisionalResearchOnly: true/);
-assert.match(watchlistFeed, /userAlertEligible: false/);
+assert.match(watchlistFeed, /provisionalResearchOnly: false/);
+assert.match(watchlistFeed, /userAlertEligible: true/);
 assert.doesNotMatch(watchlistFeed, /TELEGRAM_BOT_TOKEN|SWING_UP_SERIOUS_SIGNAL_WEBHOOK_URL/);
 assert.match(route, /cache-control": "private, no-store"/);
 assert.match(delivery, /Returns only sanitized fields intended for an authenticated web\/app view/);

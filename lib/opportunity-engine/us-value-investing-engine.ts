@@ -83,8 +83,8 @@ export type UsValueCompanyAnalysis = {
     action: ValueAlertAction;
     tier: ValueAlertTier;
     seriousSignal: boolean;
-    userAlertEligible: false;
-    publicationStatus: "serious_internal_review_only" | "watchlist_internal" | "research_only";
+    userAlertEligible: boolean;
+    publicationStatus: "provisional_alert" | "serious_internal_review_only" | "watchlist_internal" | "research_only";
     historicallyCertified: false;
     evidenceTriggered: boolean;
     noNewsRequired: true;
@@ -697,8 +697,8 @@ function analyzeRow(row: RawRow, observedAt: string): UsValueCompanyAnalysis {
       action,
       tier,
       seriousSignal: seriousBuy || seriousSell || seriousWatchOut,
-      userAlertEligible: false,
-      publicationStatus,
+      userAlertEligible: ["buy", "sell", "watch_out"].includes(action),
+      publicationStatus: ["buy", "sell", "watch_out"].includes(action) ? "provisional_alert" : publicationStatus,
       historicallyCertified: false,
       evidenceTriggered: seriousBuy || seriousSell || seriousWatchOut,
       noNewsRequired: true,

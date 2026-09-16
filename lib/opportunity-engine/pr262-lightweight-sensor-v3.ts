@@ -472,7 +472,7 @@ async function marketWatch(fetchImpl: typeof fetch, exposure: Pr262ExposureEntry
     // event per ticker/reason/day is enough. Including the live price and minute
     // in the identity recreated the same threshold event every five minutes and
     // could bury genuinely new filings or news beneath repeated price work.
-    events.push({ id: `v3-market:${hash(`${ticker}|${kind}|${now.toISOString().slice(0, 10)}`)}`, source: "market_price", sourceProvider: "tradingview_quality_watchlist_v3", sourceHealthStatus: "connected", observedAt: now.toISOString(), title: `${ticker} ${kind} at ${price}`, url: `https://www.tradingview.com/symbols/${encodeURIComponent(row.s ?? ticker)}/`, sourceUrl: TRADINGVIEW_SCAN, ticker, company: item.company, kind, priority: threshold === "strong_buy_price_crossed" ? 100 : threshold ? 92 : 80, reason: threshold ? "A stored valuation threshold crossed and is exposed through the provisional Valuation Watchlist; price alone is not Serious Signal evidence." : `A large market change was detected (${change.toFixed(1)}%, ${relativeVolume.toFixed(1)}x relative volume) and is retained as provisional price research only.`, cik: item.cik, form: null, accession: null, canonicalSecIndexUrl: null, identityMethod: "not_applicable", mappingStatus: "mapped", mappingMethod: "stored_watchlist_ticker", mappingReason: "The ticker comes from the stored PR262 company exposure index.", tradingViewSymbol: item.tradingViewSymbol, queueAttempts: 0, queueNextAttemptAt: null, queueLastAttemptAt: null, queueLastError: null });
+    events.push({ id: `${threshold ? "valuation" : "v3-market"}:${hash(`${ticker}|${kind}|${now.toISOString().slice(0, 10)}`)}`, source: "market_price", sourceProvider: threshold ? "valuation_foundation_review" : "tradingview_quality_watchlist_v3", sourceHealthStatus: "connected", observedAt: now.toISOString(), title: `${ticker} ${kind} at ${price}`, url: `https://www.tradingview.com/symbols/${encodeURIComponent(row.s ?? ticker)}/`, sourceUrl: TRADINGVIEW_SCAN, ticker, company: item.company, kind: threshold ? "valuation_review" : kind, priority: 80, reason: threshold ? "A stored fair-value threshold was crossed. Review this company’s dated financial evidence and valuation assumptions through the Committee. No new headline is required." : `A large market change was detected (${change.toFixed(1)}%, ${relativeVolume.toFixed(1)}x relative volume) and is retained as provisional price research only.`, cik: item.cik, form: null, accession: null, canonicalSecIndexUrl: null, identityMethod: "not_applicable", mappingStatus: "mapped", mappingMethod: "stored_watchlist_ticker", mappingReason: "The ticker comes from the stored PR262 company exposure index.", tradingViewSymbol: item.tradingViewSymbol, queueAttempts: 0, queueNextAttemptAt: null, queueLastAttemptAt: null, queueLastError: null });
   }
   return { events, prices };
 }
@@ -775,11 +775,8 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
   const deduped = [...[...events, ...fanout].reduce((map, event) => {
     const current = map.get(event.id); if (!current || event.priority > current.priority) map.set(event.id, event); return map;
   }, new Map<string, Pr262SensorEvent>()).values()];
-  // Price thresholds and unusual moves are valuable provisional research, but
-  // price alone cannot satisfy the source-evidence gate. Keep them out of the
-  // Serious Signal queue and publish their compact current-price snapshot to the
-  // authenticated Watchlist instead. This also retires legacy price-only backlog
-  // during the next normal state write.
+  // Valuation thresholds now enter a bounded company-first review queue.
+  // Unexplained price/volume moves remain visible research without inventing a cause.
   const retiredUnimportantPending = state.pending.filter((event) => event.priority < MIN_IMPORTANT_PRIORITY || researchOnlyPriceEvent(event));
   const importantPending = state.pending.filter((event) => event.priority >= MIN_IMPORTANT_PRIORITY && !researchOnlyPriceEvent(event));
   const actionablePending = importantPending.filter(canEnterIssuerEvidenceQueue);
@@ -799,7 +796,10 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
       && !researchOnlyPriceEvent(event)
       && !canEnterIssuerEvidenceQueue(event))
     .slice(0, MAX_FRESH);
+  const valuationCapacity = Math.max(0, 8 - actionablePending.filter(event => event.kind === "valuation_review").length);
+  const selectedValuations = new Set(unseen.filter(event => event.kind === "valuation_review").slice(0, Math.min(3, valuationCapacity)).map(event => event.id));
   const fresh = unseen
+    .filter(event => event.kind !== "valuation_review" || selectedValuations.has(event.id))
     .filter((event) => event.mappingMethod !== "deterministic_sector_fanout"
       && !researchOnlyPriceEvent(event)
       && canEnterIssuerEvidenceQueue(event))

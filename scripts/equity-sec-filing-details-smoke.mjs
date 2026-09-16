@@ -1018,3 +1018,13 @@ console.log(JSON.stringify({
   directionInferencePerformed: false,
   writesOrNotificationsPerformed: false,
 }, null, 2));
+
+// Missing attachments are inferred from an explicit reference, never document length.
+assert.equal(loaded.exports.primaryNeedsEventExhibit("8-K", "The board changed its meeting arrangements."), false);
+assert.equal(loaded.exports.primaryNeedsEventExhibit("8-K", "The press release dated July 22 is attached as Exhibit 99.1."), true);
+assert.equal(loaded.exports.primaryNeedsEventExhibit("8-K", "The previously filed Exhibit 99.1 is incorporated by reference."), false);
+assert.equal(loaded.exports.primaryNeedsEventExhibit("8-K", "The previously filed Exhibit 99.1 is incorporated by reference. The new release is furnished as Exhibit 99.2."), true);
+const primaryPath = "https://www.sec.gov/Archives/edgar/data/1000001/000100000126000001/main.htm";
+assert.equal(loaded.exports.inlineEventExhibit('<a href="release.htm">Exhibit 99.1</a>', primaryPath, "EX-99.1").url, primaryPath.replace("main.htm", "release.htm"));
+assert.equal(loaded.exports.inlineEventExhibit('<a href="../other/release.htm">Exhibit 99.1</a>', primaryPath, "EX-99.1"), null);
+assert.equal(loaded.exports.inlineEventExhibit('<a href="https://evil.example/release.htm">Exhibit 99.1</a>', primaryPath, "EX-99.1"), null);

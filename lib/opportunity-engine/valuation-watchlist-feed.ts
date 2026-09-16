@@ -1,3 +1,5 @@
+import { explainSignal, plainEvidenceGaps } from "@/lib/signal-explanation";
+import { readResearchAlerts } from "@/lib/opportunity-engine/pr262-research-evidence";
 import { readVersionedTextFromR2 } from "@/lib/r2-warehouse";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 import type { UsValueCompanyAnalysis } from "@/lib/opportunity-engine/us-value-investing-engine";
@@ -68,7 +70,7 @@ function rank(item: UsValueCompanyAnalysis, action: WatchlistAction) {
   return item.scores.businessQuality;
 }
 
-function sanitizeCandidate(item: UsValueCompanyAnalysis, action: WatchlistAction, cycleId: string, livePrice?: LivePrice) {
+function sanitizeCandidate(item: UsValueCompanyAnalysis, action: WatchlistAction, cycleId: string, livePrice?: LivePrice, review?: Record<string, unknown>) {
   const ticker = safeTicker(item.ticker);
   if (!ticker) return null;
   const reasons = sanitizeReasons(item.decision?.reasons);
@@ -81,6 +83,10 @@ function sanitizeCandidate(item: UsValueCompanyAnalysis, action: WatchlistAction
   const liveUpsideToBasePercent = currentPrice !== null && currentPrice > 0 && baseValue !== null
     ? Math.round(((baseValue - currentPrice) / currentPrice) * 10_000) / 100
     : finite(item.fairValue?.upsideToBasePercent);
+  const priceObservedAt = livePrice?.checkedAt ?? item.observedAt;
+  const approvedForThisSnapshot = review?.committeeApproved === true && review.currentPrice === currentPrice && review.priceObservedAt === priceObservedAt;
+  const directionStillSupported = currentPrice === null || baseValue === null
+    || (action === "buy_research" ? currentPrice < baseValue : action === "sell_research" ? currentPrice > baseValue : true);
   return {
     id: `${cycleId}:${action}:${ticker}`,
     anchor: `valuation-watchlist-${action}-${ticker.toLowerCase().replace(/[^a-z0-9-]/g, "-")}`,
@@ -98,7 +104,7 @@ function sanitizeCandidate(item: UsValueCompanyAnalysis, action: WatchlistAction
     industry: text(item.industry),
     action,
     currentPrice,
-    priceObservedAt: livePrice?.checkedAt ?? item.observedAt,
+    priceObservedAt,
     livePriceFresh: Boolean(livePrice),
     livePriceAlert: livePrice && (livePrice.threshold || Math.abs(livePrice.changePercent ?? 0) >= 5 || (livePrice.relativeVolume ?? 0) >= 3) ? {
       threshold: livePrice.threshold,
@@ -122,9 +128,11 @@ function sanitizeCandidate(item: UsValueCompanyAnalysis, action: WatchlistAction
     reasons,
     blockers,
     specialistModelApplied,
-    publicationStatus: "provisional_research_only" as const,
-    userAlertEligible: false as const,
-    committeeApproved: false as const,
+    publicationStatus: approvedForThisSnapshot ? "committee_approved_alert" as const : "provisional_alert" as const,
+    userAlertEligible: action !== "price_watch" && directionStillSupported && review?.committeeStatus !== "rejected",
+    committeeApproved: approvedForThisSnapshot,
+    committeeStatus: approvedForThisSnapshot ? "approved" : review?.committeeApproved === true ? "awaiting_review" : String(review?.committeeStatus ?? "awaiting_review"),
+    explanation: explainSignal({ company: String(item.company ?? ticker), sector: item.sector, industry: item.industry, kind: "valuation", action, price: currentPrice, fairValue: baseValue, reasons, gaps: plainEvidenceGaps(blockers) }),
     links: [
       ...(tradingViewUrl ? [{ label: "Market and valuation", url: tradingViewUrl }] : []),
       { label: "SEC filings", url: secUrl },
@@ -141,9 +149,10 @@ function arrayOfAnalyses(value: unknown) {
 export async function getValuationWatchlistStatus(options: { limit?: number; action?: WatchlistAction } = {}) {
   const requestedLimit = Number(options.limit ?? 60);
   const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(200, Math.floor(requestedLimit))) : 60;
-  const [current, livePriceCurrent] = await Promise.all([
+  const [current, livePriceCurrent, reviews] = await Promise.all([
     readVersionedTextFromR2(LATEST_FOUNDATION_SUMMARY_KEY),
     readVersionedTextFromR2(LIVE_WATCHLIST_PRICE_KEY),
+    readResearchAlerts(),
   ]);
   if (!current.found || !current.text) {
     return {
@@ -155,8 +164,8 @@ export async function getValuationWatchlistStatus(options: { limit?: number; act
       candidates: [],
       truncated: false,
       sanitized: true as const,
-      provisionalResearchOnly: true as const,
-      userAlertEligible: false as const,
+      provisionalResearchOnly: false as const,
+      userAlertEligible: true as const,
     };
   }
 
@@ -196,7 +205,7 @@ export async function getValuationWatchlistStatus(options: { limit?: number; act
   ];
   const all = groups.flatMap(([action, items]) => items.map((item) => ({ action, item, rank: rank(item, action) })))
     .sort((left, right) => right.rank - left.rank)
-    .flatMap(({ action, item }) => sanitizeCandidate(item, action, cycleId, livePrices.get(item.ticker.toUpperCase())) ?? []);
+    .flatMap(({ action, item }) => sanitizeCandidate(item, action, cycleId, livePrices.get(item.ticker.toUpperCase()), reviews.find(r => r.kind === "valuation" && r.ticker === item.ticker && r.valuationObservedAt === item.observedAt)) ?? []);
   const filtered = options.action ? all.filter((item) => item.action === options.action) : all;
   const candidates = filtered.slice(0, limit);
   const coverage = object(parsed.coverage);
@@ -211,6 +220,8 @@ export async function getValuationWatchlistStatus(options: { limit?: number; act
       sourceCheckedAt: text(parsed.sourceCheckedAt),
       coverage: {
         companies: finite(coverage.companiesStored),
+        companiesWithFairValue: finite(coverage.companiesWithFairValue),
+        companiesWithoutFairValue: finite(coverage.companiesWithoutFairValue),
         totalCompanies: finite(coverage.totalCompanies),
         percent: finite(coverage.coveragePercent),
       },
@@ -232,8 +243,8 @@ export async function getValuationWatchlistStatus(options: { limit?: number; act
     candidates,
     truncated: filtered.length > candidates.length,
     sanitized: true as const,
-    provisionalResearchOnly: true as const,
-    userAlertEligible: false as const,
+    provisionalResearchOnly: false as const,
+    userAlertEligible: true as const,
   };
 }
 
@@ -243,7 +254,7 @@ export const VALUATION_WATCHLIST_POLICY = Object.freeze({
   publicSanitizedRead: true,
   internalDiagnosticsProtected: true,
   sanitized: true,
-  provisionalResearchOnly: true,
-  committeeApproved: false,
+  provisionalResearchOnly: false,
+  committeeApprovalRequiredForSerious: true,
   seriousSignalDeliveryAllowed: false,
 });

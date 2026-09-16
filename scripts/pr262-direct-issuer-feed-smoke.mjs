@@ -678,3 +678,17 @@ console.log(JSON.stringify({
   configuredFeedRepairsExistingRegistry: true,
   failedFeedBackoffWithoutSlowingHealthyFeeds: true,
 }, null, 2));
+
+registry = null;
+const verifiedFetches = [];
+await loaded.exports.runPr262DirectAnnouncementMonitor({ now: new Date("2026-09-16T15:00:00Z"),
+  exposure: [exposureCompany("AMD", "0000002488"), exposureCompany("TG", "0000850429")],
+  fetchImpl: async request => {
+    const url = String(request); verifiedFetches.push(url);
+    if (url.startsWith("https://data.sec.gov/")) return { ok: true, json: async () => ({ cik: 850429, website: "", investorWebsite: "" }) };
+    if (url === "https://ir.tredegar.com/") return response('<link type="application/rss+xml" href="/news.xml">');
+    return response('<rss><channel></channel></rss>', "application/rss+xml");
+  } });
+assert.ok(verifiedFetches.includes("https://ir.amd.com/news-events/press-releases/rss"), "A verified issuer feed must be polled without website discovery");
+assert.ok(verifiedFetches.includes("https://ir.tredegar.com/"), "A verified IR root must remain usable when SEC omits the website field");
+assert.equal(registry.entries.find(row => row.ticker === "TG").feedUrl, "https://ir.tredegar.com/news.xml");

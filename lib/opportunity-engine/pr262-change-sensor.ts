@@ -1420,7 +1420,11 @@ export async function readNextPr262PendingSensorEvent(input: {
     const retryAt = event.queueNextAttemptAt ? Date.parse(event.queueNextAttemptAt) : Number.NaN;
     const retryDue = !Number.isFinite(retryAt)
       || retryAt <= nowMs
-      || foundationValuationFallbackRetryEligible(event);
+      || foundationValuationFallbackRetryEligible(event)
+      // Migrate existing needs-more-data items out of the old paid-review delay.
+      // The independent Committee ledgers still enforce every paid-call limit.
+      || (/candidate_needs_more_data/.test(event.queueLastError ?? "")
+        && nowMs - Date.parse(event.queueLastAttemptAt ?? "") >= 15 * 60_000);
     return !excludedEventIds.has(event.id)
       && event.priority >= minimumPriority
       && processingReady(event)

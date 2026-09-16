@@ -1,3 +1,4 @@
+import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
@@ -8,6 +9,7 @@ function compile(url, dependencies = {}) {
   const cjsModule = { exports: {} };
   new Function("require", "module", "exports", output)((name) => {
     if (name in dependencies) return dependencies[name];
+    if (["@/lib/signal-explanation", "@/lib/equity-signal/valuation-candidate"].includes(name)) return loadTsModule(name);
     throw new Error(`Unexpected import in optional-history smoke: ${name}`);
   }, cjsModule, cjsModule.exports);
   return cjsModule.exports;

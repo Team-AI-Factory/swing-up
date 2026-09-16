@@ -44,6 +44,12 @@ assert.equal(genericCandidate.materiality, 45);
 assert.ok(genericCandidate.score >= 55);
 assert.equal(genericCandidate.direction, "unknown");
 assert.equal(genericCandidate.gatePassed, false, "Research mapping must not make an unresolved event publishable");
+const unmappedReceipt = { ...genericReceipt, title: "Unlisted Enterprise provides operating update", summary: genericReceipt.summary.replaceAll("Example Corp", "Unlisted Enterprise"), publisher: "Unlisted Enterprise", symbolHints: ["ZZZZZ"], companyHints: ["Unlisted Enterprise"] };
+for (const inclusive of [false, true]) {
+  const unmapped = analysis.buildImpactCandidates([unmappedReceipt], universe, macro, now, [], inclusive);
+  assert.equal(unmapped.candidates.length, 0);
+  assert.equal(unmapped.diagnostics.unmapped, 1, "One unmapped receipt must count once in both admission modes");
+}
 const candidate = analysis.buildImpactCandidates([receipt], universe, macro, now, [], true).candidates[0];
 assert.ok(candidate);
 assert.equal(candidate.gatePassed, false, "A raw contract amount alone cannot establish company scale");

@@ -1139,8 +1139,7 @@ export function buildImpactCandidates(receipts: EventReceipt[], universe: Equity
       const ripples = rippleMappings(receipt, classification, index);
       mapped.push(...ripples);
       if (!direct.length && !ripples.length) unmapped += 1;
-    }
-    if (classification.direction === "unknown" && !direct.length) unmapped += 1;
+    } else if (!direct.length) unmapped += 1;
   }
   const clusters: MappedEvent[][] = [];
   for (const item of mapped) {

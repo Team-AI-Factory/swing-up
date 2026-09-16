@@ -2073,7 +2073,8 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
     };
     if (retryableReport(report, retryClassificationAllowsAi) && eventAgeMs <= 7 * 24 * 60 * 60_000) {
       const reportStatus = text(report.status) ?? "unknown";
-      const retryReason = `pr262_event_report_retry:${reportStatus}`;
+      const capacityOnly = reportStatus === "qualified_signal_openai_reservation_denied" && !evidenceProgress.evidenceFollowupScheduled;
+      const retryReason = `pr262_event_report_retry:${reportStatus}${capacityOnly ? ":awaiting_paid_capacity_only" : ""}`;
       const paidAttempt = report.openAiCalled === true;
       // A real or conservatively admitted paid Committee attempt must not be
       // retried while its rolling 24-hour cost record remains active. The

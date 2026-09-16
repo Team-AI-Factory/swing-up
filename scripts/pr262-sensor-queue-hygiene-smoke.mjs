@@ -353,3 +353,15 @@ console.log(JSON.stringify({
   directIssuerRowsProtectedFromSecondaryNewsExpiry: true,
   trimmedIdsPersistInSeenState: true,
 }, null, 2));
+
+const legacyBudgetCase = mappedEvent({ id: "news:legacy-budget-blocked", priority: 95,
+  queueLastError: "pr262_event_report_retry:qualified_signal_openai_reservation_denied",
+  queueLastAttemptAt: new Date(now.getTime() - 20 * 60000).toISOString(),
+  queueNextAttemptAt: new Date(now.getTime() + 8 * 3600000).toISOString(),
+});
+putObject(sensorStateKey, { ...persisted, pending: [legacyBudgetCase] });
+assert.equal((await sensor.readNextPr262PendingSensorEvent({ now }))?.id, legacyBudgetCase.id, "Legacy capacity blocks must not suppress evidence collection");
+putObject(sensorStateKey, { ...persisted, pending: [{ ...legacyBudgetCase, queueLastAttemptAt: new Date(now.getTime() - 5 * 60000).toISOString() }] });
+assert.equal(await sensor.readNextPr262PendingSensorEvent({ now }), null, "The evidence-collection interval must still apply");
+putObject(sensorStateKey, { ...persisted, pending: [{ ...legacyBudgetCase, queueLastError: legacyBudgetCase.queueLastError + ":awaiting_paid_capacity_only" }] });
+assert.equal(await sensor.readNextPr262PendingSensorEvent({ now }), null, "Complete cases waiting solely for paid capacity must not churn every cycle");

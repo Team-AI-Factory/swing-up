@@ -97,7 +97,6 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
   const paid = report.openAiCalled === true;
   const eventId = text(event.id);
   const nextEvidenceCheckAt = new Date(now.getTime() + 15 * 60_000).toISOString();
-  const tasks = evidenceTasks(report);
   const previousFollowup = await readEvidenceFollowup(eventId);
   const previousReview = paid ? {} : previousFollowup;
   const completeness = {
@@ -108,6 +107,16 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
     tradingHaltCheck: object(report.tradingHaltSafety).currentStateKnown === true,
   };
   const known = Object.values(completeness).filter(Boolean).length;
+  const collectionGaps = [
+    ...(!completeness.sourceDocument ? ["The source document or required filing exhibit is incomplete."] : []),
+    ...(!completeness.financialFacts ? ["Verified financial fundamentals are missing."] : []),
+    ...(!completeness.marketPrice || !completeness.currentMarketPrice ? ["A current market price observation is needed."] : []),
+    ...(!completeness.direction ? ["The causal business effect and investment direction need more evidence."] : []),
+    ...(!completeness.tradingHaltCheck ? ["Current trading-halt verification is needed."] : []),
+  ];
+  const tasks = evidenceTasks({ ...report, blockers: [
+    ...(Array.isArray(report.blockers) ? report.blockers : []), ...collectionGaps,
+  ] });
   const observed = Date.parse(text(event.observedAt));
   const quality = { fields: completeness, availableFields: known, requiredFields: Object.keys(completeness).length,
     completenessPercent: Math.round(known / Object.keys(completeness).length * 100),
@@ -115,7 +124,7 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
     eventToReviewMinutes: paid && Number.isFinite(observed) ? Math.max(0, Math.round((now.getTime() - observed) / 60000)) : null,
     sourceFailureReason: input.sourceFailureReason, committeeRolesCompleted: Number(committee.agentsCompleted ?? 0),
   };
-  const needsFollowup = (paid || previousFollowup.status === "collecting_evidence") && report.seriousSignalFound !== true && output.overallRecommendation !== "reject";
+  const needsFollowup = (paid || previousFollowup.status === "collecting_evidence" || Boolean(candidate.ticker && known < 7)) && report.seriousSignalFound !== true && output.overallRecommendation !== "reject";
   if (needsFollowup) {
     const key = `${ROOT}/followups/${hash(eventId)}.json`;
     const current = await readVersionedTextFromR2(key);
@@ -152,7 +161,7 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
       currentPrice: object(candidate.quote).price ?? null, priceObservedAt: object(candidate.quote).observedAt ?? null,
       fairValue: object(input.companyAnalysis?.fairValue).baseValue ?? null,
       userAlertEligible: output.overallRecommendation !== "reject", committeeApproved: approved,
-      committeeStatus: approved ? "approved" : output.overallRecommendation === "reject" ? "rejected" : output.overallRecommendation === "approve" ? "approved_pending_checks" : paid || previousFollowup.status ? "needs_more_data" : "awaiting_review",
+      committeeStatus: approved ? "approved" : output.overallRecommendation === "reject" ? "rejected" : output.overallRecommendation === "approve" ? "approved_pending_checks" : needsFollowup ? "needs_more_data" : "awaiting_review",
       committee: { completed: Number(committee.agentsCompleted ?? 0), failed: Number(committee.agentsFailed ?? 0), confidence: object(committee.finalJudge).confidence ?? null },
       publicationStatus: approved ? "committee_approved_alert" : "provisional_alert",
       explanation: { ...explainCandidate(candidate, input.companyAnalysis), missingInformation: plainEvidenceGaps(paid ? tasks.gaps : Array.isArray(previousReview.gaps) ? previousReview.gaps as string[] : tasks.gaps) },
@@ -169,7 +178,7 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
       if (!paid && previous) {
         alert.committee = previous.committee as typeof alert.committee;
         alert.committeeApproved = previous.committeeApproved === true;
-        alert.committeeStatus = text(previous.committeeStatus);
+        alert.committeeStatus = needsFollowup && previous.committeeStatus === "awaiting_review" ? "needs_more_data" : text(previous.committeeStatus);
         alert.publicationStatus = text(previous.publicationStatus);
         alert.userAlertEligible = previous.userAlertEligible === true;
       }

@@ -138,6 +138,13 @@ assert.equal(legacyFollowup.paidReviewNotBefore, undefined, "Collection must not
 const legacyAlert = (await evidence.readResearchAlerts()).find(row => row.eventId === legacyEvent.id);
 assert.equal(legacyAlert.committeeStatus, "needs_more_data");
 assert.equal(legacyAlert.committeeApproved, false);
+const readyLegacy = await evidence.recordResearchEvidence({ event: legacyEvent, report: legacyPrior, companyAnalysis: analysis, sourceDecisionGrade: true, sourceFailureReason: null, now: new Date(now.getTime() + 15 * 60000) });
+assert.equal(readyLegacy.evidenceFollowupScheduled, false, "Once all checks pass, paid capacity must not cause another evidence collection");
+assert.equal((await evidence.readEvidenceFollowup(legacyEvent.id)).status, "awaiting_committee_capacity");
+assert.equal((await evidence.readEvidenceFollowup(legacyEvent.id)).nextEvidenceCheckAt, null);
+assert.equal((await evidence.readResearchAlerts()).find(row => row.eventId === legacyEvent.id).committeeStatus, "awaiting_review");
+const missingAgain = await evidence.recordResearchEvidence({ event: legacyEvent, report: legacyDeniedReport, companyAnalysis: analysis, sourceDecisionGrade: false, sourceFailureReason: "event_exhibit_not_found", now: new Date(now.getTime() + 30 * 60000) });
+assert.equal(missingAgain.evidenceFollowupScheduled, true, "New missing evidence must reopen collection without a paid review");
 const rejectedLegacy = await evidence.recordResearchEvidence({ event: legacyEvent, report: { ...legacyDeniedReport, committee: { output: { overallRecommendation: "reject" } } }, sourceDecisionGrade: false, sourceFailureReason: "event_exhibit_not_found", now });
 assert.equal(rejectedLegacy.evidenceFollowupScheduled, false, "An explicit Committee rejection must not be converted into more paid work");
 assert.equal((await evidence.readEvidenceFollowup(legacyEvent.id)).status, "rejected");

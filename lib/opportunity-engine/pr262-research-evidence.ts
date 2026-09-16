@@ -124,7 +124,9 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
     eventToReviewMinutes: paid && Number.isFinite(observed) ? Math.max(0, Math.round((now.getTime() - observed) / 60000)) : null,
     sourceFailureReason: input.sourceFailureReason, committeeRolesCompleted: Number(committee.agentsCompleted ?? 0),
   };
-  const needsFollowup = (paid || previousFollowup.status === "collecting_evidence" || Boolean(candidate.ticker && known < 7)) && report.seriousSignalFound !== true && output.overallRecommendation !== "reject";
+  const collectionComplete = known === Object.keys(completeness).length
+    && (report.status === "qualified_signal_openai_reservation_denied" || report.status === "qualified_signal_openai_not_requested");
+  const needsFollowup = !collectionComplete && (paid || previousFollowup.status === "collecting_evidence" || Boolean(candidate.ticker && known < 7)) && report.seriousSignalFound !== true && output.overallRecommendation !== "reject";
   if (needsFollowup) {
     const key = `${ROOT}/followups/${hash(eventId)}.json`;
     const current = await readVersionedTextFromR2(key);
@@ -136,6 +138,13 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
       tasks: paid ? tasks.tasks : previousReview.tasks ?? tasks.tasks, quality,
       lastCollectionAt: now.toISOString(), evidenceChanged: Boolean(previousFollowup.candidateFingerprint && previousFollowup.candidateFingerprint !== report.candidateFingerprint),
     }, current.etag ? { expectedEtag: current.etag } : { createOnly: true });
+  }
+  if (previousFollowup.status === "collecting_evidence" && collectionComplete && output.overallRecommendation !== "reject") {
+    const key = `${ROOT}/followups/${hash(eventId)}.json`;
+    const current = await readVersionedTextFromR2(key);
+    await writeVersionedJsonToR2(key, { ...previousFollowup, status: "awaiting_committee_capacity",
+      updatedAt: now.toISOString(), lastCollectionAt: now.toISOString(), nextEvidenceCheckAt: null, quality },
+      current.etag ? { expectedEtag: current.etag } : { createOnly: true });
   }
   if (previousFollowup.status === "collecting_evidence" && (output.overallRecommendation === "reject" || input.approvedResultKey)) {
     const key = `${ROOT}/followups/${hash(eventId)}.json`;
@@ -165,7 +174,7 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
       committee: { completed: Number(committee.agentsCompleted ?? 0), failed: Number(committee.agentsFailed ?? 0), confidence: object(committee.finalJudge).confidence ?? null },
       publicationStatus: approved ? "committee_approved_alert" : "provisional_alert",
       explanation: { ...explainCandidate(candidate, input.companyAnalysis), missingInformation: plainEvidenceGaps(paid ? tasks.gaps : Array.isArray(previousReview.gaps) ? previousReview.gaps as string[] : tasks.gaps) },
-      followup: approved || output.overallRecommendation === "reject" ? null : { status: "collecting_evidence", nextEvidenceCheckAt, tasks: tasks.tasks }, quality,
+      followup: approved || output.overallRecommendation === "reject" ? null : { status: needsFollowup ? "collecting_evidence" : "awaiting_committee_capacity", nextEvidenceCheckAt: needsFollowup ? nextEvidenceCheckAt : null, tasks: tasks.tasks }, quality,
       sources: (Array.isArray(candidate.receipts) ? candidate.receipts : []).map(object).flatMap(r => {
         try { const u = new URL(text(r.url)); if (u.protocol !== "https:" || u.username || u.password) return []; u.search = ""; return [{ label: text(r.publisher), url: u.toString() }]; } catch { return []; }
       }).slice(0, 4),
@@ -178,7 +187,9 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
       if (!paid && previous) {
         alert.committee = previous.committee as typeof alert.committee;
         alert.committeeApproved = previous.committeeApproved === true;
-        alert.committeeStatus = needsFollowup && previous.committeeStatus === "awaiting_review" ? "needs_more_data" : text(previous.committeeStatus);
+        alert.committeeStatus = collectionComplete && previous.committeeApproved !== true
+          ? "awaiting_review"
+          : needsFollowup && previous.committeeStatus === "awaiting_review" ? "needs_more_data" : text(previous.committeeStatus);
         alert.publicationStatus = text(previous.publicationStatus);
         alert.userAlertEligible = previous.userAlertEligible === true;
       }

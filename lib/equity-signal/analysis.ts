@@ -1117,7 +1117,7 @@ export function buildImpactCandidates(receipts: EventReceipt[], universe: Equity
     const classification = classify(receipt);
     const direct = mapDirect(receipt, index);
     if (classification.direction === "unknown") directionUnknown += 1;
-    if (classification.direction !== "unknown" || (includeResearchCandidates && classification.materiality >= 55)) {
+    if (classification.direction !== "unknown" || includeResearchCandidates) {
       for (const value of direct) {
         const causalExposure = directExposure(receipt, classification, value.equity);
         const relationship = causalExposure.status === "direct_issuer" ? "direct" as const : "second_order" as const;

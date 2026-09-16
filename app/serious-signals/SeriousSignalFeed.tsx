@@ -9,6 +9,7 @@ type LiveAlert = {
   alertType: "buy" | "sell" | "watch_out";
   eventHeadline: string;
   whyItMatters: string | null;
+  explanation?: { companyDoes: string; whatHappened: string; whyItMatters: string; whatCouldHappen: string; whatCouldGoWrong: string };
   price: number | null;
   finalJudgeConfidence: number;
   committee: { completed: number; failed: number; recommendation: string };
@@ -73,9 +74,11 @@ type ValuationWatchlistItem = {
   reasons: string[];
   blockers: string[];
   specialistModelApplied: boolean;
-  publicationStatus: "provisional_research_only";
-  userAlertEligible: false;
-  committeeApproved: false;
+  publicationStatus: "provisional_alert" | "committee_approved_alert";
+  committeeStatus: string;
+  explanation: { companyDoes: string; whatHappened: string; whyItMatters: string; whatCouldHappen: string; whatCouldGoWrong: string };
+  userAlertEligible: boolean;
+  committeeApproved: boolean;
   links: Array<{ label: string; url: string }>;
 };
 
@@ -88,7 +91,7 @@ type ValuationWatchlist = {
     cycleId: string | null;
     completedAt: string | null;
     sourceCheckedAt: string | null;
-    coverage: { companies: number | null; totalCompanies: number | null; percent: number | null } | null;
+    coverage: { companiesWithFairValue: number | null; companiesWithoutFairValue: number | null; companies: number | null; totalCompanies: number | null; percent: number | null } | null;
   };
   livePricing: { available: boolean; checkedAt: string | null; ageMinutes: number | null; source: string | null };
   summary: {
@@ -102,8 +105,8 @@ type ValuationWatchlist = {
   candidates: ValuationWatchlistItem[];
   truncated: boolean;
   sanitized: true;
-  provisionalResearchOnly: true;
-  userAlertEligible: false;
+  provisionalResearchOnly: false;
+  userAlertEligible: boolean;
 };
 
 const TOKEN_STORAGE_KEY = "swing_up_serious_signal_read_token";
@@ -134,9 +137,9 @@ function deliveryLabel(value: string) {
 }
 
 function watchlistLabel(value: ValuationWatchlistItem["action"]) {
-  if (value === "buy_research") return "PROVISIONAL BUY RESEARCH";
-  if (value === "sell_research") return "PROVISIONAL SELL RESEARCH";
-  if (value === "watch_out_research") return "PROVISIONAL RISK WATCH";
+  if (value === "buy_research") return "PROVISIONAL BUY ALERT";
+  if (value === "sell_research") return "PROVISIONAL SELL ALERT";
+  if (value === "watch_out_research") return "PROVISIONAL WATCH OUT ALERT";
   return "PRICE WATCH";
 }
 
@@ -162,14 +165,13 @@ function ValuationWatchlistPanel({
 }) {
   return (
     <section id="valuation-watchlist" style={{ marginTop: 36 }}>
-      <div className="eyebrow">Live foundation research · no access key needed · not a Serious Signal</div>
+      <div className="eyebrow">Live valuation alerts · no access key needed</div>
       <h2>Valuation Watchlist</h2>
       <p>
-        These are apparent valuation opportunities from the daily foundation screen. They are shown immediately for research,
-        but they have not passed current-event evidence, all 14 Committee roles, or the Final Judge.
+        These live alerts explain potential opportunities and risks from the company valuation screen. Each alert shows its actual Committee review status.
       </p>
       <p className="muted">
-        Permanent link: <a href="/serious-signals#valuation-watchlist">/serious-signals#valuation-watchlist</a> · refreshes within one minute of new R2 foundation or live-price data.
+        Permanent link: <a href="/serious-signals#valuation-watchlist">/serious-signals#valuation-watchlist</a> · refreshes within one minute of new company or price information.
       </p>
       {error ? <section className="card"><strong>Watchlist unavailable:</strong> {error}</section> : null}
       {watchlist ? (
@@ -183,6 +185,7 @@ function ValuationWatchlistPanel({
             Foundation {watchlist.foundation.complete ? "complete" : "still building"}
             {watchlist.foundation.completedAt ? ` · completed ${formatTime(watchlist.foundation.completedAt)}` : ""}
             {watchlist.foundation.coverage?.percent !== null && watchlist.foundation.coverage?.percent !== undefined ? ` · ${watchlist.foundation.coverage.percent}% coverage` : ""}.
+            {watchlist.foundation.coverage?.companiesWithFairValue != null ? ` ${watchlist.foundation.coverage.companiesWithFairValue} companies have a model value; ${watchlist.foundation.coverage.companiesWithoutFairValue ?? "unknown"} still need valuation inputs.` : ""}
             {watchlist.livePricing.available && watchlist.livePricing.checkedAt ? ` Live prices checked ${formatTime(watchlist.livePricing.checkedAt)}.` : ""}
           </p>
           {watchlist.candidates.length === 0 ? (
@@ -193,11 +196,12 @@ function ValuationWatchlistPanel({
                 <article className="card alert-card" id={item.anchor} key={item.id}>
                   <div className="button-row">
                     <span className="badge">{watchlistLabel(item.action)}</span>
-                    <span className="badge">Not Committee approved</span>
+                    <span className="badge">{item.committeeApproved ? "Committee approved" : item.committeeStatus === "approved_pending_checks" ? "Positive review · final checks pending" : item.committeeStatus === "needs_more_data" ? "Committee requests more information" : "Awaiting Committee review"}</span>
                     {item.specialistModelApplied ? <span className="badge">Sector specialist</span> : null}
                     {item.livePriceAlert ? <span className="badge">{livePriceAlertLabel(item.livePriceAlert)}</span> : null}
                   </div>
                   <h3>{item.ticker} · {item.company}</h3>
+                  {item.explanation ? <><p><strong>What the company does:</strong> {item.explanation.companyDoes}</p><p><strong>What is happening:</strong> {item.explanation.whatHappened}</p><p><strong>Why it matters:</strong> {item.explanation.whyItMatters}</p><p><strong>What could happen:</strong> {item.explanation.whatCouldHappen}</p><p><strong>What could go wrong:</strong> {item.explanation.whatCouldGoWrong}</p></> : null}
                   <p><strong>Current / conservative / base / optimistic:</strong> {money(item.currentPrice)} / {money(item.fairValue.conservative)} / {money(item.fairValue.base)} / {money(item.fairValue.optimistic)}</p>
                   <p className="muted">Price checked {formatTime(item.priceObservedAt)}{item.livePriceFresh ? " · live sensor snapshot" : " · latest foundation snapshot"}.</p>
                   {item.livePriceAlert ? <p><strong>Live market move:</strong> {item.livePriceAlert.changePercent !== null ? `${item.livePriceAlert.changePercent.toFixed(1)}%` : "change unavailable"}{item.livePriceAlert.relativeVolume !== null ? ` · ${item.livePriceAlert.relativeVolume.toFixed(1)}x relative volume` : ""}. This remains provisional research until current evidence and the Committee approve it.</p> : null}
@@ -237,7 +241,7 @@ export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
       const payload = await response.json() as ValuationWatchlist;
       if (!payload.ok
         || payload.sanitized !== true
-        || payload.provisionalResearchOnly !== true
+        || payload.provisionalResearchOnly !== false
         || !Array.isArray(payload.candidates)) {
         throw new Error("The Valuation Watchlist response failed its safety check.");
       }
@@ -394,7 +398,8 @@ export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
                   </div>
                   <h2>{alert.ticker} {alert.price !== null ? `· $${alert.price.toLocaleString("en-US")}` : ""}</h2>
                   <p><strong>What happened:</strong> {alert.eventHeadline}</p>
-                  <p><strong>Why it matters:</strong> {alert.whyItMatters ?? "The full verified explanation is not available in the sanitized feed."}</p>
+                  {alert.explanation ? <><p><strong>What the company does:</strong> {alert.explanation.companyDoes}</p><p><strong>What could happen:</strong> {alert.explanation.whatCouldHappen}</p><p><strong>What could go wrong:</strong> {alert.explanation.whatCouldGoWrong}</p></> : null}
+                  <p><strong>Why it matters:</strong> {alert.explanation?.whyItMatters ?? alert.whyItMatters ?? "The full verified explanation is not available in the sanitized feed."}</p>
                   <p><strong>Detected:</strong> {formatTime(alert.createdAt)} Bangkok time</p>
                   <p><strong>Committee:</strong> {alert.committee.completed}/14 completed, {alert.committee.failed} failed, recommendation {alert.committee.recommendation}.</p>
                   {alert.evidence.length ? (

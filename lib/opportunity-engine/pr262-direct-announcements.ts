@@ -22,6 +22,15 @@ const DISCOVERY_CONCURRENCY = 1;
 const MAX_FEEDS_POLLED_PER_CYCLE = 20;
 const SEC_AGENT = "SwingUp/1.0 support@swingup.app";
 
+// Issuer-published IR roots/RSS links verified 2026-09-16. Each seed is bound
+// to the SEC identity; a recycled ticker cannot inherit another issuer's feed.
+const VERIFIED_ISSUER_SOURCES = [
+  { ticker: "TG", cik: "0000850429", investorWebsite: "https://ir.tredegar.com/", feedUrl: null },
+  { ticker: "NVDA", cik: "0001045810", investorWebsite: "https://investor.nvidia.com/", feedUrl: "https://nvidianews.nvidia.com/cats/press_release.xml" },
+  { ticker: "AMD", cik: "0000002488", investorWebsite: "https://ir.amd.com/", feedUrl: "https://ir.amd.com/news-events/press-releases/rss" },
+  { ticker: "TSM", cik: "0001046179", investorWebsite: "https://investor.tsmc.com/english", feedUrl: null },
+];
+
 type RegistryEntry = {
   ticker: string;
   company: string;
@@ -426,9 +435,9 @@ async function loadRegistry() {
 
 async function seedEnv(registry: Registry, exposure: Pr262ExposureEntry[]) {
   const raw = process.env.SWING_UP_PR262_DIRECT_FEEDS_JSON?.trim();
-  if (!raw) return;
-  let rows: unknown[] = [];
-  try { rows = JSON.parse(raw) as unknown[]; } catch { return; }
+  let rows: unknown[] = [...VERIFIED_ISSUER_SOURCES];
+  try { if (raw) { const supplied = JSON.parse(raw); if (Array.isArray(supplied)) rows = [...rows, ...supplied]; } } catch { /* Keep verified defaults. */ }
+  rows = [...new Map(rows.filter(row => row && typeof row === "object" && !Array.isArray(row)).map(row => [String((row as Record<string, unknown>).ticker).toUpperCase(), row])).values()];
   const exposureByTicker = new Map(exposure.map((item) => [item.ticker, item]));
   const seededAt = new Date().toISOString();
   for (const value of rows) {
@@ -438,18 +447,18 @@ async function seedEnv(registry: Registry, exposure: Pr262ExposureEntry[]) {
     const feedUrl = text(row.feedUrl);
     const investorWebsite = text(row.investorWebsite);
     const company = ticker ? exposureByTicker.get(ticker) : null;
-    if (!ticker || !feedUrl || !company?.cik) continue;
+    if (!ticker || (!feedUrl && !investorWebsite) || !company?.cik || (row.cik && row.cik !== company.cik)) continue;
     const existing = registry.entries.find((entry) => entry.ticker === ticker);
     if (existing) {
-      const feedChanged = existing.feedUrl !== feedUrl;
+      const feedChanged = Boolean(feedUrl && existing.feedUrl !== feedUrl);
       const websiteChanged = Boolean(investorWebsite && existing.investorWebsite !== investorWebsite);
       existing.consecutiveConfirmedNoFeedDiscoveries = 0;
       if (!feedChanged && !websiteChanged) continue;
       existing.company = company.company;
       existing.cik = company.cik;
-      existing.feedUrl = feedUrl;
+      if (feedUrl) existing.feedUrl = feedUrl;
       if (investorWebsite) existing.investorWebsite = investorWebsite;
-      existing.lastDiscoveryAt = seededAt;
+      existing.lastDiscoveryAt = feedUrl ? seededAt : new Date(0).toISOString();
       existing.lastCheckedAt = null;
       existing.lastSuccessAt = feedChanged ? null : existing.lastSuccessAt;
       existing.nextCheckAt = null;
@@ -464,7 +473,7 @@ async function seedEnv(registry: Registry, exposure: Pr262ExposureEntry[]) {
       investorWebsite,
       feedUrl,
       discoveredAt: seededAt,
-      lastDiscoveryAt: seededAt,
+      lastDiscoveryAt: feedUrl ? seededAt : new Date(0).toISOString(),
       lastCheckedAt: null,
       lastSuccessAt: null,
       nextCheckAt: null,
@@ -496,7 +505,8 @@ async function discoverOne(
     throw new Error("direct_feed_sec_submissions_invalid_json");
   }
   const secEvents = recentSecFilingEvents(body, company, submissionsUrl, now);
-  const investorWebsite = text(body.investorWebsite) ?? text(body.website);
+  const investorWebsite = text(body.investorWebsite) ?? text(body.website) ?? existing?.investorWebsite
+    ?? VERIFIED_ISSUER_SOURCES.find(row => row.cik === company.cik && row.ticker === company.ticker)?.investorWebsite ?? null;
   let feedUrl: string | null = null;
   let error: string | null = null;
   if (investorWebsite) {

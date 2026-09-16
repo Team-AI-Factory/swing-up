@@ -327,7 +327,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
           aiBudget = await safeAiBudgetStatus();
           const exactRetryAt = typeof recorded.nextRetryAt === "string" ? recorded.nextRetryAt : null;
           const eventId = typeof result.eventId === "string" ? result.eventId : null;
-          if (result.nonterminal === true && eventId && exactRetryAt && Number.isFinite(Date.parse(exactRetryAt))) {
+          if (result.nonterminal === true && result.evidenceFollowupScheduled !== true && eventId && exactRetryAt && Number.isFinite(Date.parse(exactRetryAt))) {
             // The mutation sink is batched and de-duplicated by event ID. This
             // replaces the event job's preliminary bound with the exact expiry
             // of the durable rolling-cost entry without adding another retry.

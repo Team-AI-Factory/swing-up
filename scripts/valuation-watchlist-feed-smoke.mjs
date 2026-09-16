@@ -1,3 +1,4 @@
+import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
@@ -55,6 +56,8 @@ new Function("require", "module", "exports", output)((name) => {
   if (name === "@/lib/opportunity-engine/pr262-storage") return {
     pr262StorageKey: (relative) => `production/pr262/${relative}`,
   };
+  if (name === "@/lib/signal-explanation") return loadTsModule(name);
+  if (name === "@/lib/opportunity-engine/pr262-research-evidence") return { readResearchAlerts: async () => [] };
   throw new Error(`Unexpected watchlist feed import: ${name}`);
 }, cjsModule, cjsModule.exports);
 
@@ -73,8 +76,8 @@ assert.equal(result.candidates[0].livePriceFresh, true);
 assert.equal(result.candidates[0].livePriceAlert.threshold, "buy_price_crossed");
 assert.equal(result.candidates[0].fairValue.upsideToBasePercent, 54.76);
 assert.ok(result.candidates[0].reasons.every((reason) => !reason.includes("136.6% below")), "Historical upside must not be repeated as a discount");
-assert.equal(result.candidates[0].publicationStatus, "provisional_research_only");
-assert.equal(result.candidates[0].userAlertEligible, false);
+assert.equal(result.candidates[0].publicationStatus, "provisional_alert");
+assert.equal(result.candidates[0].userAlertEligible, true);
 assert.equal(result.candidates[0].committeeApproved, false);
 assert.match(result.candidates[0].anchor, /^valuation-watchlist-buy_research-bank$/);
 assert.ok(result.candidates[0].links.some((link) => link.url === "https://www.tradingview.com/symbols/NYSE-BANK/"));

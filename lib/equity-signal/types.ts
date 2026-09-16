@@ -5,6 +5,7 @@ export type ProviderStatus = "connected" | "partial" | "not_due" | "rate_limited
 export type EquityEventChannel = BranchNewsChannel | "nasdaq_trade_halts";
 export type EventDirection = "upside" | "downside" | "mixed" | "unknown";
 export type EventFamily =
+  | "valuation_gap"
   | "earnings_guidance"
   | "product_launch"
   | "technology_breakthrough"

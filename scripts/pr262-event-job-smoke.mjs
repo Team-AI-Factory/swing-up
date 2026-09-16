@@ -1,3 +1,4 @@
+import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
@@ -570,6 +571,7 @@ const stubs = {
 const cjsModule = { exports: {} };
 new Function("require", "module", "exports", output)((name) => {
   if (name in stubs) return stubs[name];
+  if (name === "@/lib/opportunity-engine/pr262-research-evidence") return loadTsModule(name, stubs);
   throw new Error(`Unexpected event-job import: ${name}`);
 }, cjsModule, cjsModule.exports);
 
@@ -1067,12 +1069,22 @@ assert.equal(paidAudit.report.status, "candidate_needs_more_data");
 assert.equal(paidAudit.report.openAiCalled, true);
 assert.equal(paidAudit.report.committee.agentsCompleted, 13);
 assert.equal(lastRetryMutation.eventId, event.id);
-assert.equal(lastRetryMutation.nextRetryAt, "2026-08-12T10:08:00.000Z", "A paid incomplete fingerprint must not hot-retry inside the rolling cost window.");
+assert.equal(lastRetryMutation.nextRetryAt, "2026-08-11T10:23:00.000Z", "Missing evidence must be collected after 15 minutes, independently of the paid review cooldown.");
 assert.equal(objects.get(PR262_EVENT_JOB_KEYS.STATE_KEY).value.runs.length, completedRunsBeforeNonterminalRetries, "A nonterminal audit must not mark the queue event complete.");
 assert.equal(acknowledgements, acknowledgementsBeforeNonterminalRetries, "A retryable Committee outcome must remain in the queue.");
 assert.equal(objects.get(historyKey).value.records.length, historyCountBeforeNonterminalRetries, "Incomplete Committee work must not enter signal history.");
 assert.equal([...objects.keys()].filter((key) => key.startsWith(PR262_EVENT_JOB_KEYS.OUTBOX_PREFIX)).length, outboxCountBeforeNonterminalRetries, "Incomplete Committee work must not create an alert outbox.");
 assert.equal([...objects.keys()].filter((key) => key.startsWith(PR262_EVENT_JOB_KEYS.RUN_PREFIX)).length, terminalResultCountBeforeNonterminalRetries, "The paid audit must live outside the terminal result namespace.");
+
+// Collection resumes while the exact same paid evidence remains locked.
+runnerResultMode = "reservation_denied";
+let duplicatePaidReservations = 0;
+const collectionOnly = await runPr262EventJob({ now: new Date("2026-08-11T10:24:00.000Z"), allowOpenAi: true,
+  beforeOpenAiCall: async () => { duplicatePaidReservations++; return true; }, });
+assert.equal(duplicatePaidReservations, 0, "Same evidence must stop before reserving another paid Committee");
+assert.equal(collectionOnly.openAiCalled, false);
+assert.equal(collectionOnly.evidenceFollowupScheduled, true);
+assert.equal(lastRetryMutation.nextRetryAt, "2026-08-11T10:39:00.000Z");
 
 runnerResultMode = "cycle_start_budget_denied";
 committeeFingerprint = "fingerprint-cycle-start-full";
@@ -1219,3 +1231,18 @@ console.log(JSON.stringify({
   shortRenewableLeaseAndDeadlineRecovery: true,
   legacyEventLedgerCompactedWithoutLosingIdempotency: true,
 }, null, 2));
+
+targetedValueBudgetAllowed = false;
+runnerResultMode = "serious";
+committeeFingerprint = "fingerprint-approved-foundation-fallback";
+setSecEventIdentity("000099", "2026-08-11T10:14:00.000Z");
+const approvedFoundationFallback = await runPr262EventJob({ now: new Date("2026-08-11T10:15:00.000Z"), allowOpenAi: true });
+assert.equal(approvedFoundationFallback.seriousSignalFound, true);
+const approvedFallbackPayload = objects.get(approvedFoundationFallback.resultKey).value;
+assert.equal(approvedFallbackPayload.companyRefresh, null, "The test must exercise a quota-blocked targeted refresh");
+assert.deepEqual(approvedFallbackPayload.valuationAnalysis, lastStoredCompanyAnalysis, "Persist the exact valuation used by the Committee");
+const fallbackEvidence = loadTsModule("@/lib/opportunity-engine/pr262-research-evidence", stubs);
+const fallbackPublicAlert = (await fallbackEvidence.readResearchAlerts()).find(row => row.eventId === event.id);
+assert.equal(fallbackPublicAlert.committeeApproved, true);
+assert.equal(fallbackPublicAlert.fairValue, analysis.fairValue.baseValue, "Finalizing approval must not erase the fallback fair value");
+assert.equal(fallbackPublicAlert.valuationObservedAt, analysis.observedAt, "Finalizing approval must retain the original valuation time");

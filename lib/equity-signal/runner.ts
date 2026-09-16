@@ -1,9 +1,13 @@
+import { committeeExplanation } from "@/lib/signal-explanation";
 import crypto from "node:crypto";
 import { runAiCommittee, TRUSTED_IN_MEMORY_EVIDENCE } from "@/lib/ai-committee/orchestrator";
 import type { AiCommitteeEvidencePack, EvidenceStrength } from "@/lib/ai-committee/evidence-pack";
 import { getAiCommitteeProviderStatus } from "@/lib/ai-committee/provider";
 import { buildImpactCandidates, fingerprintCandidate } from "@/lib/equity-signal/analysis";
 import { collectEventSources } from "@/lib/equity-signal/event-sources";
+import { buildValuationCandidate, reassessValuationCandidate } from "@/lib/equity-signal/valuation-candidate";
+import type { UsValueCompanyAnalysis } from "@/lib/opportunity-engine/us-value-investing-engine";
+import type { VerifiedFactsCache } from "@/lib/equity-signal/fundamentals";
 import { enrichCandidateFundamentals } from "@/lib/equity-signal/fundamentals";
 import { bootstrapPublicHistoricalSignals, mergeHistoricalSignals } from "@/lib/equity-signal/historical-bootstrap";
 import { fetchMacroContext } from "@/lib/equity-signal/macro";
@@ -35,6 +39,8 @@ export type EquitySignalLabInput = {
   allowOpenAi?: boolean;
   /** Internal research admission only; publication authority is unchanged. */
   allowIncompleteCommitteeReview?: boolean;
+  verifiedFactsCache?: VerifiedFactsCache;
+  reserveRejectionAudit?: () => Promise<boolean>;
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
   now?: Date;
@@ -59,6 +65,7 @@ export type EquitySignalLabInput = {
     historicalSignalsComplete?: boolean;
     storedCompanyAnalysis?: Record<string, unknown>;
     sourceEvidenceIncomplete?: boolean;
+    analysisKind?: "event" | "valuation";
   };
   /** Legacy compatibility switch. The current PR262 policy always keeps history non-blocking. */
   requirePilotBeforeOpenAi?: boolean;
@@ -222,6 +229,8 @@ function evidencePack(candidate: ImpactCandidate, providers: ProviderResult[], m
     source: "pr262_stored_company_analysis",
     ticker: storedCompanyAnalysis.ticker,
     company: storedCompanyAnalysis.company,
+    sector: storedCompanyAnalysis.sector,
+    industry: storedCompanyAnalysis.industry,
     observedAt: storedCompanyAnalysis.observedAt,
     currentPriceAtAnalysis: storedCompanyAnalysis.currentPrice,
     fairValue: storedCompanyAnalysis.fairValue,
@@ -230,8 +239,8 @@ function evidencePack(candidate: ImpactCandidate, providers: ProviderResult[], m
     decision: storedCompanyAnalysis.decision,
   }] : [];
   const fundamentalItems = [
-    ...(candidate.fundamentals?.items.map((item) => ({ ...item, sourceUrl: candidate.fundamentals?.sourceUrl })) ?? []),
     ...storedCompanyItems,
+    ...(candidate.fundamentals?.items.map((item) => ({ ...item, sourceUrl: candidate.fundamentals?.sourceUrl })) ?? []),
   ];
   const fundamentalsAvailable = candidate.fundamentals?.available === true || storedCompanyItems.length > 0;
   const macroItems = macro.series.map((item) => ({ seriesId: item.seriesId, label: item.label, latestDate: item.latestDate, value: item.value, previousValue: item.previousValue, change: item.change, changePercentile: item.changePercentile, changeZScore: item.changeZScore, observationCount: item.observationCount, sourceUrl: item.sourceUrl }));
@@ -241,9 +250,9 @@ function evidencePack(candidate: ImpactCandidate, providers: ProviderResult[], m
   ];
   const historicalItems = candidate.historicalAnalog.items;
   const sourceNames = [...new Set(receipts.map((receipt) => receipt.publisher).concat(providers.map((provider) => provider.provider), historicalItems.map((item) => item.provenance?.eventPublisher ?? "").filter(Boolean), ["Nasdaq Trader equity universe", "FRED macro regime"]))];
-  const sourceLinks = [...new Set(receipts.map((receipt) => receipt.url).concat(macro.series.map((item) => item.sourceUrl), historicalItems.map((item) => item.provenance?.eventSourceUrl ?? "")).filter(Boolean))];
+  const sourceLinks = [...new Set(receipts.map((receipt) => receipt.url).concat(candidate.fundamentals?.sourceUrl ? [candidate.fundamentals.sourceUrl] : []).concat(macro.series.map((item) => item.sourceUrl), historicalItems.map((item) => item.provenance?.eventSourceUrl ?? "")).filter(Boolean))];
   const filingRelevant = ["earnings_guidance", "financing_dilution", "insider_ownership", "merger_acquisition", "leadership_change"].includes(candidate.eventFamily);
-  const fundamentalsRelevant = ["earnings_guidance", "financing_dilution", "contract_award", "merger_acquisition"].includes(candidate.eventFamily);
+  const fundamentalsRelevant = ["valuation_gap", "earnings_guidance", "financing_dilution", "contract_award", "merger_acquisition"].includes(candidate.eventFamily);
   const missingEvidence = [
     ...(!candidate.quote ? ["priceVolumeEvidence"] : []),
     ...(candidate.quote && candidate.quote.actionableForSeriousSignal !== true ? ["currentMarketQuote"] : []),
@@ -255,6 +264,7 @@ function evidencePack(candidate: ImpactCandidate, providers: ProviderResult[], m
     ...(candidate.quote && (candidate.quote.delayedMinutes ?? 0) > 30 ? [`Market snapshot is ${candidate.quote.delayedMinutes} minutes behind the scan time; treat it as an entry-readiness warning, never as proof that the event worked.`] : []),
   ];
   return {
+    analysisKind: candidate.eventFamily === "valuation_gap" ? "valuation" : "event",
     assetClass: "public_equity",
     candidateAlertId: `branch-equity-${fingerprint}`,
     rawSignalIds: [],
@@ -376,6 +386,15 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
     const publicBootstrapSignals = realHistoricalSignals.filter((record) => record.provenance?.origin === "public_historical_bootstrap");
     const inclusiveReview = input.allowIncompleteCommitteeReview === true;
     const mapped = buildImpactCandidates(eventResult.receipts, universeResult.snapshot, macroResult.context, now, historicalSignals, inclusiveReview);
+    if (targeted?.analysisKind === "valuation" && targeted.storedCompanyAnalysis) {
+      const entry = targeted.universe.entries[0];
+      const receipt = eventResult.receipts.find((item) => item.rawEventType === "valuation_review");
+      const analysis = targeted.storedCompanyAnalysis as unknown as UsValueCompanyAnalysis;
+      const valuation = entry?.cik && receipt && analysis.ticker === entry.ticker
+        ? buildValuationCandidate(analysis, entry.cik, receipt, now) : null;
+      mapped.candidates = valuation ? [valuation] : [];
+      mapped.diagnostics.mappedRelationships = valuation ? 1 : 0;
+    }
     const researchPool = inclusiveReview ? mapped.candidates.filter((candidate) => committeeResearchAdmission(candidate, now).eligible) : [];
     const activeHaltReceipts = eventResult.receipts.filter((receipt) =>
       receipt.channel === "nasdaq_trade_halts" && receipt.rawEventType?.endsWith(":active"));
@@ -394,11 +413,11 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       else if (!tradingHaltStateKnown) candidate.quote.marketSession = "unknown";
     }
     const ranked = quoted.candidates.map((candidate) => withPriceForecast(candidate, now));
-    const gatePassed = ranked.filter((candidate) => candidate.gatePassed);
-    const gateFailures = failedGateCounts(ranked);
+    let gatePassed = ranked.filter((candidate) => candidate.gatePassed);
+    let gateFailures = failedGateCounts(ranked);
     const noSignalClassification = noSignalReason(eventResult.receipts.length, mapped.diagnostics, ranked);
     const reviewedFingerprints = new Set(input.skipOpenAiCandidateFingerprints ?? []);
-    const qualifiedWithFingerprints = gatePassed.map((candidate) => ({ candidate, fingerprint: fingerprintCandidate(candidate) }));
+    let qualifiedWithFingerprints = gatePassed.map((candidate) => ({ candidate, fingerprint: fingerprintCandidate(candidate) }));
     const quotedQualified = qualifiedWithFingerprints.filter((item) => item.candidate.quote);
     const unreviewedQuoted = quotedQualified.filter((item) => !reviewedFingerprints.has(item.fingerprint));
     const reviewPool = inclusiveReview
@@ -407,11 +426,27 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       : gatePassed;
     const unreviewedPool = reviewPool.filter((candidate) => !reviewedFingerprints.has(fingerprintCandidate(candidate)));
     const selectedForReview = input.allowOpenAi ? unreviewedQuoted[0] ?? quotedQualified[0] : quotedQualified[0];
-    const bestBeforeFundamentals = inclusiveReview
+    let bestBeforeFundamentals = inclusiveReview
       ? unreviewedPool[0] ?? reviewPool[0] ?? null
       : selectedForReview?.candidate ?? gatePassed[0] ?? null;
-    const fundamentalsResult = await enrichCandidateFundamentals(bestBeforeFundamentals, fetchImpl, now);
-    const best = fundamentalsResult.candidate;
+    let rejectionAuditReview = false;
+    if (!bestBeforeFundamentals && inclusiveReview && input.allowOpenAi && input.reserveRejectionAudit) {
+      const nearMiss = ranked.find(candidate => candidate.mappingConfidence >= 95 && candidate.score >= 45
+        && candidate.materiality >= 35 && candidate.relationship === "direct"
+        && now.getTime() - Date.parse(candidate.eventObservedAt) <= 72 * 3600000
+        && candidate.receipts.some(receipt => (receipt.summary?.length ?? 0) >= 200));
+      if (nearMiss && await input.reserveRejectionAudit()) {
+        bestBeforeFundamentals = nearMiss;
+        rejectionAuditReview = true;
+      }
+    }
+    const fundamentalsResult = await enrichCandidateFundamentals(bestBeforeFundamentals, fetchImpl, now, input.verifiedFactsCache);
+    const best = fundamentalsResult.candidate ? reassessValuationCandidate(fundamentalsResult.candidate, now, targeted?.storedCompanyAnalysis as unknown as UsValueCompanyAnalysis | undefined) : null;
+    // Facts may resolve a materiality or valuation gate after initial admission.
+    // Record the final gate state in the funnel and finding ledger.
+    gatePassed = ranked.filter(candidate => candidate.gatePassed);
+    gateFailures = failedGateCounts(ranked);
+    qualifiedWithFingerprints = gatePassed.map(candidate => ({ candidate, fingerprint: fingerprintCandidate(candidate) }));
     const providers = [...eventResult.providers, historicalBootstrap.provider, quoted.provider, fundamentalsResult.provider];
     const qualifiedFindings = qualifiedWithFingerprints.map(({ candidate, fingerprint }) => {
       const priceAnchored = Boolean(candidate.quote && quoted.benchmarkQuote);
@@ -521,16 +556,34 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       repairEligible: false,
       marketSnapshot: quoted.marketSnapshot,
       benchmarkSnapshot: quoted.benchmarkQuote,
+      rejectionAuditReview,
       rankedCandidates: ranked.slice(0, 100).map((candidate) => ({ ticker: candidate.ticker, company: candidate.company, cik: candidate.cik, direction: candidate.direction, eventFamily: candidate.eventFamily, relationship: candidate.relationship, eventHeadline: candidate.eventHeadline, eventObservedAt: candidate.eventObservedAt, primarySource: candidate.primarySource, independentPublishers: candidate.independentPublishers, eventTruth: candidate.eventTruth, mappingConfidence: candidate.mappingConfidence, materiality: candidate.materiality, transmissionConfidence: candidate.transmissionConfidence, historicalSupport: candidate.historicalSupport, evidenceIndependence: candidate.evidenceIndependence, contradictionPenalty: candidate.contradictionPenalty, pricedInPenalty: candidate.pricedInPenalty, score: candidate.score, gateChecks: candidate.gateChecks, gatePassed: candidate.gatePassed, quote: candidate.quote, fundamentals: candidate.fundamentals, causalChain: candidate.causalChain, falsifiers: candidate.falsifiers, historicalAnalog: candidate.historicalAnalog, priceForecast: candidate.priceForecast, alertReadiness: seriousActionEligible(candidate) ? "actionable_candidate" : "watch_only" })),
       sourceFailures: providers.filter((provider) => !["connected", "not_due"].includes(provider.status)).map((provider) => ({ provider: provider.provider, status: provider.status, error: provider.error, nextRetryAt: provider.nextRetryAt })),
     };
     if (!best) {
       return { ...common, status: "no_qualified_signal", noSignalReason: noSignalClassification, seriousSignalFound: false, openAiCalled: false, qualityScore: ranked[0]?.score ?? 0, blockers: [`No Committee candidate was produced (${noSignalClassification}). The candidate funnel and failed-gate counts identify the exact stage; price movement was not required.`], technicalFailureFingerprint: null };
     }
-    const fingerprint = fingerprintCandidate(best);
+    // Stable evidence revisions allow another review when missing facts arrive.
+    // Fetch timestamps and small quote ticks cannot manufacture new evidence.
+    const evidenceRevision = crypto.createHash("sha256").update(JSON.stringify({
+      source: best.receipts.filter(r => r.channel !== "nasdaq_trade_halts").map(r => [r.id, r.summary]),
+      facts: best.fundamentals?.items ?? [], sourceComplete: targeted?.sourceEvidenceIncomplete !== true,
+      priceReady: best.quote?.actionableForSeriousSignal === true, haltKnown: tradingHaltStateKnown,
+      halted: best.quote?.marketSession === "halted",
+      valuation: best.eventFamily === "valuation_gap" ? (() => {
+        const value = (targeted?.storedCompanyAnalysis as unknown as UsValueCompanyAnalysis | undefined)?.fairValue;
+        return { base: value?.baseValue, low: value?.conservativeValue, high: value?.optimisticValue,
+          currentPriceSupportsValuation: best.gateChecks.currentPriceSupportsValuation };
+      })() : null,
+    })).digest("hex").slice(0, 16);
+    const fingerprint = inclusiveReview ? `${fingerprintCandidate(best)}:${evidenceRevision}` : fingerprintCandidate(best);
     const selectedCandidate = {
       ticker: best.ticker,
       company: best.company,
+      industry: targeted?.storedCompanyAnalysis?.industry ?? null,
+      sector: targeted?.storedCompanyAnalysis?.sector ?? null,
+      whatHappened: best.whatHappened,
+      plainLanguageExplanation: null as Record<string, string> | null,
       cik: best.cik,
       price: best.quote?.price ?? null,
       marketObservedAt: best.quote?.observedAt ?? null,
@@ -569,7 +622,7 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       alertReadiness: seriousActionEligible(best) ? "actionable_candidate" : "watch_only",
     };
     if (!inclusiveReview && !best.quote) return { ...common, status: "qualified_event_market_quote_unavailable", seriousSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, blockers: ["The event qualified before the market moved, but no usable price anchor was available for a safe entry or outcome record. The event remains on the watch queue; no OpenAI budget was spent."], technicalFailureFingerprint: null };
-    if (input.skipOpenAiCandidateFingerprints?.includes(fingerprint)) return { ...common, status: "qualified_candidate_already_reviewed", seriousSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, blockers: ["The same event evidence was reviewed recently, so OpenAI was not called again."], technicalFailureFingerprint: null };
+    if ((input.skipOpenAiCandidateFingerprints?.includes(fingerprint) || input.skipOpenAiCandidateFingerprints?.includes(fingerprintCandidate(best)))) return { ...common, status: "qualified_candidate_already_reviewed", seriousSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, blockers: ["The same event evidence was reviewed recently, so OpenAI was not called again."], technicalFailureFingerprint: null };
     const watchOnlyBlocker = !best.quote
       ? "Current market quote is unavailable."
       : best.quote.actionableForSeriousSignal !== true
@@ -636,6 +689,7 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       maximumPromptBytes: 100_000,
     });
     const results = Array.isArray(committee.agentResults) ? committee.agentResults : [];
+    selectedCandidate.plainLanguageExplanation = committeeExplanation(results.find(result => result.agentId === "explainer_agent" && result.status === "completed")?.keyFindings ?? []);
     const completed = results.filter((result) => result.status === "completed").length;
     const failed = results.filter((result) => result.status === "failed").length;
     const finalJudge = results.find((result) => result.agentId === "final_judge");

@@ -1,3 +1,4 @@
+import { explainCandidate } from "@/lib/signal-explanation";
 import crypto from "node:crypto";
 import {
   listR2ObjectKeys,
@@ -283,6 +284,7 @@ function messageFor(input: ReturnType<typeof validatedOutbox>) {
       "The test must create one durable receipt and suppress a duplicate send.",
     ].join("\n").slice(0, 3900);
   }
+  const explanation = explainCandidate(input.candidate);
   const event = text(input.candidate.eventHeadline) ?? text(input.candidate.whatHappened) ?? "Material event confirmed";
   const why = text(input.output.SwingUpView) ?? text(input.candidate.whatHappened) ?? "Current evidence passed the Serious Signal review.";
   const quote = object(input.candidate.quote);
@@ -293,9 +295,13 @@ function messageFor(input: ReturnType<typeof validatedOutbox>) {
     `Swing Up — ${label}`,
     `${input.ticker}${price !== null ? ` @ ${price}` : ""}`,
     "",
+    `What the company does: ${explanation.companyDoes}`,
     event,
     "",
+    `Why it matters: ${explanation.whyItMatters}`,
     why,
+    `What could happen: ${explanation.whatCouldHappen}`,
+    `What could go wrong: ${explanation.whatCouldGoWrong}`,
     "",
     `Final Judge confidence: ${Number.isFinite(confidence) ? confidence : "n/a"}/100`,
     "14/14 committee roles completed; current evidence gates passed.",
@@ -1265,6 +1271,7 @@ export async function getSeriousSignalStatus(options: { hours?: number; limit?: 
         id: digest(outboxKey),
         createdAt: validated.createdAt,
         ticker: validated.ticker,
+        explanation: explainCandidate(validated.candidate),
         alertType: validated.alertType,
         eventHeadline: text(validated.candidate.eventHeadline) ?? text(validated.candidate.whatHappened) ?? "Material event confirmed",
         whyItMatters: text(validated.output.SwingUpView) ?? text(validated.candidate.whatHappened),

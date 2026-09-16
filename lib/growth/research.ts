@@ -18,7 +18,8 @@ export type ResearchSnapshot = {
   priceObservedAt: string; observedAt: string; capturedAt: string;
   eventKind: "valuation_screen"; eventAt: null; horizon: null;
   sources: { label: string; url: string }[]; methods: string[];
-  publicationStatus: "provisional_research_only"; userAlertEligible: false; committeeApproved: false;
+  publicationStatus: "provisional_research_only" | "provisional_alert" | "committee_approved_alert"; userAlertEligible: boolean; committeeApproved: boolean;
+  companyDoes?: string; whatHappened?: string; committeeStatus?: string;
 };
 export function money(value: number, currency = "USD") {
   return new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 2 }).format(value);
@@ -32,6 +33,7 @@ export function slotsForDay(now: Date) {
   }));
 }
 export function candidateProblem(candidate: Candidate, now: Date): string | null {
+  if (candidate.committeeStatus === "rejected") return "Committee rejected this assessment";
   if (!(candidate.action in LABELS)) return "No publishable research category";
   if (candidate.currency !== "USD") return "Currency is not confirmed as USD";
   const priceAge = now.getTime() - Date.parse(candidate.priceObservedAt);
@@ -77,7 +79,8 @@ export function makeSnapshot(candidate: Candidate, now = new Date()): ResearchSn
     priceObservedAt: candidate.priceObservedAt, observedAt: candidate.observedAt, capturedAt: now.toISOString(),
     eventKind: "valuation_screen", eventAt: null, horizon: null,
     sources: candidate.links, methods: candidate.valuationMethods.map((method) => `${method.method}: ${method.assumption}`),
-    publicationStatus: "provisional_research_only", userAlertEligible: false, committeeApproved: false,
+    publicationStatus: candidate.publicationStatus ?? "provisional_alert", userAlertEligible: candidate.userAlertEligible === true, committeeApproved: candidate.committeeApproved === true,
+    companyDoes: candidate.explanation?.companyDoes, whatHappened: candidate.explanation?.whatHappened, committeeStatus: candidate.committeeStatus,
   };
 }
 export function publicBaseUrl() {
@@ -94,7 +97,7 @@ export function captionFor(snapshot: ResearchSnapshot, channel: Channel, id: str
     if (copy.replace(url, "x".repeat(23)).length > 280) throw new Error("X caption exceeds its standard limit");
     return copy;
   }
-  const copy = `${snapshot.label.toUpperCase()} · ${snapshot.company} ($${snapshot.ticker})\n${snapshot.title}\n\nLatest recorded price: ${money(snapshot.currentPrice)} USD\nModel target: ${money(snapshot.targetPrice)} | Range: ${money(snapshot.low)}–${money(snapshot.high)}\nPrice collected: ${timestamp(snapshot.priceObservedAt)}\nScreen observed: ${timestamp(snapshot.observedAt)}\nNews event timestamp: not established\n\nWHY\n${snapshot.why}\n\nWHAT TO WATCH NEXT\n${snapshot.expected}\n\nModel confidence: ${snapshot.confidence}/100 — not the probability of profit.\n${snapshot.risk}\n\nJoin early-bird access for full research context when Swing Up launches: ${url}${channel === "instagram" ? "\nUse the link in our bio → select this ticker." : ""}\n\n${BRAND_LINE}\nProvisional research. Not personalized financial advice. No guaranteed returns. #SwingUp #StockResearch`;
+  const copy = `${snapshot.label.toUpperCase()} · ${snapshot.company} ($${snapshot.ticker})\n${snapshot.title}\n\nLatest recorded price: ${money(snapshot.currentPrice)} USD\nModel target: ${money(snapshot.targetPrice)} | Range: ${money(snapshot.low)}–${money(snapshot.high)}\nPrice collected: ${timestamp(snapshot.priceObservedAt)}\nScreen observed: ${timestamp(snapshot.observedAt)}\nNews event timestamp: not established\n\nWHAT THE COMPANY DOES\n${snapshot.companyDoes ?? "The company profile is still being verified."}\n\nWHY\n${snapshot.why}\n\nWHAT TO WATCH NEXT\n${snapshot.expected}\n\nModel confidence: ${snapshot.confidence}/100 — not the probability of profit.\n${snapshot.risk}\n\nJoin early-bird access for full research context when Swing Up launches: ${url}${channel === "instagram" ? "\nUse the link in our bio → select this ticker." : ""}\n\n${BRAND_LINE}\nProvisional research. Not personalized financial advice. No guaranteed returns. #SwingUp #StockResearch`;
   if (copy.length > (channel === "instagram" ? 2200 : 5000)) throw new Error("Caption exceeds channel limit");
   return copy;
 }

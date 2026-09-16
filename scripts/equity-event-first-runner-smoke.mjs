@@ -1,3 +1,4 @@
+import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
@@ -128,6 +129,7 @@ const cjsModule = { exports: {} };
 const localRequire = (name) => {
   if (name === "node:crypto") return awaitImportCrypto;
   if (name in stubs) return stubs[name];
+  if (["@/lib/signal-explanation", "@/lib/equity-signal/valuation-candidate"].includes(name)) return loadTsModule(name);
   throw new Error(`Unexpected runner import: ${name}`);
 };
 const awaitImportCrypto = { createHash: () => ({ update() { return this; }, digest: () => "0123456789abcdef0123456789abcdef" }) };

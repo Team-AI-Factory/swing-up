@@ -14,6 +14,7 @@ type EvidenceSection = {
 };
 
 export type AiCommitteeEvidencePack = {
+  analysisKind?: "event" | "valuation";
   researchReview?: { enabled: true; gaps: string[] };
   assetClass?: "public_equity" | "digital_asset" | "other";
   candidateAlertId: string;

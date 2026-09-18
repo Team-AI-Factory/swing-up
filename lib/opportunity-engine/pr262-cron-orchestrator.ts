@@ -247,6 +247,17 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
   const readyAtStart = dueReadyCount(state);
   const queueHealthAtStart = queueHealthSnapshot(state, readyNow);
   const capacity = capacityForQueue(readyAtStart);
+  // Backlogged event work can consume the entire processing window. Give the
+  // existing one-profile maintenance pass its bounded turn before admissions.
+  const profileSignal = composedSignal([cycleSignal, AbortSignal.timeout(30_000)]);
+  const profileFetch: typeof fetch = (request, init) => fetch(request, {
+    ...init,
+    signal: composedSignal([profileSignal, init?.signal]),
+  });
+  const companyProfiles = processingDeadlineAtMs - Date.now() >= 35_000 && !cycleSignal.aborted
+    ? await warmPr262CompanyProfiles(new Date(), profileFetch).catch(() => ({ attempted: 0, verified: 0, status: "temporarily_unavailable" }))
+    : { attempted: 0, verified: 0, status: "cycle_deadline_reserve" };
+  assertCycleActive();
   const eventResults: Json[] = [];
   const notificationResults: Json[] = [];
   const aiCostResults: Json[] = [];
@@ -453,9 +464,6 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
       }))
     : { ok: false, skipped: true, reason: "cycle_deadline_reserve" };
 
-  const companyProfiles = processingDeadlineAtMs - Date.now() >= 35_000 && !cycleSignal.aborted
-    ? await warmPr262CompanyProfiles().catch(() => ({ attempted: 0, verified: 0, status: "temporarily_unavailable" }))
-    : { attempted: 0, verified: 0, status: "cycle_deadline_reserve" };
   assertCycleActive();
   state = await readPr262ChangeSensorState();
   const sourceSummary = sensor?.sourceSummary ?? [];

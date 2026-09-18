@@ -17,6 +17,9 @@ let directDeliveryCalls = 0;
 let deliveryRecoveryCalls = 0;
 let queueBatchCalls = 0;
 let promotionCalls = 0;
+let profileMaintenanceCalls = 0;
+const processingOrder = [];
+let advanceCycleClock = () => {};
 const recordedCostKeys = [];
 const releasedFingerprints = [];
 let mappingHealthy = true;
@@ -152,13 +155,25 @@ const stubs = {
     },
   },
   "@/lib/opportunity-engine/pr262-event-job": {
-    warmPr262CompanyProfiles: async () => ({ attempted: 0, verified: 0, status: "checked" }),
+    warmPr262CompanyProfiles: async (now, fetchImpl) => {
+      assert.ok(now instanceof Date);
+      assert.equal(typeof fetchImpl, "function", "Profile maintenance needs the deadline-bound provider fetch");
+      profileMaintenanceCalls++;
+      processingOrder.push("profiles");
+      return { attempted: eventMode === "consume_processing_window" ? 1 : 0, verified: 0, status: "checked" };
+    },
     runPr262EventJob: async (input) => {
       eventCalls += 1;
+      processingOrder.push("event");
       assert.ok(input.signal instanceof AbortSignal);
       assert.ok(input.deadlineAtMs > Date.now());
       assert.equal(typeof input.beforeOpenAiCall, "function", "Railway must pass the durable dollar reservation hook before paid analysis.");
       assert.equal(typeof input.aiReservationRetryAt, "function", "The event job must be able to inherit the exact daily-cost retry boundary.");
+      if (eventMode === "consume_processing_window") {
+        eventMode = "idle";
+        advanceCycleClock(170_000);
+        return { ok: true, status: "completed", eventsProcessed: 1, openAiCalled: false };
+      }
       if (eventMode === "restricted_models_scope") {
         eventMode = "idle";
         assert.equal(input.allowOpenAi, true, "Models Read denial cannot disable an otherwise eligible completion");
@@ -587,6 +602,34 @@ assert.equal(queueBatchCalls, batchCallsBefore + 1, "One cycle must flush its ev
 assert.equal(batchedQueueProgress.processing.queuePersistence.writes, 1);
 assert.equal(state.pending.length, 1);
 assert.equal(state.pending[0].id, "issuer-sec:queued-2");
+
+const realDateNow = Date.now;
+const pendingBeforeBacklog = state.pending;
+const maintenanceBeforeBacklog = profileMaintenanceCalls;
+const paidReservationsBeforeBacklog = paidReservationCalls;
+let simulatedNow = realDateNow();
+processingOrder.length = 0;
+state.pending = Array.from({ length: 380 }, (_, index) => ({
+  ...pendingBeforeBacklog[0], id: `backlog:${index}`, queueNextAttemptAt: null,
+}));
+eventMode = "consume_processing_window";
+advanceCycleClock = milliseconds => { simulatedNow += milliseconds; };
+Date.now = () => simulatedNow;
+try {
+  const backloggedCycle = await loaded.exports.runPr262AnalysisOnlyCycle({ maxCycleMs: 210_000 });
+  assert.equal(backloggedCycle.processing.queueHealthAtStart.dueReadyCount, 380);
+  assert.equal(profileMaintenanceCalls, maintenanceBeforeBacklog + 1, "A full due queue must still give the existing bounded profile pass one turn");
+  assert.deepEqual(processingOrder, ["profiles", "event"], "Profile maintenance must run before backlog analysis consumes the processing window");
+  assert.equal(backloggedCycle.companyProfiles.status, "checked");
+  assert.equal(backloggedCycle.companyProfiles.attempted, 1);
+  assert.equal(backloggedCycle.processing.deadlineStoppedAdmissions, true, "Maintenance does not extend the existing event-processing deadline");
+  assert.equal(paidReservationCalls, paidReservationsBeforeBacklog, "Profile maintenance cannot reserve paid Committee work");
+} finally {
+  Date.now = realDateNow;
+  state.pending = pendingBeforeBacklog;
+  advanceCycleClock = () => {};
+  eventMode = "idle";
+}
 
 console.log(JSON.stringify({
   ok: true,

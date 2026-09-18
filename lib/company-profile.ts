@@ -15,18 +15,35 @@ const customerCaveat = /\b(?:no (?:single )?customer|\d+(?:\.\d+)?%|percent|conc
 const buyerGroups = /\b(?:persons?|people|individuals?|households?|homeowners?|consumers?|patients?|subscribers?|business(?:es)?|enterprises?|companies|corporations?|firms?|organizations?|nonprofits?|governments?|municipalit(?:y|ies)|utilities|institutions?|schools?|universit(?:y|ies)|hospitals?|clinics?|laborator(?:y|ies)|pharmacies|providers?|operators?|manufacturers?|retail(?:ers?| stores?)|wholesalers?|distributors?|merchants?|developers?|contractors?|resellers?|oems?|banks?|insurers?|agencies|authorities|charterers?|shippers?|carriers?|(?:consumer|industrial|commercial|education|enterprise|government|healthcare|automotive|energy|aerospace) (?:markets?|sectors?|industries))\b/i;
 const filingBoilerplate = /\b(?:registration statement|(?:initial|proposed|public) offering|ordinary shares|common stock|incorporat(?:ed|ion)|commenced operations|began operations|securities and exchange|securities act|form (?:f|s|8|10)-\d|taking delivery of (?:our|the|its) first)\b/i;
 const unresolvedEntity = /&(?:#\d+|#x[\da-f]+|[a-z]+);/i;
+function decodeSourceEntities(value: string) {
+  return value.replace(/&#(x[\da-f]+|\d+);/gi, (entity, encoded: string) => {
+    const code = encoded[0].toLowerCase() === "x" ? parseInt(encoded.slice(1), 16) : parseInt(encoded, 10);
+    return code >= 32 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff) ? String.fromCodePoint(code) : entity;
+  }).replace(/&(nbsp|quot|apos|lsquo|rsquo|ldquo|rdquo|ndash|mdash|reg|copy|trade|lt|gt|amp);/gi, (_, name: string) => ({ nbsp: " ", quot: '"', apos: "'", lsquo: "‘", rsquo: "’", ldquo: "“", rdquo: "”", ndash: "–", mdash: "—", reg: "®", copy: "©", trade: "™", lt: "<", gt: ">", amp: "&" })[name.toLowerCase()] ?? _);
+}
 function issuerSubject(identity: CompanyIdentity) {
   const company = text(identity.company).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return `(?:we|the company|our company|our business${company ? `|${company}` : ""})`;
 }
 function operatingBusiness(sentence: string, identity: CompanyIdentity) {
   if (filingBoilerplate.test(sentence) || unresolvedEntity.test(sentence)) return false;
+  // Match dated context without deleting any words from the retained source.
+  const statement = sentence.replace(/^(?:As of (?:January|February|March|April|May|June|July|August|September|October|November|December) \d{1,2}, \d{4},|With a history dating back to \d{4},)\s+/i, "");
   // Allow an issuer's parenthetical name or legal-form apposition, but require
   // its main predicate to describe operations, not incorporation or financing.
   const subject = `${issuerSubject(identity)}(?:\\s*\\([^)]{0,180}\\))?(?:,\\s*(?:a|an|the)\\s+[^,]{1,100},)?\\s+`;
   const action = "(?:(?:primarily|principally|mainly|currently)\\s+)?(?:manufactures?|designs?|develops?|produces?|provides?|operates?|operated|distributes?|sells?|offers?|delivers?|supplies)\\b";
   const operator = "(?:is|are)\\s+(?:a\\s+|an\\s+|the\\s+)?[^.!?]{0,120}\\b(?:manufacturer|developer|producer|provider|operator|distributor|retailer|supplier|bank|utility|utilities)\\b";
-  return new RegExp(`^${subject}(?:${action}|${operator})`, "i").test(sentence);
+  if (new RegExp(`^${subject}(?:${action}|${operator})`, "i").test(statement)) return true;
+  // Annual reports may use a shorter issuer name (e.g. American Water). Only
+  // complete leading identity words directly followed by operations qualify.
+  const name = text(identity.company);
+  const words = [...name.matchAll(/[A-Za-z][A-Za-z0-9’'-]*/g)];
+  return words.slice(1, Math.min(words.length - 1, 4)).some((_, index) => {
+    const last = words[index + 1];
+    const shortName = name.slice(0, (last.index ?? 0) + last[0].length).replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+    return new RegExp(`^${shortName}\\s+(?:${action}|${operator})`, "i").test(statement);
+  });
 }
 
 /** A customer mention in a product feature is not a description of who buys it. */
@@ -49,7 +66,9 @@ export function verifiedCompanyProfile(value: unknown, identity: CompanyIdentity
   if (!ticker || !cik || !text(identity.company) || p.version !== 1 || p.status !== "verified"
     || p.ticker !== ticker || p.cik !== cik || text(p.company) !== text(identity.company)
     || p.sourceType !== "sec_annual_filing") return null;
-  const business = text(p.business), customers = text(p.customers), description = text(p.description);
+  // Decode old cached source extracts before comparing the complete description.
+  // Identity, age, provenance and factual predicates still all revalidate below.
+  const business = text(decodeSourceEntities(text(p.business))), customers = text(decodeSourceEntities(text(p.customers))), description = text(decodeSourceEntities(text(p.description)));
   const verified = Date.parse(text(p.verifiedAt)), filed = Date.parse(text(p.sourceFiledAt));
   if (!Number.isFinite(verified) || !Number.isFinite(filed) || verified > now.getTime() || filed > verified
     || now.getTime() - verified > 30 * 86400000 || now.getTime() - filed > 550 * 86400000
@@ -62,23 +81,18 @@ export function verifiedCompanyProfile(value: unknown, identity: CompanyIdentity
     if (url.protocol !== "https:" || url.hostname !== "www.sec.gov" || url.username || url.password || url.search || url.hash
       || !new RegExp(`^/Archives/edgar/data/${Number(cik)}/\\d{18}/[A-Za-z0-9._-]+\\.html?$`).test(url.pathname)) return null;
   } catch { return null; }
-  return p as VerifiedCompanyProfile;
+  return { ...p, business, customers, description } as VerifiedCompanyProfile;
 }
 
 export function annualBusinessText(html: string, form: string) {
   // HTML source wrapping is whitespace; only block tags define paragraphs.
   // Plain-text source excerpts already supply their own paragraph boundaries.
   const source = /<[a-z][^>]*>/i.test(html) ? html.replace(/\r?\n/g, " ") : html;
-  const clean = source.replace(/<(?:script|style|ix:header)\b[^>]*>[\s\S]*?<\/(?:script|style|ix:header)>/gi, " ")
+  const clean = decodeSourceEntities(source.replace(/<(?:script|style|ix:header)\b[^>]*>[\s\S]*?<\/(?:script|style|ix:header)>/gi, " ")
     // Keep block boundaries so an unpunctuated section heading cannot become
     // part of the next factual sentence. Inline spans still join with spaces.
     .replace(/<\/(?:p|div|h[1-6]|li|tr)>|<br\s*\/?\s*>/gi, "\n")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&#(x[\da-f]+|\d+);/gi, (entity, value: string) => {
-      const code = value[0].toLowerCase() === "x" ? parseInt(value.slice(1), 16) : parseInt(value, 10);
-      return code >= 32 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff) ? String.fromCodePoint(code) : entity;
-    })
-    .replace(/&(nbsp|quot|apos|lsquo|rsquo|ldquo|rdquo|ndash|mdash|reg|copy|trade|lt|gt|amp);/gi, (_, name: string) => ({ nbsp: " ", quot: '"', apos: "'", lsquo: "‘", rsquo: "’", ldquo: "“", rdquo: "”", ndash: "–", mdash: "—", reg: "®", copy: "©", trade: "™", lt: "<", gt: ">", amp: "&" })[name.toLowerCase()] ?? _)
+    .replace(/<[^>]+>/g, " "))
     .replace(/[^\S\n]+/g, " ").replace(/\s*\n\s*/g, "\n");
   const start = form === "20-F" ? /\bItem\s+4[.\s:–-]+Information on the Company\b/gi : /\bItem\s+1[.\s:–-]+Business\b/gi;
   const end = form === "20-F" ? /\bItem\s+(?:4A|5)[.\s:–-]/i : /\bItem\s+1[A-B][.\s:–-]/i;

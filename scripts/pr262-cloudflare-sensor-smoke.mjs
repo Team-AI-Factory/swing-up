@@ -9,7 +9,9 @@ import {
   parseJsonRows,
   parseRss,
   parseSecAtom,
+  parseTradeHalts,
   partitionPendingEvents,
+  persistTradeHaltSnapshot,
   reserveProvider,
   refreshQueuedMapping,
   safeDirectHttpsUrl,
@@ -86,6 +88,107 @@ await assert.rejects(
   /json_feed_contract_invalid/,
   "A JSON HTTP 200 with an unrecognized provider schema must not certify coverage",
 );
+
+const haltSourceUrl = "https://www.nyse.com/api/trade-halts/current";
+const haltContext = { now, resolver, provider: "cloudflare_nyse_halts", sourceUrl: haltSourceUrl };
+const haltRow = { formatedHaltDate: "2026-08-19", formatedHaltTime: "11:58:00", symbol: "TWST", issuerName: "Twist Bioscience Corporation", sourceExchange: "Nasdaq", reason: "News Pending", formatedResumptionDate: null, formatedResumptionTime: null };
+const nyseFixture = {
+  totalCount: 7,
+  results: { tradeHalts: [
+    haltRow,
+    { ...haltRow, symbol: "OLD", issuerName: "Older Active Halt Corporation", formatedHaltDate: "2025-06-01" },
+    { ...haltRow, symbol: "RES", issuerName: "Resumption Corporation" },
+    { ...haltRow, symbol: "RES", issuerName: "Resumption Corporation", formatedResumptionDate: "2026-08-19", formatedResumptionTime: "11:59:00" },
+    { ...haltRow, symbol: "TEST WS", issuerName: "Test Warrants" },
+    { ...haltRow, symbol: "TESTU", issuerName: "Test Units" },
+    { ...haltRow, symbol: "TESTR", issuerName: "Test Rights" },
+  ] },
+};
+const nyseHalts = await parseTradeHalts(JSON.stringify(nyseFixture), haltContext);
+assert.equal(nyseHalts.status, "connected", "The actual nested NYSE contract must parse.");
+assert.equal(nyseHalts.recordsRead, 7);
+assert.equal(nyseHalts.events.length, 2, "Old safety state must not create a fresh discovery event.");
+const haltSnapshot = nyseHalts.tradeHaltSnapshot;
+assert.deepEqual({ ...haltSnapshot.provider, receipts: [] }, {
+  provider: "nasdaq_trade_halts", status: "connected", checkedAt: now.toISOString(), nextRetryAt: null,
+  sourceUrls: [haltSourceUrl], receipts: [], recordsRead: 3, error: null, entitlementVerified: true, cached: false,
+});
+assert.equal(haltSnapshot.version, 1);
+const oldHalt = haltSnapshot.provider.receipts.find((receipt) => receipt.symbolHints[0] === "OLD");
+assert.equal(oldHalt.publishedAt, "2025-06-01T11:58:00.000Z", "Active halts retain their original timestamp, regardless of age or universe mapping.");
+assert.equal(oldHalt.rawEventType, "halt:NEWS_PENDING:active");
+assert.equal(haltSnapshot.provider.receipts.find((receipt) => receipt.symbolHints[0] === "RES").rawEventType, "halt:NEWS_PENDING:resumed", "A resumption wins a same-halt timestamp tie.");
+assert.deepEqual(haltSnapshot.provider.receipts.map((receipt) => receipt.symbolHints[0]), ["TWST", "OLD", "RES"], "Warrants, units, and rights are explicitly excluded.");
+const fullRows = Array.from({ length: 205 }, (_, index) => ({ ...haltRow, symbol: `H${index}` }));
+const fullHalts = await parseTradeHalts(JSON.stringify({ totalCount: fullRows.length, results: { tradeHalts: fullRows } }), { ...haltContext, limit: 1 });
+assert.equal(fullHalts.tradeHaltSnapshot.provider.receipts.length, 205, "Discovery limits must never truncate the safety snapshot.");
+const legacyHalts = await parseTradeHalts(JSON.stringify({ results: [{ symbol: "TWST", haltTime: "2026-08-19T11:58:00Z", reason: "News Pending" }] }), haltContext);
+assert.equal(legacyHalts.events.length, 1);
+assert.equal(legacyHalts.tradeHaltSnapshot, undefined, "Legacy generic JSON must never become authoritative safety state.");
+const legacyEmptyHalts = await parseTradeHalts(JSON.stringify({ results: [] }), haltContext);
+assert.equal(legacyEmptyHalts.tradeHaltSnapshot, undefined, "A generic empty array cannot clear halt safety state.");
+const rssHalts = await parseTradeHalts(rss, haltContext);
+assert.equal(rssHalts.tradeHaltSnapshot, undefined, "Legacy RSS discovery cannot certify consolidated halt safety state.");
+const untrustedHalts = await parseTradeHalts(JSON.stringify(nyseFixture), { ...haltContext, sourceUrl: "https://example.com/halts" });
+assert.equal(untrustedHalts.tradeHaltSnapshot, undefined, "Only the official consolidated endpoint may create a safety snapshot.");
+
+const haltObjects = new Map();
+let haltEtag = 0;
+let beforeHaltPut = null;
+const haltBucket = {
+  async get(key) {
+    const stored = haltObjects.get(key);
+    return stored ? { body: true, etag: stored.etag, json: async () => structuredClone(stored.value) } : null;
+  },
+  async put(key, body, options) {
+    if (beforeHaltPut) {
+      const callback = beforeHaltPut;
+      beforeHaltPut = null;
+      callback(key);
+    }
+    const stored = haltObjects.get(key);
+    const condition = options.onlyIf;
+    if ((condition instanceof Headers && condition.get("if-none-match") === "*" && stored)
+      || (condition.etagMatches && condition.etagMatches !== stored?.etag)) return null;
+    const etag = `halt-etag-${++haltEtag}`;
+    haltObjects.set(key, { value: JSON.parse(body), etag });
+    return { etag };
+  },
+};
+const haltStateKey = "branch-labs/pr-262/cloudflare-shadow/sensor/state-v1.json";
+const haltSnapshotKey = "branch-labs/pr-262/cloudflare-shadow/sensor/trade-halt-snapshot-v1.json";
+assert.deepEqual(await persistTradeHaltSnapshot(haltBucket, haltStateKey, haltSnapshot), { key: haltSnapshotKey, written: true });
+assert.equal(haltObjects.get(haltSnapshotKey).value.provider.checkedAt, now.toISOString(), "Persistence must preserve the original provider checkedAt.");
+for (const invalid of [
+  { results: { tradeHalts: null } },
+  { totalCount: 1, results: { tradeHalts: [] } },
+  { totalCount: 2, results: { tradeHalts: [haltRow] } },
+  { totalCount: 0, results: { tradeHalts: [haltRow] } },
+  { totalCount: "1", results: { tradeHalts: [haltRow] } },
+  { results: { tradeHalts: [{ ...haltRow, symbol: "???" }] } },
+  { results: { tradeHalts: [{ ...haltRow, formatedHaltDate: "2026-02-30" }] } },
+  { results: { tradeHalts: [{ ...haltRow, formatedResumptionTime: "invalid" }] } },
+  { results: { tradeHalts: [...fullRows, { ...haltRow, formatedHaltDate: "invalid" }] } },
+]) {
+  const before = structuredClone(haltObjects.get(haltSnapshotKey));
+  await assert.rejects(async () => {
+    const parsed = await parseTradeHalts(JSON.stringify(invalid), haltContext);
+    if (parsed.tradeHaltSnapshot) await persistTradeHaltSnapshot(haltBucket, haltStateKey, parsed.tradeHaltSnapshot);
+  }, /trade_halt/, "Malformed or incomplete consolidated payloads must fail closed.");
+  assert.deepEqual(haltObjects.get(haltSnapshotKey), before, "Invalid payloads cannot overwrite the last authoritative snapshot.");
+}
+const nextHaltCheck = new Date(now.getTime() + 5 * 60_000);
+const emptyHalts = await parseTradeHalts(JSON.stringify({ totalCount: 0, results: { tradeHalts: [] } }), { ...haltContext, now: nextHaltCheck });
+assert.equal(emptyHalts.status, "connected");
+assert.equal((await persistTradeHaltSnapshot(haltBucket, haltStateKey, emptyHalts.tradeHaltSnapshot)).written, true);
+assert.deepEqual(haltObjects.get(haltSnapshotKey).value.provider.receipts, [], "A validated empty snapshot clears earlier active halts.");
+assert.equal((await persistTradeHaltSnapshot(haltBucket, haltStateKey, haltSnapshot)).written, false, "An older scan must not restore a cleared halt.");
+assert.equal((await persistTradeHaltSnapshot(haltBucket, haltStateKey, emptyHalts.tradeHaltSnapshot)).written, false, "Equal timestamp writers must not replace an authoritative snapshot.");
+const racingSnapshot = { ...haltSnapshot, provider: { ...haltSnapshot.provider, checkedAt: new Date(now.getTime() + 6 * 60_000).toISOString() } };
+const newestSnapshot = { ...emptyHalts.tradeHaltSnapshot, provider: { ...emptyHalts.tradeHaltSnapshot.provider, checkedAt: new Date(now.getTime() + 7 * 60_000).toISOString() } };
+beforeHaltPut = (key) => { haltObjects.set(key, { value: newestSnapshot, etag: `halt-etag-${++haltEtag}` }); };
+assert.equal((await persistTradeHaltSnapshot(haltBucket, haltStateKey, racingSnapshot)).written, false, "A CAS loser must reload timestamp ordering before retrying.");
+assert.deepEqual(haltObjects.get(haltSnapshotKey).value, newestSnapshot);
 
 const budgetValues = new Map();
 const budgetStorage = {
@@ -259,6 +362,12 @@ console.log(JSON.stringify({
   undatedEventsFailClosed: true,
   successfulHttpWithWrongSchemaFailsCoverage: true,
   invalidRowsCannotCertifyCompleteCoverage: true,
+  officialNestedNyseContractAndCompleteSnapshot: true,
+  oldActiveAndResumedHaltsPreserved: true,
+  authoritativeEmptyHaltsClearSafetyState: true,
+  malformedHaltsAndCountsFailClosed: true,
+  genericFeedsCannotCertifyHaltSafetyState: true,
+  haltSnapshotsUseTimestampOrderedR2Cas: true,
   fullUniverseAndExposureContractsRequired: true,
   providerWideQuotaWithPerFeedCadence: true,
   handoffRedirectsForbidden: true,

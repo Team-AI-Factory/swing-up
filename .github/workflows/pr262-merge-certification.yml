@@ -61,6 +61,7 @@ jobs:
           npm run smoke:pr262-ai-daily-cost-fuse
           npm run smoke:pr262-analysis-only-orchestrator
           npm run smoke:pr262-sensor-queue-hygiene
+          npm run smoke:pr262-trade-halt-snapshot
           npm run smoke:pr262-lightweight-sensor-v3-bootstrap
           npm run smoke:pr262-production-foundation
           npm run smoke:pr262-exposure-index-completeness
@@ -74,9 +75,16 @@ jobs:
           npm run smoke:equity-event-sources
           npm run smoke:equity-universe-fallback
           npm run smoke:ai-committee-provider-guardrails
+          npm run smoke:ai-committee-failure-diagnostics
           npm run smoke:inclusive-committee-quality
           npm run smoke:valuation-committee-followup
           npm run smoke:signal-presentation
+          npm run smoke:company-profile
+          npm run smoke:pr262-evidence-quality
+          npm run smoke:exact-evidence-followup
+          npm run smoke:rejection-audit-lifecycle
+          npm run smoke:equity-sec-filing-details
+          npm run smoke:pr262-direct-issuer-feed
           npm run smoke:equity-event-first-runner
           npm run smoke:equity-history-optional-pilot
           npm run smoke:pr262-event-job

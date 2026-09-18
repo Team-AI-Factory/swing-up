@@ -9,6 +9,12 @@ const { PrismaClient } = nodeRequire("@prisma/client");
 const db = new PrismaClient();
 const day = new Date().toISOString().slice(0,10);
 const now = new Date(`${day}T16:01:00Z`);
+const business = "We develop and provide business software for managing inventory and orders.";
+const customers = "Our customers include retailers and distributors.";
+const fixtureTicker = (action, i) => `${action === "buy_research" ? "BUY" : action === "sell_research" ? "SELL" : "RISK"}${i}`;
+const fixtureProfile = (action, i) => ({ version: 1, status: "verified", ticker: fixtureTicker(action, i), company: "Test Fixture Company", cik: "0000001234", business, customers,
+  description: `${business} ${customers}`, sourceType: "sec_annual_filing", sourceUrl: "https://www.sec.gov/Archives/edgar/data/1234/000000123426000001/example.htm",
+  sourceFiledAt: `${day}T00:00:00Z`, verifiedAt: `${day}T15:00:00Z` });
 // Keep module clocks aligned with the injected scheduler time. Mixing real early-
 // morning writes with a simulated afternoon tick prematurely reconciles delivery.
 let testClock = now.getTime();
@@ -24,7 +30,7 @@ function load(file) {
   new Function("require", "module", "exports", "Date", output)((name) => {
     if (name === "@/lib/db/client") return { prisma: db };
     if (name === "@/lib/opportunity-engine/valuation-watchlist-feed") return { getValuationWatchlistStatus: async ({ action }) => ({ candidates: [1,2,3].map((i) => ({
-      id: `test:${action}:${i}`, ticker: `${action === "buy_research" ? "BUY" : action === "sell_research" ? "SELL" : "RISK"}${i}`, company: "Test Fixture Company", currency: "USD", action,
+      id: `test:${action}:${i}`, ticker: fixtureTicker(action, i), company: "Test Fixture Company", cik: "0000001234", companyProfile: fixtureProfile(action, i), currency: "USD", action,
       currentPrice: action === "sell_research" ? 100 : 40,
       fairValue: { conservative: 50, base: 60, optimistic: 70 }, scores: { fairValueConfidence: 84, evidence: 90, risk: 30 },
       observedAt: `${day}T02:00:00Z`, priceObservedAt: `${day}T16:00:00Z`, livePriceFresh: true,
@@ -102,6 +108,20 @@ try {
   await db.socialDelivery.updateMany({ where: { status: "unknown" }, data: { checkedAt: new Date(now.getTime() - 3_600_000) } });
   await tick(new Date(now.getTime() + 2 * 3_600_000));
   assert.equal(mutations, 3); assert.equal(reads, 1); assert.equal(await db.socialDelivery.count({ where: { status: "unknown" } }), 0);
+  const nextDay = new Date(now.getTime() + 86_400_000);
+  const validRecord = await db.socialSignal.findFirst();
+  const legacySnapshot = { ...validRecord.snapshot };
+  delete legacySnapshot.companyProfile;
+  const legacy = await db.socialSignal.create({ data: { scheduleKey: `${nextDay.toISOString().slice(0, 10)}-2`, ticker: validRecord.ticker,
+    sourceId: "legacy-unverified-fixture", snapshot: legacySnapshot, scheduledAt: nextDay,
+    deliveries: { create: { channel: "facebook", caption: "Legacy description must not be published", status: "awaiting_connection" } } } });
+  await tick(nextDay);
+  assert.equal(mutations, 3, "A queued legacy snapshot cannot publish without profile provenance");
+  assert.equal((await db.socialDelivery.findFirst({ where: { signalId: legacy.id } })).status, "held");
+  const publicResearch = load(resolve("lib/growth/public-records.ts"));
+  const publicRows = await publicResearch.latestResearch(100);
+  assert.ok(publicRows.rows.length > 0, "Verified snapshots remain readable");
+  assert.ok(publicRows.rows.every(row => row.id !== legacy.id), "Legacy snapshots are excluded from public research history");
   const record = await db.socialSignal.findFirst(); writeFileSync("/tmp/swing-up-test-card-id", record.id);
   console.log(JSON.stringify({ ok: true, checks: ["additive migration accepted by PostgreSQL", "concurrent signup uniqueness", "consent and price persisted", "repeat signup cannot overwrite preferences", "private deletion works", "rate limit enforced", "visits deduplicated", "owner dashboard protected", "concurrent scheduler lease", "one delivery per channel", "ambiguous timeout reconciled without resending"] }, null, 2));
 } finally { globalThis.fetch = originalFetch; await db.$disconnect(); }

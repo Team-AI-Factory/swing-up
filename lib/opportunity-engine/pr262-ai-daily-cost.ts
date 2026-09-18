@@ -3,6 +3,8 @@ import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 
 const STATE_KEY = pr262StorageKey("serious-signal/ai-cost-v1.json");
 const WINDOW_MS = 24 * 60 * 60_000;
+const AUDIT_RETENTION_DAYS = 45;
+const AUDIT_RETENTION_MS = AUDIT_RETENTION_DAYS * WINDOW_MS;
 const DEFAULT_LIMIT_USD = 10;
 const DEFAULT_WARNING_USD = 6;
 const DEFAULT_UNKNOWN_USAGE_FALLBACK_USD = 0.75;
@@ -32,7 +34,14 @@ type CostReservation = {
   direction: "upside" | "downside" | null;
   amountUsd: number;
 };
-type State = { version: 1; updatedAt: string; entries: CostEntry[]; reservations: CostReservation[] };
+type State = {
+  version: 1;
+  updatedAt: string;
+  entries: CostEntry[];
+  reservations: CostReservation[];
+  auditEntries: CostEntry[];
+  auditTrackingStartedAt: string;
+};
 
 function object(value: unknown): Json {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Json : {};
@@ -65,14 +74,12 @@ function reviewReservationUsd(limit: number) {
   );
 }
 
-function emptyState(): State {
-  return { version: 1, updatedAt: new Date(0).toISOString(), entries: [], reservations: [] };
+function emptyState(now: Date): State {
+  return { version: 1, updatedAt: new Date(0).toISOString(), entries: [], reservations: [], auditEntries: [], auditTrackingStartedAt: now.toISOString() };
 }
 
-function normalize(raw: unknown, now: Date): State {
-  const value = object(raw);
-  if (value.version !== 1 || !Array.isArray(value.entries)) throw new Error("pr262_ai_daily_cost_state_invalid");
-  const entries = value.entries.flatMap((item): CostEntry[] => {
+function normalizeEntries(items: unknown[], now: Date, retentionMs: number): CostEntry[] {
+  return items.flatMap((item): CostEntry[] => {
     const row = object(item);
     const recordedAt = typeof row.recordedAt === "string" ? row.recordedAt : "";
     const at = Date.parse(recordedAt);
@@ -80,7 +87,7 @@ function normalize(raw: unknown, now: Date): State {
     if (!row.id || typeof row.id !== "string" || !Number.isFinite(at) || costUsd === null || costUsd < 0) {
       throw new Error("pr262_ai_daily_cost_entry_invalid");
     }
-    if (now.getTime() - at >= WINDOW_MS) return [];
+    if (now.getTime() - at >= retentionMs) return [];
     return [{
       id: row.id,
       recordedAt,
@@ -90,6 +97,24 @@ function normalize(raw: unknown, now: Date): State {
       source: row.source === "actual_tokens" ? "actual_tokens" : "fallback_missing_usage",
     }];
   });
+}
+
+function normalize(raw: unknown, now: Date): State {
+  const value = object(raw);
+  if (value.version !== 1 || !Array.isArray(value.entries)) throw new Error("pr262_ai_daily_cost_state_invalid");
+  const entries = normalizeEntries(value.entries, now, WINDOW_MS);
+  const rawAuditEntries = value.auditEntries === undefined ? [] : value.auditEntries;
+  if (!Array.isArray(rawAuditEntries)) throw new Error("pr262_ai_cost_audit_entries_invalid");
+  // Preserve legacy entries during migration, but do not claim the previously
+  // discarded history has been recovered. The fingerprint can recur after 24h,
+  // so the timestamp is part of the audit identity.
+  const auditEntries = [...new Map(
+    normalizeEntries([...rawAuditEntries, ...value.entries], now, AUDIT_RETENTION_MS)
+      .map((entry) => [`${entry.id}:${entry.recordedAt}`, entry] as const),
+  ).values()];
+  const auditTrackingStartedAt = typeof value.auditTrackingStartedAt === "string"
+    && Number.isFinite(Date.parse(value.auditTrackingStartedAt))
+    ? value.auditTrackingStartedAt : now.toISOString();
   const rawReservations = value.reservations === undefined ? [] : value.reservations;
   if (!Array.isArray(rawReservations)) throw new Error("pr262_ai_daily_cost_reservations_invalid");
   const reservations = rawReservations.flatMap((item): CostReservation[] => {
@@ -123,12 +148,14 @@ function normalize(raw: unknown, now: Date): State {
     updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : new Date(0).toISOString(),
     entries,
     reservations,
+    auditEntries,
+    auditTrackingStartedAt,
   };
 }
 
 async function load(now: Date) {
   const current = await readVersionedTextFromR2(STATE_KEY);
-  if (!current.found || !current.text) return { state: emptyState(), etag: current.etag };
+  if (!current.found || !current.text) return { state: emptyState(now), etag: current.etag };
   try { return { state: normalize(JSON.parse(current.text), now), etag: current.etag }; }
   catch (error) {
     throw new Error("pr262_ai_daily_cost_state_unreadable", { cause: error });
@@ -141,6 +168,46 @@ function total(entries: CostEntry[]) {
 
 function totalReservations(reservations: CostReservation[]) {
   return Math.round(reservations.reduce((sum, item) => sum + item.amountUsd, 0) * 1_000_000) / 1_000_000;
+}
+
+function auditWindow(state: State, now: Date, days: number) {
+  const startMs = now.getTime() - days * WINDOW_MS;
+  const entries = state.auditEntries.filter((entry) => {
+    const at = Date.parse(entry.recordedAt);
+    return at >= startMs && at <= now.getTime();
+  });
+  const metered = entries.filter((entry) => entry.source === "actual_tokens");
+  const unknown = entries.filter((entry) => entry.source === "fallback_missing_usage");
+  const completeFromMs = Math.max(Date.parse(state.auditTrackingStartedAt), now.getTime() - AUDIT_RETENTION_MS);
+  return {
+    startAt: new Date(startMs).toISOString(),
+    endAt: now.toISOString(),
+    recordedReviews: entries.length,
+    completeTokenUsageReviews: metered.length,
+    completeTokenUsageEstimateUsd: total(metered),
+    unknownUsageReviews: unknown.length,
+    unknownUsageAllocationUsd: total(unknown),
+    budgetAccountedUsd: total(entries),
+    recordedReviewHistoryComplete: completeFromMs <= startMs,
+    recordedReviewHistoryCompleteFrom: new Date(completeFromMs).toISOString(),
+  };
+}
+
+function auditSummary(state: State, now: Date) {
+  return {
+    retentionDays: AUDIT_RETENTION_DAYS,
+    providerInvoiceVerified: false,
+    coversRecordedReviewsOnly: true,
+    activeReservationUsd: totalReservations(state.reservations),
+    activeReservations: state.reservations.length,
+    last48Hours: auditWindow(state, now, 2),
+    last30Days: auditWindow(state, now, 30),
+  };
+}
+
+export async function getPr262AiCostAudit(now = new Date()) {
+  const loaded = await load(now);
+  return auditSummary(loaded.state, now);
 }
 
 function nextBudgetAdmissionAt(state: State, amountUsd: number, limit: number) {
@@ -164,7 +231,7 @@ function nextBudgetAdmissionAt(state: State, amountUsd: number, limit: number) {
   return null;
 }
 
-export async function getPr262AiDailyBudgetStatus(now = new Date()) {
+export async function getPr262AiDailyBudgetStatus(now = new Date(), includeAudit = false) {
   const loaded = await load(now);
   const spentUsd = total(loaded.state.entries);
   const reservedUsd = totalReservations(loaded.state.reservations);
@@ -189,6 +256,9 @@ export async function getPr262AiDailyBudgetStatus(now = new Date()) {
     activeReservations: loaded.state.reservations.length,
     reviewsRecorded: loaded.state.entries.length,
     unknownUsageReviews: loaded.state.entries.filter((item) => item.source === "fallback_missing_usage").length,
+    completeTokenUsageEstimateUsd: total(loaded.state.entries.filter((item) => item.source === "actual_tokens")),
+    unknownUsageAllocationUsd: total(loaded.state.entries.filter((item) => item.source === "fallback_missing_usage")),
+    ...(includeAudit ? { costAudit: auditSummary(loaded.state, now) } : {}),
   };
 }
 
@@ -231,6 +301,7 @@ export async function reservePr262AiCommitteeBudget(input: {
       amountUsd,
     };
     const next: State = {
+      ...loaded.state,
       version: 1,
       updatedAt: now.toISOString(),
       entries: loaded.state.entries,
@@ -253,6 +324,7 @@ export async function releasePr262AiCommitteeBudgetReservation(candidateFingerpr
     const loaded = await load(now);
     if (!loaded.state.reservations.some((item) => item.id === id)) return { released: false, reason: "reservation_not_found" };
     const next: State = {
+      ...loaded.state,
       version: 1,
       updatedAt: now.toISOString(),
       entries: loaded.state.entries,
@@ -326,12 +398,14 @@ export async function recordPr262AiCommitteeCost(reportValue: unknown, now = new
       source: actual !== null ? "actual_tokens" : "fallback_missing_usage",
     };
     const next: State = {
+      ...loaded.state,
       version: 1,
       updatedAt: now.toISOString(),
       // normalize() already removes entries outside the rolling 24-hour
       // window. Retain every in-window charge so a high review count can
       // never make the ledger forget spend and reopen the $10 fuse.
       entries: [...loaded.state.entries, entry],
+      auditEntries: [...loaded.state.auditEntries, entry],
       reservations: loaded.state.reservations.filter((item) => item.id !== id),
     };
     const written = await writeVersionedJsonToR2(

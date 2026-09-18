@@ -1,3 +1,5 @@
+import type { VerifiedCompanyProfile } from "@/lib/company-profile";
+import { readCompanyProfiles } from "@/lib/opportunity-engine/company-profile-cache";
 import { explainSignal, plainEvidenceGaps } from "@/lib/signal-explanation";
 import { buildPriceOutlook, compareSignalPotential } from "@/lib/signal-outlook";
 import { readResearchAlerts } from "@/lib/opportunity-engine/pr262-research-evidence";
@@ -64,9 +66,9 @@ function sanitizeReasons(value: unknown, maximum = 4) {
     : [];
 }
 
-function sanitizeCandidate(item: UsValueCompanyAnalysis, action: WatchlistAction, cycleId: string, livePrice?: LivePrice, review?: Record<string, unknown>) {
+function sanitizeCandidate(item: UsValueCompanyAnalysis, action: WatchlistAction, cycleId: string, livePrice?: LivePrice, review?: Record<string, unknown>, companyProfile?: VerifiedCompanyProfile) {
   const ticker = safeTicker(item.ticker);
-  if (!ticker) return null;
+  if (!ticker || !companyProfile) return null;
   const reasons = sanitizeReasons(item.decision?.reasons);
   const blockers = sanitizeReasons(item.decision?.blockers);
   const specialistModelApplied = reasons.some((reason) => /specialist model/i.test(reason));
@@ -86,6 +88,8 @@ function sanitizeCandidate(item: UsValueCompanyAnalysis, action: WatchlistAction
     anchor: `valuation-watchlist-${action}-${ticker.toLowerCase().replace(/[^a-z0-9-]/g, "-")}`,
     observedAt: item.observedAt,
     ticker,
+    cik: companyProfile.cik,
+    companyProfile,
     company: String(item.company ?? ticker).replace(/\s+/g, " ").trim().slice(0, 160),
     currency: text(item.currency),
     fundamentals: {
@@ -127,8 +131,9 @@ function sanitizeCandidate(item: UsValueCompanyAnalysis, action: WatchlistAction
     userAlertEligible: action !== "price_watch" && directionStillSupported && review?.committeeStatus !== "rejected",
     committeeApproved: approvedForThisSnapshot,
     committeeStatus: approvedForThisSnapshot ? "approved" : review?.committeeApproved === true ? "awaiting_review" : String(review?.committeeStatus ?? "awaiting_review"),
-    explanation: explainSignal({ company: String(item.company ?? ticker), sector: item.sector, industry: item.industry, kind: "valuation", action, price: currentPrice, fairValue: baseValue, fundamentals: item.fundamentals, gaps: plainEvidenceGaps(blockers) }),
+    explanation: explainSignal({ company: String(item.company ?? ticker), sector: item.sector, industry: item.industry, description: companyProfile.description, kind: "valuation", action, price: currentPrice, fairValue: baseValue, fundamentals: item.fundamentals, gaps: plainEvidenceGaps(blockers) }),
     links: [
+      { label: "Company business and customers — annual filing", url: companyProfile.sourceUrl },
       ...(tradingViewUrl ? [{ label: "Market and valuation", url: tradingViewUrl }] : []),
       { label: "SEC filings", url: secUrl },
     ],
@@ -198,8 +203,9 @@ export async function getValuationWatchlistStatus(options: { limit?: number; act
     ["watch_out_research", arrayOfAnalyses(serious.watchOut)],
     ["price_watch", arrayOfAnalyses(parsed.qualityPriceWatchlist)],
   ];
+  const profiles = await readCompanyProfiles(groups.flatMap(([, items]) => items)).catch(() => new Map<string, VerifiedCompanyProfile>());
   const all = groups.flatMap(([action, items]) => items.flatMap(item =>
-    sanitizeCandidate(item, action, cycleId, livePrices.get(item.ticker.toUpperCase()), reviews.find(r => r.kind === "valuation" && r.ticker === item.ticker && r.valuationObservedAt === item.observedAt)) ?? []))
+    sanitizeCandidate(item, action, cycleId, livePrices.get(item.ticker.toUpperCase()), reviews.find(r => r.kind === "valuation" && r.ticker === item.ticker && r.valuationObservedAt === item.observedAt), profiles.get(item.ticker.toUpperCase())) ?? []))
     .sort(compareSignalPotential);
   const filtered = options.action ? all.filter((item) => item.action === options.action) : all;
   const candidates = filtered.slice(0, limit);
@@ -229,10 +235,10 @@ export async function getValuationWatchlistStatus(options: { limit?: number; act
     },
     summary: {
       total: all.length,
-      buyResearch: groups[0][1].length,
-      sellResearch: groups[1][1].length,
-      watchOutResearch: groups[2][1].length,
-      priceWatch: groups[3][1].length,
+      buyResearch: all.filter(row => row.action === "buy_research").length,
+      sellResearch: all.filter(row => row.action === "sell_research").length,
+      watchOutResearch: all.filter(row => row.action === "watch_out_research").length,
+      priceWatch: all.filter(row => row.action === "price_watch").length,
       specialistModelApplied: all.filter((item) => item.specialistModelApplied).length,
     },
     candidates,

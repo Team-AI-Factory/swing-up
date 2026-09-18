@@ -29,7 +29,7 @@ function date(value: unknown) {
   return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
 }
 
-export function latestFact(facts: Record<string, unknown>, concepts: readonly string[], units: readonly string[], now: Date, annualOnly = false) {
+function datedFacts(facts: Record<string, unknown>, concepts: readonly string[], units: readonly string[], now: Date, annualOnly = false) {
   const today = now.toISOString().slice(0, 10);
   const candidates = concepts.flatMap((concept) => {
     const raw = facts[concept];
@@ -53,7 +53,26 @@ export function latestFact(facts: Record<string, unknown>, concepts: readonly st
   });
   // Compare all aliases. A discontinued tag must not hide a newer equivalent tag;
   // a recently filed comparative prior period must not replace the current period.
-  return candidates.sort((a, b) => b.periodEnd.localeCompare(a.periodEnd) || b.filedAt.localeCompare(a.filedAt))[0] ?? null;
+  return candidates.sort((a, b) => b.periodEnd.localeCompare(a.periodEnd) || b.filedAt.localeCompare(a.filedAt));
+}
+
+export function latestFact(facts: Record<string, unknown>, concepts: readonly string[], units: readonly string[], now: Date, annualOnly = false) {
+  return datedFacts(facts, concepts, units, now, annualOnly)[0] ?? null;
+}
+
+function priorYearFact(facts: Record<string, unknown>, concepts: readonly string[], units: readonly string[], now: Date) {
+  const rows = datedFacts(facts, concepts, units, now);
+  const current = rows[0];
+  if (!current) return null;
+  return rows.find(row => {
+    const yearGapDays = (Date.parse(current.periodEnd) - Date.parse(row.periodEnd)) / 86400000;
+    if (row.unit !== current.unit || yearGapDays < 350 || yearGapDays > 380 || Boolean(row.periodStart) !== Boolean(current.periodStart)) return false;
+    if (!row.periodStart || !current.periodStart) return true;
+    const currentDays = (Date.parse(current.periodEnd) - Date.parse(current.periodStart)) / 86400000;
+    const previousDays = (Date.parse(row.periodEnd) - Date.parse(row.periodStart)) / 86400000;
+    // Do not compare one quarter with a year-to-date or full-year number.
+    return Math.abs(currentDays - previousDays) <= 7;
+  }) ?? null;
 }
 
 function applyCompanyScale(candidate: ImpactCandidate, annualRevenue: ReturnType<typeof latestFact>, sourceUrl: string, now: Date) {
@@ -109,13 +128,19 @@ export async function enrichCandidateFundamentals(candidate: ImpactCandidate | n
     const dei = namespaces.dei && typeof namespaces.dei === "object" && !Array.isArray(namespaces.dei) ? namespaces.dei as Record<string, unknown> : {};
     const ifrs = namespaces["ifrs-full"] && typeof namespaces["ifrs-full"] === "object" && !Array.isArray(namespaces["ifrs-full"]) ? namespaces["ifrs-full"] as Record<string, unknown> : {};
     const facts = { ...ifrs, ...usGaap, ...dei };
-    const items = METRICS.flatMap((metric) => {
+    const items: NonNullable<ImpactCandidate["fundamentals"]>["items"] = METRICS.flatMap((metric) => {
       const fact = latestFact(facts, metric.concepts, metric.units, now);
       return fact ? [{ metric: metric.label, value: fact.value, unit: fact.unit, periodStart: fact.periodStart, filedAt: fact.filedAt, periodEnd: fact.periodEnd, form: fact.form }] : [];
     });
+    const currentMetricCount = items.length;
+    for (const metric of METRICS) {
+      if (!cache?.requiredMetrics?.includes(`${metric.label}_prior_year`)) continue;
+      const fact = priorYearFact(facts, metric.concepts, metric.units, now);
+      if (fact) items.push({ metric: `${metric.label}_prior_year`, value: fact.value, unit: fact.unit, periodStart: fact.periodStart, filedAt: fact.filedAt, periodEnd: fact.periodEnd, form: fact.form });
+    }
     const latestFiledAt = items.map((item) => item.filedAt).filter((value): value is string => Boolean(value)).sort().at(-1) ?? null;
     const fiscalPeriodEnd = items.map((item) => item.periodEnd).filter((value): value is string => Boolean(value)).sort().at(-1) ?? null;
-    candidate.fundamentals = { available: items.length >= 3, sourceUrl, checkedAt: now.toISOString(), latestFiledAt, fiscalPeriodEnd, items, error: items.length ? null : "no_supported_company_facts" };
+    candidate.fundamentals = { available: currentMetricCount >= 3, sourceUrl, checkedAt: now.toISOString(), latestFiledAt, fiscalPeriodEnd, items, error: items.length ? null : "no_supported_company_facts" };
     const annualRevenue = latestFact(facts, METRICS[0].concepts, ["USD"], now, true);
     if (candidate.eventFamily !== "valuation_gap") applyCompanyScale(candidate, annualRevenue, sourceUrl, now);
     if (candidate.fundamentals.available) await cache?.write({ cik: candidate.cik, fundamentals: candidate.fundamentals, annualRevenue }).catch(() => undefined);

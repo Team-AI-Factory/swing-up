@@ -14,7 +14,7 @@ export function SignalPriceOutlook({ outlook, action }: { outlook: PriceOutlook;
     <div className="signal-return"><span>{sell ? "Potential decline to base" : buy ? "Potential gain to base" : "Price move to base"}</span><strong>{percent(sell || buy ? outlook.potentialPercent : outlook.base.changePercent)}</strong></div>
     <div className="signal-price-grid">
       <div><span>Current recorded price</span><strong>{money(outlook.currentPrice, outlook.currency)}</strong></div>
-      {([ ["Conservative", outlook.conservative], ["Base", outlook.base], ["Optimistic", outlook.optimistic] ] as const).map(([label, value]) => <div key={label}><span>{label} {outlook.basis === "historical_scenarios" ? "scenario" : "value"}</span><strong>{money(value.price, outlook.currency)}</strong><small>{percent(value.changePercent)} from current</small></div>)}
+      {([ ["Conservative case", outlook.conservative], ["Base case (middle)", outlook.base], ["Best case (estimated)", outlook.optimistic] ] as const).map(([label, value]) => <div key={label}><span>{label} · {outlook.basis === "historical_scenarios" ? "price scenario" : "business value"}</span><strong>{money(value.price, outlook.currency)}</strong><small>{percent(value.changePercent)} from current</small></div>)}
     </div>
     <p><strong>Upside:</strong> {percent(outlook.upsidePercent)} · <strong>Downside:</strong> {percent(outlook.downsidePercent)}</p>
     <p><strong>Timeline:</strong> {outlook.horizon}</p>

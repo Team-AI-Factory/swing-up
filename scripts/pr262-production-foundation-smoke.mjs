@@ -16,6 +16,7 @@ let exposureBuilds = 0;
 let forceGateRevision = 0;
 const forceGateObjects = new Map();
 const stubs = {
+  "@/lib/opportunity-engine/pr262-event-job": { warmPr262CompanyProfiles: async () => ({ attempted: 1, verified: 1, status: "checked" }) },
   "next/server": {
     NextResponse: {
       json(body, options = {}) {

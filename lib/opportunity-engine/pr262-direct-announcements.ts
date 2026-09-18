@@ -22,13 +22,20 @@ const DISCOVERY_CONCURRENCY = 1;
 const MAX_FEEDS_POLLED_PER_CYCLE = 20;
 const SEC_AGENT = "SwingUp/1.0 support@swingup.app";
 
-// Issuer-published IR roots/RSS links verified 2026-09-16. Each seed is bound
-// to the SEC identity; a recycled ticker cannot inherit another issuer's feed.
+// Issuer-published IR roots/RSS links verified 2026-09-16 and 2026-09-18.
+// See docs/operations/direct-issuer-feed-coverage.md for primary provenance.
+// Each seed is bound to the SEC identity; a recycled ticker cannot inherit
+// another issuer's feed.
 const VERIFIED_ISSUER_SOURCES = [
   { ticker: "TG", cik: "0000850429", investorWebsite: "https://ir.tredegar.com/", feedUrl: null },
   { ticker: "NVDA", cik: "0001045810", investorWebsite: "https://investor.nvidia.com/", feedUrl: "https://nvidianews.nvidia.com/cats/press_release.xml" },
   { ticker: "AMD", cik: "0000002488", investorWebsite: "https://ir.amd.com/", feedUrl: "https://ir.amd.com/news-events/press-releases/rss" },
   { ticker: "TSM", cik: "0001046179", investorWebsite: "https://investor.tsmc.com/english", feedUrl: null },
+  { ticker: "INTC", cik: "0000050863", investorWebsite: "https://www.intc.com/", feedUrl: "https://www.intc.com/news-events/press-releases/rss" },
+  { ticker: "XOM", cik: "0000034088", investorWebsite: "https://investor.exxonmobil.com/", feedUrl: "https://investor.exxonmobil.com/company-information/press-releases/rss" },
+  { ticker: "AAPL", cik: "0000320193", investorWebsite: "https://www.apple.com/newsroom/", feedUrl: "https://www.apple.com/newsroom/rss-feed.rss" },
+  { ticker: "JPM", cik: "0000019617", investorWebsite: "https://jpmorganchaseco.gcs-web.com/", feedUrl: "https://jpmorganchaseco.gcs-web.com/rss/news-releases.xml" },
+  { ticker: "KO", cik: "0000021344", investorWebsite: "https://investors.coca-colacompany.com/", feedUrl: "https://investors.coca-colacompany.com/news-events/press-releases/rss" },
 ];
 
 type RegistryEntry = {
@@ -368,6 +375,11 @@ function discoverInvestorPages(html: string, base: string) {
 }
 
 function parseFeed(feed: string, entry: RegistryEntry, now: Date): Pr262SensorEvent[] {
+  const root = feed.replace(/^\uFEFF/, "").replace(/^\s*(?:(?:<\?[\s\S]*?\?>|<!--[\s\S]*?-->)\s*)*/, "");
+  if (!/^<rss\b[^>]*>[\s\S]*<channel\b[^>]*(?:\/>|>[\s\S]*<\/channel\s*>)[\s\S]*<\/rss\s*>\s*$/i.test(root)
+    && !/^<feed\b[^>]*(?:\/>|>[\s\S]*<\/feed\s*>)\s*$/i.test(root)) {
+    throw new Error("direct_feed_invalid_syndication_payload");
+  }
   const blocks = [...feed.matchAll(/<(?:item|entry)\b[\s\S]*?<\/(?:item|entry)>/gi)].map((match) => match[0]);
   return blocks.slice(0, 30).flatMap((block): Pr262SensorEvent[] => {
     const title = tag(block, "title").slice(0, 300);
@@ -450,17 +462,18 @@ async function seedEnv(registry: Registry, exposure: Pr262ExposureEntry[]) {
     if (!ticker || (!feedUrl && !investorWebsite) || !company?.cik || (row.cik && row.cik !== company.cik)) continue;
     const existing = registry.entries.find((entry) => entry.ticker === ticker);
     if (existing) {
+      const identityChanged = existing.cik !== company.cik;
       const feedChanged = Boolean(feedUrl && existing.feedUrl !== feedUrl);
       const websiteChanged = Boolean(investorWebsite && existing.investorWebsite !== investorWebsite);
       existing.consecutiveConfirmedNoFeedDiscoveries = 0;
-      if (!feedChanged && !websiteChanged) continue;
+      if (!identityChanged && !feedChanged && !websiteChanged) continue;
       existing.company = company.company;
       existing.cik = company.cik;
-      if (feedUrl) existing.feedUrl = feedUrl;
-      if (investorWebsite) existing.investorWebsite = investorWebsite;
+      if (feedUrl || identityChanged) existing.feedUrl = feedUrl;
+      if (investorWebsite || identityChanged) existing.investorWebsite = investorWebsite;
       existing.lastDiscoveryAt = feedUrl ? seededAt : new Date(0).toISOString();
       existing.lastCheckedAt = null;
-      existing.lastSuccessAt = feedChanged ? null : existing.lastSuccessAt;
+      existing.lastSuccessAt = feedChanged || identityChanged ? null : existing.lastSuccessAt;
       existing.nextCheckAt = null;
       existing.error = null;
       existing.consecutiveFailures = 0;
@@ -643,7 +656,10 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
   if (!Number.isFinite(lastDiscoveryMs) || now.getTime() - lastDiscoveryMs >= DISCOVERY_CADENCE_MS) {
     if (eligibleCompanies.length) {
       const prioritized = eligibleCompanies
-        .map((company) => discoveryTarget(company, byTicker.get(company.ticker), now))
+        .map((company) => {
+          const existing = byTicker.get(company.ticker);
+          return discoveryTarget(company, existing?.cik === company.cik ? existing : undefined, now);
+        })
         .filter((target): target is DiscoveryTarget => target !== null)
         .sort(compareDiscoveryTargets);
       const discoveryTargets: DiscoveryTarget[] = [];
@@ -705,8 +721,10 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
   }
 
   registry.entries = [...byTicker.values()];
+  const eligibleIdentities = new Map(eligibleCompanies.map((company) => [company.ticker, company.cik]));
   const due = registry.entries
     .filter((entry) => entry.feedUrl)
+    .filter((entry) => eligibleIdentities.get(entry.ticker) === entry.cik)
     .filter((entry) => {
       const next = entry.nextCheckAt ? Date.parse(entry.nextCheckAt) : 0;
       return !Number.isFinite(next) || next <= now.getTime();
@@ -746,9 +764,8 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
   const winner = written.conflict ? await loadRegistry() : null;
   if (winner && !winner.found) throw new Error("pr262_direct_feed_registry_conflict_winner_missing");
   const persistedRegistry = winner?.registry ?? registry;
-  const eligibleTickers = new Set(eligibleCompanies.map((company) => company.ticker));
-  const currentEntries = persistedRegistry.entries.filter((entry) => eligibleTickers.has(entry.ticker));
-  const retainedHistoricalEntries = persistedRegistry.entries.filter((entry) => !eligibleTickers.has(entry.ticker));
+  const currentEntries = persistedRegistry.entries.filter((entry) => eligibleIdentities.get(entry.ticker) === entry.cik);
+  const retainedHistoricalEntries = persistedRegistry.entries.filter((entry) => eligibleIdentities.get(entry.ticker) !== entry.cik);
   const persistedByTicker = new Map(persistedRegistry.entries.map((entry) => [entry.ticker, entry]));
   return {
     events,
@@ -778,7 +795,7 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
     currentEligibleCompaniesKnown: currentEntries.length,
     retainedHistoricalCompanies: retainedHistoricalEntries.length,
     retainedHistoricalFeedlessCompanies: retainedHistoricalEntries.filter((entry) => !entry.feedUrl).length,
-    unseenCompanies: eligibleCompanies.filter((company) => !persistedByTicker.has(company.ticker)).length,
+    unseenCompanies: eligibleCompanies.filter((company) => persistedByTicker.get(company.ticker)?.cik !== company.cik).length,
     investorWebsitesFound: persistedRegistry.entries.filter((entry) => entry.investorWebsite).length,
     feedlessCompanies: persistedRegistry.entries.filter((entry) => !entry.feedUrl).length,
     transientDiscoveryBacklog: currentEntries.filter((entry) => !entry.feedUrl && transientDiscoveryError(entry.error)).length,

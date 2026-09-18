@@ -35,8 +35,10 @@
     "smoke:pr262-runtime-pause": "node scripts/pr262-runtime-pause-smoke.mjs",
     "smoke:pr262-committee-authority": "node scripts/pr262-committee-authority-smoke.mjs",
     "smoke:pr262-event-job": "node scripts/pr262-event-job-smoke.mjs",
+    "smoke:pr262-trade-halt-snapshot": "node scripts/pr262-trade-halt-snapshot-smoke.mjs",
     "smoke:pr262-storage-namespace": "node scripts/pr262-storage-namespace-smoke.mjs",
     "smoke:pr262-provider-budget-durability": "node scripts/pr262-provider-budget-durability-smoke.mjs",
+    "smoke:pr262-evidence-quality": "node scripts/pr262-evidence-quality-smoke.mjs",
     "smoke:pr262-ai-daily-cost-fuse": "node scripts/pr262-ai-daily-cost-fuse-smoke.mjs",
     "smoke:pr262-analysis-only-orchestrator": "node scripts/pr262-analysis-only-orchestrator-smoke.mjs",
     "smoke:pr262-route-auth": "node scripts/pr262-route-auth-smoke.mjs",
@@ -74,7 +76,11 @@
     "smoke:branch-lab-policy": "node scripts/branch-signal-lab-policy-smoke.mjs",
     "smoke:inclusive-committee-quality": "node scripts/inclusive-committee-quality-smoke.mjs",
     "smoke:valuation-committee-followup": "node scripts/valuation-committee-followup-smoke.mjs",
-    "smoke:signal-presentation": "node scripts/signal-presentation-smoke.mjs"
+    "smoke:rejection-audit-lifecycle": "node scripts/rejection-audit-lifecycle-smoke.mjs",
+    "smoke:company-profile": "node scripts/company-profile-smoke.mjs",
+    "smoke:signal-presentation": "node scripts/signal-presentation-smoke.mjs",
+    "smoke:ai-committee-failure-diagnostics": "node scripts/ai-committee-failure-diagnostics-smoke.mjs",
+    "smoke:exact-evidence-followup": "node scripts/exact-evidence-followup-smoke.mjs"
   },
   "dependencies": {
     "next": "^15.1.3",

@@ -1,5 +1,6 @@
 import type { getValuationWatchlistStatus } from "@/lib/opportunity-engine/valuation-watchlist-feed";
 import { buildPriceOutlook, type PriceOutlook } from "@/lib/signal-outlook";
+import { verifiedCompanyProfile, type VerifiedCompanyProfile } from "@/lib/company-profile";
 
 export const CHANNELS = ["facebook", "instagram", "x"] as const;
 export type Channel = typeof CHANNELS[number];
@@ -21,8 +22,16 @@ export type ResearchSnapshot = {
   sources: { label: string; url: string }[]; methods: string[];
   publicationStatus: "provisional_research_only" | "provisional_alert" | "committee_approved_alert"; userAlertEligible: boolean; committeeApproved: boolean;
   companyDoes?: string; whatHappened?: string; committeeStatus?: string;
+  cik?: string | null; companyProfile?: VerifiedCompanyProfile;
   outlook?: PriceOutlook;
 };
+export function publicResearchSnapshot(value: unknown, now = new Date()): ResearchSnapshot | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const snapshot = value as ResearchSnapshot;
+  const profile = verifiedCompanyProfile(snapshot.companyProfile, snapshot, now);
+  if (!profile) return null;
+  return { ...snapshot, cik: profile.cik, companyProfile: profile, companyDoes: profile.description };
+}
 export function snapshotOutlook(snapshot: ResearchSnapshot) {
   return snapshot.outlook ?? buildPriceOutlook({ currentPrice: snapshot.currentPrice, currency: snapshot.currency, action: snapshot.action,
     conservative: snapshot.low, base: snapshot.targetPrice, optimistic: snapshot.high, basis: "valuation" });
@@ -39,6 +48,7 @@ export function slotsForDay(now: Date) {
   }));
 }
 export function candidateProblem(candidate: Candidate, now: Date): string | null {
+  if (!verifiedCompanyProfile(candidate.companyProfile, candidate, now)) return "Verified company profile is required";
   if (candidate.committeeStatus === "rejected") return "Committee rejected this assessment";
   if (!(candidate.action in LABELS)) return "No publishable research category";
   if (candidate.currency !== "USD") return "Currency is not confirmed as USD";
@@ -58,6 +68,8 @@ export function candidateProblem(candidate: Candidate, now: Date): string | null
 export function makeSnapshot(candidate: Candidate, now = new Date()): ResearchSnapshot {
   const problem = candidateProblem(candidate, now);
   if (problem) throw new Error(problem);
+  const companyProfile = verifiedCompanyProfile(candidate.companyProfile, candidate, now);
+  if (!companyProfile) throw new Error("Verified company profile is required");
   const action = candidate.action as keyof typeof LABELS;
   const current = candidate.currentPrice!;
   const target = candidate.fairValue.base!;
@@ -84,9 +96,10 @@ export function makeSnapshot(candidate: Candidate, now = new Date()): ResearchSn
     confidence: candidate.scores.fairValueConfidence!, riskScore: candidate.scores.risk, evidenceScore: candidate.scores.evidence,
     priceObservedAt: candidate.priceObservedAt, observedAt: candidate.observedAt, capturedAt: now.toISOString(),
     eventKind: "valuation_screen", eventAt: null, horizon: null,
-    sources: candidate.links, methods: candidate.valuationMethods.map((method) => `${method.method}: ${method.assumption}`),
+    sources: [...candidate.links, { label: "Company profile: annual filing", url: companyProfile.sourceUrl }], methods: candidate.valuationMethods.map((method) => `${method.method}: ${method.assumption}`),
     publicationStatus: candidate.publicationStatus ?? "provisional_alert", userAlertEligible: candidate.userAlertEligible === true, committeeApproved: candidate.committeeApproved === true,
-    companyDoes: candidate.explanation?.companyDoes, whatHappened: candidate.explanation?.whatHappened, committeeStatus: candidate.committeeStatus,
+    cik: companyProfile.cik, companyProfile, companyDoes: companyProfile.description,
+    whatHappened: candidate.explanation?.whatHappened, committeeStatus: candidate.committeeStatus,
     outlook: candidate.outlook,
   };
 }
@@ -96,7 +109,10 @@ export function publicBaseUrl() {
   if (process.env.NODE_ENV === "production" && url.protocol !== "https:") throw new Error("Public image URL requires HTTPS");
   return url.origin;
 }
-export function captionFor(snapshot: ResearchSnapshot, channel: Channel, id: string, baseUrl: string) {
+export function captionFor(snapshot: ResearchSnapshot, channel: Channel, id: string, baseUrl: string, now = new Date()) {
+  const verified = publicResearchSnapshot(snapshot, now);
+  if (!verified) throw new Error("Verified company profile is required for publication");
+  snapshot = verified;
   const url = `${baseUrl}/go/${channel}/${id}`;
   if (channel === "x") {
     // Required context is also on the attached card and linked permanent research page.

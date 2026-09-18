@@ -1,3 +1,5 @@
+import { verifiedCompanyProfile } from "@/lib/company-profile";
+import { ensureCompanyProfile, warmFoundationCompanyProfiles } from "@/lib/opportunity-engine/company-profile-cache";
 import { recordResearchEvidence, readEvidenceFollowup, verifiedFactsCache, reserveRejectionAudit } from "@/lib/opportunity-engine/pr262-research-evidence";
 import crypto from "node:crypto";
 import { lookup, resolve4 } from "node:dns/promises";
@@ -9,7 +11,8 @@ import { providerCallBudgetDecision, type ProviderBudgetReservation } from "@/li
 import { PERMISSION_GATE_KEYS } from "@/lib/equity-signal/analysis";
 import { mergeHistoricalSignals } from "@/lib/equity-signal/historical-bootstrap";
 import type { HistoricalSignalRecord } from "@/lib/equity-signal/historical-analogs";
-import { fetchNasdaqTradeHalts, mergeSecFilingDetails } from "@/lib/equity-signal/event-sources";
+import { mergeSecFilingDetails } from "@/lib/equity-signal/event-sources";
+import { fetchPr262TradeHalts } from "@/lib/opportunity-engine/pr262-trade-halt-snapshot";
 import { runEquitySignalLab, type EquityProviderCallRequest, type EquitySignalLabInput } from "@/lib/equity-signal/runner";
 import { enrichSecFilingDetails } from "@/lib/equity-signal/sec-filing-details";
 import type { EventReceipt, ProviderResult } from "@/lib/equity-signal/types";
@@ -112,6 +115,7 @@ export type Pr262EventJobInput = {
   now?: Date;
   fetchImpl?: typeof fetch;
   allowOpenAi?: boolean;
+  aiProviderBlockedReason?: EquitySignalLabInput["aiProviderBlockedReason"];
   beforeOpenAiCall?: NonNullable<EquitySignalLabInput["beforeOpenAiCall"]>;
   aiReservationRetryAt?: () => string | null;
   resolveHost?: (hostname: string) => Promise<string[]>;
@@ -1057,7 +1061,7 @@ async function readCachedFullSource(event: Pr262SensorEvent, now: Date): Promise
     receipts: source.receipts as EventReceipt[],
     providers: (source.providers as ProviderResult[]).map((provider) => ({ ...provider, cached: true })),
     decisionGrade: true,
-    diagnostics: { ...object(source.diagnostics), cacheHit: true, cacheKey: key },
+    diagnostics: { ...object(source.diagnostics), cacheHit: true, cacheKey: key, sourceCollectedAt: text(object(source.diagnostics).sourceCollectedAt) },
   };
 }
 
@@ -1378,6 +1382,14 @@ function compactAnalysisDiagnostics(report: Json) {
   return {
     status: text(report.status),
     qualityScore: finiteDiagnosticNumber(report.qualityScore),
+    committee: report.openAiCalled === true ? {
+      status: text(object(report.committee).status),
+      agentsCompleted: finiteDiagnosticNumber(object(report.committee).agentsCompleted),
+      agentsFailed: finiteDiagnosticNumber(object(report.committee).agentsFailed),
+      roleDiagnostics: Array.isArray(object(report.committee).roleDiagnostics)
+        ? object(report.committee).roleDiagnostics : [],
+      actualOpenAiUsage: object(object(object(report.committee).output).modelUsageSummary).actualOpenAiUsage ?? null,
+    } : null,
     funnel: {
       realEventReceipts: finiteDiagnosticNumber(funnel.realEventReceipts),
       receiptsConsidered: finiteDiagnosticNumber(funnel.receiptsConsidered),
@@ -1456,6 +1468,7 @@ function committeeApproved(report: Json, pointer: Json) {
   const candidateCik = normalizedCik(candidate.cik);
   const pointerCik = normalizedCik(pointer.cik);
   return report.seriousSignalFound === true
+    && Boolean(verifiedCompanyProfile(candidate.companyProfile, candidate))
     && report.actionableSignalFound === true
     && (report.alertType === "buy" || report.alertType === "sell")
     && candidateTicker !== null
@@ -1681,12 +1694,14 @@ function retryableReport(report: Json, allowOpenAi: boolean) {
     && (committee.ok !== true || Number(committee.agentsCompleted) !== 14 || Number(committee.agentsFailed) !== 0)) return true;
   if (status === "candidate_needs_more_data" && object(report.researchReview).admitted === true
     && object(committee.output).overallRecommendation !== "reject") return true;
+  if (status === "candidate_company_profile_pending") return true;
   if (status === "qualified_event_market_quote_unavailable") return true;
   if (status === "qualified_event_watch_only"
     && (halt.currentStateKnown !== true || quote.actionableForSeriousSignal !== true)) return true;
   if (!allowOpenAi && status === "qualified_signal_openai_not_requested") return true;
   return [
     "configuration_blocker",
+    "committee_provider_access_blocked",
     "qualified_signal_openai_reservation_denied",
     "source_temporarily_unavailable",
     "technical_failure",
@@ -1887,6 +1902,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
     };
     assertJobActive();
     const baseReceipt = eventReceipt(resolved.event, resolved.directoryEntry.company, resolved.directoryEntry.ticker);
+    const sourceCollectionStartedAt = clock().toISOString();
     const [collectedSource, haltProvider, history] = await Promise.all([
       cachedFullSource ?? readDecisionGradeSource(
         baseReceipt,
@@ -1899,10 +1915,11 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
         input.fullSourceTransport ?? pinnedHttpsTransport,
         beforeFullSourceRequest,
       ),
-      fetchNasdaqTradeHalts(quotaAwareFetch, now),
+      fetchPr262TradeHalts(quotaAwareFetch, now),
       loadOptionalHistoricalLibrary(),
     ]);
     assertJobActive();
+    const sourceCollectionFinishedAt = clock().toISOString();
     const retained = !collectedSource.decisionGrade && resolved.event.source !== "market_price"
       ? await retainedPartialSource(resolved.event, now, collectedSource).catch(() => null) : null;
     // A provider cooldown must not erase facts already read. Keep the original
@@ -1911,6 +1928,9 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       ? { ...retained, providers: [...collectedSource.providers, ...retained.providers.map(provider => ({ ...provider, cached: true }))],
           diagnostics: { ...retained.diagnostics, followupFailureReason: object(collectedSource.diagnostics).failureReason, retainedPartialEvidence: true } }
       : collectedSource;
+    if (!cachedFullSource && source === collectedSource && source.decisionGrade) {
+      object(source.diagnostics).sourceCollectedAt = sourceCollectionFinishedAt;
+    }
     const fullSourceCacheWrite = cachedFullSource || !source.decisionGrade
       ? { written: false, reason: cachedFullSource ? "cache_hit" : "not_decision_grade" }
       : await cacheFullSource(resolved.event, source, now).catch((error) => ({
@@ -2030,9 +2050,11 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
         })
       : object(await runEquitySignalLab({
           allowOpenAi: effectiveAllowOpenAi,
+          aiProviderBlockedReason: input.aiProviderBlockedReason,
           allowIncompleteCommitteeReview: true,
           verifiedFactsCache: { ...verifiedFactsCache, requiredMetrics: (Array.isArray(priorFollowup.tasks) ? priorFollowup.tasks : []).flatMap(task => Array.isArray(object(task).fields) ? object(task).fields as string[] : []) },
           reserveRejectionAudit: () => reserveRejectionAudit(event.id, now),
+          resolveCompanyProfile: identity => ensureCompanyProfile(identity, quotaAwareFetch, now),
           fetchImpl: quotaAwareFetch,
           signal: jobAbort.signal,
           now,
@@ -2053,7 +2075,10 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
     assertJobActive();
     const evidenceProgress = await recordResearchEvidence({ event: object(resolved.event), report,
       companyAnalysis: valuationAnalysis ? object(valuationAnalysis) : undefined,
-      sourceDecisionGrade: source.decisionGrade, sourceFailureReason, now,
+      sourceDecisionGrade: source.decisionGrade, sourceFailureReason, now: clock(),
+      collectionTiming: { startedAt: sourceCollectionStartedAt, finishedAt: sourceCollectionFinishedAt,
+        sourceCollectedAt: cachedFullSource ? text(object(cachedFullSource.diagnostics).sourceCollectedAt)
+          : source === collectedSource && (source.decisionGrade || researchSourceUsable) ? sourceCollectionFinishedAt : null },
     }).catch(error => ({ evidenceFollowupScheduled: Boolean(priorFollowup.status === "collecting_evidence" || report.status === "candidate_needs_more_data"), nextEvidenceCheckAt: new Date(now.getTime() + 15 * 60000).toISOString(), error: error instanceof Error ? error.message.slice(0, 180) : "evidence_progress_write_failed" }));
     const retryClassificationAllowsAi = event.source === "market_price" ? allowOpenAi : effectiveAllowOpenAi;
     const costControl = {
@@ -2362,3 +2387,21 @@ export const PR262_EVENT_JOB_KEYS = {
   OUTBOX_PREFIX,
   HISTORY_KEY,
 } as const;
+
+
+/** One raw-foundation profile per maintenance pass, sharing the event worker lease and unchanged provider caps. */
+export async function warmPr262CompanyProfiles(now = new Date(), fetchImpl: typeof fetch = fetch) {
+  const eventId = "company-profile-foundation-maintenance";
+  const claim = await claimEvent(eventId, now);
+  if (claim.status !== "claimed" || !claim.ownerId) return { attempted: 0, verified: 0, status: "worker_busy" };
+  const ownerId = claim.ownerId;
+  try {
+    const budgeted: typeof fetch = async (request, init) => {
+      const requestBudget = branchProviderCallRequest(request, now);
+      if (requestBudget) await reserveProviderCall({ eventId, ownerId, now, request: requestBudget });
+      return fetchImpl(request, init);
+    };
+    const shared = await createPr262SensorBudgetedFetch({ now, fetchImpl: budgeted });
+    return { ...(await warmFoundationCompanyProfiles(shared.fetchImpl, now)), status: "checked" };
+  } finally { await releaseLease(eventId, ownerId, new Date()); }
+}

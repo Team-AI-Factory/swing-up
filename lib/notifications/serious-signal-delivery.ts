@@ -1,3 +1,5 @@
+import { readCompanyProfiles } from "@/lib/opportunity-engine/company-profile-cache";
+import { verifiedCompanyProfile } from "@/lib/company-profile";
 import { explainCandidate } from "@/lib/signal-explanation";
 import { candidatePriceOutlook, compareSignalPotential } from "@/lib/signal-outlook";
 import crypto from "node:crypto";
@@ -190,6 +192,14 @@ function blankChannelState(): DeliveryChannelState {
   };
 }
 
+async function withCachedCompanyProfile(raw: unknown) {
+  const outbox = object(raw), candidate = object(outbox.candidate);
+  if (verifiedCompanyProfile(candidate.companyProfile, candidate) || outbox.kind === DELIVERY_TEST_KIND) return outbox;
+  const profiles = await readCompanyProfiles([candidate]).catch(() => new Map());
+  const companyProfile = profiles.get(String(candidate.ticker));
+  return companyProfile ? { ...outbox, candidate: { ...candidate, companyProfile } } : outbox;
+}
+
 function validatedOutbox(raw: unknown, outboxKey: string) {
   const outbox = object(raw);
   const kind = text(outbox.kind);
@@ -224,6 +234,7 @@ function validatedOutbox(raw: unknown, outboxKey: string) {
     || candidate.evidenceFingerprint !== outbox.candidateFingerprint) {
     throw new Error("serious_signal_delivery_issuer_or_evidence_mismatch");
   }
+  if (!testOnly && !verifiedCompanyProfile(candidate.companyProfile, candidate)) throw new Error("serious_signal_delivery_company_profile_unverified");
   if (candidate.gatePassed !== true
     || Number(candidate.eventTruth) < 80
     || Number(candidate.mappingConfidence) < 95
@@ -693,7 +704,7 @@ async function processDeliveryJobKey(
   const ownerId = options.ownerId ?? `delivery-${crypto.randomUUID()}`;
   const storedOutbox = await readVersionedTextFromR2(outboxKey);
   if (!storedOutbox.found || !storedOutbox.text) throw new Error("serious_signal_delivery_outbox_missing");
-  const validated = validatedOutbox(JSON.parse(storedOutbox.text), outboxKey);
+  const validated = validatedOutbox(await withCachedCompanyProfile(JSON.parse(storedOutbox.text)), outboxKey);
   const message = messageFor(validated);
   const current = await loadJob(key, outboxKey) ?? await ensureDeliveryJob(validated, now);
   const claimed = await claimDeliveryJob(current, now, ownerId);
@@ -916,7 +927,7 @@ async function listCursorPage(prefix: string, limit: number, continuationToken: 
 async function readAndValidateOutbox(outboxKey: string) {
   const stored = await readVersionedTextFromR2(outboxKey);
   if (!stored.found || !stored.text) throw new Error("serious_signal_delivery_outbox_missing");
-  return validatedOutbox(JSON.parse(stored.text), outboxKey);
+  return validatedOutbox(await withCachedCompanyProfile(JSON.parse(stored.text)), outboxKey);
 }
 
 export async function discoverSeriousSignalDeliveries(options: { now?: Date } & DeliveryControl = {}) {
@@ -1278,6 +1289,7 @@ export async function getSeriousSignalStatus(options: { hours?: number; limit?: 
         eventHeadline: text(validated.candidate.eventHeadline) ?? text(validated.candidate.whatHappened) ?? "Material event confirmed",
         whyItMatters: text(validated.output.SwingUpView) ?? text(validated.candidate.whatHappened),
         price: finite(quote.price),
+        priceObservedAt: text(quote.observedAt, 64),
         finalJudgeConfidence: Number(validated.judge.confidence),
         committee: { completed: 14, failed: 0, recommendation: "approve" },
         evidence: safeEvidenceUrls(validated.candidate),

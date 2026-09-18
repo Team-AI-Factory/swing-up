@@ -169,7 +169,7 @@ for (const expected of [
   /fetchAlphaEarningsCalendar/,
   /fetchFederalRegister/,
   /fetchOpenFdaRecalls/,
-  /fetchNasdaqTradeHalts/,
+  /fetchPr262TradeHalts/,
   /runPr262DirectAnnouncementMonitor/,
   /market_watch/,
   /FIVE_MINUTES_MS/,

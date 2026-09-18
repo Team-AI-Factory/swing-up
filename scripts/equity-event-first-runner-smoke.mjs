@@ -1,3 +1,4 @@
+import { companyProfileFixture } from "./helpers/company-profile-fixture.mjs";
 import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -65,12 +66,14 @@ const haltProvider = { ...provider("nasdaq_trade_halts"), receipts: [], recordsR
 const agentResults = Array.from({ length: 13 }, (_, index) => ({ agentId: `agent_${index}`, status: "completed", verdict: "positive", confidence: 82, concerns: [], missingData: [], followUpChecks: [] })).concat({ agentId: "final_judge", status: "completed", verdict: "positive", confidence: 85, concerns: [], missingData: [], followUpChecks: [] });
 let committeeCalls = 0;
 let committeeThrows = false;
+let committeeFails = false;
 let quoteActionable = true;
 let candidateGatePassed = true;
 const stubs = {
   "@/lib/ai-committee/orchestrator": { TRUSTED_IN_MEMORY_EVIDENCE: trusted, runAiCommittee: async (input) => {
     committeeCalls += 1;
     if (committeeThrows) throw new Error("provider_response_parse_failed");
+    if (committeeFails) return { ok: false, status: "agent_failures", agentResults: agentResults.map((result, index) => ({ ...result, status: index === 0 ? "failed" : "blocked", verdict: "mixed", confidence: 0, error: index === 0 ? "provider_error" : "provider_review_stopped", providerFailure: { category: "quota", httpStatus: 429, code: "insufficient_quota", stopRemainingAgents: true } })), plannedAgents: agentResults.map(result => result.agentId), committeeOutput: { overallRecommendation: "needs_more_data", missingEvidence: [] }, compatibility: { writesDatabase: false } };
     return { ok: true, status: "completed", agentResults, plannedAgents: agentResults.map((item) => item.agentId), committeeOutput: { overallRecommendation: "approve", evidenceConfidenceScore: 85, missingEvidence: [] }, compatibility: { writesDatabase: false }, receivedEvidence: input[trusted] };
   } },
   "@/lib/ai-committee/provider": { getAiCommitteeProviderStatus: () => ({ configured: true, enabled: true }) },
@@ -129,12 +132,15 @@ const cjsModule = { exports: {} };
 const localRequire = (name) => {
   if (name === "node:crypto") return awaitImportCrypto;
   if (name in stubs) return stubs[name];
-  if (["@/lib/signal-explanation", "@/lib/equity-signal/valuation-candidate"].includes(name)) return loadTsModule(name);
+  if (["@/lib/company-profile", "@/lib/signal-explanation", "@/lib/equity-signal/valuation-candidate"].includes(name)) return loadTsModule(name);
   throw new Error(`Unexpected runner import: ${name}`);
 };
 const awaitImportCrypto = { createHash: () => ({ update() { return this; }, digest: () => "0123456789abcdef0123456789abcdef" }) };
 new Function("require", "module", "exports", output)(localRequire, cjsModule, cjsModule.exports);
-const { runEquitySignalLab } = cjsModule.exports;
+const runEquitySignalLab = input => cjsModule.exports.runEquitySignalLab({
+  resolveCompanyProfile: async identity => companyProfileFixture(identity, input.now),
+  ...input,
+});
 
 const held = await runEquitySignalLab({ now: new Date("2026-07-22T10:00:00.000Z"), allowOpenAi: false });
 assert.equal(held.assetClass, "public_equity");
@@ -310,4 +316,49 @@ const duplicate = await runEquitySignalLab({ ...researchInput, skipOpenAiCandida
 assert.equal(duplicate.openAiCalled, false);
 const ready = await runEquitySignalLab(researchInput);
 assert.equal(ready.status, "serious_buy", "Complete current evidence retains its approved publication route");
+committeeFails = true;
+const providerFailure = await runEquitySignalLab(researchInput);
+assert.equal(providerFailure.status, "committee_failed", "A zero-role provider failure must not masquerade as missing investment evidence");
+assert.equal(providerFailure.seriousSignalFound, false);
+assert.equal(providerFailure.openAiCalled, true, "Provider failure keeps conservative accounting until reconciled");
+assert.equal(providerFailure.committee.agentsCompleted, 0);
+assert.equal(providerFailure.committee.agentsFailed, 14);
+assert.equal(providerFailure.committee.roleDiagnostics[0].providerFailure.httpStatus, 429);
+assert.equal(providerFailure.failureScope, "external_provider");
+assert.equal(providerFailure.technicalFailureFingerprint, "committee_agent_failures");
+assert.match(providerFailure.blockers[0], /quota \(HTTP 429\) \/ insufficient_quota/);
+committeeFails = false;
+restore();
+const recentHaltSnapshot = { ...haltProvider, status: "not_due", cached: true, cacheAgeMs: 5 * 60_000 };
+const cachedHaltInput = { ...researchInput, targetedContext: { ...researchInput.targetedContext,
+  providers: [provider("targeted_full_source"), recentHaltSnapshot] } };
+const cachedHaltReady = await runEquitySignalLab(cachedHaltInput);
+assert.equal(cachedHaltReady.status, "serious_buy", "A recent authoritative empty snapshot survives a cadence deferral");
+restore();
+const expiredHalt = await runEquitySignalLab({ ...cachedHaltInput, targetedContext: { ...cachedHaltInput.targetedContext,
+  providers: [provider("targeted_full_source"), { ...recentHaltSnapshot, cacheAgeMs: 15 * 60_000 + 1 }] } });
+assert.equal(expiredHalt.seriousSignalFound, false, "An expired halt snapshot cannot authorize publication");
+restore();
+const activeHalt = await runEquitySignalLab({ ...cachedHaltInput, targetedContext: { ...cachedHaltInput.targetedContext,
+  receipts: [...cachedHaltInput.targetedContext.receipts, { ...receipt, id: "retained-active-halt", channel: "nasdaq_trade_halts",
+    symbolHints: [candidate.ticker], rawEventType: "halt:REGULATORY:active" }] } });
+assert.equal(activeHalt.seriousSignalFound, false, "A retained active halt always blocks publication");
+assert.equal(activeHalt.selectedCandidate.quote.marketSession, "halted");
+restore();
+let blockedReservations = 0;
+const callsBeforeAccessBlock = committeeCalls;
+const accessBlocked = await runEquitySignalLab({ ...researchInput, allowOpenAi: false, aiProviderBlockedReason: "authentication", beforeOpenAiCall: async () => { blockedReservations++; return true; } });
+assert.equal(accessBlocked.status, "committee_provider_access_blocked");
+assert.equal(accessBlocked.openAiCalled, false);
+assert.equal(accessBlocked.seriousSignalFound, false);
+assert.equal(committeeCalls, callsBeforeAccessBlock, "Known inaccessible provider must receive zero paid requests");
+assert.equal(blockedReservations, 0);
+assert.equal(accessBlocked.selectedCandidate.ticker, "EXM", "Unpaid evidence processing must still produce a candidate");
+assert.equal(accessBlocked.committee.providerBlockedReason, "authentication");
+const missingProfile = await runEquitySignalLab({ ...researchInput, resolveCompanyProfile: async () => null });
+assert.equal(missingProfile.status, "candidate_company_profile_pending");
+assert.equal(missingProfile.openAiCalled, false, "Unverified products and customers must block paid review and publication");
+assert.equal(missingProfile.seriousSignalFound, false);
+const wrongIssuerProfile = await runEquitySignalLab({ ...researchInput, resolveCompanyProfile: async identity => companyProfileFixture({ ...identity, cik: "0000000002" }, researchInput.now) });
+assert.equal(wrongIssuerProfile.status, "candidate_company_profile_pending", "The real profile validator must reject another issuer's profile");
 console.log(JSON.stringify({ ok: true, eventQualifiedAtZeroPercentMove: true, cryptoDisabled: true, priorMoveNotRequired: true, strictCommitteeStillRequired: true, historyNeverBlocksCurrentEvidence: true, targetedCurrentEvidenceCanReachCommitteeWithoutHistory: true, paidCommitteeFailureRetainsCostReservation: true, staleQuoteCannotBecomeActionable: true, unknownHaltStateForcesWatch: true, historyStillStoredAndRefined: true, strongHistoryStillImprovesForecastContext: true, noWritesOrPublishing: true }, null, 2));

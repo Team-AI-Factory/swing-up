@@ -6,10 +6,10 @@ import {
   fetchFederalRegister,
   fetchGdeltDiscovery,
   fetchMarketauxDiscovery,
-  fetchNasdaqTradeHalts,
   fetchOfficialFeeds,
   fetchOpenFdaRecalls,
 } from "@/lib/equity-signal/event-sources";
+import { fetchPr262TradeHalts } from "@/lib/opportunity-engine/pr262-trade-halt-snapshot";
 import { fetchMacroContext } from "@/lib/equity-signal/macro";
 import type { EventReceipt, ProviderResult } from "@/lib/equity-signal/types";
 import {
@@ -599,7 +599,7 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
       const result = await fetchOpenFdaRecalls(fetchImpl, now); return { status: result.status, recordsRead: result.recordsRead, receipts: result.receipts, error: result.error };
     }),
     run("trade_halts", FIVE_MINUTES_MS, ["https://www.nyse.com/api/trade-halts/current", "https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts"], async () => {
-      const result = await fetchNasdaqTradeHalts(fetchImpl, now); return { status: result.status, recordsRead: result.recordsRead, receipts: result.receipts, error: result.error };
+      const result = await fetchPr262TradeHalts(fetchImpl, now); return { status: result.status, recordsRead: result.recordsRead, receipts: result.receipts, error: result.error };
     }),
     run("official_all", FIFTEEN_MINUTES_MS, ["rotating_official_public_feeds"], async () => {
       const rows: ProviderResult[] = await fetchOfficialFeeds(fetchImpl, now, { offset: state.cursors.officialFeedIndex, limit: 3 });
@@ -804,7 +804,7 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
       && !researchOnlyPriceEvent(event)
       && canEnterIssuerEvidenceQueue(event))
     .slice(0, MAX_FRESH);
-  const partitioned = partitionPr262PendingEventsWithTelemetry([...actionablePending, ...fresh], now);
+  const partitioned = partitionPr262PendingEventsWithTelemetry([...actionablePending, ...fresh.map(event => ({ ...event, firstQueuedAt: now.toISOString() }))], now);
   const pending = partitioned.pending;
   const retained = new Set(pending.map((event) => event.id));
   for (const event of retiredUnimportantPending) known.add(event.id);

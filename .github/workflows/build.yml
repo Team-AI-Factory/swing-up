@@ -95,4 +95,5 @@ jobs:
         run: npx prisma db execute --file prisma/migrations/20260914110000_early_access_growth/migration.sql --schema prisma/schema.prisma
       - run: node scripts/growth-smoke.mjs
       - run: node scripts/valuation-watchlist-feed-smoke.mjs
+      - run: node scripts/company-profile-smoke.mjs
       - run: node scripts/growth-integration-smoke.mjs

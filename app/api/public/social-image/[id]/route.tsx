@@ -1,6 +1,6 @@
 import { ImageResponse } from "next/og";
 import { prisma } from "@/lib/db/client";
-import { BRAND_LINE, COLORS, money, timestamp, type ResearchSnapshot } from "@/lib/growth/research";
+import { BRAND_LINE, COLORS, money, publicResearchSnapshot, timestamp } from "@/lib/growth/research";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -8,7 +8,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   if (!/^[a-z0-9]{20,40}$/.test(id)) return new Response("Not found", { status: 404 });
   const row = await prisma.socialSignal.findUnique({ where: { id } });
   if (!row) return new Response("Not found", { status: 404 });
-  const s = row.snapshot as unknown as ResearchSnapshot;
+  const s = publicResearchSnapshot(row.snapshot);
+  if (!s) return new Response("Not found", { status: 404, headers: { "Cache-Control": "no-store" } });
   const accent = COLORS[s.action];
   return new ImageResponse(<div style={{ display: "flex", flexDirection: "column", width: "100%", height: "100%", background: "#07111F", color: "#F4F7FB", padding: 52, fontFamily: "sans-serif" }}>
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 34, fontWeight: 700, color: "#22C7B8" }}><svg width="32" height="32" viewBox="0 0 32 32"><path d="M7 25L25 7M8 7H25V24" fill="none" stroke="#22C7B8" strokeWidth="3" /></svg>Swing Up</div><span style={{ color: "#A7B3C5", fontSize: 19 }}>PROVISIONAL RESEARCH</span></div>
@@ -23,5 +24,5 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       <div style={{ display: "flex", marginTop: 22, fontSize: 18, color: accent, fontWeight: 700 }}>THE SCENARIO TO WATCH</div><div style={{ display: "flex", marginTop: 8, fontSize: 22, lineHeight: 1.35 }}>{s.expected}</div>
       <div style={{ display: "flex", flexDirection: "column", gap: 7, marginTop: "auto", paddingTop: 22, color: "#A7B3C5", fontSize: 17 }}><span>Price collected: {timestamp(s.priceObservedAt)}</span><span>Screen observed: {timestamp(s.observedAt)} · News event time: not established</span></div>
     </div><div style={{ display: "flex", marginTop: 24, fontSize: 25, color: "#22C7B8", fontWeight: 700 }}>Join early-bird access → use the post link</div><div style={{ display: "flex", marginTop: 10, color: "#A7B3C5", fontSize: 17 }}>Full signal context at launch. General research, not personal advice. No guaranteed returns.</div>
-  </div>, { width: 1080, height: 1350, headers: { "Cache-Control": "public, max-age=31536000, immutable" } });
+  </div>, { width: 1080, height: 1350, headers: { "Cache-Control": "no-store" } });
 }

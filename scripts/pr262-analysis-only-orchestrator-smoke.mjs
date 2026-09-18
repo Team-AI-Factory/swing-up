@@ -23,6 +23,11 @@ let deliveryHealthy = true;
 let eventMode = "idle";
 let aiBudgetMode = "available";
 let allowSensorRun = false;
+let accessDiagnosticCalls = 0;
+let unknownUsageReviews = 0;
+let accessDiagnostic = { status: "completed", readOnly: true, callsPaidModel: false, billingQuotaVerified: false, modelAvailable: { fast: true, deep: true, final: true } };
+let expectedProviderBlocker = null;
+let paidReservationCalls = 0;
 const accountingRetryAt = "2026-08-28T12:00:00.000Z";
 const cycleStartBudgetRetryAt = "2026-08-28T15:00:00.000Z";
 const raceTimeBudgetRetryAt = "2026-08-28T16:00:00.000Z";
@@ -61,6 +66,12 @@ const queueHygiene = {
   capacityDropped: 0,
 };
 const stubs = {
+  "@/lib/ai-committee/provider": {
+    probeOpenAiCommitteeProviderAccess: async () => {
+      accessDiagnosticCalls++;
+      return structuredClone(accessDiagnostic);
+    },
+  },
   "@/lib/notifications/serious-signal-delivery": {
     deliverSeriousSignalOutbox: async () => {
       directDeliveryCalls += 1;
@@ -73,16 +84,16 @@ const stubs = {
   },
   "@/lib/opportunity-engine/pr262-ai-daily-cost": {
     getPr262AiDailyBudgetStatus: async () => aiBudgetMode === "cycle_start_full"
-      ? { allowed: false, spentUsd: 9.5, reservedUsd: 0.5, exposureUsd: 10, remainingUsd: 0, limitUsd: 10, warningUsd: 6, warning: true, hardFuseTripped: true, nextReviewReservationUsd: 0.75, nextBudgetAdmissionAt: cycleStartBudgetRetryAt, reservationCheckedBeforePaidCommittee: true, activeReservations: 1, reviewsRecorded: 13, unknownUsageReviews: 0 }
-      : { allowed: true, spentUsd: 0, reservedUsd: 0, exposureUsd: 0, remainingUsd: 10, limitUsd: 10, warningUsd: 6, warning: false, hardFuseTripped: false, nextReviewReservationUsd: 0.75, nextBudgetAdmissionAt: null, reservationCheckedBeforePaidCommittee: true, activeReservations: 0, reviewsRecorded: 0, unknownUsageReviews: 0 },
-    reservePr262AiCommitteeBudget: async (reservation) => aiBudgetMode === "race_time_full"
+      ? { allowed: false, spentUsd: 9.5, reservedUsd: 0.5, exposureUsd: 10, remainingUsd: 0, limitUsd: 10, warningUsd: 6, warning: true, hardFuseTripped: true, nextReviewReservationUsd: 0.75, nextBudgetAdmissionAt: cycleStartBudgetRetryAt, reservationCheckedBeforePaidCommittee: true, activeReservations: 1, reviewsRecorded: 13, unknownUsageReviews }
+      : { allowed: true, spentUsd: 0, reservedUsd: 0, exposureUsd: 0, remainingUsd: 10, limitUsd: 10, warningUsd: 6, warning: false, hardFuseTripped: false, nextReviewReservationUsd: 0.75, nextBudgetAdmissionAt: null, reservationCheckedBeforePaidCommittee: true, activeReservations: 0, reviewsRecorded: 0, unknownUsageReviews },
+    reservePr262AiCommitteeBudget: async (reservation) => { paidReservationCalls++; return aiBudgetMode === "race_time_full"
       ? { allowed: false, reason: "daily_cost_fuse", nextRetryAt: raceTimeBudgetRetryAt, nextBudgetAdmissionAt: raceTimeBudgetRetryAt }
       : {
           allowed: true,
           reason: "reserved",
           nextRetryAt: null,
           reservation: { ...reservation, expiresAt: accountingRetryAt },
-        },
+        }; },
     releasePr262AiCommitteeBudgetReservation: async (fingerprint) => {
       releasedFingerprints.push(fingerprint);
       return { released: true };
@@ -139,12 +150,20 @@ const stubs = {
     },
   },
   "@/lib/opportunity-engine/pr262-event-job": {
+    warmPr262CompanyProfiles: async () => ({ attempted: 0, verified: 0, status: "checked" }),
     runPr262EventJob: async (input) => {
       eventCalls += 1;
       assert.ok(input.signal instanceof AbortSignal);
       assert.ok(input.deadlineAtMs > Date.now());
       assert.equal(typeof input.beforeOpenAiCall, "function", "Railway must pass the durable dollar reservation hook before paid analysis.");
       assert.equal(typeof input.aiReservationRetryAt, "function", "The event job must be able to inherit the exact daily-cost retry boundary.");
+      if (eventMode === "provider_access_blocked") {
+        eventMode = "idle";
+        assert.equal(input.allowOpenAi, false, "Definitively unavailable access must block paid reviews before reservation");
+        assert.equal(input.aiProviderBlockedReason, expectedProviderBlocker);
+        assert.equal(await input.beforeOpenAiCall({ candidateFingerprint: "provider-blocked", ticker: "SAFE", direction: "upside" }), false);
+        return { ok: true, status: "event_job_deferred", nonterminal: true, openAiCalled: false, eventsProcessed: 0, analysisDiagnostics: { status: "committee_provider_access_blocked" } };
+      }
       if (eventMode === "evidence_deferred") {
         eventMode = "idle";
         throw new Error("pr262_event_full_source_incomplete:provider_budget_not_due; event_id=sec:0001213900-26-094677; ticker=MBAI; cik=0001610590; next_retry_at=2026-08-27T07:53:02.028Z");
@@ -425,8 +444,13 @@ assert.equal(guardedDefault.sensor.queueHygiene.staleSecondaryCompanyNewsDropped
 
 state.pending[0].queueNextAttemptAt = null;
 aiBudgetMode = "cycle_start_full";
+unknownUsageReviews = 13;
 eventMode = "cycle_start_budget_full";
 const cycleStartFull = await loaded.exports.runPr262AnalysisOnlyCycle({ maxCycleMs: 90_000 });
+assert.equal(accessDiagnosticCalls, 1, "Blocked paid capacity with unknown usage gets one read-only provider check");
+assert.equal(cycleStartFull.aiCostControl.providerAccessDiagnostic.callsPaidModel, false);
+assert.equal(cycleStartFull.aiCostControl.providerAccessDiagnostic.billingQuotaVerified, false);
+unknownUsageReviews = 0;
 assert.equal(cycleStartFull.ok, true);
 assert.equal(cycleStartFull.processing.eventDeferrals, 1);
 assert.equal(state.pending[0].queueNextAttemptAt, cycleStartBudgetRetryAt, "A cycle-start full fuse must carry its exact global capacity boundary into the queue.");
@@ -439,6 +463,27 @@ assert.equal(raceTimeFull.ok, true);
 assert.equal(raceTimeFull.processing.eventDeferrals, 1);
 assert.equal(state.pending[0].queueNextAttemptAt, raceTimeBudgetRetryAt, "A concurrent full-fuse denial must carry its exact capacity boundary into the queue.");
 aiBudgetMode = "available";
+
+const successfulDiagnostic = structuredClone(accessDiagnostic);
+for (const reason of ["authentication", "permission", "configured_model_unavailable"]) {
+  expectedProviderBlocker = reason;
+  accessDiagnostic = reason === "configured_model_unavailable"
+    ? { ...successfulDiagnostic, modelAvailable: { fast: true, deep: true, final: false } }
+    : { status: "failed", readOnly: true, callsPaidModel: false, billingQuotaVerified: false, failure: { category: reason } };
+  unknownUsageReviews = 13;
+  eventMode = "provider_access_blocked";
+  const priorReservations = paidReservationCalls;
+  const priorEvidenceCalls = eventCalls;
+  const unavailableAccess = await loaded.exports.runPr262AnalysisOnlyCycle({ maxCycleMs: 90_000 });
+  assert.equal(unavailableAccess.aiCostControl.allowed, true, "Provider access must be reported separately from remaining dollar capacity");
+  assert.equal(unavailableAccess.aiCostControl.providerBlockedReason, reason);
+  assert.equal(unavailableAccess.processing.aiCalls, 0);
+  assert.equal(paidReservationCalls, priorReservations, "No reservation may be consumed when access is already known to fail");
+  assert.ok(eventCalls > priorEvidenceCalls, "Unpaid evidence collection must continue while provider access is blocked");
+}
+unknownUsageReviews = 0;
+accessDiagnostic = successfulDiagnostic;
+expectedProviderBlocker = null;
 
 eventMode = "paid_nonterminal";
 const recordedBeforePaidRetry = recordedCostKeys.length;

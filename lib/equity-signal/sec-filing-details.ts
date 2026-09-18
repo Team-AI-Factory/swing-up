@@ -48,6 +48,7 @@ export type SecFilingDetailSelectionOptions = {
 
 type SkipReason = "non_sec" | "scheduled" | "unsupported_form" | "invalid_date" | "stale" | "invalid_url" | "duplicate_accession" | "cached" | "failure_cooldown" | "retry_not_due" | "run_limit";
 type DetailFailure = "index_http_error" | "index_payload_too_large" | "index_request_failed" | "primary_document_not_found" | "document_http_error" | "document_payload_too_large" | "document_request_failed" | "document_text_empty" | "event_exhibit_not_found" | "exhibit_http_error" | "exhibit_payload_too_large" | "exhibit_request_failed" | "exhibit_text_empty" | "provider_budget_not_due";
+type EventExhibitStatus = "not_assessed" | "not_required" | "required_not_found" | "retrieved" | "download_failed" | "deferred";
 
 export type SecFilingDetail = {
   receipt: EventReceipt;
@@ -57,6 +58,8 @@ export type SecFilingDetail = {
   exhibitDocumentUrl: string | null;
   exhibitDocumentType: "EX-99.1" | "EX-99.2" | null;
   eventExhibitMissing: boolean;
+  eventExhibitStatus: EventExhibitStatus;
+  requiredExhibitType: "EX-99.1" | "EX-99.2" | null;
   documentsFetched: 1 | 2;
   text: string;
   textLength: number;
@@ -73,6 +76,8 @@ export type SecFilingDetailDiagnostic = {
   exhibitDocumentUrl: string | null;
   exhibitDocumentType: "EX-99.1" | "EX-99.2" | null;
   eventExhibitMissing: boolean;
+  eventExhibitStatus: EventExhibitStatus;
+  requiredExhibitType: "EX-99.1" | "EX-99.2" | null;
   documentsFetched: number;
   textLength: number;
   truncated: boolean;
@@ -193,6 +198,7 @@ function decodeHtml(value: string) {
 function plainText(html: string) {
   return decodeHtml(html
     .replace(/<!--[^]*?-->/g, " ")
+    .replace(/<ix:(header|hidden)\b[^>]*>[^]*?<\/ix:\1>/gi, " ")
     .replace(/<(?:script|style|noscript|template|svg|math)\b[^>]*>[^]*?<\/(?:script|style|noscript|template|svg|math)>/gi, " ")
     .replace(/<(?:br|hr)\b[^>]*>/gi, "\n")
     .replace(/<\/(?:p|div|section|article|header|footer|h[1-6]|li|tr|table)>/gi, "\n")
@@ -368,14 +374,21 @@ function primaryDocumentUrl(documents: FilingDocument[], form: string) {
     .sort((left, right) => right.score - left.score || left.url.localeCompare(right.url))[0]?.url ?? null;
 }
 
+function eventExhibitReferences(text: string) {
+  // Assess each reference in its own sentence. A prior filing's EX-99.1
+  // must not hide the current release's EX-99.2 or manufacture a new gap.
+  return text.split(/(?<=[.!?;])\s+(?=[A-Za-z])/).flatMap(sentence =>
+    [...sentence.matchAll(/\bexhibit\s+99\.([12])\b/gi)].map(match => {
+      const historical = /previously filed/i.test(sentence)
+        && !/furnish(?:ed|es|ing)?|attach(?:ed|es|ing)?|herewith|hereto|accompanying this/i.test(sentence);
+      const currentReference = !historical && /incorporat(?:e|ed|es|ing)\s+by\s+reference|furnish(?:ed|es|ing)?|attach(?:ed|es|ing)?/i.test(sentence);
+      return { type: `EX-99.${match[1]}` as "EX-99.1" | "EX-99.2", currentReference, historical };
+    }));
+}
+
 function referencedEventExhibitType(text: string) {
-  const matches = [...text.matchAll(/\bexhibit\s+99\.([12])\b/gi)];
-  const contextual = matches.find((match) => {
-    const index = match.index ?? 0;
-    const nearby = text.slice(Math.max(0, index - 180), Math.min(text.length, index + match[0].length + 180));
-    return /incorporat(?:e|ed|es|ing)\s+by\s+reference|furnish(?:ed|es|ing)?|attach(?:ed|es|ing)?/i.test(nearby);
-  }) ?? matches[0];
-  return contextual ? `EX-99.${contextual[1]}` as "EX-99.1" | "EX-99.2" : null;
+  const references = eventExhibitReferences(text);
+  return (references.find(reference => reference.currentReference) ?? references[0])?.type ?? null;
 }
 
 function eventExhibit(documents: FilingDocument[], preferredType: "EX-99.1" | "EX-99.2" | null) {
@@ -395,14 +408,13 @@ function eventExhibit(documents: FilingDocument[], preferredType: "EX-99.1" | "E
 
 export function primaryNeedsEventExhibit(form: string, text: string) {
   if (form !== "8-K" && form !== "6-K") return false;
-  const merelyReferencesExhibit = /(?:incorporat(?:e|ed|es|ing)\s+by\s+reference|furnish(?:ed|es|ing)?|attach(?:ed|es|ing)?)\b[\s\S]{0,180}\bexhibit\s+99\.[12]\b/i.test(text)
+  const references = eventExhibitReferences(text);
+  if (references.some(reference => reference.currentReference)) return true;
+  if (!references.length || references.every(reference => reference.historical)) return false;
+  // Keep the existing conservative cross-sentence reference check when the
+  // prose is ambiguous; only explicitly historical references are excluded.
+  return /(?:incorporat(?:e|ed|es|ing)\s+by\s+reference|furnish(?:ed|es|ing)?|attach(?:ed|es|ing)?)\b[\s\S]{0,180}\bexhibit\s+99\.[12]\b/i.test(text)
     || /\bexhibit\s+99\.[12]\b[\s\S]{0,180}(?:incorporat(?:e|ed|es|ing)\s+by\s+reference|furnish(?:ed|es|ing)?|attach(?:ed|es|ing)?)/i.test(text);
-  // A short, self-contained filing is not evidence of a missing attachment.
-  // Historical incorporation references also do not promise a new exhibit.
-  const historicalOnly = [...text.matchAll(/\bexhibit\s+99\.[12]\b/gi)].length === 1
-    && /previously filed[^.]{0,180}exhibit\s+99\.[12]|exhibit\s+99\.[12][^.]{0,180}previously filed/i.test(text)
-    && !/furnish(?:ed|es|ing)?|attach(?:ed|es|ing)?|herewith|hereto|accompanying this/i.test(text);
-  return merelyReferencesExhibit && !historicalOnly;
 }
 
 export function inlineEventExhibit(html: string, primaryUrl: string, preferred: "EX-99.1" | "EX-99.2" | null) {
@@ -418,7 +430,22 @@ export function inlineEventExhibit(html: string, primaryUrl: string, preferred: 
   return null;
 }
 
-function composeFilingText(primaryText: string, exhibitText: string | null, exhibitType: "EX-99.1" | "EX-99.2" | null) {
+function prioritizePrimaryEventText(primaryText: string, form: string) {
+  if (form !== "8-K") return primaryText;
+  const items = [...primaryText.matchAll(/(?:^|\n)\s*Item\s+[1-8]\.\d{2}\b[^\n]{0,180}(?:\n|$)/gi)];
+  const currentItem = items.find((item, index) => {
+    const bodyStart = (item.index ?? 0) + item[0].length;
+    const bodyEnd = items[index + 1]?.index ?? primaryText.length;
+    // A table-of-contents heading without factual prose is not the event.
+    return primaryText.slice(bodyStart, bodyEnd).trim().length >= 80;
+  });
+  const eventStart = currentItem?.index ?? 0;
+  if (!eventStart) return primaryText;
+  return `${primaryText.slice(eventStart).trim()}\n\nPrimary filing cover and preceding context:\n${primaryText.slice(0, eventStart).trim()}`;
+}
+
+function composeFilingText(rawPrimaryText: string, exhibitText: string | null, exhibitType: "EX-99.1" | "EX-99.2" | null, form: string) {
+  const primaryText = prioritizePrimaryEventText(rawPrimaryText, form);
   if (!exhibitText || !exhibitType) {
     return {
       text: primaryText.slice(0, SEC_FILING_TEXT_MAX_CHARS),
@@ -697,6 +724,8 @@ export async function enrichSecFilingDetails(
     exhibitDocumentUrl: detail.exhibitDocumentUrl,
     exhibitDocumentType: detail.exhibitDocumentType,
     eventExhibitMissing: detail.eventExhibitMissing,
+    eventExhibitStatus: detail.eventExhibitStatus,
+    requiredExhibitType: detail.requiredExhibitType,
     documentsFetched: detail.documentsFetched,
     textLength: detail.textLength,
     truncated: detail.truncated,
@@ -738,6 +767,8 @@ export async function enrichSecFilingDetails(
         exhibitDocumentUrl: null,
         exhibitDocumentType: null,
         eventExhibitMissing: false,
+        eventExhibitStatus: "not_assessed",
+        requiredExhibitType: null,
         documentsFetched: 0,
         textLength: 0,
         truncated: false,
@@ -756,6 +787,8 @@ export async function enrichSecFilingDetails(
     let exhibitType: "EX-99.1" | "EX-99.2" | null = null;
     let documentsFetched = 0;
     let incompleteCategory: DetailFailure | null = null;
+    let eventExhibitStatus: EventExhibitStatus = "not_assessed";
+    let requiredExhibitType: "EX-99.1" | "EX-99.2" | null = null;
     try {
       const indexHtml = await fetchSecText(fetchImpl, selectedReceipt.indexUrl, "text/html,application/xhtml+xml", "index", grantKey);
       const documents = filingDocuments(indexHtml, selectedReceipt.indexUrl);
@@ -765,9 +798,12 @@ export async function enrichSecFilingDetails(
       const primaryText = plainText(documentHtml);
       if (!primaryText) throw new FilingDetailError("document_text_empty");
       documentsFetched = 1;
+      eventExhibitStatus = "not_required";
       let exhibitText: string | null = null;
       if (primaryNeedsEventExhibit(selectedReceipt.form, primaryText)) {
         const preferredType = referencedEventExhibitType(primaryText);
+        requiredExhibitType = preferredType;
+        eventExhibitStatus = "required_not_found";
         const exhibit = eventExhibit(documents, preferredType) ?? inlineEventExhibit(documentHtml, primaryUrl, preferredType);
         if (!exhibit) {
           // Keep factual primary text available as incomplete evidence rather
@@ -778,13 +814,15 @@ export async function enrichSecFilingDetails(
         } else {
           exhibitUrl = exhibit.url;
           exhibitType = exhibit.documentType;
+          eventExhibitStatus = "download_failed";
           const exhibitHtml = await fetchSecText(fetchImpl, exhibitUrl, "text/html,application/xhtml+xml,text/plain", "exhibit", grantKey);
           exhibitText = plainText(exhibitHtml);
           if (!exhibitText) throw new FilingDetailError("exhibit_text_empty");
           documentsFetched = 2;
+          eventExhibitStatus = "retrieved";
         }
       }
-      const composed = composeFilingText(primaryText, exhibitText, exhibitType);
+      const composed = composeFilingText(primaryText, exhibitText, exhibitType, selectedReceipt.form);
       const { text, truncated } = composed;
       const detail: SecFilingDetail = {
         receipt: cloneReceipt(selectedReceipt.receipt),
@@ -794,6 +832,8 @@ export async function enrichSecFilingDetails(
         exhibitDocumentUrl: exhibitUrl,
         exhibitDocumentType: exhibitType,
         eventExhibitMissing: incompleteCategory === "event_exhibit_not_found",
+        eventExhibitStatus,
+        requiredExhibitType,
         documentsFetched: documentsFetched as 1 | 2,
         text,
         textLength: text.length,
@@ -802,7 +842,7 @@ export async function enrichSecFilingDetails(
       };
       cacheDetail(selectedReceipt.indexUrl, detail, now.getTime());
       fetchedDetails.push(detail);
-      fetchedDiagnostics.push({ receiptId: selectedReceipt.receipt.id, form: selectedReceipt.form, indexUrl: selectedReceipt.indexUrl, status: incompleteCategory ? "partial" : "enriched", primaryDocumentUrl: primaryUrl, exhibitDocumentUrl: exhibitUrl, exhibitDocumentType: exhibitType, eventExhibitMissing: incompleteCategory === "event_exhibit_not_found", documentsFetched, textLength: text.length, truncated, errorCategory: incompleteCategory });
+      fetchedDiagnostics.push({ receiptId: selectedReceipt.receipt.id, form: selectedReceipt.form, indexUrl: selectedReceipt.indexUrl, status: incompleteCategory ? "partial" : "enriched", primaryDocumentUrl: primaryUrl, exhibitDocumentUrl: exhibitUrl, exhibitDocumentType: exhibitType, eventExhibitMissing: incompleteCategory === "event_exhibit_not_found", eventExhibitStatus, requiredExhibitType, documentsFetched, textLength: text.length, truncated, errorCategory: incompleteCategory });
     } catch (error) {
       const category = error instanceof FilingDetailError ? error.category : "document_request_failed";
       const deferred = category === "provider_budget_not_due";
@@ -815,13 +855,15 @@ export async function enrichSecFilingDetails(
       } else {
         cacheFailure(selectedReceipt.indexUrl, category, now.getTime());
       }
-      fetchedDiagnostics.push({ receiptId: selectedReceipt.receipt.id, form: selectedReceipt.form, indexUrl: selectedReceipt.indexUrl, status: deferred ? "not_due" : "failed", primaryDocumentUrl: primaryUrl, exhibitDocumentUrl: exhibitUrl, exhibitDocumentType: exhibitType, eventExhibitMissing: false, documentsFetched, textLength: 0, truncated: false, errorCategory: category });
+      fetchedDiagnostics.push({ receiptId: selectedReceipt.receipt.id, form: selectedReceipt.form, indexUrl: selectedReceipt.indexUrl, status: deferred ? "not_due" : "failed", primaryDocumentUrl: primaryUrl, exhibitDocumentUrl: exhibitUrl, exhibitDocumentType: exhibitType, eventExhibitMissing: false, eventExhibitStatus: deferred && requiredExhibitType ? "deferred" : eventExhibitStatus, requiredExhibitType, documentsFetched, textLength: 0, truncated: false, errorCategory: category });
     }
   }
   const detailByFiling = new Map<string, SecFilingDetail>();
   for (const detail of [...cachedDetails, ...fetchedDetails]) detailByFiling.set(filingKey(detail.indexUrl), detail);
   const details = [...detailByFiling.values()];
-  const items = [...cachedDiagnostics, ...fetchedDiagnostics];
+  // A refreshed accession replaces its cached partial diagnostic as well as
+  // its text. Otherwise a successfully retrieved exhibit still looks missing.
+  const items = [...new Map([...cachedDiagnostics, ...fetchedDiagnostics].map(item => [item.receiptId, item])).values()];
   const failures = fetchedDiagnostics.filter((item) => item.status === "failed").length;
   const incomplete = details.filter((detail) => detail.eventExhibitMissing).length;
   const newlyDeferredReceiptIds = fetchedDiagnostics

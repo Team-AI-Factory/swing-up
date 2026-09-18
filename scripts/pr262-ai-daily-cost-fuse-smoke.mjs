@@ -38,6 +38,7 @@ new Function("require", "module", "exports", output)((specifier) => {
 
 const {
   getPr262AiDailyBudgetStatus,
+  getPr262AiCostAudit,
   recordPr262AiCommitteeCost,
   releasePr262AiCommitteeBudgetReservation,
   reservePr262AiCommitteeBudget,
@@ -182,6 +183,54 @@ try {
   await recordPr262AiCommitteeCost(partialUsageReport, now);
   assert.equal(state.payload.entries[0].costUsd, 0.75, "Incomplete provider usage must retain the full conservative reservation.");
 
+  // Audit history must survive normal 24-hour cleanup without contributing
+  // old spend to the rolling fuse or presenting fallback allocations as bills.
+  state = null;
+  const meteredReport = {
+    ...partialUsageReport,
+    candidateFingerprint: "repeated-after-window",
+    committee: { output: { modelUsageSummary: { actualOpenAiUsage: {
+      responsesWithUsage: 14,
+      tokens: { promptTokens: 1_000, completionTokens: 500, cachedPromptTokens: 0 },
+    } } } },
+  };
+  await recordPr262AiCommitteeCost(meteredReport, now);
+  const hourLater = new Date(now.getTime() + 60 * 60_000);
+  await recordPr262AiCommitteeCost({ ...report, candidateFingerprint: "unknown-audit" }, hourLater);
+  const dayLater = new Date(now.getTime() + 25 * 60 * 60_000);
+  await reservePr262AiCommitteeBudget({ candidateFingerprint: "pending-audit", ticker: "SAFE" }, dayLater);
+  const agedBudget = await getPr262AiDailyBudgetStatus(dayLater, true);
+  assert.equal(agedBudget.spentUsd, 0, "Charges at least 24 hours old must not reduce current capacity.");
+  assert.equal(agedBudget.reservedUsd, 0.75, "An active reservation remains separate from past recorded spend.");
+  assert.equal(agedBudget.costAudit.last48Hours.completeTokenUsageEstimateUsd, 0.0012);
+  assert.equal(agedBudget.costAudit.last48Hours.unknownUsageAllocationUsd, 0.75);
+  assert.equal(agedBudget.costAudit.last48Hours.budgetAccountedUsd, 0.7512);
+  assert.equal(agedBudget.costAudit.last48Hours.recordedReviews, 2);
+  assert.equal(agedBudget.costAudit.providerInvoiceVerified, false);
+  assert.equal(agedBudget.costAudit.last30Days.recordedReviewHistoryComplete, false, "New history must not pretend to reconstruct the past month.");
+  await recordPr262AiCommitteeCost(meteredReport, dayLater);
+  await recordPr262AiCommitteeCost(meteredReport, dayLater);
+  const repeatAudit = await getPr262AiCostAudit(dayLater);
+  assert.equal(repeatAudit.last48Hours.recordedReviews, 3, "A later real review of the same fingerprint counts once, while a repeated recording stays idempotent.");
+  assert.equal(repeatAudit.last48Hours.completeTokenUsageEstimateUsd, 0.0024);
+  const thirtyFiveDaysLater = new Date(now.getTime() + 35 * 24 * 60 * 60_000);
+  await reservePr262AiCommitteeBudget({ candidateFingerprint: "retain-history" }, thirtyFiveDaysLater);
+  assert.equal(state.payload.entries.length, 0);
+  assert.equal(state.payload.auditEntries.length, 3, "All recorded review history remains durable beyond 35 days after current-window cleanup.");
+  assert.equal((await getPr262AiCostAudit(thirtyFiveDaysLater)).last30Days.recordedReviewHistoryComplete, true);
+  const fortySixDaysLater = new Date(now.getTime() + 46 * 24 * 60 * 60_000);
+  await reservePr262AiCommitteeBudget({ candidateFingerprint: "bounded-history" }, fortySixDaysLater);
+  assert.equal(state.payload.auditEntries.length, 1, "Only entries inside the 45-day retention window remain after a mutation.");
+
+  state = { payload: { version: 1, updatedAt: now.toISOString(), entries: [
+    { id: "legacy", recordedAt: hourLater.toISOString(), ticker: "SAFE", alertType: null, costUsd: 0.5, source: "actual_tokens" },
+  ], reservations: [] }, etag: `"etag-${++etagCounter}"` };
+  await reservePr262AiCommitteeBudget({ candidateFingerprint: "migrate-audit" }, dayLater);
+  assert.equal(state.payload.auditEntries.length, 1, "Migration preserves legacy raw entries even when they expire from the fuse in this write.");
+  const migratedAudit = await getPr262AiCostAudit(dayLater);
+  assert.equal(migratedAudit.last48Hours.completeTokenUsageEstimateUsd, 0.5);
+  assert.equal(migratedAudit.last48Hours.recordedReviewHistoryComplete, false);
+
   state = { payload: { version: 1, updatedAt: now.toISOString(), entries: "damaged", reservations: [] }, etag: `"etag-${++etagCounter}"` };
   await assert.rejects(() => getPr262AiDailyBudgetStatus(now), /pr262_ai_daily_cost_state_unreadable/, "Damaged accounting must fail closed instead of reopening paid capacity.");
 } finally {
@@ -205,4 +254,9 @@ console.log(JSON.stringify({
   globalFuseUsesExactCumulativeCapacityExpiry: true,
   raceTimeGlobalFuseUsesExactRetry: true,
   highVolumeCannotEvictInWindowSpend: true,
+  auditRetains45DaysWithoutChangingRollingFuse: true,
+  auditSeparatesTokenEstimatesUnknownAllocationsAndReservations: true,
+  auditReportsIncompleteHistoricalCoverage: true,
+  auditRepeatedFingerprintUsesReviewTimestamp: true,
+  auditMigratesLegacyEntriesBeforeCleanup: true,
 }, null, 2));

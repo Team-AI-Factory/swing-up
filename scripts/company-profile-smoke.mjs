@@ -16,7 +16,8 @@ const html = `<html><style>.hidden{display:none}</style><ix:header>Company finan
 const extracted = profile.extractCompanyProfile({ identity, html, form: "10-K", sourceUrl: fixture.sourceUrl, filedAt: fixture.sourceFiledAt, now });
 assert.ok(extracted);
 assert.match(extracted.business, /inventory management software/);
-assert.match(extracted.customers, /retail stores, wholesalers and manufacturing/);
+assert.equal(extracted.business, fixture.business);
+assert.equal(extracted.customers, fixture.customers, "Section headings are excluded from factual sentences");
 assert.doesNotMatch(extracted.description, /Risk Factors|might cancel|taxonomy/);
 for (const changed of [{ cik: "2" }, { ticker: "OTHER" }, { company: "Different Company" }]) {
   assert.equal(profile.verifiedCompanyProfile(extracted, { ...identity, ...changed }, now), null);
@@ -27,6 +28,35 @@ assert.equal(profile.extractCompanyProfile({ identity, html: html.replace(fixtur
 assert.equal(profile.extractCompanyProfile({ identity, html, form: "10-K", sourceUrl: fixture.sourceUrl.replace("/1/", "/2/"), filedAt: fixture.sourceFiledAt, now }), null);
 const twentyF = html.replaceAll("Item 1.", "Item 4. Information on the Company").replace(/<h2><span>ITEM[\s\S]*?<\/h2>/, "<h2>Item 4. Information on the Company</h2>").replaceAll("Item 1A.", "Item 5.");
 assert.ok(profile.extractCompanyProfile({ identity, html: twentyF, form: "20-F", sourceUrl: fixture.sourceUrl, filedAt: fixture.sourceFiledAt, now }));
+
+// Real source sentences from Apple's FY2025 Item 1:
+// https://www.sec.gov/Archives/edgar/data/320193/000032019325000079/aapl-20250927.htm
+const appleBusiness = "The Company designs, manufactures and markets smartphones, personal computers, tablets, wearables and accessories, and sells a variety of related services.";
+const appleCloud = "The Company’s cloud services store and keep customers’ content up-to-date and available across multiple Apple devices and Windows personal computers.";
+const appleCustomers = "The Company’s customers are primarily in the consumer, small and mid-sized business, education, enterprise and government markets.";
+const appleInput = { identity: { ticker: "AAPL", company: "Apple Inc.", cik: "0000320193" }, form: "10-K", sourceUrl: "https://www.sec.gov/Archives/edgar/data/320193/000032019325000079/aapl-20250927.htm", filedAt: "2025-10-31", now };
+// Repeat a source paragraph only to retain the extractor's minimum section
+// length when removing the customer description in the negative fixture.
+const appleHtml = `<h2>Item 1. Business</h2><div>Company Background</div><p>${appleBusiness}</p><div>Cloud Services</div>${`<p>${appleCloud}</p>`.repeat(3)}<h3>Markets and Distribution</h3><p>${appleCustomers.replace("customers", "<span>customers</span>")}</p><h2>Item 1A. Risk Factors</h2>`;
+const apple = profile.extractCompanyProfile({ ...appleInput, html: appleHtml });
+assert.ok(apple);
+assert.equal(apple.business, appleBusiness);
+assert.equal(apple.customers, appleCustomers, "Actual customer markets outrank an earlier product-use mention");
+assert.equal(profile.extractCompanyProfile({ ...appleInput, html: appleHtml.replace("The Company’s <span>customers</span>", "The Company’s\n<span>customers</span>") })?.customers, appleCustomers, "HTML formatting whitespace cannot truncate a factual sentence");
+const appleWithoutCustomers = appleHtml.replace(appleCustomers.replace("customers", "<span>customers</span>"), "");
+assert.equal(profile.extractCompanyProfile({ ...appleInput, html: appleWithoutCustomers }), null, "A customer mention alone cannot verify a profile");
+const incidentalUsage = "Our customers are able to access their content across multiple devices and personal computers.";
+assert.equal(profile.extractCompanyProfile({ ...appleInput, html: appleWithoutCustomers.replace("</p>", `</p><p>${incidentalUsage}</p>`) }), null, "An explicit customer subject with a usage predicate is not a customer segment");
+assert.equal(profile.extractCompanyProfile({ ...appleInput, html: appleWithoutCustomers.replace("</p>", "</p><p>Our markets are highly competitive and characterized by rapid technological advances.</p>") }), null, "Competitive conditions do not identify customer markets");
+assert.equal(profile.verifiedCompanyProfile({ ...apple, customers: appleCloud, description: `${apple.business} ${appleCloud}` }, appleInput.identity, now), null, "Previously cached incidental descriptions fail current verification");
+const namedGroups = "We sell enterprise networking products to telecommunications service providers and government agencies.";
+const directGroups = profile.extractCompanyProfile({ identity, html: html.replace(fixture.customers, namedGroups), form: "10-K", sourceUrl: fixture.sourceUrl, filedAt: fixture.sourceFiledAt, now });
+assert.equal(directGroups?.customers, namedGroups, "Named buyers do not need the literal word customers");
+assert.ok(profile.verifiedCompanyProfile(directGroups, identity, now));
+const healthcareGroups = "The Company serves hospitals, outpatient clinics and independent medical laboratories throughout the United States.";
+assert.equal(profile.extractCompanyProfile({ identity, html: html.replace(fixture.customers, healthcareGroups), form: "10-K", sourceUrl: fixture.sourceUrl, filedAt: fixture.sourceFiledAt, now })?.customers, healthcareGroups);
+const preferred = profile.extractCompanyProfile({ identity, html: html.replace("<h3>Customers</h3>", `<p>${namedGroups}</p><h3>Customers</h3>`), form: "10-K", sourceUrl: fixture.sourceUrl, filedAt: fixture.sourceFiledAt, now });
+assert.equal(preferred?.customers, fixture.customers, "Explicit customer composition wins over an earlier individual sales channel");
 
 const objects = new Map(); let revision = 0;
 const storage = {

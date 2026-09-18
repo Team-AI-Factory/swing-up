@@ -1,4 +1,5 @@
 import type { getValuationWatchlistStatus } from "@/lib/opportunity-engine/valuation-watchlist-feed";
+import { buildPriceOutlook, type PriceOutlook } from "@/lib/signal-outlook";
 
 export const CHANNELS = ["facebook", "instagram", "x"] as const;
 export type Channel = typeof CHANNELS[number];
@@ -20,7 +21,12 @@ export type ResearchSnapshot = {
   sources: { label: string; url: string }[]; methods: string[];
   publicationStatus: "provisional_research_only" | "provisional_alert" | "committee_approved_alert"; userAlertEligible: boolean; committeeApproved: boolean;
   companyDoes?: string; whatHappened?: string; committeeStatus?: string;
+  outlook?: PriceOutlook;
 };
+export function snapshotOutlook(snapshot: ResearchSnapshot) {
+  return snapshot.outlook ?? buildPriceOutlook({ currentPrice: snapshot.currentPrice, currency: snapshot.currency, action: snapshot.action,
+    conservative: snapshot.low, base: snapshot.targetPrice, optimistic: snapshot.high, basis: "valuation" });
+}
 export function money(value: number, currency = "USD") {
   return new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 2 }).format(value);
 }
@@ -81,6 +87,7 @@ export function makeSnapshot(candidate: Candidate, now = new Date()): ResearchSn
     sources: candidate.links, methods: candidate.valuationMethods.map((method) => `${method.method}: ${method.assumption}`),
     publicationStatus: candidate.publicationStatus ?? "provisional_alert", userAlertEligible: candidate.userAlertEligible === true, committeeApproved: candidate.committeeApproved === true,
     companyDoes: candidate.explanation?.companyDoes, whatHappened: candidate.explanation?.whatHappened, committeeStatus: candidate.committeeStatus,
+    outlook: candidate.outlook,
   };
 }
 export function publicBaseUrl() {

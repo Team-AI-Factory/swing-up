@@ -56,7 +56,7 @@ new Function("require", "module", "exports", output)((name) => {
   if (name === "@/lib/opportunity-engine/pr262-storage") return {
     pr262StorageKey: (relative) => `production/pr262/${relative}`,
   };
-  if (name === "@/lib/signal-explanation") return loadTsModule(name);
+  if (name === "@/lib/signal-explanation" || name === "@/lib/signal-outlook") return loadTsModule(name);
   if (name === "@/lib/opportunity-engine/pr262-research-evidence") return { readResearchAlerts: async () => [] };
   throw new Error(`Unexpected watchlist feed import: ${name}`);
 }, cjsModule, cjsModule.exports);

@@ -1,4 +1,5 @@
 import { explainCandidate } from "@/lib/signal-explanation";
+import { candidatePriceOutlook, compareSignalPotential } from "@/lib/signal-outlook";
 import crypto from "node:crypto";
 import {
   listR2ObjectKeys,
@@ -1272,6 +1273,7 @@ export async function getSeriousSignalStatus(options: { hours?: number; limit?: 
         createdAt: validated.createdAt,
         ticker: validated.ticker,
         explanation: explainCandidate(validated.candidate),
+        outlook: candidatePriceOutlook(validated.candidate),
         alertType: validated.alertType,
         eventHeadline: text(validated.candidate.eventHeadline) ?? text(validated.candidate.whatHappened) ?? "Material event confirmed",
         whyItMatters: text(validated.output.SwingUpView) ?? text(validated.candidate.whatHappened),
@@ -1292,7 +1294,7 @@ export async function getSeriousSignalStatus(options: { hours?: number; limit?: 
       });
     } catch { continue; }
   }
-  alerts.sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)));
+  alerts.sort((left, right) => compareSignalPotential({ action: left.alertType, ticker: left.ticker, outlook: left.outlook as ReturnType<typeof candidatePriceOutlook> }, { action: right.alertType, ticker: right.ticker, outlook: right.outlook as ReturnType<typeof candidatePriceOutlook> }));
   const selected = alerts.slice(0, limit);
   return {
     ok: true,

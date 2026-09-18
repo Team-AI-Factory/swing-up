@@ -221,3 +221,15 @@ p { color: var(--muted); line-height: 1.65; }
 .growth-scroll { overflow-x: auto; }
 @media (max-width: 950px) { .launch-split { gap: 28px; } .research-grid { grid-template-columns: 1fr; } .research-card { gap: 18px; } }
 @media (max-width: 700px) { .launch-split, .research-detail { grid-template-columns: 1fr; } .launch-page { padding-top: 32px; } .launch-form { padding: 22px; } .launch-intro { font-size: 18px; } }
+
+/* Shared, responsive price scenarios across provisional and approved alerts. */
+.signal-outlook { margin: 18px 0; padding: 16px; border: 1px solid var(--border, #334155); border-radius: 14px; }
+.signal-return { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.signal-return > strong { font-size: 1.4rem; font-variant-numeric: tabular-nums; }
+.signal-price-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.signal-price-grid > div { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.signal-price-grid span, .signal-price-grid small { font-size: 0.78rem; opacity: 0.8; }
+.signal-price-grid strong { font-size: 1rem; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.signal-outlook p { font-size: 0.85rem; line-height: 1.5; }
+.signal-outlook p:last-child { margin-bottom: 0; }
+@media (max-width: 420px) { .signal-return { align-items: flex-start; flex-direction: column; gap: 4px; } }

@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 import { explainCandidate, plainEvidenceGaps } from "@/lib/signal-explanation";
+import { candidatePriceOutlook } from "@/lib/signal-outlook";
 import type { VerifiedFactsCache, VerifiedFactsSnapshot } from "@/lib/equity-signal/fundamentals";
 
 type Json = Record<string, unknown>;
@@ -168,6 +169,9 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
       valuationObservedAt: input.companyAnalysis?.observedAt ?? null,
       eventHeadline: candidate.eventHeadline, kind: candidate.eventFamily === "valuation_gap" ? "valuation" : "event",
       currentPrice: object(candidate.quote).price ?? null, priceObservedAt: object(candidate.quote).observedAt ?? null,
+      currency: input.companyAnalysis?.currency ?? candidate.currency ?? null,
+      industry: input.companyAnalysis?.industry ?? candidate.industry ?? null, sector: input.companyAnalysis?.sector ?? candidate.sector ?? null,
+      eventFamily: candidate.eventFamily, outlook: candidatePriceOutlook(candidate, input.companyAnalysis),
       fairValue: object(input.companyAnalysis?.fairValue).baseValue ?? null,
       userAlertEligible: output.overallRecommendation !== "reject", committeeApproved: approved,
       committeeStatus: approved ? "approved" : output.overallRecommendation === "reject" ? "rejected" : output.overallRecommendation === "approve" ? "approved_pending_checks" : needsFollowup ? "needs_more_data" : "awaiting_review",

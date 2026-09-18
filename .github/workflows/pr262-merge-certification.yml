@@ -76,6 +76,7 @@ jobs:
           npm run smoke:ai-committee-provider-guardrails
           npm run smoke:inclusive-committee-quality
           npm run smoke:valuation-committee-followup
+          npm run smoke:signal-presentation
           npm run smoke:equity-event-first-runner
           npm run smoke:equity-history-optional-pilot
           npm run smoke:pr262-event-job

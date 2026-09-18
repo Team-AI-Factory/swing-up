@@ -1,6 +1,8 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
+import { SignalPriceOutlook } from "@/components/SignalPriceOutlook";
+import type { PriceOutlook } from "@/lib/signal-outlook";
 
 type LiveAlert = {
   id: string;
@@ -11,6 +13,7 @@ type LiveAlert = {
   whyItMatters: string | null;
   explanation?: { companyDoes: string; whatHappened: string; whyItMatters: string; whatCouldHappen: string; whatCouldGoWrong: string };
   price: number | null;
+  outlook?: PriceOutlook;
   finalJudgeConfidence: number;
   committee: { completed: number; failed: number; recommendation: string };
   evidence: Array<{ source: string | null; url: string }>;
@@ -59,6 +62,7 @@ type ValuationWatchlistItem = {
   industry: string | null;
   action: "buy_research" | "sell_research" | "watch_out_research" | "price_watch";
   currentPrice: number | null;
+  outlook: PriceOutlook;
   priceObservedAt: string;
   livePriceFresh: boolean;
   livePriceAlert: { threshold: string | null; changePercent: number | null; relativeVolume: number | null } | null;
@@ -150,10 +154,6 @@ function livePriceAlertLabel(value: NonNullable<ValuationWatchlistItem["livePric
   return "LIVE UNUSUAL PRICE / VOLUME";
 }
 
-function money(value: number | null) {
-  return value === null ? "—" : `$${value.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
-}
-
 function ValuationWatchlistPanel({
   watchlist,
   error,
@@ -170,6 +170,7 @@ function ValuationWatchlistPanel({
       <p>
         These live alerts explain potential opportunities and risks from the company valuation screen. Each alert shows its actual Committee review status.
       </p>
+      <p className="muted">Buy opportunities first, then Sell opportunities; highest potential move to base value first within each group.</p>
       <p className="muted">
         Permanent link: <a href="/serious-signals#valuation-watchlist">/serious-signals#valuation-watchlist</a> · refreshes within one minute of new company or price information.
       </p>
@@ -202,16 +203,14 @@ function ValuationWatchlistPanel({
                   </div>
                   <h3>{item.ticker} · {item.company}</h3>
                   {item.explanation ? <><p><strong>What the company does:</strong> {item.explanation.companyDoes}</p><p><strong>What is happening:</strong> {item.explanation.whatHappened}</p><p><strong>Why it matters:</strong> {item.explanation.whyItMatters}</p><p><strong>What could happen:</strong> {item.explanation.whatCouldHappen}</p><p><strong>What could go wrong:</strong> {item.explanation.whatCouldGoWrong}</p></> : null}
-                  <p><strong>Current / conservative / base / optimistic:</strong> {money(item.currentPrice)} / {money(item.fairValue.conservative)} / {money(item.fairValue.base)} / {money(item.fairValue.optimistic)}</p>
+                  <SignalPriceOutlook outlook={item.outlook} action={item.action} />
                   <p className="muted">Price checked {formatTime(item.priceObservedAt)}{item.livePriceFresh ? " · live sensor snapshot" : " · latest foundation snapshot"}.</p>
                   {item.livePriceAlert ? <p><strong>Live market move:</strong> {item.livePriceAlert.changePercent !== null ? `${item.livePriceAlert.changePercent.toFixed(1)}%` : "change unavailable"}{item.livePriceAlert.relativeVolume !== null ? ` · ${item.livePriceAlert.relativeVolume.toFixed(1)}x relative volume` : ""}. This remains provisional research until current evidence and the Committee approve it.</p> : null}
                   <p><strong>Quality / risk / evidence:</strong> {item.scores.quality ?? "—"} / {item.scores.risk ?? "—"} / {item.scores.evidence ?? "—"}</p>
-                  {item.reasons.length ? <p><strong>Why it reached the watchlist:</strong> {item.reasons.join(" ")}</p> : null}
-                  {item.blockers.length ? <p><strong>Why it is not a Serious Signal:</strong> {item.blockers.join(" ")}</p> : null}
                   <div className="button-row">
                     <a className="button" href={`/serious-signals#${item.anchor}`}>Link to this item</a>
-                    {item.links.map((link) => <a className="button" href={link.url} key={link.url} rel="noreferrer" target="_blank">{link.label}</a>)}
                   </div>
+                  <details><summary>Sources</summary><div className="button-row">{item.links.map((link) => <a href={link.url} key={link.url} rel="noreferrer" target="_blank">{link.label}</a>)}</div></details>
                 </article>
               ))}
             </div>
@@ -397,9 +396,10 @@ export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
                     <span className="badge">{deliveryLabel(alert.delivery.status)}</span>
                   </div>
                   <h2>{alert.ticker} {alert.price !== null ? `· $${alert.price.toLocaleString("en-US")}` : ""}</h2>
-                  <p><strong>What happened:</strong> {alert.eventHeadline}</p>
+                  <p><strong>What happened:</strong> {alert.explanation?.whatHappened ?? "The business effect is being assessed."}</p>
                   {alert.explanation ? <><p><strong>What the company does:</strong> {alert.explanation.companyDoes}</p><p><strong>What could happen:</strong> {alert.explanation.whatCouldHappen}</p><p><strong>What could go wrong:</strong> {alert.explanation.whatCouldGoWrong}</p></> : null}
                   <p><strong>Why it matters:</strong> {alert.explanation?.whyItMatters ?? alert.whyItMatters ?? "The full verified explanation is not available in the sanitized feed."}</p>
+                  {alert.outlook ? <SignalPriceOutlook outlook={alert.outlook} action={alert.alertType} /> : null}
                   <p><strong>Detected:</strong> {formatTime(alert.createdAt)} Bangkok time</p>
                   <p><strong>Committee:</strong> {alert.committee.completed}/14 completed, {alert.committee.failed} failed, recommendation {alert.committee.recommendation}.</p>
                   {alert.evidence.length ? (

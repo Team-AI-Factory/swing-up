@@ -54,7 +54,7 @@ new Function("require", "module", "exports", output)((specifier) => {
   }
   if (specifier === "@/lib/opportunity-engine/pr262-storage") return { pr262StorageKey: storageKey };
   if (specifier === "@/lib/opportunity-engine/pr262-runtime") return { isPr262ApprovedPremergeProductionRollout: () => false };
-  if (specifier === "@/lib/signal-explanation") return loadTsModule(specifier);
+  if (specifier === "@/lib/signal-explanation" || specifier === "@/lib/signal-outlook") return loadTsModule(specifier);
   throw new Error(`Unexpected delivery import: ${specifier}`);
 }, loaded, loaded.exports);
 

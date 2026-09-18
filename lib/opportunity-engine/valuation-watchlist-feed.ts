@@ -1,4 +1,5 @@
 import { explainSignal, plainEvidenceGaps } from "@/lib/signal-explanation";
+import { buildPriceOutlook, compareSignalPotential } from "@/lib/signal-outlook";
 import { readResearchAlerts } from "@/lib/opportunity-engine/pr262-research-evidence";
 import { readVersionedTextFromR2 } from "@/lib/r2-warehouse";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
@@ -63,13 +64,6 @@ function sanitizeReasons(value: unknown, maximum = 4) {
     : [];
 }
 
-function rank(item: UsValueCompanyAnalysis, action: WatchlistAction) {
-  if (action === "buy_research") return item.fairValue.upsideToBasePercent ?? -Infinity;
-  if (action === "sell_research") return -(item.fairValue.upsideToBasePercent ?? Infinity);
-  if (action === "watch_out_research") return item.scores.risk;
-  return item.scores.businessQuality;
-}
-
 function sanitizeCandidate(item: UsValueCompanyAnalysis, action: WatchlistAction, cycleId: string, livePrice?: LivePrice, review?: Record<string, unknown>) {
   const ticker = safeTicker(item.ticker);
   if (!ticker) return null;
@@ -104,6 +98,7 @@ function sanitizeCandidate(item: UsValueCompanyAnalysis, action: WatchlistAction
     industry: text(item.industry),
     action,
     currentPrice,
+    outlook: buildPriceOutlook({ currentPrice, currency: item.currency, action, conservative: item.fairValue?.conservativeValue, base: baseValue, optimistic: item.fairValue?.optimisticValue, basis: "valuation" }),
     priceObservedAt,
     livePriceFresh: Boolean(livePrice),
     livePriceAlert: livePrice && (livePrice.threshold || Math.abs(livePrice.changePercent ?? 0) >= 5 || (livePrice.relativeVolume ?? 0) >= 3) ? {
@@ -132,7 +127,7 @@ function sanitizeCandidate(item: UsValueCompanyAnalysis, action: WatchlistAction
     userAlertEligible: action !== "price_watch" && directionStillSupported && review?.committeeStatus !== "rejected",
     committeeApproved: approvedForThisSnapshot,
     committeeStatus: approvedForThisSnapshot ? "approved" : review?.committeeApproved === true ? "awaiting_review" : String(review?.committeeStatus ?? "awaiting_review"),
-    explanation: explainSignal({ company: String(item.company ?? ticker), sector: item.sector, industry: item.industry, kind: "valuation", action, price: currentPrice, fairValue: baseValue, reasons, gaps: plainEvidenceGaps(blockers) }),
+    explanation: explainSignal({ company: String(item.company ?? ticker), sector: item.sector, industry: item.industry, kind: "valuation", action, price: currentPrice, fairValue: baseValue, fundamentals: item.fundamentals, gaps: plainEvidenceGaps(blockers) }),
     links: [
       ...(tradingViewUrl ? [{ label: "Market and valuation", url: tradingViewUrl }] : []),
       { label: "SEC filings", url: secUrl },
@@ -148,7 +143,7 @@ function arrayOfAnalyses(value: unknown) {
 
 export async function getValuationWatchlistStatus(options: { limit?: number; action?: WatchlistAction } = {}) {
   const requestedLimit = Number(options.limit ?? 60);
-  const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(200, Math.floor(requestedLimit))) : 60;
+  const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(1000, Math.floor(requestedLimit))) : 60;
   const [current, livePriceCurrent, reviews] = await Promise.all([
     readVersionedTextFromR2(LATEST_FOUNDATION_SUMMARY_KEY),
     readVersionedTextFromR2(LIVE_WATCHLIST_PRICE_KEY),
@@ -203,9 +198,9 @@ export async function getValuationWatchlistStatus(options: { limit?: number; act
     ["watch_out_research", arrayOfAnalyses(serious.watchOut)],
     ["price_watch", arrayOfAnalyses(parsed.qualityPriceWatchlist)],
   ];
-  const all = groups.flatMap(([action, items]) => items.map((item) => ({ action, item, rank: rank(item, action) })))
-    .sort((left, right) => right.rank - left.rank)
-    .flatMap(({ action, item }) => sanitizeCandidate(item, action, cycleId, livePrices.get(item.ticker.toUpperCase()), reviews.find(r => r.kind === "valuation" && r.ticker === item.ticker && r.valuationObservedAt === item.observedAt)) ?? []);
+  const all = groups.flatMap(([action, items]) => items.flatMap(item =>
+    sanitizeCandidate(item, action, cycleId, livePrices.get(item.ticker.toUpperCase()), reviews.find(r => r.kind === "valuation" && r.ticker === item.ticker && r.valuationObservedAt === item.observedAt)) ?? []))
+    .sort(compareSignalPotential);
   const filtered = options.action ? all.filter((item) => item.action === options.action) : all;
   const candidates = filtered.slice(0, limit);
   const coverage = object(parsed.coverage);

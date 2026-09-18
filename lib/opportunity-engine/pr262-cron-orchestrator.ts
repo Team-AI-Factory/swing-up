@@ -2,6 +2,7 @@ import {
   deliverSeriousSignalOutbox,
   processPendingSeriousSignalDeliveries,
 } from "@/lib/notifications/serious-signal-delivery";
+import { probeOpenAiCommitteeProviderAccess } from "@/lib/ai-committee/provider";
 import {
   getPr262AiDailyBudgetStatus,
   recordPr262AiCommitteeCostFromResultKey,
@@ -19,7 +20,7 @@ import {
   readPr262ChangeSensorState,
   type Pr262PendingSensorEventMutation,
 } from "@/lib/opportunity-engine/pr262-change-sensor";
-import { runPr262EventJob } from "@/lib/opportunity-engine/pr262-event-job";
+import { runPr262EventJob, warmPr262CompanyProfiles } from "@/lib/opportunity-engine/pr262-event-job";
 import { runPr262LightweightSensorV3 } from "@/lib/opportunity-engine/pr262-lightweight-sensor-v3";
 import { createPr262SensorBudgetedFetch } from "@/lib/opportunity-engine/pr262-sensor-fetch-budget";
 import { promotePr262SeriousWatchOut } from "@/lib/opportunity-engine/pr262-serious-watch-out-authority";
@@ -125,6 +126,13 @@ function asJson(value: unknown): Json {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Json : {};
 }
 
+function paidProviderAccessBlocker(diagnostic: Json) {
+  const category = asJson(diagnostic.failure).category;
+  if (diagnostic.status === "failed" && (category === "authentication" || category === "permission")) return category;
+  if (diagnostic.status === "completed" && Object.values(asJson(diagnostic.modelAvailable)).some(available => available === false)) return "configured_model_unavailable";
+  return null;
+}
+
 function isScheduledEventDeferral(message: string) {
   if (!/; next_retry_at=\d{4}-\d{2}-\d{2}T/.test(message)) return false;
   const reason = message.split(";")[0]?.trim() ?? "";
@@ -155,11 +163,13 @@ function composedSignal(signals: Array<AbortSignal | null | undefined>) {
 
 async function safeAiBudgetStatus(): Promise<AiBudgetStatus> {
   try {
-    return { ...(await getPr262AiDailyBudgetStatus()), accountingHealthy: true, accountingError: null };
+    return { ...(await getPr262AiDailyBudgetStatus(new Date(), true)), accountingHealthy: true, accountingError: null };
   } catch (error) {
     return {
       allowed: false,
       spentUsd: 0,
+      completeTokenUsageEstimateUsd: 0,
+      unknownUsageAllocationUsd: 0,
       reservedUsd: 0,
       exposureUsd: 0,
       remainingUsd: 0,
@@ -239,6 +249,11 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
   const notificationResults: Json[] = [];
   const aiCostResults: Json[] = [];
   let aiBudget = await safeAiBudgetStatus();
+  const providerAccessDiagnostic = aiBudget.unknownUsageReviews > 0
+    ? await probeOpenAiCommitteeProviderAccess(cycleSignal)
+    : { status: "skipped", reason: "no_unknown_usage_reviews", readOnly: true, callsPaidModel: false, billingQuotaVerified: false };
+  if (providerAccessDiagnostic.status !== "skipped") console.info(JSON.stringify({ kind: "pr262_openai_access_diagnostic", checkedAt, ...providerAccessDiagnostic }));
+  const providerBlockedReason = paidProviderAccessBlocker(providerAccessDiagnostic);
   let eventFailures = 0;
   let eventDeferrals = 0;
   let aiCalls = 0;
@@ -261,13 +276,15 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
       : null;
     try {
       const raw = await runPr262EventJob({
-        allowOpenAi: aiBudget.allowed && aiBudget.accountingHealthy,
+        allowOpenAi: aiBudget.allowed && aiBudget.accountingHealthy && !providerBlockedReason,
+        aiProviderBlockedReason: providerBlockedReason ?? undefined,
         excludedEventIds: [...excludedEventIds],
         queueMutationSink: (mutation) => {
           queueMutations.push(mutation);
           excludedEventIds.add(mutation.eventId);
         },
         beforeOpenAiCall: async (reservation) => {
+          if (providerBlockedReason) return false;
           try {
             const reserved = await reservePr262AiCommitteeBudget({
               candidateFingerprint: reservation.candidateFingerprint,
@@ -434,6 +451,9 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
       }))
     : { ok: false, skipped: true, reason: "cycle_deadline_reserve" };
 
+  const companyProfiles = processingDeadlineAtMs - Date.now() >= 35_000 && !cycleSignal.aborted
+    ? await warmPr262CompanyProfiles().catch(() => ({ attempted: 0, verified: 0, status: "temporarily_unavailable" }))
+    : { attempted: 0, verified: 0, status: "cycle_deadline_reserve" };
   assertCycleActive();
   state = await readPr262ChangeSensorState();
   const sourceSummary = sensor?.sourceSummary ?? [];
@@ -579,6 +599,8 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
     },
     aiCostControl: {
       ...aiBudget,
+      providerAccessDiagnostic,
+      providerBlockedReason,
       actualTokenUsagePreferred: true,
       unknownUsageFallbackUsd: 0.75,
       incompleteUsageRetainsFullReservation: true,
@@ -600,6 +622,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
       historicalCasesRequiredForSeriousSignal: false,
       historicalCasesRemainLearningContext: true,
     },
+    companyProfiles,
     providerPolicy: {
       alphaVantageDiscoveryAndRailwayFallbackAreDurablyBudgeted: true,
       eventQuoteFallbackOrder: ["Yahoo Finance", "Alpha Vantage", "Financial Modeling Prep when commercially approved"],

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
 import { getValuationWatchlistStatus } from "@/lib/opportunity-engine/valuation-watchlist-feed";
-import { CHANNELS, SLOT_ACTIONS, candidateProblem, captionFor, makeSnapshot, publicBaseUrl, slotsForDay, type Channel, type ResearchSnapshot } from "@/lib/growth/research";
+import { CHANNELS, SLOT_ACTIONS, candidateProblem, captionFor, makeSnapshot, publicBaseUrl, publicResearchSnapshot, slotsForDay, type Channel } from "@/lib/growth/research";
 import { bufferConfiguration, BufferError, deliveryState, findBufferPost, publishBufferImage, readBufferPost, verifyBufferChannels } from "@/lib/growth/buffer";
 
 export function growthEnabled() {
@@ -10,7 +10,13 @@ export function growthEnabled() {
 }
 async function prepareSignal(key: string, at: Date, action: typeof SLOT_ACTIONS[number], now: Date) {
   const existing = await prisma.socialSignal.findUnique({ where: { scheduleKey: key } });
-  if (existing) return existing;
+  if (existing) {
+    if (!publicResearchSnapshot(existing.snapshot, now)) {
+      await prisma.socialDelivery.updateMany({ where: { signalId: existing.id, status: { in: ["preview", "awaiting_connection"] } }, data: { status: "held", failure: "Verified company profile is required for publication" } });
+      throw new Error("Held snapshot: verified company profile is required");
+    }
+    return existing;
+  }
   const [feed, recent] = await Promise.all([
     getValuationWatchlistStatus({ limit: 200, action }),
     prisma.socialSignal.findMany({ where: { scheduledAt: { gte: new Date(now.getTime() - 24 * 3_600_000) } }, select: { ticker: true } }),
@@ -21,22 +27,26 @@ async function prepareSignal(key: string, at: Date, action: typeof SLOT_ACTIONS[
   const snapshot = makeSnapshot(candidate, now);
   return prisma.$transaction(async (tx) => {
     const signal = await tx.socialSignal.create({ data: { scheduleKey: key, ticker: candidate.ticker, sourceId: candidate.id, snapshot: snapshot as unknown as Prisma.InputJsonValue, scheduledAt: at } });
-    await tx.socialDelivery.createMany({ data: CHANNELS.map((channel) => ({ signalId: signal.id, channel, caption: captionFor(snapshot, channel, signal.id, publicBaseUrl()), status: key.startsWith("preview-") ? "preview" : "awaiting_connection" })) });
+    await tx.socialDelivery.createMany({ data: CHANNELS.map((channel) => ({ signalId: signal.id, channel, caption: captionFor(snapshot, channel, signal.id, publicBaseUrl(), now), status: key.startsWith("preview-") ? "preview" : "awaiting_connection" })) });
     return signal;
   });
 }
 async function deliver(signalId: string, now: Date) {
   const rows = await prisma.socialDelivery.findMany({ where: { signalId, status: "awaiting_connection" }, include: { signal: true } });
   for (const row of rows) {
-    const snapshot = row.signal.snapshot as unknown as ResearchSnapshot;
+    const snapshot = publicResearchSnapshot(row.signal.snapshot, now);
+    if (!snapshot) {
+      await prisma.socialDelivery.update({ where: { id: row.id }, data: { status: "held", failure: "Verified company profile is required for publication" } }); continue;
+    }
     if (now.getTime() - Date.parse(snapshot.priceObservedAt) > 90 * 60_000) {
       await prisma.socialDelivery.update({ where: { id: row.id }, data: { status: "held", failure: "Snapshot price expired before publication" } }); continue;
     }
     const claimed = await prisma.socialDelivery.updateMany({ where: { id: row.id, status: "awaiting_connection" }, data: { status: "sending", checkedAt: now } });
     if (claimed.count !== 1) continue;
     try {
-      const post = await publishBufferImage(row.channel as Channel, row.caption, `${publicBaseUrl()}/api/public/social-image/${signalId}`);
-      await prisma.socialDelivery.update({ where: { id: row.id }, data: { status: deliveryState(post), providerPostId: post.id, externalUrl: post.externalLink, checkedAt: new Date(), failure: null } });
+      const caption = captionFor(snapshot, row.channel as Channel, signalId, publicBaseUrl(), now);
+      const post = await publishBufferImage(row.channel as Channel, caption, `${publicBaseUrl()}/api/public/social-image/${signalId}`);
+      await prisma.socialDelivery.update({ where: { id: row.id }, data: { caption, status: deliveryState(post), providerPostId: post.id, externalUrl: post.externalLink, checkedAt: new Date(), failure: null } });
     } catch (error) {
       // Even a successful provider call followed by a DB failure is ambiguous. Never blindly resend.
       await prisma.socialDelivery.update({ where: { id: row.id }, data: { status: error instanceof BufferError && !error.uncertain ? "failed" : "unknown", failure: error instanceof BufferError ? error.message : "Publication outcome unknown; reconciliation required", checkedAt: new Date() } });

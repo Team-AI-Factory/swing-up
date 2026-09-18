@@ -1,3 +1,4 @@
+import { companyProfileFixture } from "./helpers/company-profile-fixture.mjs";
 import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -44,8 +45,17 @@ const livePriceSnapshot = {
   prices: [{ ticker: "BANK", tradingViewSymbol: "NYSE:BANK", price: 42, changePercent: 5.2, relativeVolume: 3.1, threshold: "buy_price_crossed" }],
 };
 
+let profileAvailable = true;
+const { verifiedCompanyProfile } = loadTsModule("@/lib/company-profile");
 const cjsModule = { exports: {} };
 new Function("require", "module", "exports", output)((name) => {
+  if (name === "@/lib/opportunity-engine/company-profile-cache") return {
+    readCompanyProfiles: async identities => new Map(identities.flatMap(identity => {
+      const exact = { ...identity, cik: "0000000001" };
+      const profile = verifiedCompanyProfile(companyProfileFixture(exact), exact);
+      return profileAvailable && profile ? [[identity.ticker, profile]] : [];
+    })),
+  };
   if (name === "@/lib/r2-warehouse") return {
     readVersionedTextFromR2: async (key) => ({
       found: true,
@@ -56,7 +66,7 @@ new Function("require", "module", "exports", output)((name) => {
   if (name === "@/lib/opportunity-engine/pr262-storage") return {
     pr262StorageKey: (relative) => `production/pr262/${relative}`,
   };
-  if (name === "@/lib/signal-explanation") return loadTsModule(name);
+  if (name === "@/lib/signal-explanation" || name === "@/lib/signal-outlook") return loadTsModule(name);
   if (name === "@/lib/opportunity-engine/pr262-research-evidence") return { readResearchAlerts: async () => [] };
   throw new Error(`Unexpected watchlist feed import: ${name}`);
 }, cjsModule, cjsModule.exports);
@@ -84,6 +94,13 @@ assert.ok(result.candidates[0].links.some((link) => link.url === "https://www.tr
 assert.ok(result.candidates[0].links.some((link) => link.url.startsWith("https://www.sec.gov/edgar/search/")));
 assert.equal(cjsModule.exports.VALUATION_WATCHLIST_POLICY.publicSanitizedRead, true);
 assert.equal(cjsModule.exports.VALUATION_WATCHLIST_POLICY.internalDiagnosticsProtected, true);
+
+assert.match(result.candidates[0].explanation.companyDoes, /customers include/);
+assert.equal(result.candidates[0].companyProfile.status, "verified");
+profileAvailable = false;
+const held = await cjsModule.exports.getValuationWatchlistStatus({ limit: 20 });
+assert.equal(held.candidates.length, 0, "Unverified companies stay internal even when valuation evidence qualifies");
+assert.equal(held.summary.buyResearch, 0);
 
 console.log(JSON.stringify({
   ok: true,

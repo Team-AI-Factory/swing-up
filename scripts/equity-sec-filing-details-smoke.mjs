@@ -349,12 +349,24 @@ assert.equal(missingResult.diagnostics.backlog.retryDeferredCount, 1);
 assert.equal(missingDiagnostic?.status, "partial");
 assert.equal(missingDiagnostic?.errorCategory, "event_exhibit_not_found");
 assert.equal(missingDiagnostic?.eventExhibitMissing, true);
+assert.equal(missingDiagnostic?.eventExhibitStatus, "required_not_found");
+assert.equal(missingDiagnostic?.requiredExhibitType, "EX-99.2");
 assert.equal(missingDetail?.eventExhibitMissing, true);
 assert.equal(missingDetail?.documentsFetched, 1);
 assert.equal(missingDetail?.exhibitDocumentUrl, null);
 assert.match(missingDetail?.text, /PRIMARY_PARTIAL_FACT/);
 assert.equal(missingCalls.includes(unrelated991), false);
 assert.equal(missingResult.policy.partialRetryMinutes, 60);
+const recoveredMissing = await enrichSecFilingDetails([missingExhibitReceipt], async value => {
+  const url = String(value);
+  const recoveredUrl = missingPrimary.replace("form8-k.htm", "exhibit99-2.htm");
+  if (url === missingExhibitReceipt.url) return new Response(filingIndexHtml("8-K", missingPrimary, [{ url: recoveredUrl, type: "EX-99.2", sequence: "2" }]));
+  if (url === missingPrimary) return new Response("The current event release is furnished as Exhibit 99.2.");
+  assert.equal(url, recoveredUrl);
+  return new Response("Verified operating release facts. ".repeat(12));
+}, new Date(now.getTime() + 60 * 60000));
+assert.equal(recoveredMissing.diagnostics.items.filter(item => item.receiptId === missingExhibitReceipt.id).length, 1);
+assert.equal(recoveredMissing.diagnostics.items.find(item => item.receiptId === missingExhibitReceipt.id).eventExhibitStatus, "retrieved", "A successful retry must replace the cached missing-exhibit diagnostic");
 
 // Two cached partials stay visible without consuming either of the two fetch
 // slots. Sustained fresh pairs therefore advance every five-minute cycle, and
@@ -1028,3 +1040,44 @@ const primaryPath = "https://www.sec.gov/Archives/edgar/data/1000001/00010000012
 assert.equal(loaded.exports.inlineEventExhibit('<a href="release.htm">Exhibit 99.1</a>', primaryPath, "EX-99.1").url, primaryPath.replace("main.htm", "release.htm"));
 assert.equal(loaded.exports.inlineEventExhibit('<a href="../other/release.htm">Exhibit 99.1</a>', primaryPath, "EX-99.1"), null);
 assert.equal(loaded.exports.inlineEventExhibit('<a href="https://evil.example/release.htm">Exhibit 99.1</a>', primaryPath, "EX-99.1"), null);
+
+// Historical references must not select the wrong attachment, and an HTTP
+// failure must never be represented as an exhibit that was unnecessary.
+async function exactExhibitCase(primaryText, exhibitHttpStatus = 200) {
+  resetSecFilingDetailStateForTest();
+  const requested = [];
+  const result = await enrichSecFilingDetails([eightK], async value => {
+    const url = String(value); requested.push(url);
+    if (url === eightK.url) return new Response(filingIndexHtml("8-K", primaryPath, [
+      { url: eightKExhibit992, type: "EX-99.2", sequence: "2" },
+    ]));
+    if (url === primaryPath) return new Response(`<html><body>${primaryText}</body></html>`);
+    assert.equal(url, eightKExhibit992);
+    return new Response("Verified current release facts. ".repeat(12), { status: exhibitHttpStatus });
+  }, now);
+  return { result, requested, diagnostic: result.diagnostics.items.find(item => item.receiptId === eightK.id) };
+}
+const mixedReferences = await exactExhibitCase("The previously filed Exhibit 99.1 is incorporated by reference. The current operating release is furnished as Exhibit 99.2.");
+assert.equal(mixedReferences.diagnostic.eventExhibitStatus, "retrieved");
+assert.equal(mixedReferences.diagnostic.requiredExhibitType, "EX-99.2");
+assert.equal(mixedReferences.result.details[0].eventExhibitMissing, false);
+assert.equal(mixedReferences.requested.length, 3, "Exact retrieval retains the three-request accession bound");
+const selfContained = await exactExhibitCase("The board changed its meeting date. The earlier, previously filed Exhibit 99.1 is incorporated by reference. An employment agreement is attached as Exhibit 10.1.");
+assert.equal(selfContained.diagnostic.eventExhibitStatus, "not_required");
+assert.equal(selfContained.diagnostic.requiredExhibitType, null);
+assert.equal(selfContained.requested.length, 2, "An unrelated attachment must not manufacture a missing EX-99 exhibit");
+const failedDownload = await exactExhibitCase("The operating release is furnished as Exhibit 99.2.", 503);
+assert.equal(failedDownload.diagnostic.eventExhibitStatus, "download_failed");
+assert.equal(failedDownload.diagnostic.errorCategory, "exhibit_http_error");
+assert.equal(failedDownload.diagnostic.requiredExhibitType, "EX-99.2");
+assert.equal(failedDownload.diagnostic.exhibitDocumentUrl, eightKExhibit992);
+assert.equal(failedDownload.result.details.length, 0, "A failed required download cannot become complete decision-grade evidence");
+const substantiveBody = "On July 22, Example Corp signed a binding $25 million supply agreement for services delivered over the next twelve months. The agreement does not guarantee additional orders.";
+const coveredEvent = await exactExhibitCase(`<ix:header><ix:hidden>HIDDEN_XBRL_CONTEXT 0000001 false true</ix:hidden></ix:header><p>${"Registrant FORM 8-K cover information. ".repeat(500)}</p><p>Item 1.01 Entry into a Material Definitive Agreement</p><p>${substantiveBody}</p><p>Item 8.01 Other Events</p><p>No additional material event is reported.</p>`);
+const eventLead = coveredEvent.result.details[0].text.slice(0, 300);
+assert.match(eventLead, /signed a binding \$25 million supply agreement/);
+assert.doesNotMatch(eventLead, /Registrant FORM 8-K cover/);
+assert.doesNotMatch(coveredEvent.result.details[0].text, /HIDDEN_XBRL_CONTEXT/);
+assert.match(coveredEvent.result.details[0].text, /Registrant FORM 8-K cover/);
+assert.equal(coveredEvent.result.details[0].primaryDocumentUrl, primaryPath, "Reordering factual excerpts must preserve the exact source URL");
+assert.equal(coveredEvent.diagnostic.eventExhibitStatus, "not_required");

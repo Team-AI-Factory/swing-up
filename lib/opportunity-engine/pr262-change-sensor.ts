@@ -62,6 +62,8 @@ export type Pr262SensorEvent = {
   sourceProvider: string;
   sourceHealthStatus: "connected" | "partial";
   observedAt: string;
+  /** Actual queue admission; absent for legacy rows rather than inferred from publication time. */
+  firstQueuedAt?: string;
   title: string;
   url: string;
   sourceUrl: string;

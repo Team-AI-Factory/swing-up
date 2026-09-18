@@ -115,6 +115,7 @@ const mappingProbeProvider = async () => ({
   error: null,
 });
 const stubs = {
+  "@/lib/opportunity-engine/pr262-trade-halt-snapshot": { fetchPr262TradeHalts: emptyProvider },
   "@/lib/equity-signal/event-sources": {
     fetchAlphaEarningsCalendar: emptyProvider,
     fetchAlphaNews: emptyProvider,
@@ -283,6 +284,7 @@ assert.equal(companyNameOnly, undefined, "Company-name-only prose can never sati
 assert.equal(result.nonActionableEventsDropped > 0, true, "The sensor must report permanently unmappable records removed from queue consideration.");
 assert.equal(structuredTicker.ticker, "SAFE", "An explicit structured ticker may map through the authoritative universe.");
 assert.equal(structuredTicker.mappingStatus, "mapped");
+assert.equal(structuredTicker.firstQueuedAt, now.toISOString(), "A new event records actual queue admission separately from source publication.");
 assert.equal(stateWritten.value.pending.some((event) => event.title.includes("routine community update")), false, "Routine low-priority discoveries must not be written to the durable R2 queue.");
 assert.equal(sensorStateWrites, 1);
 assert.equal(sensorCadenceWrites, 1);
@@ -374,6 +376,7 @@ const unsupportedRetirement = await loaded.exports.runPr262LightweightSensorV3({
 });
 assert.equal(stateWritten.value.pending.some((item) => item.id === unsupportedOwnershipEvent.id), false, "Unsupported SEC forms must not survive in the Serious Signal queue.");
 assert.equal(stateWritten.value.pending.some((item) => item.id === supportedEightKEvent.id), true, "Supported exact SEC filings must remain queued for evidence analysis.");
+assert.equal(stateWritten.value.pending.find(item => item.id === supportedEightKEvent.id).firstQueuedAt, undefined, "Legacy queue admission must remain unknown instead of resetting on each scan.");
 assert.equal(unsupportedRetirement.nonActionableEventsDropped >= 1, true);
 
 const hygieneNow = new Date("2026-08-21T09:00:00.000Z");

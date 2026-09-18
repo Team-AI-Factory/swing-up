@@ -1,3 +1,4 @@
+import { companyProfileFixture } from "./helpers/company-profile-fixture.mjs";
 import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
@@ -44,6 +45,7 @@ function storageKey(relative) {
 
 const loaded = { exports: {} };
 new Function("require", "module", "exports", output)((specifier) => {
+  if (specifier === "@/lib/opportunity-engine/company-profile-cache") return { readCompanyProfiles: async () => new Map() };
   if (specifier === "node:crypto") return crypto;
   if (specifier === "@/lib/r2-warehouse") {
     return {
@@ -54,7 +56,7 @@ new Function("require", "module", "exports", output)((specifier) => {
   }
   if (specifier === "@/lib/opportunity-engine/pr262-storage") return { pr262StorageKey: storageKey };
   if (specifier === "@/lib/opportunity-engine/pr262-runtime") return { isPr262ApprovedPremergeProductionRollout: () => false };
-  if (specifier === "@/lib/signal-explanation") return loadTsModule(specifier);
+  if (specifier === "@/lib/company-profile" || specifier === "@/lib/signal-explanation" || specifier === "@/lib/signal-outlook") return loadTsModule(specifier);
   throw new Error(`Unexpected delivery import: ${specifier}`);
 }, loaded, loaded.exports);
 
@@ -75,6 +77,8 @@ function validOutbox(ticker, createdAt, overrides = {}) {
     alertType: "buy",
     candidateFingerprint: fingerprint,
     candidate: {
+      company: `${ticker} Company`,
+      companyProfile: companyProfileFixture({ ticker, company: `${ticker} Company`, cik: "0001234567" }),
       ticker,
       cik: "0001234567",
       direction: "upside",
@@ -90,7 +94,7 @@ function validOutbox(ticker, createdAt, overrides = {}) {
       rumour: false,
       eventHeadline: `${ticker} raises guidance`,
       whatHappened: "Verified guidance increased materially.",
-      quote: { price: 42, observedAt: createdAt, actionableForSeriousSignal: true, marketSession: "regular" },
+      quote: { price: 42, observedAt: new Date(Date.parse(createdAt) - 2 * 60_000).toISOString(), actionableForSeriousSignal: true, marketSession: "regular" },
       receipts: [{ source: "SEC", url: "https://www.sec.gov/filing?document=guidance-8k&api_token=private-query#internal-fragment" }],
     },
     committee: {
@@ -192,6 +196,8 @@ try {
   assert.equal(status.sensor.verifiedLive, false, "An alert store alone must not pretend the scanner is live.");
   assert.equal(status.emptyResultVerified, false);
   assert.equal(status.secretsIncluded, false);
+  assert.ok(status.alerts.every((alert) => Date.parse(alert.priceObservedAt) === Date.parse(alert.createdAt) - 2 * 60_000),
+    "The displayed price observation must retain the quote's timestamp, not the alert publication time.");
   assert.ok(status.alerts.every((alert) => JSON.stringify(alert).includes("document=guidance-8k")), "Status feed must preserve harmless evidence-link query data.");
   assert.ok(status.alerts.every((alert) => !JSON.stringify(alert).includes("private-query")), "Status feed must strip credential-like query data.");
   assert.ok(status.alerts.every((alert) => !JSON.stringify(alert).includes("internal-fragment")), "Status feed must strip URL fragments.");

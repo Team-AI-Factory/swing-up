@@ -1,3 +1,4 @@
+import { companyProfileFixture } from "./helpers/company-profile-fixture.mjs";
 import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
@@ -249,6 +250,7 @@ const stubs = {
     fetchNasdaqTradeHalts: async () => haltProvider,
     mergeSecFilingDetails: (receipts, details) => receipts.map((receipt) => ({ ...receipt, summary: `${receipt.summary} Official filing content: ${details.find((detail) => detail.receipt.id === receipt.id)?.text ?? ""}` })),
   },
+  "@/lib/opportunity-engine/pr262-trade-halt-snapshot": { fetchPr262TradeHalts: async () => haltProvider },
   "@/lib/equity-signal/runner": {
     runEquitySignalLab: async (input) => {
       runnerCalls += 1;
@@ -389,6 +391,7 @@ const stubs = {
       }
       assert.equal(reserved, true, "Committee reservation must be granted");
       const selectedCandidate = {
+        companyProfile: companyProfileFixture({ ticker: "EXCT", company: "Exact Issuer Corp", cik: "0001234567" }),
         ticker: "EXCT",
         company: "Exact Issuer Corp",
         cik: "0001234567",
@@ -571,6 +574,7 @@ const stubs = {
 const cjsModule = { exports: {} };
 new Function("require", "module", "exports", output)((name) => {
   if (name in stubs) return stubs[name];
+  if (["@/lib/company-profile", "@/lib/opportunity-engine/company-profile-cache"].includes(name)) return loadTsModule(name, stubs);
   if (name === "@/lib/opportunity-engine/pr262-research-evidence") return loadTsModule(name, stubs);
   throw new Error(`Unexpected event-job import: ${name}`);
 }, cjsModule, cjsModule.exports);

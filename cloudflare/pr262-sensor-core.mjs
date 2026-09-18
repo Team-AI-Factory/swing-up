@@ -17,6 +17,7 @@ const DEFAULT_RUN_PREFIX = "production/pr262/sensor/runs";
 const DEFAULT_UNIVERSE_KEY = "production/pr262/equity-universe/v1.json";
 const DEFAULT_EXPOSURE_KEY = "production/pr262/sensor/exposure-index-v1.json";
 const DEFAULT_DIRECT_FEEDS_KEY = "production/pr262/sensor/direct-company-feeds-v1.json";
+const NYSE_TRADE_HALTS_URL = "https://www.nyse.com/api/trade-halts/current";
 const HANDOFF_PATH = "/api/internal/combined-opportunity-engine/cloudflare-sensor-handoff";
 const USER_AGENT = "SwingUp/1.0 support@swingup.app";
 const FIVE_MINUTES_MS = 5 * 60_000;
@@ -894,10 +895,92 @@ export async function parseJsonRows(payload, context) {
   };
 }
 
-async function parseTradeHalts(payload, context) {
+function nyseHaltTimestamp(date, time = "00:00:00") {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}:\d{2}$/.test(time)) return null;
+  const value = `${date}T${time}.000Z`;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value ? value : null;
+}
+
+async function parseNyseTradeHalts(root, context) {
+  const rows = root.results.tradeHalts;
+  if (Object.hasOwn(root, "totalCount") && (!Number.isInteger(root.totalCount) || root.totalCount < 0 || root.totalCount !== rows.length)) {
+    throw new Error("incomplete_trade_halt_payload");
+  }
+  const latestBySymbol = new Map();
+  for (const raw of rows) {
+    const row = object(raw);
+    const rawSymbol = text(row.symbol, 100);
+    const company = text(row.issuerName, 180);
+    // Unsupported securities must never enter the common-equity safety map,
+    // even when their symbols happen to pass the general ticker normalizer.
+    if (/(?:\s|[.\/-])(?:WS|WT|WTS|U|UN|RT|RTS)$/i.test(rawSymbol)
+      || /\b(?:warrants?|rights?|units?)\b/i.test(company)) continue;
+    const symbol = normalizeTicker(rawSymbol);
+    const publishedAt = nyseHaltTimestamp(text(row.formatedHaltDate), text(row.formatedHaltTime) || "00:00:00");
+    const resumeDate = text(row.formatedResumptionDate);
+    const resumeTime = text(row.formatedResumptionTime);
+    const resumed = Boolean(resumeDate || resumeTime);
+    const fields = ["symbol", "issuerName", "sourceExchange", "reason", "formatedHaltDate", "formatedHaltTime", "formatedResumptionDate", "formatedResumptionTime"];
+    if (!fields.every((field) => row[field] == null || typeof row[field] === "string")
+      || !symbol || !publishedAt || Date.parse(publishedAt) > context.now.getTime() + MAX_CLOCK_SKEW_MS
+      || (resumed && !nyseHaltTimestamp(resumeDate || text(row.formatedHaltDate), resumeTime || "00:00:00"))) {
+      throw new Error("invalid_trade_halt_rows");
+    }
+    const exchange = text(row.sourceExchange, 80);
+    const reason = text(row.reason, 80);
+    const reasonCode = reason.toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 40);
+    const title = `${symbol} ${resumed ? "trading halt resumed" : "official trading halt"}${reason ? ` (${reason})` : ""}`;
+    const receipt = {
+      id: (await sha256Hex(`nasdaq_trade_halts|${NYSE_TRADE_HALTS_URL}|${title}|${publishedAt}`)).slice(0, 24),
+      title,
+      summary: `${company || symbol} is listed in the NYSE's official consolidated U.S. trade-halt service${exchange ? ` for ${exchange}` : ""}${reason ? ` with reason ${reason}` : ""}.${resumed ? " A resumption time is present." : " No resumption time is present."}`,
+      url: NYSE_TRADE_HALTS_URL,
+      publisher: "NYSE Trade Halt Service",
+      publishedAt,
+      channel: "nasdaq_trade_halts",
+      official: true,
+      primarySource: true,
+      scheduled: false,
+      symbolHints: [symbol],
+      companyHints: company ? [company] : [],
+      rawEventType: `halt:${reasonCode || "UNKNOWN"}:${resumed ? "resumed" : "active"}`,
+    };
+    const existing = latestBySymbol.get(symbol);
+    if (!existing || receipt.publishedAt > existing.publishedAt
+      || (receipt.publishedAt === existing.publishedAt && resumed && !existing.rawEventType.endsWith(":resumed"))) {
+      latestBySymbol.set(symbol, receipt);
+    }
+  }
+  // This is a complete safety snapshot, independent of the discovery queue's
+  // age, row limits, and cached universe mapping. An old active halt stays active.
+  const receipts = [...latestBySymbol.values()];
+  const events = [];
+  for (const receipt of receipts) {
+    const event = await makeEvent({ provider: context.provider, idPrefix: "cf-halt", identity: receipt.id, source: "official", official: true, observedAt: receipt.publishedAt, title: receipt.title, summary: receipt.summary, url: NYSE_TRADE_HALTS_URL, sourceUrl: NYSE_TRADE_HALTS_URL, ticker: receipt.symbolHints[0], company: receipt.companyHints[0], kind: "trading_halt", priority: 100, maximumAgeMs: 30 * 60_000, reason: "An official exchange halt record changed. Railway must confirm the current halt status before any signal." }, context.resolver, context.now);
+    if (event) events.push(event);
+  }
+  return {
+    recordsRead: rows.length,
+    events,
+    status: "connected",
+    error: null,
+    ...(context.sourceUrl === NYSE_TRADE_HALTS_URL ? {
+      tradeHaltSnapshot: {
+        version: 1,
+        provider: { provider: "nasdaq_trade_halts", status: "connected", checkedAt: context.now.toISOString(), nextRetryAt: null, sourceUrls: [NYSE_TRADE_HALTS_URL], receipts, recordsRead: receipts.length, error: null, entitlementVerified: true, cached: false },
+      },
+    } : {}),
+  };
+}
+
+export async function parseTradeHalts(payload, context) {
   const json = (() => { try { return JSON.parse(payload); } catch { return null; } })();
   if (!json) return parseRss(payload, { ...context, official: true, kind: "trading_halt", maximumAgeMs: 30 * 60_000 });
   const root = object(json);
+  if (Array.isArray(object(root.results).tradeHalts)) return parseNyseTradeHalts(root, context);
+  // Older generic inputs remain discovery-only; they cannot certify an empty
+  // or complete consolidated safety snapshot.
   const recognized = Array.isArray(json) || Array.isArray(root.data) || Array.isArray(root.results);
   if (!recognized) throw new Error("trade_halt_feed_contract_invalid");
   const rows = Array.isArray(json) ? json : Array.isArray(root.data) ? root.data : root.results;
@@ -921,6 +1004,27 @@ async function parseTradeHalts(payload, context) {
     status: invalidRecordCount > 0 ? "partial" : "connected",
     error: invalidRecordCount > 0 ? `invalid_trade_halt_records:${invalidRecordCount}` : null,
   };
+}
+
+export async function persistTradeHaltSnapshot(bucket, stateKey, snapshot) {
+  const key = `${stateKey.slice(0, stateKey.lastIndexOf("/") + 1)}trade-halt-snapshot-v1.json`;
+  const checkedAt = Date.parse(snapshot?.provider?.checkedAt ?? "");
+  if (snapshot?.version !== 1 || !Number.isFinite(checkedAt)) throw new Error("trade_halt_snapshot_invalid");
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const loaded = await readJsonFromR2(bucket, key);
+    if (loaded.invalid) throw new Error("trade_halt_snapshot_invalid");
+    const storedAt = Date.parse(object(object(loaded.value).provider).checkedAt ?? "");
+    // Re-check ordering after every CAS conflict so a delayed scan cannot
+    // overwrite a newer halt or a newer authoritative empty snapshot.
+    if (Number.isFinite(storedAt) && storedAt >= checkedAt) return { key, written: false };
+    const written = await bucket.put(key, JSON.stringify(snapshot), {
+      onlyIf: loaded.etag ? { etagMatches: loaded.etag } : new Headers({ "if-none-match": "*" }),
+      httpMetadata: { contentType: "application/json" },
+      customMetadata: { owner: OWNER, purpose: "trade-halt-snapshot" },
+    });
+    if (written) return { key, written: true };
+  }
+  throw new Error("trade_halt_snapshot_conflict");
 }
 
 async function marketWatch(context) {
@@ -1149,7 +1253,11 @@ function buildSourceTasks(context, state, directRegistry) {
     { provider: "sec_broad", urls: [secUrl()], run: async () => { const value = await parseSecAtom((await fetchBounded(secUrl(), {}, context.deadlineMs)).text, { ...context, provider: "cloudflare_sec_broad", sourceUrl: secUrl(), form: null }); if (!value.recordsRead) throw new Error("sec_broad_feed_empty"); return value; } },
     { provider: "sec_urgent", urls: [secUrl(urgentForm)], run: async () => { const value = await parseSecAtom((await fetchBounded(secUrl(urgentForm), {}, context.deadlineMs)).text, { ...context, provider: `cloudflare_sec_${urgentForm.toLowerCase()}`, sourceUrl: secUrl(urgentForm), form: urgentForm }); if (!value.recordsRead) throw new Error("sec_urgent_feed_empty"); return value; } },
     { provider: "google_news", urls: [googleUrl(query)], run: async () => { const value = await parseRss((await fetchBounded(googleUrl(query), {}, context.deadlineMs)).text, { ...context, provider: "cloudflare_google_news", sourceUrl: googleUrl(query), official: false, kind: "news", maximumAgeMs: 2 * 60 * 60_000 }); if (!value.recordsRead) throw new Error("google_news_feed_empty"); return value; } },
-    { provider: "trade_halts", urls: ["https://www.nyse.com/api/trade-halts/current"], run: async () => { const sourceUrl = "https://www.nyse.com/api/trade-halts/current"; return parseTradeHalts((await fetchBounded(sourceUrl, {}, context.deadlineMs)).text, { ...context, provider: "cloudflare_nyse_halts", sourceUrl }); } },
+    { provider: "trade_halts", urls: [NYSE_TRADE_HALTS_URL], run: async () => {
+      const value = await parseTradeHalts((await fetchBounded(NYSE_TRADE_HALTS_URL, {}, context.deadlineMs)).text, { ...context, provider: "cloudflare_nyse_halts", sourceUrl: NYSE_TRADE_HALTS_URL });
+      if (value.tradeHaltSnapshot) await persistTradeHaltSnapshot(context.env.SENSOR_R2, context.stateKey, value.tradeHaltSnapshot);
+      return value;
+    } },
     { provider: "market_watch", urls: ["https://scanner.tradingview.com/america/scan"], run: async () => marketWatch(context) },
     { provider: "gdelt", urls: ["https://api.gdeltproject.org/api/v2/doc/doc"], run: async () => { const sourceUrl = "https://api.gdeltproject.org/api/v2/doc/doc?query=(earnings%20OR%20guidance%20OR%20merger%20OR%20acquisition%20OR%20recall%20OR%20bankruptcy)%20sourcecountry:US&mode=ArtList&maxrecords=100&format=json&sort=HybridRel"; return parseJsonRows(JSON.parse((await fetchBounded(sourceUrl, {}, context.deadlineMs)).text), { ...context, provider: "gdelt", sourceUrl, kind: "news" }); } },
     { provider: "federal_register", urls: ["https://www.federalregister.gov/api/v1/documents.json"], run: async () => { const sourceUrl = "https://www.federalregister.gov/api/v1/documents.json?per_page=100&order=newest"; return parseJsonRows(JSON.parse((await fetchBounded(sourceUrl, {}, context.deadlineMs)).text), { ...context, provider: "federal_register", sourceUrl, official: true, kind: "federal_register", maximumAgeMs: 7 * DAY_MS }); } },
@@ -1396,7 +1504,7 @@ async function runSensor(env, storage, now = new Date()) {
   const usableUniverse = universeComplete ? universeLoaded.value : { entries: [] };
   const usableExposure = exposureComplete ? exposureLoaded.value : { entries: [] };
   const resolver = createResolver(usableUniverse, usableExposure);
-  const context = { env, now, deadlineMs: sourceDeadlineMs, resolver, exposure: usableExposure, storage, directKey };
+  const context = { env, now, deadlineMs: sourceDeadlineMs, resolver, exposure: usableExposure, storage, directKey, stateKey };
   const tasks = buildSourceTasks(context, state, directLoaded.value);
   const executed = await executeTasks(tasks, context, storage);
   const directEvents = executed.results.flatMap((item) => item.events);

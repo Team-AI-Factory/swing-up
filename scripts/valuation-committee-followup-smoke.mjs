@@ -1,3 +1,4 @@
+import { companyProfileFixture } from "./helpers/company-profile-fixture.mjs";
 import assert from "node:assert/strict";
 import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 const now = new Date("2026-09-16T15:00:00Z");
@@ -15,6 +16,10 @@ const overrides = {
       assert.match(input.messages[0].content, /company-first valuation review/);
       const data = JSON.parse(input.messages[1].content);
       assert.equal(data.evidencePack.analysisKind, "valuation");
+      const companyProfile = data.evidencePack.evidenceSections.fundamentals.items.find(item => item.source === "verified_company_profile");
+      assert.match(companyProfile.business, /inventory management software/);
+      assert.match(companyProfile.customers, /retail stores/);
+      assert.match(companyProfile.sourceUrl, /^https:\/\/www\.sec\.gov\/Archives\/edgar\/data\/1\//);
       assert.doesNotMatch(input.messages[0].content, /Require at least two genuinely independent/);
       if (data.agent.id !== "final_judge") assert.doesNotMatch(input.messages[0].content, /As Final Judge/);
       assert.match(data.decisionRules.discoveryProviderGap, /not required for valuation/);
@@ -36,7 +41,7 @@ const overrides = {
 };
 const runner = loadTsModule("@/lib/equity-signal/runner", overrides);
 const facts = { cik: 1, facts: { "us-gaap": Object.fromEntries(["Revenues", "NetIncomeLoss", "Assets", "CashAndCashEquivalentsAtCarryingValue"].map((name, i) => [name, { units: { USD: [{ val: 1000000 * (i + 1), start: "2025-01-01", end: "2025-12-31", filed: "2026-02-20", form: "10-K" }] } }])) } };
-const input = { now, allowOpenAi: true, allowIncompleteCommitteeReview: true,
+const input = { now, resolveCompanyProfile: async identity => companyProfileFixture(identity, now), allowOpenAi: true, allowIncompleteCommitteeReview: true,
   beforeOpenAiCall: async () => { reservations++; return !denyBudget; },
   fetchImpl: async () => Response.json(missingFacts ? { cik: 1, facts: {} } : facts),
   targetedContext: { analysisKind: "valuation", universe: { entries: [{ ticker: "TEST", name: "Test Software", cik: "0000000001", aliases: [], exchange: "NASDAQ", securityType: "common_stock" }], coverage: {}, sources: [] },
@@ -106,10 +111,11 @@ cached.cik = "0000000002";
 await fundamentals.enrichCandidateFundamentals(freshCandidate(), factFetch, new Date(now.getTime() + 180000), cache);
 assert.equal(requests, 3, "A different issuer's cache must never be reused");
 
-let auditAdmitted = false;
+let auditAdmitted = null;
 for (let i = 0; i < 100 && !auditAdmitted; i++) auditAdmitted = await evidence.reserveRejectionAudit(`rejected-${i}`, now);
-assert.equal(auditAdmitted, true);
-for (let i = 100; i < 130; i++) assert.equal(await evidence.reserveRejectionAudit(`rejected-${i}`, now), false, "False-negative audits must not exceed one paid reservation a day");
+assert.ok(auditAdmitted);
+assert.equal(await auditAdmitted.commit(now), true);
+for (let i = 100; i < 130; i++) assert.equal(await evidence.reserveRejectionAudit(`rejected-${i}`, now), null, "False-negative audits must not exceed one paid reservation a day");
 
 const unconfirmedCurrency = valuationHelpers.buildValuationCandidate({ ...analysis, currency: null }, "0000000001", receipt, now);
 assert.equal(unconfirmedCurrency.gateChecks.valuationCurrencyConfirmed, false, "Unknown currency can be researched but cannot certify a price-to-value comparison");
@@ -152,3 +158,9 @@ assert.equal(rejectedLegacy.evidenceFollowupScheduled, false, "An explicit Commi
 assert.equal((await evidence.readEvidenceFollowup(legacyEvent.id)).status, "rejected");
 
 assert.equal((await evidence.readResearchAlerts()).find(row => row.eventId === legacyEvent.id).userAlertEligible, false, "Explicit rejection must override a previous awaiting-review card");
+
+const held = await runner.runEquitySignalLab({ ...input, resolveCompanyProfile: async () => null });
+assert.equal(held.status, "candidate_company_profile_pending");
+assert.equal(held.openAiCalled, false);
+await evidence.recordResearchEvidence({ event, report: { ...denied, openAiCalled: false, selectedCandidate: { ...approved.selectedCandidate, quote: { ...approved.selectedCandidate.quote, price: 60, observedAt: new Date(now.getTime() + 3600000).toISOString() } } }, companyAnalysis: analysis, sourceDecisionGrade: true, sourceFailureReason: null, now: new Date(now.getTime() + 3600000) });
+assert.equal((await evidence.readResearchAlerts())[0].committeeApproved, false, "An unpaid refresh at a different quote invalidates the previous approval");

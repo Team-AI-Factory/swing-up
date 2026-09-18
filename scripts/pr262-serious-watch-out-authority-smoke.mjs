@@ -1,3 +1,5 @@
+import { loadTsModule } from "./helpers/load-typescript-module.mjs";
+import { companyProfileFixture } from "./helpers/company-profile-fixture.mjs";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -26,6 +28,7 @@ const storage = {
 };
 const loaded = { exports: {} };
 new Function("require", "module", "exports", output)((name) => {
+  if (name === "@/lib/company-profile") return loadTsModule(name);
   if (name === "node:crypto") return crypto;
   if (name === "@/lib/r2-warehouse") return storage;
   if (name === "@/lib/opportunity-engine/pr262-storage") return { pr262StorageKey: (relative) => `production/pr262/${relative}` };
@@ -34,6 +37,7 @@ new Function("require", "module", "exports", output)((name) => {
 
 function resultPayload(overrides = {}) {
   const candidate = {
+    company: "Risk Software", companyProfile: companyProfileFixture({ ticker: "RISK", company: "Risk Software", cik: "0001234567" }),
     ticker: "RISK",
     cik: "0001234567",
     direction: "downside",

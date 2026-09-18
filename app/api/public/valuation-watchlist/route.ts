@@ -4,6 +4,7 @@ import { getValuationWatchlistStatus } from "@/lib/opportunity-engine/valuation-
 export const dynamic = "force-dynamic";
 
 function boundedInteger(value: string | null, fallback: number, minimum: number, maximum: number) {
+  if (value === null || !value.trim()) return fallback;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.max(minimum, Math.min(maximum, Math.floor(parsed))) : fallback;
 }

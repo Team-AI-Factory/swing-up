@@ -7,9 +7,10 @@ import path from "node:path";
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const read = (relativePath) => readFile(path.join(repositoryRoot, relativePath), "utf8");
 
-const [railwayRaw, railwayPreviewWebRaw, railwaySensorRaw, railwayRecoveryRaw, packageRaw, middleware, cronLauncher, legacySensorWorker, legacyPauseLauncher, oldSensorRoute, retiredCloudflareHandoff, deliveryTestRoute, sensorV3, historicalPolicy, watchOutAuthority, orchestrator] = await Promise.all([
+const [railwayRaw, railwayPreviewWebRaw, railwayPreviewWorkerRaw, railwaySensorRaw, railwayRecoveryRaw, packageRaw, middleware, cronLauncher, legacySensorWorker, legacyPauseLauncher, oldSensorRoute, retiredCloudflareHandoff, deliveryTestRoute, sensorV3, historicalPolicy, watchOutAuthority, orchestrator] = await Promise.all([
   read("railway.json"),
   read("railway.preview-web.json"),
+  read("railway.preview-worker.json"),
   read("railway.sensor.json"),
   read("railway.analysis-recovery.json"),
   read("package.json"),
@@ -28,6 +29,7 @@ const [railwayRaw, railwayPreviewWebRaw, railwaySensorRaw, railwayRecoveryRaw, p
 
 const railway = JSON.parse(railwayRaw);
 const railwayPreviewWeb = JSON.parse(railwayPreviewWebRaw);
+const railwayPreviewWorker = JSON.parse(railwayPreviewWorkerRaw);
 const railwaySensor = JSON.parse(railwaySensorRaw);
 const railwayRecovery = JSON.parse(railwayRecoveryRaw);
 const pkg = JSON.parse(packageRaw);
@@ -40,6 +42,92 @@ assert.equal(railwayPreviewWeb.deploy?.startCommand, "npm run start", "A pull-re
 assert.equal(railwayPreviewWeb.deploy?.healthcheckPath, "/api/health", "A pull-request web preview must still prove application health");
 assert.equal(railwayPreviewWeb.deploy?.healthcheckTimeout, 300, "A pull-request web preview must allow the normal bounded health-check window");
 assert.doesNotMatch(railwayPreviewWeb.deploy?.startCommand ?? "", /prisma|migrate/i, "A pull-request web preview must never run database migrations");
+assert.equal(railwayPreviewWeb.build?.buildCommand, "npm run build");
+assert.deepEqual(railwayPreviewWeb.deploy?.preDeployCommand, [], "A preview must clear inherited pre-deploy migrations");
+assert.equal(railwayPreviewWeb.deploy?.cronSchedule, null);
+assert.equal(railwayPreviewWorker.build?.buildCommand, "npm run build", "Disabled preview workers must still build the real application");
+assert.equal(railwayPreviewWorker.deploy?.startCommand, "node scripts/railway-preview-start.mjs --workers-disabled");
+assert.deepEqual(railwayPreviewWorker.deploy?.preDeployCommand, []);
+assert.equal(railwayPreviewWorker.deploy?.healthcheckPath, null);
+assert.equal(railwayPreviewWorker.deploy?.cronSchedule, "0 0 1 1 *");
+assert.equal(railwayPreviewWorker.deploy?.restartPolicyType, "NEVER");
+assert.equal(railway.environments?.pr?.deploy?.startCommand, "node scripts/railway-preview-start.mjs");
+assert.equal(railway.environments?.pr?.build?.buildCommand, "npm run build");
+assert.deepEqual(railway.environments?.pr?.deploy?.preDeployCommand, []);
+assert.equal(railway.environments?.pr?.deploy?.cronSchedule, null);
+assert.equal(railway.environments?.pr?.deploy?.restartPolicyType, "NEVER");
+
+const isolatedPreviewEnvironment = {
+  RAILWAY_ENVIRONMENT_NAME: "swing-up-pr-296",
+  RAILWAY_GIT_BRANCH: "codex/serious-signal-evidence",
+  SWING_UP_PR262_STORAGE_PREFIX: "branch-labs/pr-296/",
+  SWING_UP_R2_WRITE_PREFIX: "branch-labs/pr-296/",
+  OPENAI_API_KEY: "test-only-not-a-real-key",
+  SWING_UP_PR262_EVENT_JOB_OPENAI_ENABLED: "true",
+};
+const previewLauncherUrl = new URL("./railway-preview-start.mjs", import.meta.url).href;
+const runDisabledPreview = (overrides = {}, { web = false, forceDisabled = false } = {}) => spawnSync(process.execPath, ["--input-type=module", "--eval", `
+  const fail = () => { throw new Error("preview_unexpected_side_effect"); };
+  globalThis.fetch = fail;
+  for (const [name, methods] of [
+    ["node:child_process", ["spawn", "spawnSync", "exec", "execSync", "execFile", "execFileSync", "fork"]],
+    ["node:http", ["request", "get", "createServer"]],
+    ["node:https", ["request", "get", "createServer"]],
+    ["node:net", ["connect", "createConnection", "createServer"]],
+    ["node:tls", ["connect", "createServer"]],
+  ]) {
+    const { default: module } = await import(name);
+    for (const method of methods) module[method] = fail;
+  }
+  const { syncBuiltinESMExports } = await import("node:module");
+  if (${web}) {
+    const { default: childProcess } = await import("node:child_process");
+    const { EventEmitter } = await import("node:events");
+    childProcess.spawn = (command, args) => {
+      console.log("preview_test_spawn=" + JSON.stringify([command, ...args]));
+      const child = new EventEmitter();
+      child.kill = fail;
+      setImmediate(() => child.emit("exit", 0));
+      return child;
+    };
+  }
+  syncBuiltinESMExports();
+  if (${forceDisabled}) process.argv.push("--workers-disabled");
+  await import(${JSON.stringify(previewLauncherUrl)});
+`], {
+  encoding: "utf8",
+  env: { ...isolatedPreviewEnvironment, ...overrides },
+  timeout: 5_000,
+});
+const disabledPreview = runDisabledPreview();
+assert.equal(disabledPreview.status, 0, disabledPreview.stderr);
+assert.match(disabledPreview.stdout, /workers_disabled environment=swing-up-pr-296 mode=ui_build_only/);
+for (const overrides of [
+  { RAILWAY_ENVIRONMENT_NAME: "production" },
+  { RAILWAY_GIT_BRANCH: "main" },
+  { RAILWAY_GIT_BRANCH: "" },
+  { RAILWAY_ENVIRONMENT_NAME: "" },
+  { SWING_UP_PR262_STORAGE_PREFIX: "production/pr262/" },
+  { SWING_UP_R2_WRITE_PREFIX: "production/pr262/" },
+  { SWING_UP_PR262_STORAGE_PREFIX: "branch-labs/pr-262/" },
+  { SWING_UP_R2_WRITE_PREFIX: "" },
+]) {
+  const refusedPreview = runDisabledPreview(overrides);
+  assert.equal(refusedPreview.status, 1, `Unsafe preview must fail closed: ${JSON.stringify(overrides)}`);
+  assert.match(refusedPreview.stderr, /railway_preview_(requires_pull_request_environment|storage_prefix_mismatch)/);
+  assert.doesNotMatch(refusedPreview.stdout, /workers_disabled/);
+}
+const previewWebService = { RAILWAY_SERVICE_ID: "d02bf6e1-4140-418f-aa5c-b67dcc2d8d15" };
+const previewWebStart = runDisabledPreview(previewWebService, { web: true });
+assert.equal(previewWebStart.status, 0, previewWebStart.stderr);
+assert.match(previewWebStart.stdout, /preview_test_spawn=\["npm","run","start"\]/);
+assert.doesNotMatch(previewWebStart.stdout, /workers_disabled/);
+const forcedDisabledWeb = runDisabledPreview(previewWebService, { forceDisabled: true });
+assert.equal(forcedDisabledWeb.status, 0, forcedDisabledWeb.stderr);
+assert.match(forcedDisabledWeb.stdout, /workers_disabled/);
+const productionWebRefused = runDisabledPreview({ ...previewWebService, RAILWAY_ENVIRONMENT_NAME: "production" });
+assert.equal(productionWebRefused.status, 1);
+assert.match(productionWebRefused.stderr, /railway_preview_requires_pull_request_environment/);
 assert.equal(railwaySensor.build?.builder, "RAILPACK", "The Railway sensor uses Railway Railpack");
 assert.equal(railwaySensor.deploy?.startCommand, "npm run pr262:cron", "Railway must keep the lightweight sensor active");
 assert.equal(railwaySensor.deploy?.cronSchedule, "*/15 * * * *", "Railway sensing uses the approved fifteen-minute cadence");
@@ -169,7 +257,7 @@ for (const expected of [
   /fetchAlphaEarningsCalendar/,
   /fetchFederalRegister/,
   /fetchOpenFdaRecalls/,
-  /fetchNasdaqTradeHalts/,
+  /fetchPr262TradeHalts/,
   /runPr262DirectAnnouncementMonitor/,
   /market_watch/,
   /FIVE_MINUTES_MS/,

@@ -1,3 +1,4 @@
+import { warmPr262CompanyProfiles } from "@/lib/opportunity-engine/pr262-event-job";
 import { NextRequest, NextResponse } from "next/server";
 import { internalApiScopeAuthorized } from "@/lib/internal-api-auth";
 import { loadPr262ExposureIndex } from "@/lib/opportunity-engine/pr262-exposure-index";
@@ -90,6 +91,7 @@ async function completeExposure() {
 }
 
 async function foundationCandidateSummary() {
+  const companyProfiles = await warmPr262CompanyProfiles().catch(() => ({ attempted: 0, verified: 0, status: "temporarily_unavailable" }));
   const watchlist = await getValuationWatchlistStatus({ limit: 200 });
   const candidates = watchlist.candidates
     .filter((candidate) => candidate.action !== "price_watch")
@@ -106,6 +108,7 @@ async function foundationCandidateSummary() {
       committeeStatus: candidate.committeeStatus,
     }));
   return {
+    companyProfiles,
     cycleId: watchlist.foundation.cycleId,
     complete: watchlist.foundation.complete,
     buyCount: watchlist.summary.buyResearch,
@@ -159,7 +162,7 @@ export async function POST(request: NextRequest) {
           notifications: false,
           trades: false,
           productionR2WritesPossible: true,
-          writesLimitedToFoundationAndExposure: true,
+          writesLimitedToFoundationExposureAndCompanyProfiles: true,
         },
       });
     }

@@ -692,3 +692,75 @@ await loaded.exports.runPr262DirectAnnouncementMonitor({ now: new Date("2026-09-
 assert.ok(verifiedFetches.includes("https://ir.amd.com/news-events/press-releases/rss"), "A verified issuer feed must be polled without website discovery");
 assert.ok(verifiedFetches.includes("https://ir.tredegar.com/"), "A verified IR root must remain usable when SEC omits the website field");
 assert.equal(registry.entries.find(row => row.ticker === "TG").feedUrl, "https://ir.tredegar.com/news.xml");
+
+registry = null;
+const expandedSources = [
+  ["INTC", "0000050863", "https://www.intc.com/news-events/press-releases/rss"],
+  ["XOM", "0000034088", "https://investor.exxonmobil.com/company-information/press-releases/rss"],
+  ["AAPL", "0000320193", "https://www.apple.com/newsroom/rss-feed.rss"],
+  ["JPM", "0000019617", "https://jpmorganchaseco.gcs-web.com/rss/news-releases.xml"],
+  ["KO", "0000021344", "https://investors.coca-colacompany.com/news-events/press-releases/rss"],
+];
+const expandedNow = new Date("2026-09-18T15:00:00Z");
+const expandedFetches = [];
+const expanded = await loaded.exports.runPr262DirectAnnouncementMonitor({ now: expandedNow,
+  exposure: expandedSources.map(([ticker, cik]) => exposureCompany(ticker, cik)),
+  fetchImpl: async request => {
+    const url = String(request); expandedFetches.push(url);
+    const source = expandedSources.find(([, , feed]) => feed === url);
+    assert.ok(source, "Verified seeds must not spend SEC submissions discovery calls");
+    const [ticker] = source;
+    return response(ticker === "AAPL"
+      ? '<?xml version="1.0" encoding="UTF-8"?><feed xmlns="http://www.w3.org/2005/Atom"><entry><title>Apple announces product</title><link rel="alternate" href="https://www.apple.com/newsroom/2026/09/product/"/><updated>2026-09-18T14:00:00Z</updated></entry></feed>'
+      : `<rss><channel><item><title>${ticker} announces earnings</title><link>${new URL(url).origin}/news/earnings</link><pubDate>Fri, 18 Sep 26 10:00:00 -0400</pubDate></item></channel></rss>`, "application/rss+xml");
+  } });
+assert.equal(expanded.directIrRssFeeds, 5);
+assert.equal(expanded.feedSuccesses, 5);
+assert.equal(expanded.discoveriesAttempted, 0);
+assert.equal(expanded.events.length, 5);
+for (const [ticker, cik, url] of expandedSources) {
+  assert.ok(expandedFetches.includes(url));
+  const event = expanded.events.find(row => row.ticker === ticker);
+  assert.equal(event.cik, cik, "Issuer-bound feeds must retain exact CIK identity");
+  assert.equal(event.mappingMethod, "direct_issuer_feed_ticker");
+  assert.equal(event.observedAt, "2026-09-18T14:00:00.000Z", "Atom and two-digit RSS years must preserve the announced time");
+}
+
+registry = { version: 1, updatedAt: expandedNow.toISOString(), discoveryCursor: 0,
+  lastDiscoveryCycleAt: expandedNow.toISOString(), entries: [
+    registryEntry("AAPL", "0000999999", { feedUrl: "https://former-issuer.example/feed.xml" }),
+    registryEntry("DELISTED", "0000888888", { feedUrl: "https://delisted.example/feed.xml" }),
+  ] };
+let wrongIdentityCalls = 0;
+const wrongIdentity = await loaded.exports.runPr262DirectAnnouncementMonitor({ now: expandedNow,
+  exposure: [exposureCompany("AAPL", "0000777777")], fetchImpl: async () => { wrongIdentityCalls++; throw new Error("Wrong issuer must not be polled"); } });
+assert.equal(wrongIdentityCalls, 0, "Neither a seed nor a retained registry feed may transfer across a ticker/CIK mismatch");
+assert.equal(wrongIdentity.directIrRssFeeds, 0);
+assert.equal(wrongIdentity.currentEligibleCompaniesKnown, 0);
+assert.equal(wrongIdentity.unseenCompanies, 1);
+assert.equal(wrongIdentity.retainedHistoricalCompanies, 2);
+
+registry = { version: 1, updatedAt: expandedNow.toISOString(), discoveryCursor: 0,
+  lastDiscoveryCycleAt: expandedNow.toISOString(), entries: [registryEntry("AAPL", "0000999999", {
+    investorWebsite: "https://www.apple.com/newsroom/", feedUrl: "https://www.apple.com/newsroom/rss-feed.rss",
+  })] };
+const repairedIdentity = await loaded.exports.runPr262DirectAnnouncementMonitor({ now: expandedNow,
+  exposure: [exposureCompany("AAPL", "0000320193")], fetchImpl: async () => response('<feed xmlns="http://www.w3.org/2005/Atom"/>', "application/atom+xml") });
+assert.equal(repairedIdentity.directIrRssFeeds, 1);
+assert.equal(registry.entries[0].cik, "0000320193", "An exact verified seed repairs the stale registry identity even when its URL is unchanged");
+assert.equal(repairedIdentity.feedSuccesses, 1, "A valid empty Atom feed remains a successful check");
+
+registry.entries[0].nextCheckAt = null;
+const htmlResponse = await loaded.exports.runPr262DirectAnnouncementMonitor({ now: expandedNow,
+  exposure: [exposureCompany("AAPL", "0000320193")], fetchImpl: async () => response('<html><body>Maintenance page</body></html>') });
+assert.equal(htmlResponse.feedSuccesses, 0, "HTTP 200 HTML is not a verified feed poll");
+assert.equal(htmlResponse.feedFailures, 1);
+assert.equal(htmlResponse.events.length, 0);
+assert.equal(registry.entries[0].error, "direct_feed_invalid_syndication_payload");
+
+registry.entries[0].nextCheckAt = null;
+const emptyRss = await loaded.exports.runPr262DirectAnnouncementMonitor({ now: expandedNow,
+  exposure: [exposureCompany("AAPL", "0000320193")], fetchImpl: async () => response('<rss><channel/></rss>', "application/rss+xml") });
+assert.equal(emptyRss.feedSuccesses, 1, "A valid empty RSS response clears a transient feed failure");
+assert.equal(emptyRss.events.length, 0);
+console.log("Verified issuer source expansion, Atom/RSS compatibility, current CIK isolation and feed-schema health checks passed.");

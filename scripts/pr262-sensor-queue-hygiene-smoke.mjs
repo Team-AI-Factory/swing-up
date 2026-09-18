@@ -365,3 +365,73 @@ putObject(sensorStateKey, { ...persisted, pending: [{ ...legacyBudgetCase, queue
 assert.equal(await sensor.readNextPr262PendingSensorEvent({ now }), null, "The evidence-collection interval must still apply");
 putObject(sensorStateKey, { ...persisted, pending: [{ ...legacyBudgetCase, queueLastError: legacyBudgetCase.queueLastError + ":awaiting_paid_capacity_only" }] });
 assert.equal(await sensor.readNextPr262PendingSensorEvent({ now }), null, "Complete cases waiting solely for paid capacity must not churn every cycle");
+
+function freshnessSecEvent(sequence, overrides = {}) {
+  const accession = `0001581280-26-${String(sequence).padStart(6, "0")}`;
+  const canonicalSecIndexUrl = `https://www.sec.gov/Archives/edgar/data/1581280/${accession.replaceAll("-", "")}/${accession}-index.html`;
+  return { ...sec, id: `sec:${accession}`, accession, canonicalSecIndexUrl,
+    url: canonicalSecIndexUrl, sourceUrl: canonicalSecIndexUrl, ...overrides };
+}
+const staleAuthoritativeRetry = freshnessSecEvent(901, {
+  priority: 100,
+  observedAt: new Date(now.getTime() - 40 * 3600000).toISOString(),
+  queueAttempts: 4,
+  queueLastAttemptAt: new Date(now.getTime() - 20 * 60000).toISOString(),
+  queueNextAttemptAt: new Date(now.getTime() - 5 * 60000).toISOString(),
+});
+const freshSec = freshnessSecEvent(902, {
+  priority: 80, observedAt: new Date(now.getTime() - 3600000).toISOString(),
+});
+const freshIssuer = { ...directIssuer, id: "issuer:TWST:freshness-first", priority: 80,
+  observedAt: new Date(now.getTime() - 3600000).toISOString() };
+const freshSecondary = mappedEvent({ id: "news:freshness-first", priority: 80,
+  title: "$TWST reports a distinct fresh regulatory development" });
+for (const fresh of [freshSec, freshIssuer, freshSecondary]) {
+  const partition = sensor.partitionPr262PendingEvents([staleAuthoritativeRetry, fresh], now);
+  assert.deepEqual(partition.map(event => event.id), [fresh.id, staleAuthoritativeRetry.id],
+    "Fresh mapped evidence must precede an older priority-100 SEC retry without deleting the older case");
+  putObject(sensorStateKey, { ...persisted, pending: [staleAuthoritativeRetry, fresh] });
+  assert.equal((await sensor.readNextPr262PendingSensorEvent({ now }))?.id, fresh.id,
+    "The actual persisted-queue selector must choose evidence still inside the publication window");
+  assert.equal((await sensor.readNextPr262PendingSensorEvent({ now, excludedEventIds: [fresh.id] }))?.id, staleAuthoritativeRetry.id,
+    "Per-cycle exclusions must still allow the retained older case to proceed");
+}
+
+const freshNotDue = { ...freshSec, queueAttempts: 1,
+  queueLastAttemptAt: new Date(now.getTime() - 5 * 60000).toISOString(),
+  queueNextAttemptAt: new Date(now.getTime() + 10 * 60000).toISOString(),
+  queueLastError: "source_retry_cadence" };
+putObject(sensorStateKey, { ...persisted, pending: [staleAuthoritativeRetry, freshNotDue] });
+assert.equal((await sensor.readNextPr262PendingSensorEvent({ now }))?.id, staleAuthoritativeRetry.id,
+  "Freshness must not override a future retry time or suppress a due older event");
+putObject(sensorStateKey, { ...persisted, pending: [freshNotDue] });
+assert.equal(await sensor.readNextPr262PendingSensorEvent({ now }), null,
+  "A fresh event alone must still wait for its scheduled retry");
+putObject(sensorStateKey, { ...persisted, pending: [staleAuthoritativeRetry] });
+assert.equal((await sensor.readNextPr262PendingSensorEvent({ now }))?.id, staleAuthoritativeRetry.id,
+  "Older evidence remains eligible for research when no fresh due candidate is available");
+
+const atPublicationBoundary = freshnessSecEvent(903, {
+  priority: 80, observedAt: new Date(now.getTime() - 24 * 3600000).toISOString(),
+});
+const beyondPublicationBoundary = freshnessSecEvent(904, {
+  priority: 100, queueAttempts: 4, queueNextAttemptAt: now.toISOString(),
+  observedAt: new Date(now.getTime() - 24 * 3600000 - 1).toISOString(),
+});
+assert.deepEqual(sensor.partitionPr262PendingEvents([beyondPublicationBoundary, atPublicationBoundary], now).map(event => event.id),
+  [atPublicationBoundary.id, beyondPublicationBoundary.id], "Exactly 24 hours remains fresh; one millisecond later loses publication priority");
+putObject(sensorStateKey, { ...persisted, pending: [beyondPublicationBoundary, atPublicationBoundary] });
+assert.equal((await sensor.readNextPr262PendingSensorEvent({ now }))?.id, atPublicationBoundary.id);
+
+const withinClockSkew = { ...freshIssuer, observedAt: new Date(now.getTime() + 5 * 60000).toISOString() };
+putObject(sensorStateKey, { ...persisted, pending: [staleAuthoritativeRetry, withinClockSkew] });
+assert.equal((await sensor.readNextPr262PendingSensorEvent({ now }))?.id, withinClockSkew.id,
+  "Existing allowed source clock skew must remain inside the fresh tier");
+putObject(sensorStateKey, { ...persisted, pending: [staleAuthoritativeRetry,
+  { ...withinClockSkew, observedAt: new Date(now.getTime() + 5 * 60000 + 1).toISOString() }] });
+assert.equal((await sensor.readNextPr262PendingSensorEvent({ now }))?.id, staleAuthoritativeRetry.id,
+  "A timestamp beyond allowed clock skew must not become a fresh selectable event");
+const expiredAuthoritativeRetry = { ...staleAuthoritativeRetry, observedAt: new Date(now.getTime() - 48 * 3600000 - 1).toISOString() };
+assert.equal(sensor.partitionPr262PendingEvents([expiredAuthoritativeRetry], now).length, 0,
+  "Freshness scheduling must preserve the existing 48-hour retention ceiling");
+console.log("Publication freshness: actual selection, exact 24-hour boundary, source clock skew, retry/exclusion rules and retained older research passed.");

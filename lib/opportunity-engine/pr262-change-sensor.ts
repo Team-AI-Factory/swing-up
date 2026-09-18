@@ -328,6 +328,12 @@ export type Pr262PendingPartitionResult = {
 };
 
 function pendingOrder(left: Pr262SensorEvent, right: Pr262SensorEvent, nowMs: number) {
+  // Preserve older research, but give evidence still inside the existing
+  // Serious freshness window its chance before retained authoritative retries.
+  const freshnessRank = (event: Pr262SensorEvent) => {
+    const age = nowMs - Date.parse(event.observedAt);
+    return Number.isFinite(age) && age >= -MAX_SOURCE_CLOCK_SKEW_MS && age <= 24 * 60 * 60_000 ? 0 : 1;
+  };
   const retryRank = (event: Pr262SensorEvent) => {
     const retryAt = event.queueNextAttemptAt ? Date.parse(event.queueNextAttemptAt) : Number.NaN;
     if (event.queueAttempts > 0 && (!Number.isFinite(retryAt) || retryAt <= nowMs)) return 0;
@@ -347,7 +353,8 @@ function pendingOrder(left: Pr262SensorEvent, right: Pr262SensorEvent, nowMs: nu
         : 4;
   const leftEvidenceRank = evidenceRank(left);
   const rightEvidenceRank = evidenceRank(right);
-  return leftEvidenceRank - rightEvidenceRank
+  return freshnessRank(left) - freshnessRank(right)
+    || leftEvidenceRank - rightEvidenceRank
     || leftRank - rightRank
     || right.priority - left.priority
     || (leftRank === 2

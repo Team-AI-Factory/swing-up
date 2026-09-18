@@ -16,6 +16,11 @@ async function load() {
 function same(entry: CompanyIdentity, identity: CompanyIdentity) {
   return entry.ticker === identity.ticker && entry.company === identity.company && profileCik(entry.cik) === profileCik(identity.cik);
 }
+function retryDeferred(entry: Entry | undefined, now: Date) {
+  // A successful profile's refresh date must not defer replacement after current verification rejects it.
+  // Pending and failed attempts persist a null profile and still retain their retrieval backoff.
+  return !entry?.profile && Date.parse(entry?.nextAttemptAt ?? "") > now.getTime();
+}
 async function store(entry: Entry) {
   for (let i = 0; i < 4; i++) {
     const { saved, entries } = await load();
@@ -97,7 +102,7 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
   const prior = entries.find(entry => same(entry, exact));
   const cached = verifiedCompanyProfile(prior?.profile, exact, now);
   if (cached) return cached;
-  if (Date.parse(prior?.nextAttemptAt ?? "") > now.getTime()) return null;
+  if (retryDeferred(prior, now)) return null;
   const entry: Entry = { ...exact, cik: exact.cik, updatedAt: now.toISOString(), nextAttemptAt: new Date(now.getTime() + 60 * 60000).toISOString(), profile: null };
   // Persist backoff before network; budget wrappers still make their own durable reservations.
   await store(entry);
@@ -155,7 +160,7 @@ export async function warmFoundationCompanyProfiles(fetchImpl: typeof fetch, now
     if (!cik) return [];
     const identity = { ticker: candidate.ticker, company: candidate.company, cik };
     const saved = entries.find(entry => same(entry, identity));
-    if (verifiedCompanyProfile(saved?.profile, identity, now) || Date.parse(saved?.nextAttemptAt ?? "") > now.getTime()) return [];
+    if (verifiedCompanyProfile(saved?.profile, identity, now) || retryDeferred(saved, now)) return [];
     return [{ identity, lastAttempt: Date.parse(saved?.updatedAt ?? "") || 0 }];
   }).sort((a, b) => a.lastAttempt - b.lastAttempt).slice(0, 1);
   let verified = 0;

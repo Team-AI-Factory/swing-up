@@ -9,21 +9,38 @@ const object = (v: unknown): Record<string, unknown> => v && typeof v === "objec
 const text = (v: unknown) => typeof v === "string" ? v.replace(/\s+/g, " ").trim() : "";
 export const profileCik = (v: unknown) => /^\d{1,10}$/.test(String(v ?? "")) && Number(v) > 0 ? String(v).padStart(10, "0") : null;
 const placeholder = /not yet been verified|still being collected|is the listed company|is classified in|company profile.*(?:missing|unavailable)/i;
-const businessWords = /\b(?:manufactur\w*|design\w*|develop\w*|produc\w*|provid\w*|operat\w*|distribut\w*|sell\w*|offer\w*|deliver\w*)\b/i;
 const customerSubjects = "(?:customers?|clients?|consumers?|patients?|subscribers?|end.users?|end.markets?|markets?|customer base|client base|customer segments?|market segments?)";
-const customerPredicate = new RegExp(`\\b${customerSubjects}\\s+(?:(?:we serve|primarily|mainly|principally|largely|generally|predominantly)\\s+)*(?:include[sd]?|comprise[sd]?|consists? of|range[sd]? from|are|is)\\s+(.+)`, "i");
-const customerCaveat = /\b(?:no (?:single )?customer|\d+(?:\.\d+)?%|percent|concentration|accounts? receivable|credit risk|loss of|contracts? with customers)\b/i;
+const customerPredicate = new RegExp(`^(?:(?:our|the company['’]s|a|an|the)\\s+)?(?:(?:primary|principal|main|largest|target|core)\\s+)?[\"“]?${customerSubjects}[\"”]?\\s+(?:(?:we serve|primarily|mainly|principally|largely|generally|predominantly)\\s+)*(?:include[sd]?|comprise[sd]?|consists? of|range[sd]? from|are|is(?: defined as)?)\\s+(.+)`, "i");
+const customerCaveat = /\b(?:no (?:single )?customer|\d+(?:\.\d+)?%|percent|concentration|accounts? receivable|credit risk|loss of|contracts? with customers|none of our business|mainland China|legal (?:entity|structure))\b/i;
+const buyerGroups = /\b(?:persons?|people|individuals?|households?|homeowners?|consumers?|patients?|subscribers?|business(?:es)?|enterprises?|companies|corporations?|firms?|organizations?|nonprofits?|governments?|municipalit(?:y|ies)|utilities|institutions?|schools?|universit(?:y|ies)|hospitals?|clinics?|laborator(?:y|ies)|pharmacies|providers?|operators?|manufacturers?|retail(?:ers?| stores?)|wholesalers?|distributors?|merchants?|developers?|contractors?|resellers?|oems?|banks?|insurers?|agencies|authorities|charterers?|shippers?|carriers?|(?:consumer|industrial|commercial|education|enterprise|government|healthcare|automotive|energy|aerospace) (?:markets?|sectors?|industries))\b/i;
+const filingBoilerplate = /\b(?:registration statement|(?:initial|proposed|public) offering|ordinary shares|common stock|incorporat(?:ed|ion)|commenced operations|began operations|securities and exchange|securities act|form (?:f|s|8|10)-\d|taking delivery of (?:our|the|its) first)\b/i;
+const unresolvedEntity = /&(?:#\d+|#x[\da-f]+|[a-z]+);/i;
+function issuerSubject(identity: CompanyIdentity) {
+  const company = text(identity.company).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return `(?:we|the company|our company|our business${company ? `|${company}` : ""})`;
+}
+function operatingBusiness(sentence: string, identity: CompanyIdentity) {
+  if (filingBoilerplate.test(sentence) || unresolvedEntity.test(sentence)) return false;
+  // Allow an issuer's parenthetical name or legal-form apposition, but require
+  // its main predicate to describe operations, not incorporation or financing.
+  const subject = `${issuerSubject(identity)}(?:\\s*\\([^)]{0,180}\\))?(?:,\\s*(?:a|an|the)\\s+[^,]{1,100},)?\\s+`;
+  const action = "(?:(?:primarily|principally|mainly|currently)\\s+)?(?:manufactures?|designs?|develops?|produces?|provides?|operates?|operated|distributes?|sells?|offers?|delivers?|supplies)\\b";
+  const operator = "(?:is|are)\\s+(?:a\\s+|an\\s+|the\\s+)?[^.!?]{0,120}\\b(?:manufacturer|developer|producer|provider|operator|distributor|retailer|supplier|bank|utility|utilities)\\b";
+  return new RegExp(`^${subject}(?:${action}|${operator})`, "i").test(sentence);
+}
 
 /** A customer mention in a product feature is not a description of who buys it. */
-function customerDescriptionRank(sentence: string) {
-  if (customerCaveat.test(sentence)) return 0;
+function customerDescriptionRank(sentence: string, identity: CompanyIdentity) {
+  if (customerCaveat.test(sentence) || filingBoilerplate.test(sentence) || unresolvedEntity.test(sentence)) return 0;
   const explicit = sentence.match(customerPredicate);
-  const recipient = explicit?.[1] ?? sentence.match(/\b(?:we|the company|our company)\s+(?:(?:primarily|mainly|principally)\s+)?(?:serves?\s+|(?:sells?|provides?|suppl(?:y|ies)|delivers?)\s+.{1,180}?\s+to\s+)(.+)/i)?.[1];
+  const direct = new RegExp(`^${issuerSubject(identity)}\\s+(?:(?:primarily|mainly|principally)\\s+)?(?:serves?\\s+|(?:sells?|provides?|offers?|suppl(?:y|ies)|delivers?)\\s+.{1,220}?\\s+to\\s+)(.+)`, "i");
+  const relationship = /^We have (?:well-established |established |long-standing )?relationships with (.+?), which we serve\b/i;
+  const recipient = explicit?.[1] ?? sentence.match(direct)?.[1] ?? sentence.match(relationship)?.[1];
   if (!recipient) return 0;
   const group = recipient.replace(/^(?:(?:primarily|mainly|principally|largely|generally|predominantly)\s+)*(?:in\s+)?/i, "");
   // These predicates describe usage, terms, geography or satisfaction, not a
   // customer population. Retain the original sentence when it does qualify.
-  if (group.length < 12 || /^(?:able|using|provided|required|offered|encouraged|expected|invited|eligible|entitled|satisfied|located|based|concentrated|subject|responsible|supported|served|purchasing|important|critical|essential|diverse|highly|intensely|competitive|fragmented|characterized|help|enable|ensure|improve|access|use|store|manage|our\b|their\b|customers?\b|clients?\b|consumers?\s+(?:who|that)\s+(?:use|access))\b/i.test(group)) return 0;
+  if (group.length < 4 || !buyerGroups.test(group) || /^(?:from|able|likely|using|provided|required|offered|encouraged|expected|invited|eligible|entitled|satisfied|located|based|concentrated|subject|responsible|supported|served|purchasing|important|critical|essential|diverse|highly|intensely|competitive|fragmented|characterized|help|enable|ensure|improve|access|use|store|manage|our\b|their\b|customers?\b|clients?\b|consumers?\s+(?:who|that)\s+(?:use|access))\b/i.test(group)) return 0;
   return explicit ? 2 : 1;
 }
 export function verifiedCompanyProfile(value: unknown, identity: CompanyIdentity, now = new Date()): VerifiedCompanyProfile | null {
@@ -36,8 +53,8 @@ export function verifiedCompanyProfile(value: unknown, identity: CompanyIdentity
   const verified = Date.parse(text(p.verifiedAt)), filed = Date.parse(text(p.sourceFiledAt));
   if (!Number.isFinite(verified) || !Number.isFinite(filed) || verified > now.getTime() || filed > verified
     || now.getTime() - verified > 30 * 86400000 || now.getTime() - filed > 550 * 86400000
-    || business.length < 60 || customers.length < 40 || description.length > 2400
-    || !businessWords.test(business) || !customerDescriptionRank(customers)
+    || business.length < 60 || customers.length < 25 || description.length > 2400
+    || !operatingBusiness(business, identity) || !customerDescriptionRank(customers, identity)
     || description !== (business === customers ? business : `${business} ${customers}`)
     || placeholder.test(description)) return null;
   try {
@@ -56,9 +73,12 @@ export function annualBusinessText(html: string, form: string) {
     // Keep block boundaries so an unpunctuated section heading cannot become
     // part of the next factual sentence. Inline spans still join with spaces.
     .replace(/<\/(?:p|div|h[1-6]|li|tr)>|<br\s*\/?\s*>/gi, "\n")
-    .replace(/<[^>]+>/g, " ").replace(/&#(?:160|xA0);|&nbsp;/gi, " ").replace(/&amp;/g, "&")
-    .replace(/&quot;|&#34;/g, '"').replace(/&#(?:8217|x2019);|&rsquo;/gi, "’")
-    .replace(/&#(?:8211|x2013);/gi, "–").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&#(x[\da-f]+|\d+);/gi, (entity, value: string) => {
+      const code = value[0].toLowerCase() === "x" ? parseInt(value.slice(1), 16) : parseInt(value, 10);
+      return code >= 32 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff) ? String.fromCodePoint(code) : entity;
+    })
+    .replace(/&(nbsp|quot|apos|lsquo|rsquo|ldquo|rdquo|ndash|mdash|reg|copy|trade|lt|gt|amp);/gi, (_, name: string) => ({ nbsp: " ", quot: '"', apos: "'", lsquo: "‘", rsquo: "’", ldquo: "“", rdquo: "”", ndash: "–", mdash: "—", reg: "®", copy: "©", trade: "™", lt: "<", gt: ">", amp: "&" })[name.toLowerCase()] ?? _)
     .replace(/[^\S\n]+/g, " ").replace(/\s*\n\s*/g, "\n");
   const start = form === "20-F" ? /\bItem\s+4[.\s:–-]+Information on the Company\b/gi : /\bItem\s+1[.\s:–-]+Business\b/gi;
   const end = form === "20-F" ? /\bItem\s+(?:4A|5)[.\s:–-]/i : /\bItem\s+1[A-B][.\s:–-]/i;
@@ -72,13 +92,14 @@ export function annualBusinessText(html: string, form: string) {
 /** Select whole source sentences. No generated product or customer claims. */
 export function extractCompanyProfile(input: { identity: CompanyIdentity; html: string; form: string; sourceUrl: string; filedAt: string; now: Date }) {
   const section = annualBusinessText(input.html, input.form);
-  const sentences = section.split(/\n+/).flatMap(paragraph => paragraph.match(/[^.!?]+(?:[.!?](?=\s+[A-Z“"]|$)|$)/g) ?? [])
-    .map(text).filter(sentence => sentence.length >= 40 && sentence.length <= 1100);
+  const sentences = section.split(/\n+/).flatMap(paragraph => paragraph
+    .replace(/\b(?:Inc|Corp|Co|Ltd|L\.P|L\.L\.C|U\.S|U\.K)\./gi, abbreviation => abbreviation.replace(/\./g, "\uE000"))
+    .split(/(?<=[.!?])\s+(?=[A-Z“"])/).map(sentence => sentence.replace(/\uE000/g, ".")))
+    .map(text).filter(sentence => sentence.length >= 25 && sentence.length <= 1100);
   const reject = /forward.looking|risk factors|may not|no assurance|could adversely|table of contents|incorporated by reference|annual report|securities and exchange|not yet|we expect|we believe|we intend/i;
   const useful = sentences.filter(sentence => !reject.test(sentence));
-  const business = useful.find(sentence => sentence.length >= 60 && businessWords.test(sentence)
-    && (/\b(?:we|our|company|corporation|business)\b/i.test(sentence) || sentence.toLowerCase().includes(text(input.identity.company).toLowerCase())));
-  const customers = useful.map(sentence => ({ sentence, rank: customerDescriptionRank(sentence) }))
+  const business = useful.find(sentence => sentence.length >= 60 && operatingBusiness(sentence, input.identity));
+  const customers = useful.map(sentence => ({ sentence, rank: customerDescriptionRank(sentence, input.identity) }))
     .filter(candidate => candidate.rank > 0).sort((a, b) => b.rank - a.rank)[0]?.sentence;
   if (!business || !customers) return null;
   return verifiedCompanyProfile({ version: 1, status: "verified", ticker: text(input.identity.ticker).toUpperCase(), company: text(input.identity.company),

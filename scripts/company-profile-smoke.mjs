@@ -58,6 +58,60 @@ assert.equal(profile.extractCompanyProfile({ identity, html: html.replace(fixtur
 const preferred = profile.extractCompanyProfile({ identity, html: html.replace("<h3>Customers</h3>", `<p>${namedGroups}</p><h3>Customers</h3>`), form: "10-K", sourceUrl: fixture.sourceUrl, filedAt: fixture.sourceFiledAt, now });
 assert.equal(preferred?.customers, fixture.customers, "Explicit customer composition wins over an earlier individual sales channel");
 
+// Synthetic analogues of the production filing decoys preserve the problematic
+// grammar without treating legal history, geography or product usage as buyers.
+const extractSentences = (business, customers, exactIdentity = identity) => profile.extractCompanyProfile({
+  identity: exactIdentity, html: html.replace(fixture.business, business).replace(fixture.customers, customers),
+  form: "10-K", sourceUrl: fixture.sourceUrl, filedAt: fixture.sourceFiledAt, now,
+});
+const businessDecoys = [
+  "On March 12, the Company filed a registration statement on Form F-1 relating to a proposed public offering of Ordinary Shares.",
+  "The Company offers ordinary shares under a registration statement filed with the Securities and Exchange Commission.",
+  "Star Shipping Corp. was incorporated in 2006 and commenced operations by taking delivery of its first vessel.",
+  ", a Utah corporation, develops diagnostic instruments and related molecular testing products for laboratories.",
+];
+for (const business of businessDecoys) {
+  assert.equal(extractSentences(business, fixture.customers), null, `Not an operating description: ${business}`);
+  assert.equal(profile.verifiedCompanyProfile({ ...fixture, business, description: `${business} ${fixture.customers}` }, identity, now), null, "Previously cached business boilerplate must invalidate");
+  assert.equal(extractSentences(`${business} ${fixture.business}`, fixture.customers)?.business, fixture.business, "Selection continues to a genuine operating sentence after boilerplate");
+}
+const customerDecoys = [
+  "Although our clients are primarily from China, none of our business operations are conducted in mainland China.",
+  "Our clients are primarily from China, with the remainder based in other countries and territories.",
+  "Our diagnostic test is a gene expression assay that assesses whether a patient is likely to have a slow growing tumor.",
+  "Workplace Management solutions offered to clients range from mobile engineering to building maintenance services.",
+  "Our markets are growing rapidly as demand for digital services increases.",
+];
+for (const customers of customerDecoys) {
+  assert.equal(extractSentences(fixture.business, customers), null, `Not a buyer description: ${customers}`);
+  assert.equal(profile.verifiedCompanyProfile({ ...fixture, customers, description: `${fixture.business} ${customers}` }, identity, now), null, "Previously cached incidental/geographic customer statements must invalidate");
+  assert.equal(extractSentences(fixture.business, `${customers} ${fixture.customers}`)?.customers, fixture.customers, "Incidental clauses cannot outrank later actual buyer groups");
+}
+const validOperatingProfiles = [
+  ["We are the largest publicly traded water and wastewater utility in the United States.", "A customer is defined as a person, business, municipality or any other entity that purchases our water or wastewater services."],
+  ["We provide residential solar energy systems, electricity leases and related maintenance services.", "Our primary customers are homeowners who lease solar electricity systems and receive ongoing maintenance services."],
+  ["We provide residential solar energy systems, electricity leases and related maintenance services.", "Our primary customers are homeowners."],
+  ["We operated 290 banking offices across 12 states in the United States.", "We provide a wide range of trust, employee benefit, investment management, insurance, agency, and custodial services to individuals, businesses, and nonprofit organizations."],
+  ["We operate ocean-going dry bulk vessels that transport commodities and agricultural products worldwide.", "We have well-established relationships with major dry bulk charterers, which we serve by carrying a variety of cargoes over a multitude of routes around the globe."],
+];
+for (const [business, customers] of validOperatingProfiles) {
+  const valid = extractSentences(business, customers);
+  assert.equal(valid?.business, business);
+  assert.equal(valid?.customers, customers);
+  assert.ok(profile.verifiedCompanyProfile(valid, identity, now));
+}
+for (const suffix of ["Inc.", "Corp.", "Co."]) {
+  const exactIdentity = { ...identity, company: `Diagnostic Products ${suffix}` };
+  const business = `${exactIdentity.company}, a Utah corporation, develops diagnostic testing products and related laboratory instruments.`;
+  assert.equal(extractSentences(business, fixture.customers, exactIdentity)?.business, business, "Company abbreviation periods must not produce orphaned sentence fragments");
+}
+const namedIdentity = { ...identity, company: "Diagnostic Products, Inc." };
+const encodedBusiness = 'Diagnostic Products, Inc. (&#8220;the Company&#8221;), a Utah corporation, develops diagnostic instruments&#8212;including TestKit&#174; products for laboratories.';
+const decodedBusiness = 'Diagnostic Products, Inc. (“the Company”), a Utah corporation, develops diagnostic instruments—including TestKit® products for laboratories.';
+assert.equal(extractSentences(encodedBusiness, fixture.customers, namedIdentity)?.business, decodedBusiness, "Numeric HTML entities decode while the complete issuer subject is preserved");
+assert.equal(extractSentences(encodedBusiness.replaceAll("&#8220;", "&#x201C;").replaceAll("&#8221;", "&#x201D;"), fixture.customers, namedIdentity)?.business, decodedBusiness);
+assert.equal(profile.verifiedCompanyProfile({ ...fixture, company: namedIdentity.company, business: encodedBusiness, description: `${encodedBusiness} ${fixture.customers}` }, namedIdentity, now), null, "Old profiles with raw entities must refresh from the source");
+
 const objects = new Map(); let revision = 0;
 const storage = {
   readVersionedTextFromR2: async key => objects.has(key) ? { found: true, text: JSON.stringify(objects.get(key)), etag: String(revision) } : { found: false, text: null, etag: null },
@@ -97,4 +151,6 @@ objects.set("value-investing/resumable/latest/index.json", { kind: "us_value_inv
 assert.deepEqual(await cache.warmFoundationCompanyProfiles(fetcher, now), { attempted: 1, verified: 1 });
 assert.deepEqual(await cache.warmFoundationCompanyProfiles(fetcher, new Date(now.getTime() + 60000)), { attempted: 0, verified: 0 });
 assert.equal(requests, 2, "Raw foundation warming is bounded by durable fifteen-minute cadence");
+// Keep cache migration coverage in both existing CI entry points for this smoke.
+await import("./company-profile-cache-invalidation-smoke.mjs");
 console.log("PASS: exact profile identity, annual business extraction, customers, provenance, bounded streams, cache reuse, retry backoff, raw-foundation warming");

@@ -1,0 +1,94 @@
+import assert from "node:assert/strict";
+import { loadTsModule } from "./helpers/load-typescript-module.mjs";
+import { companyProfileFixture } from "./helpers/company-profile-fixture.mjs";
+
+const now = new Date("2026-09-18T12:00:00Z");
+const identity = { ticker: "TEST", company: "Test Software", cik: "0000000001" };
+const fixture = companyProfileFixture(identity, now);
+const profiles = loadTsModule("@/lib/company-profile");
+const incidentalCustomers = "Our customers are able to access their content across multiple devices and personal computers.";
+const invalidProfile = { ...fixture, customers: incidentalCustomers, description: `${fixture.business} ${incidentalCustomers}` };
+assert.ok(profiles.verifiedCompanyProfile(fixture, identity, now));
+assert.equal(profiles.verifiedCompanyProfile(invalidProfile, identity, now), null);
+
+const key = "research-evidence/company-profiles-v1.json";
+const objects = new Map();
+let revision = 0, writes = 0, requests = 0;
+const storage = {
+  readVersionedTextFromR2: async path => objects.has(path)
+    ? { found: true, text: JSON.stringify(objects.get(path)), etag: String(revision) }
+    : { found: false, text: null, etag: null },
+  writeVersionedJsonToR2: async (path, value) => {
+    revision++; writes++;
+    objects.set(path, structuredClone(value));
+    return { written: true, conflict: false };
+  },
+};
+const cache = loadTsModule("@/lib/opportunity-engine/company-profile-cache", {
+  "@/lib/r2-warehouse": storage,
+  "@/lib/opportunity-engine/pr262-storage": { pr262StorageKey: path => path },
+});
+const currentEntry = () => objects.get(key).entries[0];
+function seed(profile, nextAttemptAt = new Date(now.getTime() + 30 * 86400000).toISOString()) {
+  objects.clear(); writes = 0; requests = 0;
+  objects.set(key, { version: 1, entries: [{ ...identity, profile, updatedAt: new Date(now.getTime() - 60000).toISOString(), nextAttemptAt }] });
+  objects.set("equity-universe/v1.json", { version: 1, scope: "active_us_exchange_listed_common_equities_and_adrs", entries: [{ ...identity, sourceNames: ["SEC company_tickers_exchange"] }] });
+  objects.set("value-investing/resumable/latest/index.json", { kind: "us_value_investing_resumable_summary", seriousAlerts: { buy: [identity] } });
+}
+const submissions = { cik: 1, tickers: ["TEST"], filings: { recent: {
+  form: ["10-K"], filingDate: [fixture.sourceFiledAt], accessionNumber: ["0000000001-26-000001"], primaryDocument: ["annual.htm"],
+} } };
+const html = `<h2>Item 1. Business</h2><p>${fixture.business}</p><p>${"The company maintains regional facilities and provides ongoing implementation support for its software. ".repeat(8)}</p><h3>Customers</h3><p>${fixture.customers}</p><h2>Item 1A. Risk Factors</h2>`;
+const fetcher = async url => {
+  requests++;
+  assert.equal(currentEntry().profile, null, "Every new attempt durably clears the invalid profile before retrieval");
+  assert.ok(Date.parse(currentEntry().nextAttemptAt) > Date.parse(currentEntry().updatedAt), "The attempt retains durable backoff before retrieval");
+  return String(url).includes("submissions") ? Response.json(submissions) : new Response(html);
+};
+
+seed(fixture);
+assert.deepEqual(await cache.ensureCompanyProfile(identity, fetcher, now), fixture);
+assert.equal(requests, 0, "Valid cached profiles are reused without provider requests");
+assert.equal(writes, 0, "Valid cache reuse does not write storage");
+assert.equal((await cache.readCompanyProfiles([identity], now)).size, 1);
+assert.deepEqual(await cache.warmFoundationCompanyProfiles(fetcher, now), { attempted: 0, verified: 0 });
+assert.equal(requests, 0, "The warmer also skips valid profiles");
+
+seed(invalidProfile);
+assert.equal((await cache.readCompanyProfiles([identity], now)).size, 0, "Public reads reject previously cached incidental customer text");
+assert.equal(requests, 0, "Public reads remain cache-only");
+assert.ok(await cache.ensureCompanyProfile(identity, fetcher, now), "An invalid prior success refreshes before its thirty-day refresh date");
+assert.equal(requests, 2);
+assert.equal(currentEntry().profile.customers, fixture.customers);
+assert.equal((await cache.readCompanyProfiles([identity], now)).size, 1);
+assert.ok(await cache.ensureCompanyProfile(identity, fetcher, new Date(now.getTime() + 60000)));
+assert.equal(requests, 2, "The replacement profile is reused");
+
+seed(invalidProfile);
+assert.deepEqual(await cache.warmFoundationCompanyProfiles(fetcher, now), { attempted: 1, verified: 1 }, "Maintenance selects invalid prior successes despite their future refresh dates");
+assert.equal(requests, 2);
+assert.deepEqual(await cache.warmFoundationCompanyProfiles(fetcher, new Date(now.getTime() + 60000)), { attempted: 0, verified: 0 });
+assert.equal(requests, 2, "The fifteen-minute maintenance cadence still applies");
+
+seed(invalidProfile);
+const broken = async () => { requests++; throw new Error("synthetic_source_failure"); };
+assert.equal(await cache.ensureCompanyProfile(identity, broken, now), null);
+assert.equal(requests, 1, "The invalid prior success is attempted immediately even when retrieval fails");
+assert.equal(currentEntry().profile, null);
+assert.equal(currentEntry().nextAttemptAt, new Date(now.getTime() + 3600000).toISOString());
+assert.equal(await cache.ensureCompanyProfile(identity, broken, new Date(now.getTime() + 60000)), null);
+assert.deepEqual(await cache.warmFoundationCompanyProfiles(broken, new Date(now.getTime() + 15 * 60000)), { attempted: 0, verified: 0 });
+assert.equal(requests, 1, "Both direct retrieval and maintenance honor a real failure's backoff");
+assert.ok(await cache.ensureCompanyProfile(identity, fetcher, new Date(now.getTime() + 3600000)));
+assert.equal(requests, 3, "Retrieval resumes when the failure backoff expires");
+
+seed(invalidProfile);
+const providerRetry = new Date(now.getTime() + 3 * 3600000).toISOString();
+const budgetDeferred = async () => { requests++; throw new Error(`provider_budget_deferred; next_retry_at=${providerRetry}`); };
+assert.equal(await cache.ensureCompanyProfile(identity, budgetDeferred, now), null);
+assert.equal(currentEntry().nextAttemptAt, providerRetry);
+assert.equal(await cache.ensureCompanyProfile(identity, fetcher, new Date(now.getTime() + 2 * 3600000)), null);
+assert.deepEqual(await cache.warmFoundationCompanyProfiles(fetcher, new Date(now.getTime() + 2 * 3600000)), { attempted: 0, verified: 0 });
+assert.equal(requests, 1, "An extended provider-budget backoff remains authoritative after invalidation");
+
+console.log("PASS: valid cache reuse, invalid-success immediate refresh, cache-only read validation, maintenance selection, durable failed-attempt and provider backoff");

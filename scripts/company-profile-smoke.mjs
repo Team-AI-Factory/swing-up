@@ -110,7 +110,32 @@ const encodedBusiness = 'Diagnostic Products, Inc. (&#8220;the Company&#8221;), 
 const decodedBusiness = 'Diagnostic Products, Inc. (“the Company”), a Utah corporation, develops diagnostic instruments—including TestKit® products for laboratories.';
 assert.equal(extractSentences(encodedBusiness, fixture.customers, namedIdentity)?.business, decodedBusiness, "Numeric HTML entities decode while the complete issuer subject is preserved");
 assert.equal(extractSentences(encodedBusiness.replaceAll("&#8220;", "&#x201C;").replaceAll("&#8221;", "&#x201D;"), fixture.customers, namedIdentity)?.business, decodedBusiness);
-assert.equal(profile.verifiedCompanyProfile({ ...fixture, company: namedIdentity.company, business: encodedBusiness, description: `${encodedBusiness} ${fixture.customers}` }, namedIdentity, now), null, "Old profiles with raw entities must refresh from the source");
+const encodedCachedProfile = { ...fixture, company: namedIdentity.company, business: encodedBusiness, description: `${encodedBusiness} ${fixture.customers}` };
+const normalizedCache = profile.verifiedCompanyProfile(encodedCachedProfile, namedIdentity, now);
+assert.equal(normalizedCache?.business, decodedBusiness, "Formatting-only cached entities decode without requiring SEC retrieval");
+assert.equal(normalizedCache?.description, `${decodedBusiness} ${fixture.customers}`);
+assert.equal(normalizedCache?.verifiedAt, encodedCachedProfile.verifiedAt, "Normalization never refreshes the verification date");
+assert.equal(profile.verifiedCompanyProfile({ ...encodedCachedProfile, description: `${encodedBusiness} Different customers were claimed.` }, namedIdentity, now), null, "Entity decoding cannot repair mismatched factual descriptions");
+assert.equal(profile.verifiedCompanyProfile(encodedCachedProfile, namedIdentity, new Date(now.getTime() + 31 * 86400000)), null);
+assert.equal(profile.verifiedCompanyProfile({ ...encodedCachedProfile, sourceUrl: fixture.sourceUrl.replace("/1/", "/2/") }, namedIdentity, now), null);
+
+// Exact valid source grammar observed on the live AWK and FIBK cards.
+const awkIdentity = { ...identity, company: "American Water Works Company, Inc." };
+const awkBusiness = "With a history dating back to 1886, American Water is the largest and most geographically diverse, publicly-traded water and wastewater utility company in the United States, as measured by both operating revenues and population served.";
+const fibkIdentity = { ...identity, company: "First Interstate BancSystem, Inc." };
+const fibkBusiness = "As of February 20, 2026, we operated 290 banking offices, including branches and detached drive-up facilities, in communities across 12 states— Colorado, Idaho, Iowa, Minnesota, Missouri, Montana, Nebraska, North Dakota, Oregon, South Dakota, Washington, and Wyoming.";
+for (const [exactIdentity, business] of [[awkIdentity, awkBusiness], [fibkIdentity, fibkBusiness]]) {
+  const valid = extractSentences(business, fixture.customers, exactIdentity);
+  assert.equal(valid?.business, business, "Matching contextual introductions retains every word of the source sentence");
+  assert.ok(profile.verifiedCompanyProfile({ ...fixture, company: exactIdentity.company, business, description: `${business} ${fixture.customers}` }, exactIdentity, now));
+}
+for (const business of [
+  awkBusiness.replace("American Water is", "American Electric is"),
+  awkBusiness.replace("American Water is", "American is"),
+  awkBusiness.replace("American Water is", "American Waters is"),
+  awkBusiness.replace("American Water is", "American Water Holdings is"),
+  "As of February 20, 2026, the Company filed a registration statement for its proposed public offering of Ordinary Shares.",
+]) assert.equal(extractSentences(business, fixture.customers, awkIdentity), null, "A contextual introduction cannot admit unrelated issuers or filing boilerplate");
 
 const objects = new Map(); let revision = 0;
 const storage = {
@@ -134,6 +159,12 @@ assert.equal(requests, 2);
 assert.equal(streamCancelled, true, "Business extraction stops before large financial exhibits");
 assert.ok(await cache.ensureCompanyProfile(identity, fetcher, new Date(now.getTime() + 60000)));
 assert.equal(requests, 2, "Verified profiles reuse the cache without provider requests");
+const profileCacheKey = "research-evidence/company-profiles-v1.json";
+const savedCache = structuredClone(objects.get(profileCacheKey));
+objects.set(profileCacheKey, { version: 1, entries: [{ ...namedIdentity, profile: encodedCachedProfile, updatedAt: now.toISOString(), nextAttemptAt: new Date(now.getTime() + 30 * 86400000).toISOString() }] });
+assert.equal((await cache.ensureCompanyProfile(namedIdentity, fetcher, now))?.business, decodedBusiness);
+assert.equal(requests, 2, "Verified formatting-only cache repairs do not make provider requests");
+objects.set(profileCacheKey, savedCache);
 objects.set("equity-universe/v1.json", { version: 1, scope: "active_us_exchange_listed_common_equities_and_adrs", entries: [{ ticker: "TEST", cik: "0000000001", sourceNames: ["SEC company_tickers_exchange"] }] });
 assert.equal((await cache.readCompanyProfiles([identity], now)).size, 1);
 objects.get("equity-universe/v1.json").entries[0].cik = "0000000002";

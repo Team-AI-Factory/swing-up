@@ -128,7 +128,9 @@ function asJson(value: unknown): Json {
 
 function paidProviderAccessBlocker(diagnostic: Json) {
   const category = asJson(diagnostic.failure).category;
-  if (diagnostic.status === "failed" && (category === "authentication" || category === "permission")) return category;
+  // Models Read and Model Capabilities Request are separate OpenAI scopes.
+  // A models-list 403 does not establish that chat completions are forbidden.
+  if (diagnostic.status === "failed" && category === "authentication") return category;
   if (diagnostic.status === "completed" && Object.values(asJson(diagnostic.modelAvailable)).some(available => available === false)) return "configured_model_unavailable";
   return null;
 }

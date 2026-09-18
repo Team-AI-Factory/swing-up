@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
+import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 
 const source = readFileSync(new URL("../lib/opportunity-engine/pr262-cron-orchestrator.ts", import.meta.url), "utf8");
 assert.match(source, /result\.openAiCalled === false && aiReservationFingerprint/, "Only explicit proof that OpenAI was not called may release a paid reservation.");
@@ -28,6 +29,7 @@ let unknownUsageReviews = 0;
 let accessDiagnostic = { status: "completed", readOnly: true, callsPaidModel: false, billingQuotaVerified: false, modelAvailable: { fast: true, deep: true, final: true } };
 let expectedProviderBlocker = null;
 let paidReservationCalls = 0;
+let restrictedKeyCompletion = null;
 const accountingRetryAt = "2026-08-28T12:00:00.000Z";
 const cycleStartBudgetRetryAt = "2026-08-28T15:00:00.000Z";
 const raceTimeBudgetRetryAt = "2026-08-28T16:00:00.000Z";
@@ -157,6 +159,16 @@ const stubs = {
       assert.ok(input.deadlineAtMs > Date.now());
       assert.equal(typeof input.beforeOpenAiCall, "function", "Railway must pass the durable dollar reservation hook before paid analysis.");
       assert.equal(typeof input.aiReservationRetryAt, "function", "The event job must be able to inherit the exact daily-cost retry boundary.");
+      if (eventMode === "restricted_models_scope") {
+        eventMode = "idle";
+        assert.equal(input.allowOpenAi, true, "Models Read denial cannot disable an otherwise eligible completion");
+        assert.equal(input.aiProviderBlockedReason, undefined);
+        assert.equal(await input.beforeOpenAiCall({ candidateFingerprint: "restricted-key-review", ticker: "SAFE", direction: "upside" }), true);
+        const completion = await restrictedKeyCompletion();
+        assert.equal(completion.ok, true);
+        assert.equal(completion.status, "completed");
+        return { ok: true, status: "completed", openAiCalled: true, eventsProcessed: 1, seriousSignalFound: false, resultKey: "test/restricted-key-review.json" };
+      }
       if (eventMode === "provider_access_blocked") {
         eventMode = "idle";
         assert.equal(input.allowOpenAi, false, "Definitively unavailable access must block paid reviews before reservation");
@@ -465,7 +477,7 @@ assert.equal(state.pending[0].queueNextAttemptAt, raceTimeBudgetRetryAt, "A conc
 aiBudgetMode = "available";
 
 const successfulDiagnostic = structuredClone(accessDiagnostic);
-for (const reason of ["authentication", "permission", "configured_model_unavailable"]) {
+for (const reason of ["authentication", "configured_model_unavailable"]) {
   expectedProviderBlocker = reason;
   accessDiagnostic = reason === "configured_model_unavailable"
     ? { ...successfulDiagnostic, modelAvailable: { fast: true, deep: true, final: false } }
@@ -480,6 +492,49 @@ for (const reason of ["authentication", "permission", "configured_model_unavaila
   assert.equal(unavailableAccess.processing.aiCalls, 0);
   assert.equal(paidReservationCalls, priorReservations, "No reservation may be consumed when access is already known to fail");
   assert.ok(eventCalls > priorEvidenceCalls, "Unpaid evidence collection must continue while provider access is blocked");
+}
+// Exercise the real provider across both endpoints: one restricted key denies
+// GET /models yet successfully returns a budget-reserved chat completion.
+const provider = loadTsModule("@/lib/ai-committee/provider");
+const providerEnvKeys = ["OPENAI_API_KEY", "OPENAI_MODEL", "AI_COMMITTEE_ENABLED", "AI_COMMITTEE_DRY_RUN_DEFAULT", "AI_COMMITTEE_FAST_MODEL", "AI_COMMITTEE_DEEP_MODEL", "AI_COMMITTEE_FINAL_MODEL", "AI_COMMITTEE_MODEL_ALLOWLIST"];
+const savedProviderEnv = Object.fromEntries(providerEnvKeys.map(key => [key, process.env[key]]));
+const originalFetch = globalThis.fetch;
+let restrictedCompletionRequests = 0;
+try {
+  for (const key of providerEnvKeys) delete process.env[key];
+  process.env.OPENAI_API_KEY = "restricted-key-fixture";
+  process.env.OPENAI_MODEL = "gpt-4.1-mini";
+  process.env.AI_COMMITTEE_ENABLED = "true";
+  globalThis.fetch = async (url, options) => {
+    if (url === "https://api.openai.com/v1/models") {
+      assert.equal(options.method, "GET");
+      return Response.json({ error: { code: "permission_denied" } }, { status: 403 });
+    }
+    assert.equal(url, "https://api.openai.com/v1/chat/completions");
+    assert.equal(options.method, "POST");
+    restrictedCompletionRequests++;
+    return Response.json({ choices: [{ message: { content: '{"verdict":"needs_more_data"}' }, finish_reason: "stop" }], usage: { prompt_tokens: 10, completion_tokens: 8, total_tokens: 18 } });
+  };
+  accessDiagnostic = await provider.probeOpenAiCommitteeProviderAccess();
+  assert.equal(accessDiagnostic.failure.httpStatus, 403);
+  assert.equal(accessDiagnostic.failure.category, "permission");
+  restrictedKeyCompletion = () => provider.runOpenAiCommitteeProvider({ tier: "fast", confirmRun: true, dryRun: false, maxTokens: 50, messages: [{ role: "user", content: "Return a JSON verdict from the supplied evidence." }] });
+  unknownUsageReviews = 13;
+  eventMode = "restricted_models_scope";
+  const reservationsBeforeRestricted = paidReservationCalls;
+  const restricted = await loaded.exports.runPr262AnalysisOnlyCycle({ maxCycleMs: 90_000 });
+  assert.equal(restricted.ok, true);
+  assert.equal(restricted.aiCostControl.providerBlockedReason, null);
+  assert.equal(restricted.aiCostControl.providerAccessDiagnostic.failure.httpStatus, 403, "The denied listing remains visible in diagnostics");
+  assert.equal(paidReservationCalls, reservationsBeforeRestricted + 1, "The unchanged budget gate must admit the review before completion");
+  assert.equal(restrictedCompletionRequests, 1);
+  assert.equal(restricted.processing.aiCalls, 1);
+} finally {
+  globalThis.fetch = originalFetch;
+  for (const key of providerEnvKeys) {
+    if (savedProviderEnv[key] === undefined) delete process.env[key];
+    else process.env[key] = savedProviderEnv[key];
+  }
 }
 unknownUsageReviews = 0;
 accessDiagnostic = successfulDiagnostic;

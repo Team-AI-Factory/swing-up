@@ -250,7 +250,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
   const queueHealthAtStart = queueHealthSnapshot(state, readyNow);
   const capacity = capacityForQueue(readyAtStart);
   // Backlogged event work can consume the entire processing window. Give the
-  // existing one-profile maintenance pass its bounded turn before admissions.
+  // bounded profile maintenance pass its turn before admissions.
   const profileSignal = composedSignal([cycleSignal, AbortSignal.timeout(30_000)]);
   const profileFetch: typeof fetch = (request, init) => fetch(request, {
     ...init,
@@ -614,8 +614,8 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
       providerAccessDiagnostic,
       providerBlockedReason,
       actualTokenUsagePreferred: true,
-      unknownUsageFallbackUsd: 0.75,
-      incompleteUsageRetainsFullReservation: true,
+      unknownUsageBookedAsSpend: false,
+      unconfirmedRequestsRetainSeparateBoundedExposure: true,
       hardDailyLimitCannotBeRaisedAboveUsd: 10,
       candidatesRemainQueuedWhenFuseBlocksAi: true,
       accountingFailureBlocksAdditionalAiOnly: true,

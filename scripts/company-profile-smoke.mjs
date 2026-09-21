@@ -75,6 +75,11 @@ for (const business of businessDecoys) {
   assert.equal(profile.verifiedCompanyProfile({ ...fixture, business, description: `${business} ${fixture.customers}` }, identity, now), null, "Previously cached business boilerplate must invalidate");
   assert.equal(extractSentences(`${business} ${fixture.business}`, fixture.customers)?.business, fixture.business, "Selection continues to a genuine operating sentence after boilerplate");
 }
+// The live EG card exposed this source-list heading without the product list.
+const unfinishedBusiness = "Our company provides products for the following lines of business:";
+assert.equal(extractSentences(unfinishedBusiness, fixture.customers), null, "An unfinished product list cannot verify a company profile");
+assert.equal(profile.verifiedCompanyProfile({ ...fixture, business: unfinishedBusiness, description: `${unfinishedBusiness} ${fixture.customers}` }, identity, now), null, "Incomplete cached descriptions invalidate immediately");
+assert.equal(extractSentences(`${unfinishedBusiness}</p><p>${fixture.business}`, fixture.customers)?.business, fixture.business, "Selection continues to the next complete operating description");
 const customerDecoys = [
   "Although our clients are primarily from China, none of our business operations are conducted in mainland China.",
   "Our clients are primarily from China, with the remainder based in other countries and territories.",
@@ -88,6 +93,7 @@ for (const customers of customerDecoys) {
   assert.equal(extractSentences(fixture.business, `${customers} ${fixture.customers}`)?.customers, fixture.customers, "Incidental clauses cannot outrank later actual buyer groups");
 }
 const validOperatingProfiles = [
+  ["We are an underwriter of property and casualty insurance for commercial businesses worldwide.", "Our primary customers are companies and insurance brokers serving commercial enterprises."],
   ["We are the largest publicly traded water and wastewater utility in the United States.", "A customer is defined as a person, business, municipality or any other entity that purchases our water or wastewater services."],
   ["We provide residential solar energy systems, electricity leases and related maintenance services.", "Our primary customers are homeowners who lease solar electricity systems and receive ongoing maintenance services."],
   ["We provide residential solar energy systems, electricity leases and related maintenance services.", "Our primary customers are homeowners."],
@@ -105,6 +111,10 @@ for (const suffix of ["Inc.", "Corp.", "Co."]) {
   const business = `${exactIdentity.company}, a Utah corporation, develops diagnostic testing products and related laboratory instruments.`;
   assert.equal(extractSentences(business, fixture.customers, exactIdentity)?.business, business, "Company abbreviation periods must not produce orphaned sentence fragments");
 }
+const brandIdentity = { ...identity, company: "TestRoast Corporation" };
+const brandBusiness = "TestRoast is a roaster and retailer of specialty coffee and related food products worldwide.";
+assert.equal(extractSentences(brandBusiness, fixture.customers, brandIdentity)?.business, brandBusiness, "The complete issuer brand may omit only its legal suffix");
+assert.equal(extractSentences(brandBusiness.replace("TestRoast is", "TestRoast Holdings is"), fixture.customers, brandIdentity), null, "A suffix-free brand cannot match a different company");
 const namedIdentity = { ...identity, company: "Diagnostic Products, Inc." };
 const encodedBusiness = 'Diagnostic Products, Inc. (&#8220;the Company&#8221;), a Utah corporation, develops diagnostic instruments&#8212;including TestKit&#174; products for laboratories.';
 const decodedBusiness = 'Diagnostic Products, Inc. (“the Company”), a Utah corporation, develops diagnostic instruments—including TestKit® products for laboratories.';

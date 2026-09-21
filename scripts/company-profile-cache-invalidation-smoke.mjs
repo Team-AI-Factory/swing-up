@@ -91,4 +91,22 @@ assert.equal(await cache.ensureCompanyProfile(identity, fetcher, new Date(now.ge
 assert.deepEqual(await cache.warmFoundationCompanyProfiles(fetcher, new Date(now.getTime() + 2 * 3600000)), { attempted: 0, verified: 0 });
 assert.equal(requests, 1, "An extended provider-budget backoff remains authoritative after invalidation");
 
-console.log("PASS: valid cache reuse, invalid-success immediate refresh, cache-only read validation, maintenance selection, durable failed-attempt and provider backoff");
+// Old parser failures can recover immediately using a fuller exact source,
+// rather than waiting out yesterday's extraction backoff or reusing a prefix.
+seed(null);
+const filing = { url: fixture.sourceUrl, form: "10-K", filedAt: fixture.sourceFiledAt };
+Object.assign(currentEntry(), { error: "company_profile_products_and_customers_not_extracted", filing, parserRevision: 1 });
+const sourceKey = `research-evidence/company-profile-sources/${identity.cik}/${filing.url.split("/").slice(-2).join("-")}.json`;
+objects.set(sourceKey, { version: 1, url: filing.url, filedAt: filing.filedAt, businessText: profiles.annualBusinessText(html.replace(fixture.business, "Our company provides products for the following lines of business:"), "10-K") });
+assert.ok(await cache.ensureCompanyProfile(identity, fetcher, now));
+assert.equal(requests, 1, "Reuse the exact filing locator and fetch a fuller old excerpt only once");
+assert.equal(currentEntry().parserRevision, profiles.COMPANY_PROFILE_PARSER_REVISION);
+assert.equal(objects.get(sourceKey).parserRevision, profiles.COMPANY_PROFILE_PARSER_REVISION);
+assert.ok(await cache.ensureCompanyProfile(identity, fetcher, new Date(now.getTime() + 60000)));
+assert.equal(requests, 1, "A recovered profile returns to ordinary cache reuse");
+seed(null);
+Object.assign(currentEntry(), { error: "company_profile_products_and_customers_not_extracted", filing, parserRevision: profiles.COMPANY_PROFILE_PARSER_REVISION });
+assert.equal(await cache.ensureCompanyProfile(identity, fetcher, now), null);
+assert.equal(requests, 0, "An unchanged current parser must not bypass failed-extraction backoff");
+
+console.log("PASS: valid cache reuse, invalid-success immediate refresh, parser-revision recovery, cache-only read validation, maintenance selection, durable failed-attempt and provider backoff");

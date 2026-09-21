@@ -576,6 +576,7 @@ new Function("require", "module", "exports", output)((name) => {
   if (name in stubs) return stubs[name];
   if (["@/lib/company-profile", "@/lib/opportunity-engine/company-profile-cache"].includes(name)) return loadTsModule(name, stubs);
   if (name === "@/lib/opportunity-engine/pr262-research-evidence") return loadTsModule(name, stubs);
+  if (["@/lib/ai-committee/review-policy", "@/lib/equity-signal/us-market-calendar"].includes(name)) return loadTsModule(name);
   throw new Error(`Unexpected event-job import: ${name}`);
 }, cjsModule, cjsModule.exports);
 
@@ -589,7 +590,7 @@ assert.deepEqual(
 resolve4Answers = new Promise(() => {});
 const fallbackStartedAt = Date.now();
 assert.deepEqual(
-  await defaultResolveHost("publisher.example", 5),
+  await defaultResolveHost("publisher.example", 5, async () => []),
   ["2606:4700:4700::1111"],
   "A stalled explicit A-record lookup must time out and preserve the usable OS-resolver result.",
 );
@@ -760,15 +761,15 @@ const oversizedConfirmed = await fetchFullSource(
   sourceEvent,
   "Exact Issuer Corp",
   "EXCT",
-  async () => new Response(`${confirmedBody}${"x".repeat(500_001)}`, { status: 200, headers: { "content-type": "text/html" } }),
+  async () => new Response(`${confirmedBody}${"x".repeat(2_000_001)}`, { status: 200, headers: { "content-type": "text/html" } }),
   securityNow,
   publicDns,
 );
 assert.equal(oversizedConfirmed.decisionGrade, true, "A large publisher page may use only its bounded prefix when that prefix independently confirms the issuer and event");
 assert.equal(oversizedConfirmed.diagnostics.sourceBodyTruncated, true, "The decision-grade result must disclose that the publisher body was truncated");
-assert.equal(oversizedConfirmed.diagnostics.sourceTextBytes, 500_000, "The reader must never retain more than the bounded source limit");
+assert.equal(oversizedConfirmed.diagnostics.sourceTextBytes, 2_000_000, "The reader must never retain more than the bounded source limit");
 
-const oversized = await fetchFullSource(sourceReceipt, sourceEvent, "Exact Issuer Corp", "EXCT", async () => new Response("x".repeat(500_001), { status: 200, headers: { "content-type": "text/plain" } }), securityNow, publicDns);
+const oversized = await fetchFullSource(sourceReceipt, sourceEvent, "Exact Issuer Corp", "EXCT", async () => new Response("x".repeat(2_000_001), { status: 200, headers: { "content-type": "text/plain" } }), securityNow, publicDns);
 assert.equal(oversized.decisionGrade, false, "An oversized source without confirmed evidence in its bounded prefix must fail closed");
 assert.equal(oversized.providers[0].error, "full_source_body_too_large");
 

@@ -1,3 +1,4 @@
+import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -9,6 +10,7 @@ function load(path, dependencies = {}) {
   new Function("require", "module", "exports", output)((name) => {
     if (name === "node:crypto") return crypto;
     if (name in dependencies) return dependencies[name];
+    if (name === "@/lib/ai-committee/review-policy") return loadTsModule(name);
     throw new Error(`Unexpected dependency: ${name}`);
   }, m, m.exports);
   return m.exports;

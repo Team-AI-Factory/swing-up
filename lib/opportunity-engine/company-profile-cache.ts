@@ -1,6 +1,6 @@
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
-import { extractCompanyProfile, profileCik, verifiedCompanyProfile, type CompanyIdentity, type VerifiedCompanyProfile } from "@/lib/company-profile";
+import { annualBusinessText, extractCompanyProfile, profileCik, verifiedCompanyProfile, type CompanyIdentity, type VerifiedCompanyProfile } from "@/lib/company-profile";
 const KEY = pr262StorageKey("research-evidence/company-profiles-v1.json");
 const UNIVERSE = pr262StorageKey("equity-universe/v1.json");
 type Json = Record<string, unknown>;
@@ -116,7 +116,20 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
     entry.filing = filing;
     await store(entry);
     const extract = (html: string) => extractCompanyProfile({ identity: exact, html, form: filing.form, sourceUrl: filing.url, filedAt: filing.filedAt, now });
-    const profile = extract(await request(filing.url, html => Boolean(extract(html))));
+    // Reuse the exact annual business section across parser retries. It is
+    // issuer/accession-specific and never substitutes another company's text.
+    const sourceKey = pr262StorageKey(`research-evidence/company-profile-sources/${exact.cik}/${filing.url.split("/").slice(-2).join("-")}.json`);
+    const sourceSaved = await readVersionedTextFromR2(sourceKey);
+    const source = sourceSaved.found && sourceSaved.text ? object(JSON.parse(sourceSaved.text)) : {};
+    const cachedSection = source.url === filing.url && source.filedAt === filing.filedAt ? text(source.businessText) : "";
+    const sectionHeading = filing.form === "20-F" ? "Item 4. Information on the Company" : "Item 1. Business";
+    let profile = cachedSection ? extract(`${sectionHeading}\n${String(source.businessText)}`) : null;
+    if (!cachedSection) {
+      const html = await request(filing.url, body => Boolean(extract(body)));
+      const businessText = annualBusinessText(html, filing.form);
+      if (businessText) await writeVersionedJsonToR2(sourceKey, { version: 1, url: filing.url, filedAt: filing.filedAt, businessText, collectedAt: now.toISOString() }, sourceSaved.etag ? { expectedEtag: sourceSaved.etag } : { createOnly: true });
+      profile = extract(html);
+    }
     if (!profile) throw new Error("company_profile_products_and_customers_not_extracted");
     entry.profile = profile;
     entry.nextAttemptAt = new Date(now.getTime() + 30 * 86400000).toISOString();
@@ -125,6 +138,7 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
     return profile;
   } catch (error) {
     entry.error = error instanceof Error ? error.message.slice(0, 200) : "company_profile_fetch_failed";
+    if (/products_and_customers_not_extracted|annual_filing_unavailable/.test(entry.error)) entry.nextAttemptAt = new Date(now.getTime() + 86400000).toISOString();
     const reason = entry.error.match(/^company_profile_[a-z0-9_]+/i)?.[0]
       ?? (/budget|quota|cadence/i.test(entry.error) ? "provider_budget_deferred" : error instanceof Error && error.name === "TimeoutError" ? "source_timeout" : "source_request_failed");
     console.info(JSON.stringify({ kind: "pr262_company_profile_result", ticker: exact.ticker, status: "pending", phase: entry.filing ? "annual_filing" : "issuer_submissions", reason }));
@@ -144,26 +158,31 @@ export async function warmFoundationCompanyProfiles(fetchImpl: typeof fetch, now
   const reservation = await writeVersionedJsonToR2(cadenceKey, { version: 1, checkedAt: now.toISOString() },
     cadence.etag ? { expectedEtag: cadence.etag } : { createOnly: true });
   if (!reservation.written || reservation.conflict) return { attempted: 0, verified: 0 };
-  const [foundation, universe, { entries }] = await Promise.all([
+  const [foundation, universe, { entries }, sensor] = await Promise.all([
     readVersionedTextFromR2(pr262StorageKey("value-investing/resumable/latest/index.json")),
-    readVersionedTextFromR2(UNIVERSE), load(),
+    readVersionedTextFromR2(UNIVERSE), load(), readVersionedTextFromR2(pr262StorageKey("sensor/state-v1.json")),
   ]);
   const snapshot = foundation.found && foundation.text ? object(JSON.parse(foundation.text)) : {};
   const listed = universe.found && universe.text ? object(JSON.parse(universe.text)) : {};
-  if (snapshot.kind !== "us_value_investing_resumable_summary" || listed.version !== 1) return { attempted: 0, verified: 0 };
+  if (listed.version !== 1) return { attempted: 0, verified: 0 };
   const universeRows = Array.isArray(listed.entries) ? listed.entries.map(object) : [];
   const groups = object(snapshot.seriousAlerts);
-  const candidates = [groups.buy, groups.sell, groups.watchOut].flatMap(group => Array.isArray(group) ? group.map(object) : []);
+  const sensorState = sensor.found && sensor.text ? object(JSON.parse(sensor.text)) : {};
+  const pending = Array.isArray(sensorState.pending) ? sensorState.pending.map(object).filter(event => now.getTime() - Date.parse(text(event.observedAt)) < 3 * 86400000) : [];
+  const queuedTickers = new Set(pending.map(row => row.ticker));
+  const candidates = [...pending, ...[groups.buy, groups.sell, groups.watchOut].flatMap(group => Array.isArray(group) ? group.map(object) : [])];
   const due = candidates.flatMap(candidate => {
     const listing = universeRows.find(row => row.ticker === candidate.ticker && Array.isArray(row.sourceNames) && row.sourceNames.includes("SEC company_tickers_exchange"));
     const cik = profileCik(listing?.cik);
     if (!cik) return [];
-    const identity = { ticker: candidate.ticker, company: candidate.company, cik };
+    if (candidate.cik && profileCik(candidate.cik) !== cik) return [];
+    const identity = { ticker: candidate.ticker, company: candidate.company || listing?.company || listing?.name, cik };
     const saved = entries.find(entry => same(entry, identity));
     if (verifiedCompanyProfile(saved?.profile, identity, now) || retryDeferred(saved, now)) return [];
-    return [{ identity, lastAttempt: Date.parse(saved?.updatedAt ?? "") || 0 }];
-  }).sort((a, b) => a.lastAttempt - b.lastAttempt).slice(0, 1);
-  let verified = 0;
-  for (const candidate of due) if (await ensureCompanyProfile(candidate.identity, fetchImpl, now)) verified++;
-  return { attempted: due.length, verified };
+    return [{ identity, priority: queuedTickers.has(candidate.ticker) ? 1 : 0, lastAttempt: Date.parse(saved?.updatedAt ?? "") || 0 }];
+  }).filter((row, index, all) => all.findIndex(other => other.identity.ticker === row.identity.ticker) === index)
+    .sort((a, b) => b.priority - a.priority || a.lastAttempt - b.lastAttempt).slice(0, 2);
+  // Two independent issuers fit the existing worker window; provider quotas still apply to every request.
+  const results = await Promise.allSettled(due.map(candidate => ensureCompanyProfile(candidate.identity, fetchImpl, now)));
+  return { attempted: due.length, verified: results.filter(result => result.status === "fulfilled" && result.value).length };
 }

@@ -57,6 +57,7 @@ new Function("require", "module", "exports", output)((specifier) => {
   if (specifier === "@/lib/opportunity-engine/pr262-storage") return { pr262StorageKey: storageKey };
   if (specifier === "@/lib/opportunity-engine/pr262-runtime") return { isPr262ApprovedPremergeProductionRollout: () => false };
   if (specifier === "@/lib/company-profile" || specifier === "@/lib/signal-explanation" || specifier === "@/lib/signal-outlook") return loadTsModule(specifier);
+  if (["@/lib/ai-committee/review-policy", "@/lib/equity-signal/us-market-calendar"].includes(specifier)) return loadTsModule(specifier);
   throw new Error(`Unexpected delivery import: ${specifier}`);
 }, loaded, loaded.exports);
 
@@ -395,6 +396,27 @@ try {
   const boundedFallback = await getSeriousSignalStatus({ now: later, hours: 48 });
   assert.equal(boundedFallback.truncated, true);
   assert.equal(boundedFallback.emptyResultVerified, false, "A truncated immutable daily page can never certify an empty alert window.");
+  const weekend = new Date("2026-08-29T12:00:00Z");
+  const weekendKey = `${prefix}serious-signal/outbox/event-job/weekend-focused.json`;
+  const weekendOutbox = validOutbox("WEEK", weekend.toISOString());
+  const ids = ["analyst_agent", "skeptic_agent", "final_judge"];
+  weekendOutbox.committee = { ...weekendOutbox.committee, ok: true, agentsCompleted: 3,
+    output: { overallRecommendation: "approve", modelUsageSummary: { reviewPlan: { policy: "focused_v1", agentIds: ids }, roleDiagnostics: ids.map(agentId => ({ agentId, status: "completed" })) } } };
+  weekendOutbox.authority.fullCommitteeAgentsCompleted = 3;
+  weekendOutbox.candidate.quote.observedAt = "2026-08-28T20:00:00Z";
+  weekendOutbox.candidate.quote.marketSession = "latest_close";
+  await write(weekendKey, weekendOutbox, { createOnly: true });
+  const weekendDelivery = await deliverSeriousSignalOutbox(weekendKey, { now: weekend, ownerId: "weekend-focused" });
+  assert.equal(weekendDelivery.ok, true, "A complete focused review with Friday's dated close can reach the weekend feed.");
+  const weekendFeed = await getSeriousSignalStatus({ now: weekend, hours: 48 });
+  const weekendAlert = weekendFeed.alerts.find(alert => alert.ticker === "WEEK");
+  assert.equal(weekendAlert.committee.completed, 3);
+  assert.equal(weekendAlert.priceObservedAt, "2026-08-28T20:00:00Z", "Delivery must retain the real quote time.");
+  const brokenKey = `${prefix}serious-signal/outbox/event-job/missing-sceptic.json`;
+  const broken = structuredClone(weekendOutbox);
+  broken.committee.output.modelUsageSummary.roleDiagnostics.pop();
+  await write(brokenKey, broken, { createOnly: true });
+  await assert.rejects(() => deliverSeriousSignalOutbox(brokenKey, { now: weekend }), /incomplete_committee/);
 } finally {
   globalThis.fetch = originalFetch;
   for (const key of Object.keys(process.env)) if (!(key in originalEnvironment)) delete process.env[key];

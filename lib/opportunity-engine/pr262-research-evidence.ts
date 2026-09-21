@@ -1,3 +1,4 @@
+import { completeCommitteeReview, committeeRequestsRejectedWithoutUsage } from "@/lib/ai-committee/review-policy";
 import { readCompanyProfiles } from "@/lib/opportunity-engine/company-profile-cache";
 import { verifiedCompanyProfile, profileCik } from "@/lib/company-profile";
 import crypto from "node:crypto";
@@ -165,11 +166,12 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
   ] });
   const requiredFinancialFields = requestedTasks.tasks.flatMap(task => task.type === "financial_facts" && "fields" in task ? task.fields : []);
   const financialItems = Array.isArray(object(candidate.fundamentals).items) ? object(candidate.fundamentals).items as unknown[] : [];
+  const financialFactsRequired = ["valuation_gap", "earnings_guidance", "financing_dilution", "contract_award", "merger_acquisition"].includes(String(candidate.eventFamily)) || requiredFinancialFields.length > 0;
   const completeness = {
     companyProfile: Boolean(verifiedCompanyProfile(candidate.companyProfile, candidate, now)),
     issuer: Boolean((candidate.ticker ?? event.ticker) && (candidate.cik ?? event.cik)), sourceDocument: input.sourceDecisionGrade,
-    financialFacts: object(candidate.fundamentals).available === true
-      && requiredFinancialFields.every(metric => financialItems.some(item => object(item).metric === metric)),
+    financialFacts: !financialFactsRequired || (object(candidate.fundamentals).available === true
+      && requiredFinancialFields.every(metric => financialItems.some(item => object(item).metric === metric))),
     marketPrice: Boolean(object(candidate.quote).price), currentMarketPrice: object(candidate.quote).actionableForSeriousSignal === true,
     direction: candidate.direction === "upside" || candidate.direction === "downside",
     tradingHaltCheck: object(report.tradingHaltSafety).currentStateKnown === true,
@@ -188,6 +190,13 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
   ] });
   const timing = evidenceTiming({ event, candidate, committee, previous: object(object(previousFollowup.quality).timing), collection: input.collectionTiming, paid, now });
   const quality = { fields: completeness, availableFields: known, requiredFields: Object.keys(completeness).length,
+    applicability: { financialFacts: financialFactsRequired },
+    committeeCompleted: completeCommitteeReview(committee),
+    reviewOutcome: completeCommitteeReview(committee)
+      ? output.overallRecommendation === "approve" ? "approved" : output.overallRecommendation === "reject" ? "rejected" : "incomplete_evidence"
+      : paid && Number(committee.agentsFailed) > 0 ? "technical_failure"
+      : report.status === "qualified_signal_openai_reservation_denied" || report.status === "qualified_signal_openai_not_requested" ? "budget_deferred"
+      : known < Object.keys(completeness).length ? "incomplete_evidence" : "awaiting_review",
     completenessPercent: Math.round(known / Object.keys(completeness).length * 100),
     evidenceAgeMinutes: timing.sourceAgeMinutes,
     timing,
@@ -202,7 +211,7 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
     const current = await readVersionedTextFromR2(key);
     await writeVersionedJsonToR2(key, { version: 1, eventId, ticker: event.ticker, updatedAt: now.toISOString(),
       status: "collecting_evidence", nextEvidenceCheckAt,
-      paidReviewNotBefore: paid ? new Date(now.getTime() + 86400000).toISOString() : previousReview.paidReviewNotBefore,
+      paidReviewNotBefore: paid ? new Date(now.getTime() + (committeeRequestsRejectedWithoutUsage(committee) ? 5 * 60000 : 86400000)).toISOString() : previousReview.paidReviewNotBefore,
       candidateFingerprint: paid ? report.candidateFingerprint : previousReview.candidateFingerprint,
       gaps: paid ? tasks.gaps : previousReview.gaps ?? tasks.gaps,
       tasks: tasks.tasks, quality,
@@ -230,7 +239,7 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
   if (auditSample) {
     for (let attempt = 0; attempt < 4; attempt++) {
       const previous = savedAudit.found && savedAudit.text ? object(JSON.parse(savedAudit.text)) : {};
-      const completedReview = paid && committee.ok === true && Number(committee.agentsCompleted) === 14 && Number(committee.agentsFailed) === 0
+      const completedReview = paid && committee.ok === true && completeCommitteeReview(committee) && Number(committee.agentsFailed) === 0
         && ["approve", "reject", "needs_more_data"].includes(text(output.overallRecommendation));
       const result = await writeVersionedJsonToR2(auditKey, {
         ...previous, version: 2, eventId, ticker: event.ticker, checkedAt: now.toISOString(),
@@ -258,7 +267,7 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
     }
   }
   if (candidate.ticker && (report.seriousSignalFound !== true || input.approvedResultKey)) {
-    const approved = Boolean(input.approvedResultKey) && report.seriousSignalFound === true && Number(committee.agentsCompleted) === 14 && Number(committee.agentsFailed) === 0 && output.overallRecommendation === "approve";
+    const approved = Boolean(input.approvedResultKey) && report.seriousSignalFound === true && completeCommitteeReview(committee) && Number(committee.agentsFailed) === 0 && output.overallRecommendation === "approve";
     const alert = { id: hash(eventId), eventId, createdAt: now.toISOString(), eventObservedAt: event.observedAt,
       ticker: candidate.ticker, company: candidate.company, cik: candidate.cik, companyProfile: candidate.companyProfile ?? null, action: candidate.direction === "upside" ? "buy" : candidate.direction === "downside" ? "sell" : "watch_out",
       valuationObservedAt: input.companyAnalysis?.observedAt ?? null,

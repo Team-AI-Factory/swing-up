@@ -1,3 +1,4 @@
+import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
@@ -8,6 +9,7 @@ function load(path, dependencies = {}) {
   const loadedModule = { exports: {} };
   new Function("require", "module", "exports", output)((name) => {
     if (name in dependencies) return dependencies[name];
+    if (["@/lib/ai-committee/review-policy", "@/lib/equity-signal/us-market-calendar"].includes(name)) return loadTsModule(name);
     throw new Error(`Unexpected import: ${name}`);
   }, loadedModule, loadedModule.exports);
   return loadedModule.exports;
@@ -46,7 +48,7 @@ try {
   for (const key of keys.filter(key => /_MODEL$|MODEL_ALLOWLIST/.test(key) && key !== "OPENAI_MODEL")) delete process.env[key];
   console.info = () => {};
 
-  for (const [httpStatus, code, category] of [[401, "invalid_api_key", "authentication"], [403, "permission_denied", "permission"], [429, "insufficient_quota", "quota"], [429, "rate_limit_exceeded", "rate_limit"], [400, "unsupported_parameter", "invalid_request"], [503, "service_unavailable", "unavailable"]]) {
+  for (const [httpStatus, code, category] of [[401, "invalid_api_key", "authentication"], [403, "permission_denied", "permission"], [429, "insufficient_quota", "quota"], [429, "credit_balance_exhausted", "quota"], [429, "project_spend_limit_exceeded", "quota"], [429, "rate_limit_exceeded", "rate_limit"], [400, "unsupported_parameter", "invalid_request"], [503, "service_unavailable", "unavailable"]]) {
     let requests = 0;
     globalThis.fetch = async () => {
       requests++;
@@ -146,7 +148,41 @@ try {
   assert.equal(accessDenied.failure.category, "authentication");
   assert.equal(accessDenied.failure.httpStatus, 401);
   assert.doesNotMatch(JSON.stringify(accessDenied), /test-secret/);
-  console.log("Committee failures: safe diagnostics, stop shared failure cascade, distinguish technical failures, preserve partial usage, healthy full14 approval unchanged.");
+  console.log("Committee failures: safe diagnostics, stop shared failure cascade, distinguish technical failures, preserve partial usage, focused 3–5 reviewer plans, specialist selection, negative votes and legacy approval.");
+  globalThis.fetch = async () => Response.json({ error: {} }, { status: 429 });
+  const ambiguous429 = await provider.runOpenAiCommitteeProvider({ tier: "fast", confirmRun: true, dryRun: false, messages: [] });
+  assert.equal(ambiguous429.failure.category, "rate_or_quota", "Unrecognized 429 responses must not be labelled a proven rate limit.");
+
+  const policy = loadTsModule("@/lib/ai-committee/review-policy");
+  for (const [headline, kind, count, specialist] of [["New verified product", "event", 3, null], ["Earnings guidance raised", "event", 4, "accountant_agent"], ["FDA approval", "event", 4, "industry_agent"], ["Valuation research", "valuation", 4, "valuation_dcf_agent"], ["FDA approval changes revenue guidance", "event", 5, "industry_agent"]]) {
+    requests = 0;
+    globalThis.fetch = async (_url, options) => {
+      requests++;
+      const request = JSON.parse(options.body);
+      assert.ok(request.max_tokens <= 1000);
+      const payload = JSON.parse(request.messages[1].content);
+      if (payload.agent.id === "analyst_agent") assert.match(request.messages[0].content, /What happened:/);
+      if (payload.agent.id === "final_judge") assert.ok(!payload.agent.requiredInputs.includes("compliance result"));
+      return completed();
+    };
+    const focused = await committee.runAiCommittee({ ...input, reviewPolicy: "focused_v1", maximumPromptBytes: 60000, maxCostUsd: 0.156,
+      [committee.TRUSTED_IN_MEMORY_EVIDENCE]: { ...pack, analysisKind: kind, eventHeadline: headline } });
+    assert.equal(requests, count);
+    assert.equal(focused.ok, true);
+    assert.equal(focused.committeeOutput.overallRecommendation, "approve");
+    if (specialist) assert.ok(focused.plannedAgents.includes(specialist));
+    const proof = { ok: focused.ok, agentsCompleted: count, agentsFailed: 0, output: focused.committeeOutput };
+    assert.equal(policy.completeCommitteeReview(proof), true);
+    const missingSceptic = structuredClone(proof);
+    missingSceptic.output.modelUsageSummary.roleDiagnostics = missingSceptic.output.modelUsageSummary.roleDiagnostics.filter(role => role.agentId !== "skeptic_agent");
+    assert.equal(policy.completeCommitteeReview(missingSceptic), false);
+    const negative = focused.agentResults.map(role => role.agentId === "skeptic_agent" ? { ...role, verdict: "negative", concerns: ["Verified adverse fact"] } : role);
+    assert.equal(committee.committeeConsensusDecision(negative, { reviewPolicy: "focused_v1" }).overallRecommendation, "reject");
+  }
+  globalThis.fetch = async () => Response.json({ usage });
+  const malformedWithUsage = await provider.runOpenAiCommitteeProvider({ tier: "fast", confirmRun: true, dryRun: false, messages: [] });
+  assert.equal(malformedWithUsage.ok, false);
+  assert.equal(malformedWithUsage.tokenUsage.totalTokens, 160, "A malformed output must preserve real reported usage.");
 } finally {
   globalThis.fetch = originalFetch;
   console.info = originalInfo;

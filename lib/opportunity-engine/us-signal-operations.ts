@@ -1,3 +1,4 @@
+import { completeCommitteeReview } from "@/lib/ai-committee/review-policy";
 import crypto from "node:crypto";
 import { evaluateFiveCasePilotGate } from "@/lib/equity-signal/pilot-serious-signal-policy";
 import { loadEquityUniverse } from "@/lib/equity-signal/universe";
@@ -173,6 +174,7 @@ export type ActiveSeriousSignal = {
     specialistModel: SpecialistValuation["model"];
     committeeApproved: boolean;
     committeeAgentsCompleted: number;
+    committeeReviewProof?: Json;
     committeeAgentsFailed: number;
     finalJudgePositive: boolean;
     finalJudgeConfidence: number | null;
@@ -370,6 +372,7 @@ function parseEventCandidates(historyValue: unknown) {
 }
 
 type CommitteeApproval = {
+  reviewProof?: Json;
   approved: boolean;
   actionable: boolean;
   historicalContextAvailable: boolean;
@@ -394,12 +397,13 @@ function committeeApprovalFromRun(runValue: unknown): CommitteeApproval {
   return {
     approved: run.seriousSignalFound === true
       && committee.ok === true
-      && agentsCompleted === 14
+      && completeCommitteeReview(committee)
       && agentsFailed === 0
       && finalJudgePositive
       && output.overallRecommendation === "approve",
     actionable: run.actionableSignalFound === true && (run.alertType === "buy" || run.alertType === "sell"),
     historicalContextAvailable,
+    reviewProof: { ok: committee.ok, agentsCompleted, agentsFailed, output: { modelUsageSummary: output.modelUsageSummary } },
     agentsCompleted,
     agentsFailed,
     finalJudgePositive,
@@ -413,6 +417,7 @@ function committeeApprovalFromCandidate(candidate: Json): CommitteeApproval {
     approved: approval.approved === true,
     actionable: approval.actionable === true,
     historicalContextAvailable: approval.historicalContextAvailable === true,
+    reviewProof: approval.reviewProof ? object(approval.reviewProof) : undefined,
     agentsCompleted: Math.max(0, Math.floor(finite(approval.agentsCompleted) ?? 0)),
     agentsFailed: Math.max(0, Math.floor(finite(approval.agentsFailed) ?? 0)),
     finalJudgePositive: approval.finalJudgePositive === true,
@@ -1188,6 +1193,7 @@ function makeSignal(input: {
       specialistModel: input.specialist.model,
       committeeApproved: input.committee?.approved === true,
       committeeAgentsCompleted: input.committee?.agentsCompleted ?? 0,
+      committeeReviewProof: input.committee?.reviewProof,
       committeeAgentsFailed: input.committee?.agentsFailed ?? 0,
       finalJudgePositive: input.committee?.finalJudgePositive === true,
       finalJudgeConfidence: input.committee?.finalJudgeConfidence ?? null,

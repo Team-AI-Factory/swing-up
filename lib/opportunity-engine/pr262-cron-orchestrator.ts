@@ -172,6 +172,8 @@ async function safeAiBudgetStatus(): Promise<AiBudgetStatus> {
       spentUsd: 0,
       completeTokenUsageEstimateUsd: 0,
       unknownUsageAllocationUsd: 0,
+      providerCooldown: null,
+      pendingUsageUpperBoundUsd: 0,
       reservedUsd: 0,
       exposureUsd: 0,
       remainingUsd: 0,
@@ -179,7 +181,7 @@ async function safeAiBudgetStatus(): Promise<AiBudgetStatus> {
       warningUsd: Number(process.env.SWING_UP_PR262_AI_DAILY_WARNING_USD) || 6,
       warning: true,
       hardFuseTripped: true,
-      nextReviewReservationUsd: Number(process.env.SWING_UP_PR262_AI_REVIEW_RESERVATION_USD) || 0.75,
+      nextReviewReservationUsd: 0,
       nextBudgetAdmissionAt: null,
       reservationCheckedBeforePaidCommittee: true,
       activeReservations: 0,
@@ -248,7 +250,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
   const queueHealthAtStart = queueHealthSnapshot(state, readyNow);
   const capacity = capacityForQueue(readyAtStart);
   // Backlogged event work can consume the entire processing window. Give the
-  // existing one-profile maintenance pass its bounded turn before admissions.
+  // bounded profile maintenance pass its turn before admissions.
   const profileSignal = composedSignal([cycleSignal, AbortSignal.timeout(30_000)]);
   const profileFetch: typeof fetch = (request, init) => fetch(request, {
     ...init,
@@ -612,8 +614,8 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
       providerAccessDiagnostic,
       providerBlockedReason,
       actualTokenUsagePreferred: true,
-      unknownUsageFallbackUsd: 0.75,
-      incompleteUsageRetainsFullReservation: true,
+      unknownUsageBookedAsSpend: false,
+      unconfirmedRequestsRetainSeparateBoundedExposure: true,
       hardDailyLimitCannotBeRaisedAboveUsd: 10,
       candidatesRemainQueuedWhenFuseBlocksAi: true,
       accountingFailureBlocksAdditionalAiOnly: true,

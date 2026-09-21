@@ -24,7 +24,7 @@ const overrides = {
       if (data.agent.id !== "final_judge") assert.doesNotMatch(input.messages[0].content, /As Final Judge/);
       assert.match(data.decisionRules.discoveryProviderGap, /not required for valuation/);
       assert.equal(data.evidencePack.evidenceSections.fundamentals.items[0].source, "pr262_stored_company_analysis", "The valuation must reach the prompt instead of being sliced away behind three balance-sheet fields");
-      return { ok: true, model: "gpt-4.1-mini", content: JSON.stringify({ agentId: data.agent.id, verdict: "positive", confidence: 95, keyFindings: data.agent.id === "explainer_agent" ? ["Company: Test Software sells business software.", "What happened: Its price is below the model estimate.", "Why it matters: The estimate may be worth more than the market price.", "Possible outcome: The gap could close if the assumptions hold.", "Risks: Earnings could disappoint."] : [], supportingEvidence: [], concerns: [], missingData: [], followUpChecks: [], suggestedActionLabel: "Review valuation", riskNotes: [] }) };
+      return { ok: true, model: "gpt-4.1-mini", content: JSON.stringify({ agentId: data.agent.id, verdict: "positive", confidence: 95, keyFindings: data.agent.id === "analyst_agent" ? ["Company: Test Software sells business software.", "What happened: Its price is below the model estimate.", "Why it matters: The estimate may be worth more than the market price.", "Possible outcome: The gap could close if the assumptions hold.", "Risks: Earnings could disappoint."] : [], supportingEvidence: [], concerns: [], missingData: [], followUpChecks: [], suggestedActionLabel: "Review valuation", riskNotes: [] }) };
     },
   },
   "@/lib/ai-committee/evidence-pack": { buildAiCommitteeEvidencePack: async () => { throw new Error("Unexpected DB read"); } },
@@ -48,27 +48,27 @@ const input = { now, resolveCompanyProfile: async identity => companyProfileFixt
     receipts: [receipt], providers: [provider("nasdaq_trade_halts")], historicalSignalsComplete: true, storedCompanyAnalysis: analysis, sourceEvidenceIncomplete: false } };
 const approved = await runner.runEquitySignalLab(input);
 assert.equal(approved.openAiCalled, true);
-assert.equal(roleCalls, 14);
+assert.equal(roleCalls, 4);
 assert.equal(approved.seriousSignalFound, true, JSON.stringify(approved.blockers));
 assert.equal(approved.selectedCandidate.eventFamily, "valuation_gap");
 assert.match(approved.selectedCandidate.plainLanguageExplanation.companyDoes, /sells business software/);
 quoteReady = false;
 const stale = await runner.runEquitySignalLab(input);
-assert.equal(roleCalls, 28);
+assert.equal(roleCalls, 8);
 assert.equal(stale.seriousSignalFound, false, "A dated price may support review but cannot create a Serious Signal");
 quoteReady = true; missingFacts = true;
 const incomplete = await runner.runEquitySignalLab(input);
-assert.equal(roleCalls, 42);
+assert.equal(roleCalls, 12);
 assert.equal(incomplete.seriousSignalFound, false, "Positive AI votes cannot supply absent financial facts");
 missingFacts = false; livePrice = 120;
 const repriced = await runner.runEquitySignalLab(input);
 assert.equal(repriced.seriousSignalFound, false, "A vanished valuation gap must not publish from the old foundation price");
-assert.equal(roleCalls, 56);
+assert.equal(roleCalls, 16);
 livePrice = 50;
 denyBudget = true; missingFacts = false;
 const denied = await runner.runEquitySignalLab(input);
 assert.equal(denied.openAiCalled, false);
-assert.equal(roleCalls, 56);
+assert.equal(roleCalls, 16);
 assert.equal(reservations, 5);
 
 const objects = new Map(); let revision = 0;

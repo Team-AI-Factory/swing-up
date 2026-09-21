@@ -1,3 +1,4 @@
+import { completeCommitteeReview } from "@/lib/ai-committee/review-policy";
 import type {
   ActiveSeriousSignal,
   UsSignalOperationsReport,
@@ -103,8 +104,9 @@ function basicSignalChecks(signal: ActiveSeriousSignal) {
   if (!signal.evidence.officialSourceConfirmed) blockers.push("Official or primary evidence is not confirmed.");
   if (signal.action !== "watch_out" && !signal.evidence.priceCrossChecked) blockers.push("Actionable Buy/Sell price is not independently cross-checked.");
   if (signal.evidence.committeeApproved !== true) blockers.push("The full AI committee did not approve this signal.");
-  if (signal.evidence.committeeAgentsCompleted !== 14 || signal.evidence.committeeAgentsFailed !== 0) {
-    blockers.push("All 13 specialists plus the Final Judge did not complete successfully.");
+  const reviewProof = signal.evidence.committeeReviewProof ?? { ok: true, agentsCompleted: signal.evidence.committeeAgentsCompleted, agentsFailed: signal.evidence.committeeAgentsFailed };
+  if (!completeCommitteeReview(reviewProof) || Number(reviewProof.agentsCompleted) !== signal.evidence.committeeAgentsCompleted || signal.evidence.committeeAgentsFailed !== 0) {
+    blockers.push("Every reviewer in the selected Committee plan must complete successfully (legacy plans require 13 specialists plus the Final Judge).");
   }
   if (signal.evidence.finalJudgePositive !== true || (signal.evidence.finalJudgeConfidence ?? 0) < 80) {
     blockers.push("The Final Judge did not return a positive verdict at 80% confidence or higher.");

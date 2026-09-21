@@ -1,3 +1,4 @@
+import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
@@ -97,6 +98,7 @@ const stubs = {
 };
 new Function("require", "module", "exports", output)((name) => {
   if (name in stubs) return stubs[name];
+  if (["@/lib/ai-committee/review-policy", "@/lib/equity-signal/us-market-calendar"].includes(name)) return loadTsModule(name);
   throw new Error(`Unexpected event-source import: ${name}`);
 }, loaded, loaded.exports);
 
@@ -581,6 +583,7 @@ assert.match(marketSource, /function aggregateFailureStatus[\s\S]{0,180}if \(!st
 
 const marketLoaded = { exports: {} };
 new Function("require", "module", "exports", marketOutput)((name) => {
+  if (["@/lib/ai-committee/review-policy", "@/lib/equity-signal/us-market-calendar"].includes(name)) return loadTsModule(name);
   throw new Error(`Unexpected market import: ${name}`);
 }, marketLoaded, marketLoaded.exports);
 const quoteFetches = [];

@@ -133,6 +133,8 @@ const localRequire = (name) => {
   if (name === "node:crypto") return awaitImportCrypto;
   if (name in stubs) return stubs[name];
   if (["@/lib/company-profile", "@/lib/signal-explanation", "@/lib/equity-signal/valuation-candidate"].includes(name)) return loadTsModule(name);
+  if (["@/lib/ai-committee/review-policy", "@/lib/equity-signal/us-market-calendar"].includes(name)) return loadTsModule(name);
+  if (name === "@/lib/opportunity-engine/pr262-ai-daily-cost") return loadTsModule(name, { "@/lib/r2-warehouse": {} });
   throw new Error(`Unexpected runner import: ${name}`);
 };
 const awaitImportCrypto = { createHash: () => ({ update() { return this; }, digest: () => "0123456789abcdef0123456789abcdef" }) };

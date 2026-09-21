@@ -1,3 +1,4 @@
+import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 import { readFile } from "node:fs/promises";
 import ts from "typescript";
 
@@ -42,6 +43,7 @@ const importStubs = {
 };
 const localRequire = (specifier) => {
   if (specifier in importStubs) return importStubs[specifier];
+  if (["@/lib/ai-committee/review-policy", "@/lib/equity-signal/us-market-calendar"].includes(specifier)) return loadTsModule(specifier);
   throw new Error(`Unexpected import while loading committee decision: ${specifier}`);
 };
 new Function("require", "module", "exports", transpiled.outputText)(localRequire, loadedModule, loadedModule.exports);

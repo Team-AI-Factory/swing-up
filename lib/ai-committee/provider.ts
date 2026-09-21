@@ -20,7 +20,7 @@ export type AiCommitteeTokenUsage = {
 };
 
 export type AiCommitteeProviderFailure = {
-  category: "authentication" | "permission" | "quota" | "rate_limit" | "invalid_request" | "unavailable" | "timeout" | "cancelled" | "transport" | "invalid_response";
+  category: "authentication" | "permission" | "quota" | "rate_limit" | "rate_or_quota" | "invalid_request" | "unavailable" | "timeout" | "cancelled" | "transport" | "invalid_response";
   httpStatus?: number;
   code?: string;
   requestId?: string;
@@ -36,6 +36,8 @@ const KNOWN_ERROR_CODES = new Set([
   "billing_hard_limit_reached", "billing_not_active", "organization_deactivated",
   "account_deactivated", "unsupported_parameter", "unsupported_value",
   "invalid_value", "server_error", "service_unavailable",
+  "credit_balance_exhausted", "organization_spend_limit_exceeded", "project_spend_limit_exceeded",
+  "organization_usage_limit_exceeded", "slow_down", "server_is_overloaded",
 ]);
 
 async function httpFailure(response: Response): Promise<AiCommitteeProviderFailure> {
@@ -46,10 +48,10 @@ async function httpFailure(response: Response): Promise<AiCommitteeProviderFailu
   const code = typeof rawCode === "string" && KNOWN_ERROR_CODES.has(rawCode) ? rawCode : undefined;
   const requestId = response.headers.get("x-request-id") ?? "";
   const retryAfter = Number(response.headers.get("retry-after"));
-  const quota = code === "insufficient_quota" || code === "billing_hard_limit_reached" || code === "billing_not_active";
+  const quota = Boolean(code && ["insufficient_quota", "billing_hard_limit_reached", "billing_not_active", "credit_balance_exhausted", "organization_spend_limit_exceeded", "project_spend_limit_exceeded", "organization_usage_limit_exceeded"].includes(code));
   return {
     category: response.status === 401 ? "authentication" : response.status === 403 ? "permission"
-      : quota ? "quota" : response.status === 429 ? "rate_limit"
+      : quota ? "quota" : response.status === 429 ? (["rate_limit_exceeded", "slow_down"].includes(code ?? "") ? "rate_limit" : "rate_or_quota")
         : response.status >= 500 ? "unavailable" : "invalid_request",
     httpStatus: response.status,
     ...(code ? { code } : {}),
@@ -221,12 +223,8 @@ export async function runOpenAiCommitteeProvider(options: AiCommitteeRunOptions)
     return { ok: false as const, status: timedOut ? "provider_timeout" as const : "provider_error" as const, modelTier: options.tier, model, failure, providerStatus: status };
   }
 
-  if (!data || typeof data !== "object" || !Array.isArray(data.choices)) {
-    const failure: AiCommitteeProviderFailure = { category: "invalid_response", stopRemainingAgents: false };
-    return { ok: false as const, status: "provider_error" as const, modelTier: options.tier, model, failure, providerStatus: status };
-  }
   const count = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
-  const validUsage = data.usage && [data.usage.prompt_tokens, data.usage.completion_tokens, data.usage.total_tokens]
+  const validUsage = data?.usage && [data.usage.prompt_tokens, data.usage.completion_tokens, data.usage.total_tokens]
     .every(value => typeof value === "number" && Number.isFinite(value) && value >= 0)
     && Number(data.usage.total_tokens) >= Number(data.usage.prompt_tokens) + Number(data.usage.completion_tokens);
   const tokenUsage: AiCommitteeTokenUsage | undefined = validUsage && data.usage ? {
@@ -235,6 +233,10 @@ export async function runOpenAiCommitteeProvider(options: AiCommitteeRunOptions)
     totalTokens: count(data.usage.total_tokens),
     cachedPromptTokens: count(data.usage.prompt_tokens_details?.cached_tokens),
   } : undefined;
+  if (!data || typeof data !== "object" || !Array.isArray(data.choices)) {
+    const failure: AiCommitteeProviderFailure = { category: "invalid_response", stopRemainingAgents: false };
+    return { ok: false as const, status: "provider_error" as const, modelTier: options.tier, model, tokenUsage, failure, providerStatus: status };
+  }
   const rawContent = data.choices?.[0]?.message?.content;
   const rawFinishReason = data.choices?.[0]?.finish_reason;
   const finishReason = rawFinishReason && ["stop", "length", "content_filter", "tool_calls", "function_call"].includes(rawFinishReason) ? rawFinishReason : undefined;

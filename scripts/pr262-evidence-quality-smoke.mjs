@@ -9,7 +9,7 @@ const candidate = { ticker: "TEST", company: "Test Software", cik: event.cik, di
   companyProfile: companyProfileFixture({ ticker: "TEST", company: "Test Software", cik: event.cik }, now),
   fundamentals: { available: true },
   quote: { price: 100, observedAt: "2026-09-17T22:50:00Z", providerFetchedAt: "2026-09-17T22:58:00Z", actionableForSeriousSignal: true } };
-const committee = { startedAt: "2026-09-17T22:30:00Z", finishedAt: "2026-09-17T22:31:00Z", agentsCompleted: 14, output: { overallRecommendation: "needs_more_data" } };
+const committee = { ok: true, agentsFailed: 0, startedAt: "2026-09-17T22:30:00Z", finishedAt: "2026-09-17T22:31:00Z", agentsCompleted: 14, output: { overallRecommendation: "needs_more_data" } };
 const collection = { startedAt: "2026-09-17T22:15:00Z", finishedAt: "2026-09-17T22:20:00Z", sourceCollectedAt: "2026-09-17T22:20:00Z" };
 const timing = metrics.evidenceTiming({ event, candidate, committee, collection, now, paid: true });
 assert.equal(timing.sourceAgeMinutes, 60);
@@ -21,6 +21,8 @@ assert.equal(timing.collectionDurationMinutes, 5);
 assert.equal(timing.committeeDurationMinutes, 1);
 assert.equal(timing.eventToFirstCommitteeMinutes, 30, "Committee start, not job start or completion, defines time to review.");
 assert.equal(timing.queueToFirstCommitteeMinutes, 25);
+assert.equal(timing.eventToCompletedCommitteeMinutes, 31);
+assert.equal(metrics.evidenceTiming({ event, candidate, committee: { ...committee, ok: false, agentsFailed: 1 }, collection, now, paid: true }).eventToCompletedCommitteeMinutes, null);
 const missing = metrics.evidenceTiming({ event: { observedAt: "2026-09-18T00:00:00Z" }, candidate: {}, committee: {}, now, paid: false });
 assert.equal(missing.sourceAgeMinutes, null, "A future timestamp is invalid, not fresh evidence.");
 assert.equal(missing.quoteAgeMinutes, null);

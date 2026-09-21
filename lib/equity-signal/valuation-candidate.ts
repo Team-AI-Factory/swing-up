@@ -18,7 +18,9 @@ export function buildValuationCandidate(analysis: UsValueCompanyAnalysis, cik: s
   const causalChain = ["Financial results support an estimated business value", "The share price differs from that estimate", "The gap may close if the estimate proves sound"];
   const checks = { directionResolved: true, exactIssuer: true, valuationCurrencyConfirmed: analysis.currency === "USD", currentFoundation: age <= 30 * 3600000,
     valuationConfidence: confidence >= 75, financialEvidence: completeness >= 75,
-    independentValuationMethods: analysis.fairValue.methods.length >= 2, materialGap: Math.abs(gap) >= 20,
+    independentValuationMethods: new Set(analysis.fairValue.methods.filter(method => Number.isFinite(method.value) && method.value > 0).map(method => method.method)).size >= 2, materialGap: Math.abs(gap) >= 20,
+    valueTrapRiskAcceptable: direction === "downside" || (Number.isFinite(analysis.scores.risk) && analysis.scores.risk <= 45
+      && analysis.scores.businessQuality >= 70 && analysis.scores.balanceSheet >= 50),
     currentEvidenceScoreAtLeast72: score >= 72, verifiedFinancialFacts: false };
   const historical = analyzeHistoricalAnalogs({ eventKey: rootEventKey, eventFamily: "valuation_gap", direction, relationship: "direct", causalChain, macroRegime: [], asOf: now.toISOString(), featuresAsOf: analysis.observedAt }, []);
   return { ticker: analysis.ticker, company: analysis.company, cik, rootEventKey, eventFamily: "valuation_gap", direction,

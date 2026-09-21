@@ -8,6 +8,8 @@ type LiveAlert = {
   id: string;
   createdAt: string;
   ticker: string;
+  company: string;
+  industry: string;
   alertType: "buy" | "sell" | "watch_out";
   eventHeadline: string;
   whyItMatters: string | null;
@@ -191,7 +193,7 @@ function ValuationWatchlistPanel({
             {watchlist.livePricing.available && watchlist.livePricing.checkedAt ? ` Live prices checked ${formatTime(watchlist.livePricing.checkedAt)}.` : ""}
           </p>
           {watchlist.candidates.length === 0 ? (
-            <section className="card"><h3>No provisional valuation candidate is available in the latest complete foundation run.</h3></section>
+            <section className="card"><h3>No valuation alert has completed all company-detail and price-comparison checks yet.</h3></section>
           ) : (
             <div className="grid">
               {watchlist.candidates.map((item) => (
@@ -203,6 +205,7 @@ function ValuationWatchlistPanel({
                     {item.livePriceAlert ? <span className="badge">{livePriceAlertLabel(item.livePriceAlert)}</span> : null}
                   </div>
                   <h3>{item.ticker} · {item.company}</h3>
+                  <p><strong>Industry:</strong> {item.industry}</p>
                   {item.explanation ? <><p><strong>What the company does:</strong> {item.explanation.companyDoes}</p><p><strong>What is happening:</strong> {item.explanation.whatHappened}</p><p><strong>Why it matters:</strong> {item.explanation.whyItMatters}</p><p><strong>What could happen:</strong> {item.explanation.whatCouldHappen}</p><p><strong>What could go wrong:</strong> {item.explanation.whatCouldGoWrong}</p></> : null}
                   <SignalPriceOutlook outlook={item.outlook} action={item.action} />
                   <p className="muted">Price snapshot collected {formatTime(item.priceObservedAt)} Bangkok time{item.livePriceFresh ? " · sensor snapshot" : " · foundation snapshot"}. This is the collection time; the exchange trade time is unavailable. Prices may have changed.</p>
@@ -397,6 +400,7 @@ export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
                     <span className="badge">{deliveryLabel(alert.delivery.status)}</span>
                   </div>
                   <h2>{alert.ticker} {alert.price !== null ? `· $${alert.price.toLocaleString("en-US")}` : ""}</h2>
+                  <p><strong>Industry:</strong> {alert.industry}</p>
                   <p><strong>What happened:</strong> {alert.explanation?.whatHappened ?? "The business effect is being assessed."}</p>
                   {alert.explanation ? <><p><strong>What the company does:</strong> {alert.explanation.companyDoes}</p><p><strong>What could happen:</strong> {alert.explanation.whatCouldHappen}</p><p><strong>What could go wrong:</strong> {alert.explanation.whatCouldGoWrong}</p></> : null}
                   <p><strong>Why it matters:</strong> {alert.explanation?.whyItMatters ?? alert.whyItMatters ?? "The full verified explanation is not available in the sanitized feed."}</p>

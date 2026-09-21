@@ -1,4 +1,5 @@
 import type { VerifiedCompanyProfile } from "@/lib/company-profile";
+import { completePriceOutlook, industryLabel } from "@/lib/alert-details";
 import { readCompanyProfiles } from "@/lib/opportunity-engine/company-profile-cache";
 import { explainSignal, plainEvidenceGaps } from "@/lib/signal-explanation";
 import { buildPriceOutlook, compareSignalPotential } from "@/lib/signal-outlook";
@@ -69,6 +70,8 @@ function sanitizeReasons(value: unknown, maximum = 4) {
 function sanitizeCandidate(item: UsValueCompanyAnalysis, action: WatchlistAction, cycleId: string, livePrice?: LivePrice, review?: Record<string, unknown>, companyProfile?: VerifiedCompanyProfile) {
   const ticker = safeTicker(item.ticker);
   if (!ticker || !companyProfile) return null;
+  const modelAge = Date.now() - Date.parse(item.observedAt);
+  if (!Number.isFinite(modelAge) || modelAge < -300000 || modelAge > 30 * 3600000) return null;
   const reasons = sanitizeReasons(item.decision?.reasons);
   const blockers = sanitizeReasons(item.decision?.blockers);
   const specialistModelApplied = reasons.some((reason) => /specialist model/i.test(reason));
@@ -76,6 +79,9 @@ function sanitizeCandidate(item: UsValueCompanyAnalysis, action: WatchlistAction
   const tradingViewUrl = safeTradingViewUrl(item.tradingViewSymbol);
   const currentPrice = livePrice?.price ?? finite(item.currentPrice);
   const baseValue = finite(item.fairValue?.baseValue);
+  const industry = industryLabel(item.industry, companyProfile.industry);
+  const outlook = buildPriceOutlook({ currentPrice, currency: item.currency, action, conservative: item.fairValue?.conservativeValue, base: baseValue, optimistic: item.fairValue?.optimisticValue, basis: "valuation" });
+  if (!industry || !completePriceOutlook(outlook)) return null;
   const liveUpsideToBasePercent = currentPrice !== null && currentPrice > 0 && baseValue !== null
     ? Math.round(((baseValue - currentPrice) / currentPrice) * 10_000) / 100
     : finite(item.fairValue?.upsideToBasePercent);
@@ -99,10 +105,10 @@ function sanitizeCandidate(item: UsValueCompanyAnalysis, action: WatchlistAction
     },
     valuationMethods: Array.isArray(item.fairValue?.methods) ? item.fairValue.methods.slice(0, 6).map((method) => ({ method: String(method.method).slice(0, 100), assumption: String(method.assumption).slice(0, 240) })) : [],
     sector: text(item.sector),
-    industry: text(item.industry),
+    industry,
     action,
     currentPrice,
-    outlook: buildPriceOutlook({ currentPrice, currency: item.currency, action, conservative: item.fairValue?.conservativeValue, base: baseValue, optimistic: item.fairValue?.optimisticValue, basis: "valuation" }),
+    outlook,
     priceObservedAt,
     livePriceFresh: Boolean(livePrice),
     livePriceAlert: livePrice && (livePrice.threshold || Math.abs(livePrice.changePercent ?? 0) >= 5 || (livePrice.relativeVolume ?? 0) >= 3) ? {
@@ -128,7 +134,7 @@ function sanitizeCandidate(item: UsValueCompanyAnalysis, action: WatchlistAction
     blockers,
     specialistModelApplied,
     publicationStatus: approvedForThisSnapshot ? "committee_approved_alert" as const : "provisional_alert" as const,
-    userAlertEligible: action !== "price_watch" && directionStillSupported && review?.committeeStatus !== "rejected",
+    userAlertEligible: action !== "price_watch" && directionStillSupported && !["rejected", "not_eligible"].includes(String(review?.committeeStatus)),
     committeeApproved: approvedForThisSnapshot,
     committeeStatus: approvedForThisSnapshot ? "approved" : review?.committeeApproved === true ? "awaiting_review" : String(review?.committeeStatus ?? "awaiting_review"),
     explanation: explainSignal({ company: String(item.company ?? ticker), sector: item.sector, industry: item.industry, description: companyProfile.description, kind: "valuation", action, price: currentPrice, fairValue: baseValue, fundamentals: item.fundamentals, gaps: plainEvidenceGaps(blockers) }),
@@ -185,10 +191,12 @@ export async function getValuationWatchlistStatus(options: { limit?: number; act
         const value = object(row);
         const ticker = safeTicker(value.ticker);
         const price = finite(value.price);
-        if (ticker && price !== null && price > 0) livePrices.set(ticker, {
+        const rowCheckedAt = text(value.checkedAt) ?? checkedAt;
+        const rowAge = nowMs - Date.parse(rowCheckedAt);
+        if (ticker && price !== null && price > 0 && rowAge >= 0 && rowAge <= LIVE_PRICE_MAX_AGE_MS) livePrices.set(ticker, {
           ticker,
           price,
-          checkedAt,
+          checkedAt: rowCheckedAt,
           changePercent: finite(value.changePercent),
           relativeVolume: finite(value.relativeVolume),
           threshold: text(value.threshold),
@@ -235,6 +243,7 @@ export async function getValuationWatchlistStatus(options: { limit?: number; act
     },
     summary: {
       total: all.length,
+      preparing: groups.reduce((total, [, items]) => total + items.length, 0) - all.length,
       buyResearch: all.filter(row => row.action === "buy_research").length,
       sellResearch: all.filter(row => row.action === "sell_research").length,
       watchOutResearch: all.filter(row => row.action === "watch_out_research").length,

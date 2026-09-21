@@ -74,7 +74,7 @@ const persistedEvidence = loadTsModule("@/lib/opportunity-engine/pr262-research-
   },
 });
 const event = { id: "comparison-pending", ticker: "EXM", cik: "0000000001", observedAt: now.toISOString() };
-const fullCandidate = { ...report.selectedCandidate, company: "Example Corp", direction: "upside", eventFamily: "earnings", eventHeadline: "Quarterly update", quote: { price: 10, observedAt: now.toISOString(), actionableForSeriousSignal: true }, fundamentals: missing.candidate.fundamentals };
+const fullCandidate = { ...report.selectedCandidate, company: "Example Corp", industry: "Application software", currency: "USD", valuationRange: { conservativeValue: 8, baseValue: 15, optimisticValue: 18 }, direction: "upside", eventFamily: "earnings", eventHeadline: "Quarterly update", quote: { price: 10, observedAt: now.toISOString(), actionableForSeriousSignal: true }, fundamentals: missing.candidate.fundamentals };
 const firstReport = { ...report, selectedCandidate: fullCandidate, openAiCalled: true, candidateFingerprint: "reviewed-facts", status: "candidate_needs_more_data", tradingHaltSafety: { currentStateKnown: true }, committee: { agentsCompleted: 14, output: { overallRecommendation: "needs_more_data" } } };
 await persistedEvidence.recordResearchEvidence({ event, report: firstReport, sourceDecisionGrade: true, sourceFailureReason: null, now });
 assert.equal((await persistedEvidence.readEvidenceFollowup(event.id)).quality.fields.financialFacts, false);

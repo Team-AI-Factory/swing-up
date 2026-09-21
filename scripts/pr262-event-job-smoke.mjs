@@ -205,6 +205,7 @@ let failHistoryAccess = false;
 let committeeFingerprint = "fingerprint-1";
 let runnerResultMode = "serious";
 let targetedValueBudgetAllowed = true;
+let sharedValueBudgetError = null;
 let resolutionAvailable = true;
 let lastStoredCompanyAnalysis = null;
 let expectEmptyStoredCompanyAnalysis = false;
@@ -391,7 +392,7 @@ const stubs = {
       }
       assert.equal(reserved, true, "Committee reservation must be granted");
       const selectedCandidate = {
-        companyProfile: companyProfileFixture({ ticker: "EXCT", company: "Exact Issuer Corp", cik: "0001234567" }),
+        companyProfile: companyProfileFixture({ ticker: "EXCT", company: "Exact Issuer Corp", cik: "0001234567" }, input.now),
         ticker: "EXCT",
         company: "Exact Issuer Corp",
         cik: "0001234567",
@@ -559,6 +560,7 @@ const stubs = {
   "@/lib/opportunity-engine/us-value-investing-engine": {
     refreshUsValueCompany: async ({ ticker, now, beforeFetch }) => {
       valueRefreshCalls += 1;
+      if (sharedValueBudgetError) throw new Error(sharedValueBudgetError);
       await beforeFetch?.();
       return { ...analysis, ticker, observedAt: now.toISOString(), currentPrice: 41 };
     },
@@ -1251,3 +1253,16 @@ const fallbackPublicAlert = (await fallbackEvidence.readResearchAlerts()).find(r
 assert.equal(fallbackPublicAlert.committeeApproved, true);
 assert.equal(fallbackPublicAlert.fairValue, analysis.fairValue.baseValue, "Finalizing approval must not erase the fallback fair value");
 assert.equal(fallbackPublicAlert.valuationObservedAt, analysis.observedAt, "Finalizing approval must retain the original valuation time");
+
+// A real shared-account cooldown must use the same fresh foundation fallback.
+targetedValueBudgetAllowed = true; runnerResultMode = "no_signal";
+for (const [index, reason] of ["minimum_interval", "rolling_24h_budget"].entries()) {
+  sharedValueBudgetError = `pr262_sensor_budget_guard:tradingview:${reason};next_retry_at=2026-08-11T10:25:00.000Z`;
+  setSecEventIdentity(`00010${index}`, "2026-08-11T10:16:00.000Z");
+  const sharedFallback = await runPr262EventJob({ now: new Date("2026-08-11T10:17:00.000Z"), allowOpenAi: false });
+  assert.equal(sharedFallback.status, "no_qualified_signal");
+  assert.equal(sharedFallback.costControl.valuationContext.source, "daily_foundation_cache");
+  assert.equal(sharedFallback.costControl.valuationContext.targetedRefreshBlockedByQuota, true);
+  assert.equal(lastStoredCompanyAnalysis.observedAt, analysis.observedAt);
+}
+sharedValueBudgetError = null;

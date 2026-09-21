@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { selectMarketWatch, mergeWatchPrices } from "@/lib/opportunity-engine/market-watch-selection";
 import {
   fetchAlphaEarningsCalendar,
   fetchAlphaNews,
@@ -69,7 +70,7 @@ type CompatState = {
   seen: string[];
   pending: Pr262SensorEvent[];
   lastMarketWatchAt: string | null;
-  cursors: { secUrgentFormIndex: number; newsQueryIndex: number; officialFeedIndex: number; directIssuerFeedIndex: number };
+  cursors: { secUrgentFormIndex: number; newsQueryIndex: number; officialFeedIndex: number; directIssuerFeedIndex: number; marketWatchOffset?: number };
   sourceHealth: Record<string, Pr262SensorSourceHealth>;
   sensorReadiness: Pr262SensorReadiness;
   cloudflareSensor: null;
@@ -99,6 +100,7 @@ type SourceSummary = {
 
 type LiveWatchlistPrice = {
   ticker: string;
+  checkedAt: string;
   tradingViewSymbol: string;
   price: number;
   changePercent: number;
@@ -282,6 +284,7 @@ function overlayCadence(state: CompatState, value: Json): CompatState {
       newsQueryIndex: Math.max(0, Number(cursors.newsQueryIndex) || 0),
       officialFeedIndex: Math.max(0, Number(cursors.officialFeedIndex) || 0),
       directIssuerFeedIndex: Math.max(0, Number(cursors.directIssuerFeedIndex) || 0),
+      marketWatchOffset: Math.max(0, Number(cursors.marketWatchOffset) || 0),
     },
     sourceHealth: object(value.sourceHealth) as Record<string, Pr262SensorSourceHealth>,
     sensorReadiness: {
@@ -313,6 +316,7 @@ async function loadState(): Promise<{ state: CompatState; stateEtag: string | nu
       newsQueryIndex: Math.max(0, Number(object(value.cursors).newsQueryIndex) || 0),
       officialFeedIndex: Math.max(0, Number(object(value.cursors).officialFeedIndex) || 0),
       directIssuerFeedIndex: Math.max(0, Number(object(value.cursors).directIssuerFeedIndex) || 0),
+      marketWatchOffset: Math.max(0, Number(object(value.cursors).marketWatchOffset) || 0),
     },
     sourceHealth: object(value.sourceHealth) as Record<string, Pr262SensorSourceHealth>,
     sensorReadiness: {
@@ -446,10 +450,10 @@ async function runFmpNews(fetchImpl: typeof fetch, exposure: Pr262ExposureEntry[
   return { provider: "fmp_news", status: "connected", recordsRead: rows.length, receipts, error: null, urls: [FMP_NEWS_URL] };
 }
 
-async function marketWatch(fetchImpl: typeof fetch, exposure: Pr262ExposureEntry[], now: Date) {
-  const watch = exposure.filter((item) => item.tradingViewSymbol && (item.buyBelowPrice !== null || item.strongBuyBelowPrice !== null || item.trimAbovePrice !== null || item.businessQuality >= 70))
-    .sort((left, right) => right.businessQuality - left.businessQuality || (right.marketCap ?? 0) - (left.marketCap ?? 0)).slice(0, 500);
-  if (!watch.length) return { events: [] as Pr262SensorEvent[], prices: [] as LiveWatchlistPrice[] };
+async function marketWatch(fetchImpl: typeof fetch, exposure: Pr262ExposureEntry[], now: Date, offset: number, activeTickers: string[]) {
+  const selection = selectMarketWatch(exposure, offset, activeTickers);
+  const watch = selection.entries;
+  if (!watch.length) return { events: [] as Pr262SensorEvent[], prices: [] as LiveWatchlistPrice[], nextOffset: 0 };
   const response = await fetchImpl(TRADINGVIEW_SCAN, { method: "POST", headers: { "content-type": "application/json", Accept: "application/json" }, body: JSON.stringify({ symbols: { tickers: watch.map((item) => item.tradingViewSymbol), query: { types: [] } }, columns: ["name", "description", "close", "change", "volume", "relative_volume_10d_calc"] }), cache: "no-store", signal: AbortSignal.timeout(25_000) });
   if (!response.ok) throw new Error(`pr262_v3_market_http_${response.status}`);
   const body = await response.json() as { data?: Array<{ s?: string; d?: unknown[] }> };
@@ -465,7 +469,7 @@ async function marketWatch(fetchImpl: typeof fetch, exposure: Pr262ExposureEntry
     const item = byTicker.get(ticker);
     if (!item || price === null || price <= 0 || !item.tradingViewSymbol) continue;
     const threshold = item.strongBuyBelowPrice !== null && price <= item.strongBuyBelowPrice ? "strong_buy_price_crossed" : item.buyBelowPrice !== null && price <= item.buyBelowPrice ? "buy_price_crossed" : item.trimAbovePrice !== null && price >= item.trimAbovePrice ? "trim_price_crossed" : null;
-    prices.push({ ticker, tradingViewSymbol: item.tradingViewSymbol, price, changePercent: change, relativeVolume, threshold });
+    prices.push({ ticker, checkedAt: now.toISOString(), tradingViewSymbol: item.tradingViewSymbol, price, changePercent: change, relativeVolume, threshold });
     if (!threshold && Math.abs(change) < 5 && relativeVolume < 3) continue;
     const kind = threshold ?? "unusual_price_or_volume";
     // The event job always refreshes the quote before deciding, so one durable
@@ -474,7 +478,7 @@ async function marketWatch(fetchImpl: typeof fetch, exposure: Pr262ExposureEntry
     // could bury genuinely new filings or news beneath repeated price work.
     events.push({ id: `${threshold ? "valuation" : "v3-market"}:${hash(`${ticker}|${kind}|${now.toISOString().slice(0, 10)}`)}`, source: "market_price", sourceProvider: threshold ? "valuation_foundation_review" : "tradingview_quality_watchlist_v3", sourceHealthStatus: "connected", observedAt: now.toISOString(), title: `${ticker} ${kind} at ${price}`, url: `https://www.tradingview.com/symbols/${encodeURIComponent(row.s ?? ticker)}/`, sourceUrl: TRADINGVIEW_SCAN, ticker, company: item.company, kind: threshold ? "valuation_review" : kind, priority: 80, reason: threshold ? "A stored fair-value threshold was crossed. Review this company’s dated financial evidence and valuation assumptions through the Committee. No new headline is required." : `A large market change was detected (${change.toFixed(1)}%, ${relativeVolume.toFixed(1)}x relative volume) and is retained as provisional price research only.`, cik: item.cik, form: null, accession: null, canonicalSecIndexUrl: null, identityMethod: "not_applicable", mappingStatus: "mapped", mappingMethod: "stored_watchlist_ticker", mappingReason: "The ticker comes from the stored PR262 company exposure index.", tradingViewSymbol: item.tradingViewSymbol, queueAttempts: 0, queueNextAttemptAt: null, queueLastAttemptAt: null, queueLastError: null });
   }
-  return { events, prices };
+  return { events, prices, nextOffset: selection.nextOffset };
 }
 
 export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl?: typeof fetch } = {}) {
@@ -612,8 +616,11 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
           summaries.push({ provider: "fmp_news", attempted: false, status: "disabled_by_license", recordsRead: 0, newEvents: 0, error: null, nextRetryAt: null });
         })]),
     run("market_watch", FIVE_MINUTES_MS, [TRADINGVIEW_SCAN], async () => {
-      const market = await marketWatch(fetchImpl, exposure.entries, now);
-      if (market.prices.length) liveWatchlistPriceSnapshot = { version: 1, checkedAt: now.toISOString(), source: "tradingview_market_watch", prices: market.prices };
+      const market = await marketWatch(fetchImpl, exposure.entries, now, state.cursors.marketWatchOffset ?? 0, state.pending.flatMap(event => event.ticker ? [event.ticker] : []));
+      if (market.prices.length) {
+        state.cursors.marketWatchOffset = market.nextOffset;
+        liveWatchlistPriceSnapshot = { version: 1, checkedAt: now.toISOString(), source: "tradingview_market_watch", prices: market.prices };
+      }
       return { status: "connected", recordsRead: market.prices.length, events: market.events, error: null };
     }),
   ]);
@@ -626,7 +633,7 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
     const prior = await readVersionedTextFromR2(LIVE_WATCHLIST_PRICE_KEY);
     const written = await writeVersionedJsonToR2(
       LIVE_WATCHLIST_PRICE_KEY,
-      liveWatchlistPriceSnapshot,
+      { ...(liveWatchlistPriceSnapshot as LiveWatchlistPriceSnapshot), prices: mergeWatchPrices(prior.found && prior.text ? JSON.parse(prior.text) : null, (liveWatchlistPriceSnapshot as LiveWatchlistPriceSnapshot).prices, now) },
       prior.etag ? { expectedEtag: prior.etag } : { createOnly: true },
     );
     if (written.conflict) throw new Error("pr262_live_watchlist_price_conflict");

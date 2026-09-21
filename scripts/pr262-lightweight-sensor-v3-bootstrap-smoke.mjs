@@ -1,3 +1,4 @@
+import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
@@ -229,6 +230,7 @@ const changeSensorOutput = ts.transpileModule(changeSensorSource, {
 const changeSensorLoaded = { exports: {} };
 new Function("require", "module", "exports", changeSensorOutput)((name) => {
   if (name in stubs) return stubs[name];
+  if (name === "@/lib/opportunity-engine/market-watch-selection") return loadTsModule(name);
   return nodeRequire(name);
 }, changeSensorLoaded, changeSensorLoaded.exports);
 stubs["@/lib/opportunity-engine/pr262-change-sensor"].partitionPr262PendingEventsWithTelemetry =
@@ -237,6 +239,7 @@ stubs["@/lib/opportunity-engine/pr262-change-sensor"].partitionPr262PendingEvent
 const loaded = { exports: {} };
 new Function("require", "module", "exports", output)((name) => {
   if (name in stubs) return stubs[name];
+  if (name === "@/lib/opportunity-engine/market-watch-selection") return loadTsModule(name);
   return nodeRequire(name);
 }, loaded, loaded.exports);
 

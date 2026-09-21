@@ -25,7 +25,6 @@ const evidence = loadTsModule("@/lib/opportunity-engine/pr262-research-evidence"
   "@/lib/opportunity-engine/pr262-storage": { pr262StorageKey: path => `test/${path}` },
   "@/lib/opportunity-engine/company-profile-cache": { readCompanyProfiles: async () => new Map() },
   "@/lib/signal-explanation": { explainCandidate: () => ({}), plainEvidenceGaps: value => value },
-  "@/lib/signal-outlook": { candidatePriceOutlook: () => null },
 });
 const reservationKey = `test/research-evidence/rejection-audit/2026-09-18/paid-sample-reservation.json`;
 const event = { id: sampledIds[0], ticker: "EXM", cik: "0000000001", observedAt: now.toISOString() };
@@ -116,7 +115,7 @@ const runner = loadTsModule("@/lib/equity-signal/runner", {
     for (const candidate of result.candidates) { candidate.score = 50; candidate.materiality = 40; }
     return result;
   } },
-  "@/lib/equity-signal/market": { enrichCandidateQuotes: async candidates => ({ candidates, provider: provider("quote"), benchmarkQuote: null, marketSnapshot: [] }) },
+  "@/lib/equity-signal/market": { enrichCandidateQuotes: async candidates => ({ candidates: candidates.map(candidate => ({ ...candidate, quote: { ticker: candidate.ticker, price: 100, observedAt: now.toISOString(), actionableForSeriousSignal: true, marketSession: "regular" } })), provider: provider("quote"), benchmarkQuote: null, marketSnapshot: [] }) },
   "@/lib/equity-signal/fundamentals": { enrichCandidateFundamentals: async candidate => ({ candidate, provider: provider("facts") }) },
   "@/lib/ai-committee/provider": { getAiCommitteeProviderStatus: () => ({ configured: providerConfigured, enabled: providerEnabled }) },
   "@/lib/ai-committee/orchestrator": { TRUSTED_IN_MEMORY_EVIDENCE: Symbol("evidence"), runAiCommittee: async () => {
@@ -130,7 +129,7 @@ const input = { now, allowOpenAi: true, allowIncompleteCommitteeReview: true,
   reserveRejectionAudit: () => evidence.reserveRejectionAudit(event.id, now),
   resolveCompanyProfile: async identity => profileAvailable ? companyProfileFixture(identity, now) : null,
   beforeOpenAiCall: async () => { if (budgetThrows) throw new Error("budget_unavailable"); return budgetAllowed; },
-  targetedContext: { universe, receipts: [receipt], providers: [provider("nasdaq_trade_halts")], historicalSignalsComplete: true } };
+  targetedContext: { storedCompanyAnalysis: { currency: "USD", industry: "Application software", fairValue: { conservativeValue: 80, baseValue: 120, optimisticValue: 140 } }, universe, receipts: [receipt], providers: [provider("nasdaq_trade_halts")], historicalSignalsComplete: true } };
 for (const blocker of ["profile", "provider", "configuration", "disabled", "budget", "budget_exception"]) {
   objects.clear(); profileAvailable = blocker !== "profile"; budgetAllowed = blocker !== "budget"; budgetThrows = blocker === "budget_exception";
   providerConfigured = blocker !== "configuration"; providerEnabled = blocker !== "disabled";

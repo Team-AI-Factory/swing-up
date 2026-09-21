@@ -15,8 +15,8 @@ const candidate = {
   company: "Example Regional Bank",
   exchange: "NYSE",
   sector: "Financial",
-  industry: "Regional Banks",
-  observedAt: "2026-08-28T02:17:00.000Z",
+  industry: "Regional Banks", currency: "USD",
+  observedAt: new Date().toISOString(),
   currentPrice: 40,
   fairValue: { conservativeValue: 58, baseValue: 65, optimisticValue: 72, buyBelowPrice: 46, trimAbovePrice: 100, upsideToBasePercent: 62.5 },
   scores: { businessQuality: 82, risk: 28, evidenceCompleteness: 100, fairValueConfidence: 90 },
@@ -68,6 +68,7 @@ new Function("require", "module", "exports", output)((name) => {
   };
   if (name === "@/lib/signal-explanation" || name === "@/lib/signal-outlook") return loadTsModule(name);
   if (name === "@/lib/opportunity-engine/pr262-research-evidence") return { readResearchAlerts: async () => [] };
+  if (name === "@/lib/alert-details") return loadTsModule(name);
   throw new Error(`Unexpected watchlist feed import: ${name}`);
 }, cjsModule, cjsModule.exports);
 

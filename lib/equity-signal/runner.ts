@@ -3,6 +3,7 @@ import { PR262_REVIEW_MAX_PROMPT_BYTES, PR262_REVIEW_MAX_COST_USD } from "@/lib/
 import { verifiedCompanyProfile, type CompanyIdentity, type VerifiedCompanyProfile } from "@/lib/company-profile";
 import { committeeExplanation } from "@/lib/signal-explanation";
 import crypto from "node:crypto";
+import { alertDetails, industryLabel } from "@/lib/alert-details";
 import { runAiCommittee, TRUSTED_IN_MEMORY_EVIDENCE } from "@/lib/ai-committee/orchestrator";
 import type { AiCommitteeEvidencePack, EvidenceStrength } from "@/lib/ai-committee/evidence-pack";
 import { getAiCommitteeProviderStatus } from "@/lib/ai-committee/provider";
@@ -583,6 +584,12 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
     const evidenceRevision = crypto.createHash("sha256").update(JSON.stringify({
       source: best.receipts.filter(r => r.channel !== "nasdaq_trade_halts").map(r => [r.id, r.summary]),
       companyProfile: companyProfile ? { business: companyProfile.business, customers: companyProfile.customers, sourceUrl: companyProfile.sourceUrl, sourceFiledAt: companyProfile.sourceFiledAt } : null,
+      industry: industryLabel(targeted?.storedCompanyAnalysis?.industry, companyProfile?.industry),
+      outlookRange: (() => {
+        const fair = targeted?.storedCompanyAnalysis?.fairValue as UsValueCompanyAnalysis["fairValue"] | undefined;
+        return { currency: targeted?.storedCompanyAnalysis?.currency, low: fair?.conservativeValue, base: fair?.baseValue, high: fair?.optimisticValue,
+          forecastStatus: best.priceForecast.status, forecastSample: best.priceForecast.sampleSize };
+      })(),
       facts: best.fundamentals?.items ?? [], sourceComplete: targeted?.sourceEvidenceIncomplete !== true,
       priceReady: best.quote?.actionableForSeriousSignal === true, haltKnown: tradingHaltStateKnown,
       halted: best.quote?.marketSession === "halted",
@@ -597,7 +604,7 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       companyProfile,
       ticker: best.ticker,
       company: best.company,
-      industry: targeted?.storedCompanyAnalysis?.industry ?? null,
+      industry: industryLabel(targeted?.storedCompanyAnalysis?.industry, companyProfile?.industry),
       sector: targeted?.storedCompanyAnalysis?.sector ?? null,
       currency: targeted?.storedCompanyAnalysis?.currency ?? null,
       valuationRange: targeted?.storedCompanyAnalysis?.fairValue ?? null,
@@ -642,6 +649,9 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       alertReadiness: seriousActionEligible(best) ? "actionable_candidate" : "watch_only",
     };
     if (!companyProfile) return { ...common, status: "candidate_company_profile_pending", seriousSignalFound: false, actionableSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, blockers: ["A source-backed company profile describing its products or services and customers is required before publication."], technicalFailureFingerprint: null };
+    const details = alertDetails(selectedCandidate, undefined, now);
+    if (!details.complete) return { ...common, status: "candidate_alert_details_pending", seriousSignalFound: false, actionableSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, blockers: details.missing, technicalFailureFingerprint: null };
+    if (best.eventFamily === "valuation_gap" && best.gateChecks.valueTrapRiskAcceptable === false) return { ...common, status: "candidate_valuation_risk_rejected", seriousSignalFound: false, actionableSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, blockers: ["The apparent discount fails the business-quality, balance-sheet or risk checks. Reassess when the financial evidence changes."], technicalFailureFingerprint: null };
     if (!inclusiveReview && !best.quote) return { ...common, status: "qualified_event_market_quote_unavailable", seriousSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, blockers: ["The event qualified before the market moved, but no usable price anchor was available for a safe entry or outcome record. The event remains on the watch queue; no OpenAI budget was spent."], technicalFailureFingerprint: null };
     if ((input.skipOpenAiCandidateFingerprints?.includes(fingerprint) || input.skipOpenAiCandidateFingerprints?.includes(fingerprintCandidate(best)))) return { ...common, status: "qualified_candidate_already_reviewed", seriousSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, blockers: ["The same event evidence was reviewed recently, so OpenAI was not called again."], technicalFailureFingerprint: null };
     const watchOnlyBlocker = !best.quote

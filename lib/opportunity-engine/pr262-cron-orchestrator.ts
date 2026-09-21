@@ -291,6 +291,9 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
       : null;
     try {
       const raw = await runPr262EventJob({
+        // Give one existing slot to a due valuation case; unused capacity falls
+        // back to the event queue. No extra calls or budget are introduced.
+        preferValuation: index === 1,
         allowOpenAi: aiBudget.allowed && aiBudget.accountingHealthy && !providerBlockedReason,
         aiProviderBlockedReason: providerBlockedReason ?? undefined,
         excludedEventIds: [...excludedEventIds],

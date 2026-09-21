@@ -1,5 +1,6 @@
 import { readCompanyProfiles } from "@/lib/opportunity-engine/company-profile-cache";
 import { verifiedCompanyProfile } from "@/lib/company-profile";
+import { alertDetails, industryLabel } from "@/lib/alert-details";
 import { completeCommitteeReview } from "@/lib/ai-committee/review-policy";
 import { usQuoteFreshness } from "@/lib/equity-signal/us-market-calendar";
 import { explainCandidate } from "@/lib/signal-explanation";
@@ -237,6 +238,7 @@ function validatedOutbox(raw: unknown, outboxKey: string) {
     throw new Error("serious_signal_delivery_issuer_or_evidence_mismatch");
   }
   if (!testOnly && !verifiedCompanyProfile(candidate.companyProfile, candidate)) throw new Error("serious_signal_delivery_company_profile_unverified");
+  if (!testOnly && !alertDetails(candidate).complete) throw new Error("serious_signal_delivery_alert_details_incomplete");
   if (candidate.gatePassed !== true
     || Number(candidate.eventTruth) < 80
     || Number(candidate.mappingConfidence) < 95
@@ -300,8 +302,11 @@ function messageFor(input: ReturnType<typeof validatedOutbox>) {
     ].join("\n").slice(0, 3900);
   }
   const explanation = explainCandidate(input.candidate);
+  const details = alertDetails(input.candidate);
+  const outlook = details.outlook;
+  const money = (value: number | null) => `${outlook.currency} ${value?.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+  const scenario = (name: string, value: typeof outlook.base) => `${name}: ${money(value.price)} (${value.changePercent! >= 0 ? "+" : ""}${value.changePercent}%)`;
   const event = text(input.candidate.eventHeadline) ?? text(input.candidate.whatHappened) ?? "Material event confirmed";
-  const why = text(input.output.SwingUpView) ?? text(input.candidate.whatHappened) ?? "Current evidence passed the Serious Signal review.";
   const quote = object(input.candidate.quote);
   const price = finite(quote.price);
   const confidence = Number(input.judge.confidence);
@@ -309,14 +314,20 @@ function messageFor(input: ReturnType<typeof validatedOutbox>) {
   return [
     `Swing Up — ${label}`,
     `${input.ticker}${price !== null ? ` @ ${price}` : ""}`,
+    `Industry: ${details.industry}`,
+    `Recorded price: ${money(outlook.currentPrice)} · ${text(quote.observedAt) ?? ""}`,
+    `${outlook.basis === "valuation" ? "Estimated business value" : "Historical price scenarios"}:`,
+    scenario("Conservative", outlook.conservative),
+    scenario("Base", outlook.base),
+    scenario("Optimistic", outlook.optimistic),
+    outlook.horizon,
     "",
     `What the company does: ${explanation.companyDoes}`,
-    event,
+    event.slice(0, 240),
     "",
-    `Why it matters: ${explanation.whyItMatters}`,
-    why,
-    `What could happen: ${explanation.whatCouldHappen}`,
-    `What could go wrong: ${explanation.whatCouldGoWrong}`,
+    `Why it matters: ${explanation.whyItMatters.slice(0, 240)}`,
+    `What could happen: ${explanation.whatCouldHappen.slice(0, 220)}`,
+    `What could go wrong: ${explanation.whatCouldGoWrong.slice(0, 260)}`,
     "",
     `Final Judge confidence: ${Number.isFinite(confidence) ? confidence : "n/a"}/100`,
     `All ${Number(input.committee.agentsCompleted)} selected Committee reviewers completed their checks.`,
@@ -1286,6 +1297,8 @@ export async function getSeriousSignalStatus(options: { hours?: number; limit?: 
         id: digest(outboxKey),
         createdAt: validated.createdAt,
         ticker: validated.ticker,
+        company: text(validated.candidate.company),
+        industry: industryLabel(validated.candidate.industry, object(validated.candidate.companyProfile).industry),
         explanation: explainCandidate(validated.candidate),
         outlook: candidatePriceOutlook(validated.candidate),
         alertType: validated.alertType,

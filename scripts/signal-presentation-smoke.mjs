@@ -106,8 +106,8 @@ assert.equal(assemblePublicSignals([{ ...candidate, priceObservedAt: refreshed.p
 
 // Exercise live-price re-ranking before the requested feed limit.
 const analyses = [
-  { ...candidate, ticker: "A", tradingViewSymbol: "NYSE:A", fairValue: { conservativeValue: 140, baseValue: 150, optimisticValue: 160, upsideToBasePercent: 50 }, scores: {}, decision: {} },
-  { ...candidate, ticker: "B", tradingViewSymbol: "NYSE:B", fairValue: { conservativeValue: 180, baseValue: 200, optimisticValue: 220, upsideToBasePercent: 100 }, scores: {}, decision: {} },
+  { ...candidate, observedAt: new Date().toISOString(), ticker: "A", tradingViewSymbol: "NYSE:A", fairValue: { conservativeValue: 140, baseValue: 150, optimisticValue: 160, upsideToBasePercent: 50 }, scores: {}, decision: {} },
+  { ...candidate, observedAt: new Date().toISOString(), ticker: "B", tradingViewSymbol: "NYSE:B", fairValue: { conservativeValue: 180, baseValue: 200, optimisticValue: 220, upsideToBasePercent: 100 }, scores: {}, decision: {} },
 ];
 const watchlist = loadTsModule("@/lib/opportunity-engine/valuation-watchlist-feed", {
   "@/lib/opportunity-engine/pr262-storage": { pr262StorageKey: value => value },

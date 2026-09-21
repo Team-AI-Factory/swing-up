@@ -55,7 +55,7 @@ export function evidenceTiming(input: { event: Json; candidate: Json; committee:
 
 export function summarizeEvidenceQuality(samples: Json[]) {
   const measured = samples.filter(row => finite(row.availableFields) && finite(row.requiredFields) && row.requiredFields > 0);
-  const requiredFields = ["companyProfile", "issuer", "sourceDocument", "financialFacts", "marketPrice", "currentMarketPrice", "direction", "tradingHaltCheck"];
+  const requiredFields = ["companyProfile", "industry", "priceScenarios", "issuer", "sourceDocument", "financialFacts", "marketPrice", "currentMarketPrice", "direction", "tradingHaltCheck"];
   const complete = measured.filter(row => requiredFields.every(field => object(row.fields)[field] === true));
   const ratio = (count: number) => measured.length ? Math.round(count / measured.length * 10_000) / 100 : null;
   const average = (values: unknown[]) => {
@@ -71,7 +71,7 @@ export function summarizeEvidenceQuality(samples: Json[]) {
     incompleteMetricEvents: samples.length - measured.length,
     completeEvidenceEvents: complete.length,
     usableEvidenceRatioPercent: ratio(complete.length),
-    usableEvidenceDefinition: "All applicable evidence checks pass, including issuer, source document, verified company profile, relevant financial facts, direction, session-appropriate price and halt check; this does not imply Committee approval.",
+    usableEvidenceDefinition: "All applicable evidence checks pass, including issuer, source document, verified company profile and industry, supported price scenarios, relevant financial facts, direction, session-appropriate price and halt check; this does not imply Committee approval.",
     reviewOutcomes: Object.fromEntries(["approved", "rejected", "incomplete_evidence", "technical_failure", "budget_deferred", "awaiting_review"].map(outcome => [outcome, samples.filter(row => row.reviewOutcome === outcome).length])),
     completedCommitteeReviews: samples.filter(row => row.committeeCompleted === true).length,
     decisionGradeSourceEvents: measured.filter(row => object(row.fields).sourceDocument === true).length,

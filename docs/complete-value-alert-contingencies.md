@@ -1,0 +1,20 @@
+# Complete company and valuation alerts
+
+Every published provisional or Serious alert must identify the issuer, explain its verified business and customers, name its industry, and contain a positive recorded price, currency and supported conservative/base/optimistic prices with percentage changes. A missing essential fact remains a research task. No placeholder, invented target or stale foundation can satisfy that contract.
+
+Valuation reviews do not require a news event. Stored thresholds feed the existing queue, fresh quotes recheck the direction and gap, and all selected Committee reviewers must finish. A Buy discount also has to pass the business-quality, balance-sheet and risk checks. Reviews explicitly examine debt, cash flow, dilution, unusual earnings, currency/share units and whether growth justifies a premium. A Sell is not an instruction to short the stock.
+
+| Shortfall | Automatic response | Limit or escalation |
+| --- | --- | --- |
+| Missing business or industry | Fetch exact SEC issuer data, retain dated extracts, use verified SEC industry when provider industry is missing. Prioritize queued companies and reserve one of the existing two profile-maintenance slots for broader coverage. | Unsupported facts stay unpublished; provider limits and retry dates apply. |
+| Old profiles fall out of the cache | Retain verified issuer entries beyond the former 1,000-company cap; revalidate identity and age on reuse. | Profile refresh remains bounded; all companies cannot be verified instantly. |
+| A company is never scanned for price | Keep up to 100 queued companies in a 500-company batch; rotate the remaining capacity across every other listing. Reserve one existing event-processing slot for a due valuation review. | Full-universe coverage takes multiple cycles. No scan-frequency or API-limit increase. |
+| Old price or valuation | Keep per-company collection times when merging batches. Expire retained price snapshots after six hours and foundation alerts after 30 hours. Serious publication additionally needs the existing session-aware actual quote and halt checks. | Collection time never substitutes for an exchange trade time. |
+| Missing currency or scenario prices | Refresh the exact company's financial model and price before a paid review. Record explicit evidence tasks and retry dates. | No value is manufactured when the model cannot support a range. |
+| Shared market-data cooldown | Continue with the exact issuer's validated daily valuation when within 30 hours; still refresh and validate the separate trading quote. | No extra provider request, quota bypass or renewed evidence timestamp. |
+| Source timeout, access denial or provider outage | Reuse identity-verified evidence, retry bounded transient failures, retain exact failed-document requests, honor provider backoff and quota. | Do not bypass access controls; persistent gaps appear in monitoring. |
+| OpenAI 429 or account problem | Retain evidence, stop paid attempts during the existing cooldown/access block and reconcile recorded usage. | Account credits/permissions may need the owner; no budget increase or invented $0.75 charge. |
+| Duplicate review or delivery retry | Reuse the existing evidence/review identity; meaningful evidence changes allow reconsideration. Existing durable outbox claims and receipts prevent unnecessary duplicate work. | New prices never inherit approval from an old price observation. |
+| Failed worker or new software defect | Existing recovery workers and the hourly operational watch diagnose, test a focused repair, and deploy only after checks pass. | No guarantee of immediate repair for every unknown fault; unresolved dependencies must be reported. |
+
+The operational watch reports complete evidence, evidence age, time to review, profile/industry/scenario gaps, price coverage and real delivery receipts. Successful connections, green deployments and synthetic tests do not establish that a real investment opportunity was approved. Consistency requires repeated live observation, and no daily signal quota is imposed.

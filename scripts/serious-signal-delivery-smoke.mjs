@@ -56,6 +56,7 @@ new Function("require", "module", "exports", output)((specifier) => {
   }
   if (specifier === "@/lib/opportunity-engine/pr262-storage") return { pr262StorageKey: storageKey };
   if (specifier === "@/lib/opportunity-engine/pr262-runtime") return { isPr262ApprovedPremergeProductionRollout: () => false };
+  if (specifier === "@/lib/alert-details") return loadTsModule(specifier);
   if (specifier === "@/lib/company-profile" || specifier === "@/lib/signal-explanation" || specifier === "@/lib/signal-outlook") return loadTsModule(specifier);
   if (["@/lib/ai-committee/review-policy", "@/lib/equity-signal/us-market-calendar"].includes(specifier)) return loadTsModule(specifier);
   throw new Error(`Unexpected delivery import: ${specifier}`);
@@ -83,6 +84,8 @@ function validOutbox(ticker, createdAt, overrides = {}) {
       ticker,
       cik: "0001234567",
       direction: "upside",
+      currency: "USD", industry: "Application software",
+      valuationRange: { conservativeValue: 38, baseValue: 55, optimisticValue: 65 },
       evidenceFingerprint: fingerprint,
       gatePassed: true,
       eventTruth: 96,
@@ -274,6 +277,15 @@ try {
   const missingAuthorityKey = `${prefix}serious-signal/outbox/event-job/buy/NOAUTH/fingerprint.json`;
   await write(missingAuthorityKey, validOutbox("NOAUTH", start.toISOString(), { authority: {} }), { createOnly: true });
   await assert.rejects(() => deliverSeriousSignalOutbox(missingAuthorityKey, { now: start }), /serious_signal_delivery_authority_missing/);
+
+  for (const gap of ["industry", "range"]) {
+    const incompleteKey = `${prefix}serious-signal/outbox/event-job/buy/GAP/${gap}.json`;
+    const incomplete = validOutbox("GAP", start.toISOString());
+    if (gap === "industry") { delete incomplete.candidate.industry; delete incomplete.candidate.companyProfile.industry; }
+    else delete incomplete.candidate.valuationRange;
+    await write(incompleteKey, incomplete, { createOnly: true });
+    await assert.rejects(() => deliverSeriousSignalOutbox(incompleteKey, { now: start }), /serious_signal_delivery_alert_details_incomplete/);
+  }
 
   const staleQuoteKey = `${prefix}serious-signal/outbox/event-job/buy/STALE/fingerprint.json`;
   const staleQuote = validOutbox("STALE", start.toISOString());

@@ -435,3 +435,12 @@ const expiredAuthoritativeRetry = { ...staleAuthoritativeRetry, observedAt: new 
 assert.equal(sensor.partitionPr262PendingEvents([expiredAuthoritativeRetry], now).length, 0,
   "Freshness scheduling must preserve the existing 48-hour retention ceiling");
 console.log("Publication freshness: actual selection, exact 24-hour boundary, source clock skew, retry/exclusion rules and retained older research passed.");
+
+// Valuation work gets one preferred admission without bypassing readiness/backoff.
+const dueValuation = mappedEvent({ id: "valuation:fairness", source: "market_price", kind: "valuation_review", priority: 80 });
+const urgentNews = mappedEvent({ id: "news:fairness", priority: 99 });
+putObject(sensorStateKey, { ...persisted, pending: [urgentNews, dueValuation] });
+assert.equal((await sensor.readNextPr262PendingSensorEvent({ now, preferValuation: true }))?.id, dueValuation.id);
+assert.equal((await sensor.readNextPr262PendingSensorEvent({ now }))?.id, urgentNews.id);
+putObject(sensorStateKey, { ...persisted, pending: [urgentNews, { ...dueValuation, queueNextAttemptAt: new Date(now.getTime() + 3600000).toISOString() }] });
+assert.equal((await sensor.readNextPr262PendingSensorEvent({ now, preferValuation: true }))?.id, urgentNews.id);

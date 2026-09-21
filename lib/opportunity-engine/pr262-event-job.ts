@@ -1238,8 +1238,12 @@ function validatedFoundationValueAnalysis(
 }
 
 function targetedValueBudgetDenied(error: unknown) {
-  return error instanceof ProviderBudgetError
-    && error.message.startsWith("tradingview_targeted_value_");
+  return error instanceof Error && ((error instanceof ProviderBudgetError
+    && error.message.startsWith("tradingview_targeted_value_"))
+    // The sensor and targeted refresh share the same account quota. Either
+    // guard must permit the already-validated foundation fallback, without
+    // issuing another request or treating its saved price as a fresh quote.
+    || /^pr262_sensor_budget_guard:tradingview:(?:minimum_interval|rolling_24h_budget)(?:;|$)/.test(error.message));
 }
 
 async function writeMonotonicLatest(key: string, payload: Json, candidateAt: string, currentTimestamp: (value: Json) => string | null) {

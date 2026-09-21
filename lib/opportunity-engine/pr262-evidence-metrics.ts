@@ -1,3 +1,4 @@
+import { completeCommitteeReview } from "@/lib/ai-committee/review-policy";
 type Json = Record<string, unknown>;
 const object = (value: unknown): Json => value && typeof value === "object" && !Array.isArray(value) ? value as Json : {};
 const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
@@ -28,13 +29,15 @@ export function evidenceTiming(input: { event: Json; candidate: Json; committee:
   const committeeStartedAt = input.paid ? timestamp(committee.startedAt, now) : null;
   const committeeFinishedAt = input.paid ? timestamp(committee.finishedAt, now) : null;
   const firstCommitteeAttemptAt = timestamp(previous.firstCommitteeAttemptAt, now) ?? committeeStartedAt;
+  const firstCompletedCommitteeAt = timestamp(previous.firstCompletedCommitteeAt, now)
+    ?? (completeCommitteeReview(committee) ? committeeFinishedAt : null);
   const quoteObservedAt = timestamp(quote.observedAt, now);
   const quoteFetchedAt = timestamp(quote.providerFetchedAt, now);
   return {
     collectionScope: "source, halt and optional-history collection batch; excludes later quote, financial and Committee work",
     checkedAt, sourcePublishedAt, firstQueuedAt, firstCollectionStartedAt,
     collectionStartedAt, collectionFinishedAt, sourceCollectedAt,
-    committeeStartedAt, committeeFinishedAt, firstCommitteeAttemptAt,
+    committeeStartedAt, committeeFinishedAt, firstCommitteeAttemptAt, firstCompletedCommitteeAt,
     quoteObservedAt, quoteFetchedAt,
     sourceAgeMinutes: minutes(sourcePublishedAt, checkedAt),
     sourceCollectionAgeMinutes: minutes(sourceCollectedAt, checkedAt),
@@ -45,6 +48,8 @@ export function evidenceTiming(input: { event: Json; candidate: Json; committee:
     committeeDurationMinutes: minutes(committeeStartedAt, committeeFinishedAt),
     eventToFirstCommitteeMinutes: minutes(sourcePublishedAt, firstCommitteeAttemptAt),
     queueToFirstCommitteeMinutes: minutes(firstQueuedAt, firstCommitteeAttemptAt),
+    eventToCompletedCommitteeMinutes: minutes(sourcePublishedAt, firstCompletedCommitteeAt),
+    queueToCompletedCommitteeMinutes: minutes(firstQueuedAt, firstCompletedCommitteeAt),
   };
 }
 
@@ -58,7 +63,7 @@ export function summarizeEvidenceQuality(samples: Json[]) {
     return { measuredEvents: known.length, missingEvents: samples.length - known.length,
       averageMinutes: known.length ? Math.round(known.reduce((sum, value) => sum + value, 0) / known.length * 100) / 100 : null };
   };
-  const timingFields = ["sourceAgeMinutes", "sourceCollectionAgeMinutes", "quoteAgeMinutes", "quoteCacheAgeMinutes", "queueWaitMinutes", "collectionDurationMinutes", "committeeDurationMinutes", "eventToFirstCommitteeMinutes", "queueToFirstCommitteeMinutes"];
+  const timingFields = ["sourceAgeMinutes", "sourceCollectionAgeMinutes", "quoteAgeMinutes", "quoteCacheAgeMinutes", "queueWaitMinutes", "collectionDurationMinutes", "committeeDurationMinutes", "eventToFirstCommitteeMinutes", "queueToFirstCommitteeMinutes", "eventToCompletedCommitteeMinutes", "queueToCompletedCommitteeMinutes"];
   return {
     sampleUnit: "latest evidence assessment per unique event in the UTC day",
     sampledEvents: samples.length,
@@ -66,12 +71,14 @@ export function summarizeEvidenceQuality(samples: Json[]) {
     incompleteMetricEvents: samples.length - measured.length,
     completeEvidenceEvents: complete.length,
     usableEvidenceRatioPercent: ratio(complete.length),
-    usableEvidenceDefinition: "All tracked evidence-content checks pass, including issuer, source document, verified company profile, financial facts, direction, current price and halt check; this does not imply Committee approval.",
+    usableEvidenceDefinition: "All applicable evidence checks pass, including issuer, source document, verified company profile, relevant financial facts, direction, session-appropriate price and halt check; this does not imply Committee approval.",
+    reviewOutcomes: Object.fromEntries(["approved", "rejected", "incomplete_evidence", "technical_failure", "budget_deferred", "awaiting_review"].map(outcome => [outcome, samples.filter(row => row.reviewOutcome === outcome).length])),
+    completedCommitteeReviews: samples.filter(row => row.committeeCompleted === true).length,
     decisionGradeSourceEvents: measured.filter(row => object(row.fields).sourceDocument === true).length,
     decisionGradeSourceRatioPercent: ratio(measured.filter(row => object(row.fields).sourceDocument === true).length),
     averageCompletenessPercent: measured.length ? Math.round(measured.reduce((sum, row) => sum + Number(row.availableFields) / Number(row.requiredFields) * 100, 0) / measured.length) : null,
     timing: Object.fromEntries(timingFields.map(field => [field, average(samples.map(row => object(row.timing)[field]))])),
     sourceConnectionSuccessUsedAsEvidence: false,
-    committeeTimingMeaning: "Time to the first Committee attempt, including failed attempts; it is not proof of a completed or approved review.",
+    committeeTimingMeaning: "First-attempt timing includes failed requests. Completed-review timing requires every selected reviewer to finish; approval is counted separately.",
   };
 }

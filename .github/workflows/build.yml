@@ -62,6 +62,9 @@ jobs:
       - name: Run lint
         run: npm run lint --if-present
 
+      - name: Verify alert recovery and truthful cost controls
+        run: node scripts/reliable-alerts-smoke.mjs
+
       - name: Build application
         run: npm run build
 

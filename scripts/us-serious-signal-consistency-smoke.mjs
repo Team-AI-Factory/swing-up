@@ -1,3 +1,4 @@
+import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
@@ -7,7 +8,7 @@ const output = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText;
 const cjsModule = { exports: {} };
-new Function("require", "module", "exports", output)(() => { throw new Error("Unexpected runtime import"); }, cjsModule, cjsModule.exports);
+new Function("require", "module", "exports", output)((name) => { if (name === "@/lib/ai-committee/review-policy") return loadTsModule(name); throw new Error("Unexpected runtime import"); }, cjsModule, cjsModule.exports);
 const { verifyUsSeriousSignals } = cjsModule.exports;
 
 function signal(overrides = {}) {

@@ -1,3 +1,4 @@
+import { readOpenAiBillingAudit } from "@/lib/ai-committee/billing-audit";
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 
@@ -7,8 +8,12 @@ const AUDIT_RETENTION_DAYS = 45;
 const AUDIT_RETENTION_MS = AUDIT_RETENTION_DAYS * WINDOW_MS;
 const DEFAULT_LIMIT_USD = 10;
 const DEFAULT_WARNING_USD = 6;
-const DEFAULT_UNKNOWN_USAGE_FALLBACK_USD = 0.75;
-const DEFAULT_REVIEW_RESERVATION_USD = 0.75;
+// A temporary maximum exposure, never booked as spending: six bounded calls,
+// at most one token per UTF-8 prompt byte plus framing, and 1,000 output tokens.
+export const PR262_REVIEW_MAX_PROMPT_BYTES = 60_000;
+export const PR262_REVIEW_MAX_OUTPUT_TOKENS = 1_000;
+export const PR262_REVIEW_MAX_CALLS = 6;
+export const PR262_REVIEW_MAX_COST_USD = PR262_REVIEW_MAX_CALLS * (((PR262_REVIEW_MAX_PROMPT_BYTES + 1000) * 0.4 + PR262_REVIEW_MAX_OUTPUT_TOKENS * 1.6) / 1_000_000);
 const GPT_4_1_MINI_INPUT_USD_PER_MILLION = 0.4;
 const GPT_4_1_MINI_CACHED_INPUT_USD_PER_MILLION = 0.1;
 const GPT_4_1_MINI_OUTPUT_USD_PER_MILLION = 1.6;
@@ -24,7 +29,10 @@ type CostEntry = {
   ticker: string | null;
   alertType: string | null;
   costUsd: number;
-  source: "actual_tokens" | "fallback_missing_usage";
+  source: "actual_tokens" | "rejected_request" | "usage_pending" | "legacy_missing_usage";
+  pendingUpperBoundUsd?: number;
+  legacyEstimateUsd?: number;
+  retryAt?: string;
 };
 type CostReservation = {
   id: string;
@@ -41,6 +49,7 @@ type State = {
   reservations: CostReservation[];
   auditEntries: CostEntry[];
   auditTrackingStartedAt: string;
+  providerCooldown?: { until: string; category: string; code?: string; httpStatus?: number };
 };
 
 function object(value: unknown): Json {
@@ -68,10 +77,7 @@ function warningUsd(limit: number) {
 
 function reviewReservationUsd(limit: number) {
   void limit;
-  return Math.max(
-    DEFAULT_REVIEW_RESERVATION_USD,
-    positiveEnv("SWING_UP_PR262_AI_REVIEW_RESERVATION_USD", DEFAULT_REVIEW_RESERVATION_USD),
-  );
+  return PR262_REVIEW_MAX_COST_USD;
 }
 
 function emptyState(now: Date): State {
@@ -93,8 +99,11 @@ function normalizeEntries(items: unknown[], now: Date, retentionMs: number): Cos
       recordedAt,
       ticker: typeof row.ticker === "string" ? row.ticker : null,
       alertType: typeof row.alertType === "string" ? row.alertType : null,
-      costUsd,
-      source: row.source === "actual_tokens" ? "actual_tokens" : "fallback_missing_usage",
+      costUsd: row.source === "fallback_missing_usage" ? 0 : costUsd,
+      source: row.source === "actual_tokens" ? "actual_tokens" : row.source === "rejected_request" ? "rejected_request" : row.source === "usage_pending" ? "usage_pending" : "legacy_missing_usage",
+      ...(row.source === "fallback_missing_usage" ? { legacyEstimateUsd: costUsd } : finite(row.legacyEstimateUsd) !== null ? { legacyEstimateUsd: Number(row.legacyEstimateUsd) } : {}),
+      ...(finite(row.pendingUpperBoundUsd) !== null ? { pendingUpperBoundUsd: Math.max(0, Number(row.pendingUpperBoundUsd)) } : {}),
+      ...(typeof row.retryAt === "string" && Number.isFinite(Date.parse(row.retryAt)) ? { retryAt: row.retryAt } : {}),
     }];
   });
 }
@@ -150,6 +159,7 @@ function normalize(raw: unknown, now: Date): State {
     reservations,
     auditEntries,
     auditTrackingStartedAt,
+    ...(typeof object(value.providerCooldown).until === "string" ? { providerCooldown: value.providerCooldown as State["providerCooldown"] } : {}),
   };
 }
 
@@ -170,6 +180,10 @@ function totalReservations(reservations: CostReservation[]) {
   return Math.round(reservations.reduce((sum, item) => sum + item.amountUsd, 0) * 1_000_000) / 1_000_000;
 }
 
+function pendingExposure(entries: CostEntry[]) {
+  return entries.reduce((sum, entry) => sum + (entry.pendingUpperBoundUsd ?? 0), 0);
+}
+
 function auditWindow(state: State, now: Date, days: number) {
   const startMs = now.getTime() - days * WINDOW_MS;
   const entries = state.auditEntries.filter((entry) => {
@@ -177,7 +191,7 @@ function auditWindow(state: State, now: Date, days: number) {
     return at >= startMs && at <= now.getTime();
   });
   const metered = entries.filter((entry) => entry.source === "actual_tokens");
-  const unknown = entries.filter((entry) => entry.source === "fallback_missing_usage");
+  const unknown = entries.filter((entry) => entry.source === "usage_pending" || entry.source === "legacy_missing_usage");
   const completeFromMs = Math.max(Date.parse(state.auditTrackingStartedAt), now.getTime() - AUDIT_RETENTION_MS);
   return {
     startAt: new Date(startMs).toISOString(),
@@ -186,7 +200,10 @@ function auditWindow(state: State, now: Date, days: number) {
     completeTokenUsageReviews: metered.length,
     completeTokenUsageEstimateUsd: total(metered),
     unknownUsageReviews: unknown.length,
-    unknownUsageAllocationUsd: total(unknown),
+    unknownUsageAllocationUsd: 0,
+    pendingUsageUpperBoundUsd: pendingExposure(unknown),
+    removedLegacyEstimateUsd: unknown.reduce((sum, entry) => sum + (entry.legacyEstimateUsd ?? 0), 0),
+    rejectedRequests: entries.filter(entry => entry.source === "rejected_request").length,
     budgetAccountedUsd: total(entries),
     recordedReviewHistoryComplete: completeFromMs <= startMs,
     recordedReviewHistoryCompleteFrom: new Date(completeFromMs).toISOString(),
@@ -207,18 +224,18 @@ function auditSummary(state: State, now: Date) {
 
 export async function getPr262AiCostAudit(now = new Date()) {
   const loaded = await load(now);
-  return auditSummary(loaded.state, now);
+  return { ...auditSummary(loaded.state, now), providerBilling: await readOpenAiBillingAudit(now) };
 }
 
 function nextBudgetAdmissionAt(state: State, amountUsd: number, limit: number) {
-  let exposureUsd = total(state.entries) + totalReservations(state.reservations);
+  let exposureUsd = total(state.entries) + pendingExposure(state.entries) + totalReservations(state.reservations);
   if (exposureUsd + amountUsd <= limit + Number.EPSILON) return null;
   if (amountUsd > limit + Number.EPSILON) return null;
 
   const releases = new Map<number, number>();
   for (const entry of state.entries) {
     const expiresAt = Date.parse(entry.recordedAt) + WINDOW_MS;
-    releases.set(expiresAt, (releases.get(expiresAt) ?? 0) + entry.costUsd);
+    releases.set(expiresAt, (releases.get(expiresAt) ?? 0) + entry.costUsd + (entry.pendingUpperBoundUsd ?? 0));
   }
   for (const reservation of state.reservations) {
     const expiresAt = Date.parse(reservation.expiresAt);
@@ -235,11 +252,14 @@ export async function getPr262AiDailyBudgetStatus(now = new Date(), includeAudit
   const loaded = await load(now);
   const spentUsd = total(loaded.state.entries);
   const reservedUsd = totalReservations(loaded.state.reservations);
-  const exposureUsd = Math.round((spentUsd + reservedUsd) * 1_000_000) / 1_000_000;
+  const pendingUsageUpperBoundUsd = pendingExposure(loaded.state.entries);
+  const exposureUsd = Math.round((spentUsd + reservedUsd + pendingUsageUpperBoundUsd) * 1_000_000) / 1_000_000;
   const limit = limitUsd();
   const warning = warningUsd(limit);
   const nextReviewReservationUsd = reviewReservationUsd(limit);
-  const allowed = exposureUsd + nextReviewReservationUsd <= limit + Number.EPSILON;
+  const providerCooldown = Date.parse(loaded.state.providerCooldown?.until ?? "") > now.getTime() ? loaded.state.providerCooldown : null;
+  const budgetAvailable = exposureUsd + nextReviewReservationUsd <= limit + Number.EPSILON;
+  const allowed = budgetAvailable && !providerCooldown;
   return {
     allowed,
     spentUsd,
@@ -249,16 +269,18 @@ export async function getPr262AiDailyBudgetStatus(now = new Date(), includeAudit
     limitUsd: limit,
     warningUsd: warning,
     warning: exposureUsd >= warning,
-    hardFuseTripped: !allowed,
+    hardFuseTripped: !budgetAvailable,
+    providerCooldown,
+    pendingUsageUpperBoundUsd,
     nextReviewReservationUsd,
-    nextBudgetAdmissionAt: nextBudgetAdmissionAt(loaded.state, nextReviewReservationUsd, limit),
+    nextBudgetAdmissionAt: providerCooldown?.until ?? nextBudgetAdmissionAt(loaded.state, nextReviewReservationUsd, limit),
     reservationCheckedBeforePaidCommittee: true,
     activeReservations: loaded.state.reservations.length,
     reviewsRecorded: loaded.state.entries.length,
-    unknownUsageReviews: loaded.state.entries.filter((item) => item.source === "fallback_missing_usage").length,
+    unknownUsageReviews: loaded.state.entries.filter((item) => item.source === "usage_pending" || item.source === "legacy_missing_usage").length,
     completeTokenUsageEstimateUsd: total(loaded.state.entries.filter((item) => item.source === "actual_tokens")),
-    unknownUsageAllocationUsd: total(loaded.state.entries.filter((item) => item.source === "fallback_missing_usage")),
-    ...(includeAudit ? { costAudit: auditSummary(loaded.state, now) } : {}),
+    unknownUsageAllocationUsd: 0,
+    ...(includeAudit ? { costAudit: { ...auditSummary(loaded.state, now), providerBilling: await readOpenAiBillingAudit(now) } } : {}),
   };
 }
 
@@ -275,11 +297,13 @@ export async function reservePr262AiCommitteeBudget(input: {
   if (!id) return denied("candidate_fingerprint_missing");
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const loaded = await load(now);
-    const recorded = loaded.state.entries.find((item) => item.id === id);
+    if (Date.parse(loaded.state.providerCooldown?.until ?? "") > now.getTime()) return denied("provider_cooldown", loaded.state.providerCooldown!.until);
+    const recorded = loaded.state.entries.find((item) => item.id === id && item.source !== "legacy_missing_usage"
+      && (item.source !== "rejected_request" || Date.parse(item.retryAt ?? "") > now.getTime()));
     if (recorded) {
       return denied(
         "candidate_already_recorded",
-        new Date(Date.parse(recorded.recordedAt) + WINDOW_MS).toISOString(),
+        recorded.retryAt ?? new Date(Date.parse(recorded.recordedAt) + WINDOW_MS).toISOString(),
       );
     }
     const activeReservation = loaded.state.reservations.find((item) => item.id === id);
@@ -288,7 +312,7 @@ export async function reservePr262AiCommitteeBudget(input: {
     }
     const limit = limitUsd();
     const amountUsd = reviewReservationUsd(limit);
-    const exposureUsd = total(loaded.state.entries) + totalReservations(loaded.state.reservations);
+    const exposureUsd = total(loaded.state.entries) + pendingExposure(loaded.state.entries) + totalReservations(loaded.state.reservations);
     if (exposureUsd + amountUsd > limit + Number.EPSILON) {
       return denied("daily_cost_fuse", nextBudgetAdmissionAt(loaded.state, amountUsd, limit));
     }
@@ -312,6 +336,7 @@ export async function reservePr262AiCommitteeBudget(input: {
       next,
       loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true },
     );
+    if (!written.conflict && !written.written) throw new Error("pr262_ai_cost_write_failed");
     if (!written.conflict) return { allowed: true as const, reason: "reserved", reservation, nextRetryAt: null };
   }
   throw new Error("pr262_ai_daily_cost_reservation_conflict");
@@ -335,6 +360,7 @@ export async function releasePr262AiCommitteeBudgetReservation(candidateFingerpr
       next,
       loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true },
     );
+    if (!written.conflict && !written.written) throw new Error("pr262_ai_cost_write_failed");
     if (!written.conflict) return { released: true, reason: "released" };
   }
   throw new Error("pr262_ai_daily_cost_release_conflict");
@@ -345,19 +371,19 @@ function actualCostFromReport(report: Json) {
   const output = object(committee.output);
   const usageSummary = object(output.modelUsageSummary);
   const actual = object(usageSummary.actualOpenAiUsage);
-  // All 13 specialists plus the Final Judge must report usage. A partial
-  // usage payload is not an exact bill and therefore reconciles to the full
-  // conservative reservation instead of reopening capacity.
-  if (Number(actual.responsesWithUsage) !== 14) return null;
+  // Each response's actual token receipt counts, including a partial review.
+  if (!(Number(actual.responsesWithUsage) > 0)) return 0;
   const tokens = object(actual.tokens);
   const prompt = finite(tokens.promptTokens);
   const cached = finite(tokens.cachedPromptTokens) ?? 0;
   const completion = finite(tokens.completionTokens);
-  if (prompt === null || completion === null || prompt + completion <= 0) return null;
+  if (prompt === null || completion === null || prompt < 0 || completion < 0 || cached < 0 || cached > prompt) return null;
+  const models = Object.keys(object(actual.byModel));
+  if (models.some(model => !["gpt-4.1-mini", "gpt-4.1-mini-2025-04-14"].includes(model))) return null;
 
-  const inputRate = Math.max(GPT_4_1_MINI_INPUT_USD_PER_MILLION, positiveEnv("AI_COMMITTEE_INPUT_USD_PER_MILLION", GPT_4_1_MINI_INPUT_USD_PER_MILLION));
-  const cachedRate = Math.max(GPT_4_1_MINI_CACHED_INPUT_USD_PER_MILLION, positiveEnv("AI_COMMITTEE_CACHED_INPUT_USD_PER_MILLION", GPT_4_1_MINI_CACHED_INPUT_USD_PER_MILLION));
-  const outputRate = Math.max(GPT_4_1_MINI_OUTPUT_USD_PER_MILLION, positiveEnv("AI_COMMITTEE_OUTPUT_USD_PER_MILLION", GPT_4_1_MINI_OUTPUT_USD_PER_MILLION));
+  const inputRate = GPT_4_1_MINI_INPUT_USD_PER_MILLION;
+  const cachedRate = GPT_4_1_MINI_CACHED_INPUT_USD_PER_MILLION;
+  const outputRate = GPT_4_1_MINI_OUTPUT_USD_PER_MILLION;
   const uncachedPrompt = Math.max(0, prompt - cached);
   return (uncachedPrompt * inputRate + cached * cachedRate + completion * outputRate) / 1_000_000;
 }
@@ -370,32 +396,41 @@ export async function recordPr262AiCommitteeCost(reportValue: unknown, now = new
     : `${report.checkedAt ?? now.toISOString()}:${object(report.selectedCandidate).ticker ?? "unknown"}`;
   const actual = actualCostFromReport(report);
   const candidate = object(report.selectedCandidate);
+  const summary = object(object(object(report.committee).output).modelUsageSummary);
+  const roles = Array.isArray(summary.roleDiagnostics) ? summary.roleDiagnostics.map(object) : [];
+  const rejected = (role: Json) => [400, 401, 403, 404, 422, 429].includes(Number(object(role.providerFailure).httpStatus))
+    || ["not_configured", "disabled", "confirmation_required", "model_not_configured", "model_not_allowed", "prompt_too_large"].includes(String(role.error));
+  const uncertain = actual === null || (roles.length === 0 && !(Number(object(summary.actualOpenAiUsage).responsesWithUsage) > 0))
+    || roles.some(role => role.status !== "blocked" && role.status !== "planned" && role.usageReported !== true && !rejected(role));
+  const failure = roles.map(role => object(role.providerFailure)).find(value => typeof value.category === "string");
+  const cooldownMs = failure ? Math.min(60 * 60_000, Math.max(5 * 60_000, Number(failure.retryAfterSeconds ?? 0) * 1000,
+    ["quota", "authentication", "permission"].includes(String(failure.category)) ? 30 * 60_000 : 0)) : 0;
+  const retryAt = new Date(now.getTime() + (cooldownMs || (uncertain ? WINDOW_MS : 5 * 60_000))).toISOString();
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const loaded = await load(now);
-    const existingEntry = loaded.state.entries.find((item) => item.id === id);
+    const hasReservation = loaded.state.reservations.some(item => item.id === id);
+    const existingEntry = loaded.state.entries.find((item) => item.id === id && item.source !== "legacy_missing_usage"
+      && !(item.source === "rejected_request" && hasReservation));
     if (existingEntry) {
       return {
         recorded: false,
         reason: "already_recorded",
-        nextRetryAt: new Date(Date.parse(existingEntry.recordedAt) + WINDOW_MS).toISOString(),
+        nextRetryAt: existingEntry.retryAt ?? new Date(Date.parse(existingEntry.recordedAt) + WINDOW_MS).toISOString(),
         ...(await getPr262AiDailyBudgetStatus(now)),
       };
     }
     const reservedAmount = loaded.state.reservations.find((item) => item.id === id)?.amountUsd
       ?? reviewReservationUsd(limitUsd());
-    const costUsd = actual !== null
-      ? Math.max(0, actual)
-      : Math.max(
-          reservedAmount,
-          positiveEnv("SWING_UP_PR262_AI_UNKNOWN_USAGE_FALLBACK_USD", DEFAULT_UNKNOWN_USAGE_FALLBACK_USD),
-        );
+    const costUsd = Math.max(0, actual ?? 0);
     const entry: CostEntry = {
       id,
       recordedAt: now.toISOString(),
       ticker: typeof candidate.ticker === "string" ? candidate.ticker : null,
       alertType: typeof report.alertType === "string" ? report.alertType : null,
       costUsd: Math.round(costUsd * 1_000_000) / 1_000_000,
-      source: actual !== null ? "actual_tokens" : "fallback_missing_usage",
+      source: uncertain ? "usage_pending" : costUsd > 0 ? "actual_tokens" : "rejected_request",
+      ...(uncertain ? { pendingUpperBoundUsd: Math.max(0, reservedAmount - costUsd) } : {}),
+      ...(costUsd === 0 || uncertain ? { retryAt } : {}),
     };
     const next: State = {
       ...loaded.state,
@@ -404,20 +439,22 @@ export async function recordPr262AiCommitteeCost(reportValue: unknown, now = new
       // normalize() already removes entries outside the rolling 24-hour
       // window. Retain every in-window charge so a high review count can
       // never make the ledger forget spend and reopen the $10 fuse.
-      entries: [...loaded.state.entries, entry],
+      entries: [...loaded.state.entries.filter(item => item.id !== id || item.source === "actual_tokens" || item.source === "usage_pending"), entry],
       auditEntries: [...loaded.state.auditEntries, entry],
       reservations: loaded.state.reservations.filter((item) => item.id !== id),
+      providerCooldown: failure ? { until: retryAt, category: String(failure.category), ...(typeof failure.code === "string" ? { code: failure.code } : {}), ...(typeof failure.httpStatus === "number" ? { httpStatus: failure.httpStatus } : {}) } : undefined,
     };
     const written = await writeVersionedJsonToR2(
       STATE_KEY,
       next,
       loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true },
     );
+    if (!written.conflict && !written.written) throw new Error("pr262_ai_cost_write_failed");
     if (!written.conflict) {
       return {
         recorded: true,
         entry,
-        nextRetryAt: new Date(Date.parse(entry.recordedAt) + WINDOW_MS).toISOString(),
+        nextRetryAt: entry.retryAt ?? new Date(Date.parse(entry.recordedAt) + WINDOW_MS).toISOString(),
         ...(await getPr262AiDailyBudgetStatus(now)),
       };
     }

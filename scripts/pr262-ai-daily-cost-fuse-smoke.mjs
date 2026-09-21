@@ -1,3 +1,4 @@
+import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
@@ -33,6 +34,7 @@ new Function("require", "module", "exports", output)((specifier) => {
       },
     };
   }
+  if (specifier === "@/lib/ai-committee/billing-audit") return loadTsModule(specifier, { "@/lib/r2-warehouse": {} });
   throw new Error(`Unexpected AI fuse import: ${specifier}`);
 }, loaded, loaded.exports);
 
@@ -44,219 +46,103 @@ const {
   reservePr262AiCommitteeBudget,
 } = loaded.exports;
 const originalEnvironment = { ...process.env };
+const bound = loaded.exports.PR262_REVIEW_MAX_COST_USD;
+const now = new Date("2026-09-21T10:00:00Z");
+const reset = (entries = []) => { state = { etag: `etag-${++etagCounter}`, payload: { version: 1, updatedAt: now.toISOString(), entries, reservations: [] } }; };
+const charge = (id, costUsd, recordedAt = now.toISOString()) => ({ id, costUsd, recordedAt, source: "actual_tokens", ticker: "TEST", alertType: "buy" });
+const report = (id, roles = [], responses = 0) => ({
+  openAiCalled: true, checkedAt: now.toISOString(), candidateFingerprint: id, selectedCandidate: { ticker: "TEST" },
+  committee: { output: { modelUsageSummary: { roleDiagnostics: roles, actualOpenAiUsage: {
+    responsesWithUsage: responses, tokens: { promptTokens: 1000, completionTokens: 500, cachedPromptTokens: 500 }, byModel: { "gpt-4.1-mini": {} },
+  } } } },
+});
+const reserve = (id, at = now) => reservePr262AiCommitteeBudget({ candidateFingerprint: id, ticker: "TEST", direction: "upside" }, at);
 try {
   process.env.SWING_UP_PR262_AI_DAILY_LIMIT_USD = "10";
-  process.env.SWING_UP_PR262_AI_DAILY_WARNING_USD = "6";
   process.env.SWING_UP_PR262_AI_REVIEW_RESERVATION_USD = "0.75";
-  const now = new Date("2026-08-20T10:00:00.000Z");
-  state = {
-    etag: `"etag-${++etagCounter}"`,
-    payload: {
-      version: 1,
-      updatedAt: now.toISOString(),
-      entries: [{ id: "prior", recordedAt: now.toISOString(), ticker: "SAFE", alertType: "buy", costUsd: 9.3, source: "actual_tokens" }],
-      reservations: [],
-    },
-  };
-  const blocked = await getPr262AiDailyBudgetStatus(now);
-  assert.equal(blocked.allowed, false, "A paid review must be blocked when its reservation could cross $10.");
-  assert.equal(blocked.hardFuseTripped, true);
-  assert.equal(blocked.nextReviewReservationUsd, 0.75);
-
-  state.payload.entries = [
-    { id: "long-lived-spend", recordedAt: now.toISOString(), ticker: "SAFE", alertType: "buy", costUsd: 9.2, source: "actual_tokens" },
-    { id: "first-small-release", recordedAt: "2026-08-19T11:00:00.000Z", ticker: "SAFE", alertType: "buy", costUsd: 0.3, source: "actual_tokens" },
-  ];
-  state.payload.reservations = [{
-    id: "second-small-release",
-    reservedAt: "2026-08-20T09:00:00.000Z",
-    expiresAt: "2026-08-20T12:00:00.000Z",
-    ticker: "SAFE",
-    direction: "upside",
-    amountUsd: 0.3,
-  }];
-  const cumulativelyBlocked = await getPr262AiDailyBudgetStatus(now);
-  assert.equal(cumulativelyBlocked.allowed, false);
-  assert.equal(cumulativelyBlocked.nextBudgetAdmissionAt, "2026-08-20T12:00:00.000Z", "Capacity must wait until enough entry and reservation amounts have cumulatively expired.");
-  const raceTimeFuseDenial = await reservePr262AiCommitteeBudget({ candidateFingerprint: "race-time-full-fuse", ticker: "SAFE", direction: "upside" }, now);
-  assert.equal(raceTimeFuseDenial.allowed, false);
-  assert.equal(raceTimeFuseDenial.reason, "daily_cost_fuse");
-  assert.equal(raceTimeFuseDenial.nextRetryAt, cumulativelyBlocked.nextBudgetAdmissionAt, "A race-time full fuse must return the exact global capacity boundary.");
-
-  state.payload.entries = [{ id: "prior", recordedAt: now.toISOString(), ticker: "SAFE", alertType: "buy", costUsd: 9.3, source: "actual_tokens" }];
-  state.payload.reservations = [];
-
+  assert.ok(bound < 0.20 && bound > 0, "Exposure must derive from enforceable model/input/output limits.");
+  reset([charge("prior", 9.9)]);
+  assert.equal((await getPr262AiDailyBudgetStatus(now)).allowed, false);
+  assert.equal((await getPr262AiDailyBudgetStatus(now)).nextReviewReservationUsd, bound, "Obsolete 75-cent environment overrides cannot return.");
   process.env.SWING_UP_PR262_AI_DAILY_LIMIT_USD = "1000";
-  process.env.SWING_UP_PR262_AI_REVIEW_RESERVATION_USD = "0.01";
-  const misconfigured = await getPr262AiDailyBudgetStatus(now);
-  assert.equal(misconfigured.limitUsd, 10, "Environment configuration must not raise the hard $10 ceiling.");
-  assert.equal(misconfigured.nextReviewReservationUsd, 0.75, "Environment configuration must not lower the safe review reservation.");
-  process.env.SWING_UP_PR262_AI_DAILY_LIMIT_USD = "0.5";
-  state.payload.entries = [];
-  const lowerLimit = await getPr262AiDailyBudgetStatus(now);
-  assert.equal(lowerLimit.nextReviewReservationUsd, 0.75, "A lower daily limit must not shrink the per-review cost bound.");
-  assert.equal(lowerLimit.allowed, false, "A daily limit below one conservative review must admit no paid review.");
-  assert.equal(lowerLimit.nextBudgetAdmissionAt, null, "No retry time may be invented when the configured limit cannot admit even one review.");
+  assert.equal((await getPr262AiDailyBudgetStatus(now)).limitUsd, 10);
+  process.env.SWING_UP_PR262_AI_DAILY_LIMIT_USD = "0.1";
+  reset();
+  assert.equal((await getPr262AiDailyBudgetStatus(now)).allowed, false);
+  assert.equal((await getPr262AiDailyBudgetStatus(now)).nextBudgetAdmissionAt, null);
   process.env.SWING_UP_PR262_AI_DAILY_LIMIT_USD = "10";
-  process.env.SWING_UP_PR262_AI_REVIEW_RESERVATION_USD = "0.75";
 
-  state.payload.entries = [{ id: "prior", recordedAt: now.toISOString(), ticker: "SAFE", alertType: "buy", costUsd: 9.2, source: "actual_tokens" }];
-  const allowed = await getPr262AiDailyBudgetStatus(now);
-  assert.equal(allowed.allowed, true);
+  reset([charge("prior", 9.8)]);
+  const concurrent = await Promise.all([reserve("a"), reserve("b")]);
+  assert.equal(concurrent.filter(row => row.allowed).length, 1, "Concurrent reservations must not exceed the hard cap.");
+  assert.equal((await getPr262AiDailyBudgetStatus(now)).spentUsd, 9.8, "A hold is not a charge.");
+  await releasePr262AiCommitteeBudgetReservation(state.payload.reservations[0].id, now);
 
-  const [firstConcurrent, secondConcurrent] = await Promise.all([
-    reservePr262AiCommitteeBudget({ candidateFingerprint: "concurrent-a", ticker: "SAFE", direction: "upside" }, now),
-    reservePr262AiCommitteeBudget({ candidateFingerprint: "concurrent-b", ticker: "SAFE", direction: "upside" }, now),
-  ]);
-  assert.equal([firstConcurrent, secondConcurrent].filter((item) => item.allowed).length, 1, "Atomic reservations must prevent overlapping cycles from crossing the fuse.");
-  assert.equal(state.payload.reservations.length, 1);
-  const afterConcurrentReservation = await getPr262AiDailyBudgetStatus(now);
-  assert.equal(afterConcurrentReservation.spentUsd, 9.2);
-  assert.equal(afterConcurrentReservation.reservedUsd, 0.75);
-  assert.equal(afterConcurrentReservation.allowed, false);
-  const winningFingerprint = state.payload.reservations[0].id;
-  assert.equal((await releasePr262AiCommitteeBudgetReservation(winningFingerprint, now)).released, true);
+  reset([charge("current", 9.84), charge("first-release", 0.05, "2026-09-20T11:00:00Z")]);
+  state.payload.reservations = [{ id: "hold", amountUsd: 0.05, reservedAt: "2026-09-21T09:00:00Z", expiresAt: "2026-09-21T12:00:00Z", ticker: "TEST", direction: "upside" }];
+  assert.equal((await getPr262AiDailyBudgetStatus(now)).nextBudgetAdmissionAt, "2026-09-21T12:00:00.000Z");
 
-  state.payload.entries = [];
-  state.payload.reservations = [];
+  reset(Array.from({ length: 13 }, (_, i) => ({ ...charge(`legacy-${i}`, 0.75), source: "fallback_missing_usage" })));
+  const migrated = await getPr262AiDailyBudgetStatus(now, true);
+  assert.equal(migrated.spentUsd, 0, "Invented legacy charges must not block opportunities.");
+  assert.equal(migrated.allowed, true);
+  assert.equal(migrated.costAudit.last48Hours.removedLegacyEstimateUsd, 9.75);
+  assert.equal(migrated.costAudit.last48Hours.unknownUsageReviews, 13, "Removing estimates must not claim that historical usage was verified.");
+  assert.equal(migrated.costAudit.providerInvoiceVerified, false);
+
+  reset();
   forcedConflicts = 2;
-  const report = {
-    openAiCalled: true,
-    checkedAt: now.toISOString(),
-    candidateFingerprint: "candidate-cost-1",
-    alertType: "buy",
-    selectedCandidate: { ticker: "SAFE" },
-    committee: { output: {} },
-  };
-  const reservation = await reservePr262AiCommitteeBudget({ candidateFingerprint: report.candidateFingerprint, ticker: "SAFE", direction: "upside" }, now);
-  assert.equal(reservation.allowed, true);
-  assert.equal(state.payload.reservations.length, 1);
-  const duplicateActiveReservation = await reservePr262AiCommitteeBudget({ candidateFingerprint: report.candidateFingerprint, ticker: "SAFE", direction: "upside" }, now);
-  assert.equal(duplicateActiveReservation.allowed, false);
-  assert.equal(duplicateActiveReservation.reason, "candidate_already_reserved");
-  assert.equal(duplicateActiveReservation.nextRetryAt, reservation.reservation.expiresAt, "An active fingerprint must retry only after its exact reservation expiry.");
-  forcedConflicts = 2;
-  const recorded = await recordPr262AiCommitteeCost(report, now);
-  assert.equal(recorded.recorded, true, "Cost recording must retry optimistic-write conflicts.");
-  assert.equal(state.payload.entries.length, 1);
-  assert.equal(state.payload.reservations.length, 0, "Actual usage must atomically reconcile the pre-call reservation.");
-  assert.equal(state.payload.entries[0].costUsd, 0.75);
-  assert.equal(recorded.nextRetryAt, "2026-08-21T10:00:00.000Z");
-  const duplicateRecordedReservation = await reservePr262AiCommitteeBudget({ candidateFingerprint: report.candidateFingerprint, ticker: "SAFE", direction: "upside" }, now);
-  assert.equal(duplicateRecordedReservation.allowed, false);
-  assert.equal(duplicateRecordedReservation.reason, "candidate_already_recorded");
-  assert.equal(duplicateRecordedReservation.nextRetryAt, recorded.nextRetryAt, "A recorded fingerprint must not be hot-retried inside its rolling cost window.");
-  const duplicate = await recordPr262AiCommitteeCost(report, now);
-  assert.equal(duplicate.reason, "already_recorded");
-  assert.equal(state.payload.entries.length, 1);
+  assert.equal((await reserve("429")).allowed, true);
+  const rejection = report("429", [{ agentId: "analyst_agent", status: "failed", usageReported: false, providerFailure: { httpStatus: 429, category: "quota", code: "credit_balance_exhausted" } }, { agentId: "final_judge", status: "blocked" }]);
+  const rejected = await recordPr262AiCommitteeCost(rejection, now);
+  assert.equal(rejected.entry.costUsd, 0);
+  assert.equal(rejected.entry.source, "rejected_request");
+  assert.equal(rejected.reservedUsd, 0);
+  assert.equal(rejected.pendingUsageUpperBoundUsd, 0);
+  assert.equal(rejected.allowed, false, "Quota errors pause all reviewers during recovery.");
+  assert.equal((await reserve("another")).reason, "provider_cooldown");
+  const later = new Date(now.getTime() + 31 * 60000);
+  assert.equal((await reserve("429", later)).allowed, true, "A topped-up account can retry the same evidence after its cooldown.");
+  const recovered = await recordPr262AiCommitteeCost(report("429", [{ status: "completed", usageReported: true }], 1), later);
+  assert.equal(recovered.entry.costUsd, 0.00105, "Use actual cached/uncached input and output token counts, including partial reviews.");
+  assert.equal(recovered.entry.source, "actual_tokens");
+  assert.equal((await recordPr262AiCommitteeCost(report("429"), later)).reason, "already_recorded");
 
-  state.payload.entries = Array.from({ length: 205 }, (_, index) => ({
-    id: `tiny-charge-${index}`,
-    recordedAt: now.toISOString(),
-    ticker: "SAFE",
-    alertType: "buy",
-    costUsd: 0.01,
-    source: "actual_tokens",
-  }));
-  const highVolumeReport = { ...report, candidateFingerprint: "high-volume-charge" };
-  const highVolumeRecorded = await recordPr262AiCommitteeCost(highVolumeReport, now);
-  assert.equal(highVolumeRecorded.recorded, true);
-  assert.equal(state.payload.entries.length, 206, "Every charge inside the rolling window must remain in the cost fuse.");
+  reset();
+  await reserve("timeout");
+  const uncertain = await recordPr262AiCommitteeCost(report("timeout", [{ status: "failed", usageReported: false, providerFailure: { category: "timeout" } }]), now);
+  assert.equal(uncertain.spentUsd, 0, "An ambiguous transport failure cannot be booked as a bill.");
+  assert.equal(uncertain.pendingUsageUpperBoundUsd, bound, "A genuinely uncertain in-flight request retains bounded exposure separately.");
+  assert.equal(uncertain.entry.source, "usage_pending");
+  assert.equal(uncertain.unknownUsageAllocationUsd, 0);
 
-  state.payload.entries = [];
-  state.payload.reservations = [];
-  const partialUsageReport = {
-    ...report,
-    candidateFingerprint: "partial-usage",
-    committee: {
-      output: {
-        modelUsageSummary: {
-          actualOpenAiUsage: {
-            responsesWithUsage: 13,
-            tokens: { promptTokens: 1, completionTokens: 1, cachedPromptTokens: 0 },
-          },
-        },
-      },
-    },
-  };
-  await reservePr262AiCommitteeBudget({ candidateFingerprint: partialUsageReport.candidateFingerprint, ticker: "SAFE", direction: "upside" }, now);
-  await recordPr262AiCommitteeCost(partialUsageReport, now);
-  assert.equal(state.payload.entries[0].costUsd, 0.75, "Incomplete provider usage must retain the full conservative reservation.");
+  reset();
+  const partial = report("partial", [{ status: "completed", usageReported: true }, { status: "failed", usageReported: false, providerFailure: { httpStatus: 429, category: "rate_limit" } }], 1);
+  const metered = await recordPr262AiCommitteeCost(partial, now);
+  assert.equal(metered.entry.costUsd, 0.00105, "One completed response counts even when the next reviewer is rejected.");
+  assert.equal(metered.entry.pendingUpperBoundUsd, undefined);
+  const nextDay = new Date(now.getTime() + 25 * 3600000);
+  await reserve("tomorrow", nextDay);
+  const audit = await getPr262AiDailyBudgetStatus(nextDay, true);
+  assert.equal(audit.spentUsd, 0);
+  assert.equal(audit.costAudit.last48Hours.completeTokenUsageEstimateUsd, 0.00105);
+  assert.equal(audit.costAudit.last30Days.recordedReviewHistoryComplete, false);
+  await recordPr262AiCommitteeCost(partial, nextDay);
+  assert.equal((await getPr262AiCostAudit(nextDay)).last48Hours.recordedReviews, 2);
+  const day35 = new Date(now.getTime() + 35 * 86400000);
+  await reserve("retained", day35);
+  assert.equal(state.payload.auditEntries.length, 2);
+  assert.equal((await getPr262AiCostAudit(day35)).last30Days.recordedReviewHistoryComplete, true);
+  await reserve("bounded", new Date(now.getTime() + 46 * 86400000));
+  assert.equal(state.payload.auditEntries.length, 1);
 
-  // Audit history must survive normal 24-hour cleanup without contributing
-  // old spend to the rolling fuse or presenting fallback allocations as bills.
-  state = null;
-  const meteredReport = {
-    ...partialUsageReport,
-    candidateFingerprint: "repeated-after-window",
-    committee: { output: { modelUsageSummary: { actualOpenAiUsage: {
-      responsesWithUsage: 14,
-      tokens: { promptTokens: 1_000, completionTokens: 500, cachedPromptTokens: 0 },
-    } } } },
-  };
-  await recordPr262AiCommitteeCost(meteredReport, now);
-  const hourLater = new Date(now.getTime() + 60 * 60_000);
-  await recordPr262AiCommitteeCost({ ...report, candidateFingerprint: "unknown-audit" }, hourLater);
-  const dayLater = new Date(now.getTime() + 25 * 60 * 60_000);
-  await reservePr262AiCommitteeBudget({ candidateFingerprint: "pending-audit", ticker: "SAFE" }, dayLater);
-  const agedBudget = await getPr262AiDailyBudgetStatus(dayLater, true);
-  assert.equal(agedBudget.spentUsd, 0, "Charges at least 24 hours old must not reduce current capacity.");
-  assert.equal(agedBudget.reservedUsd, 0.75, "An active reservation remains separate from past recorded spend.");
-  assert.equal(agedBudget.costAudit.last48Hours.completeTokenUsageEstimateUsd, 0.0012);
-  assert.equal(agedBudget.costAudit.last48Hours.unknownUsageAllocationUsd, 0.75);
-  assert.equal(agedBudget.costAudit.last48Hours.budgetAccountedUsd, 0.7512);
-  assert.equal(agedBudget.costAudit.last48Hours.recordedReviews, 2);
-  assert.equal(agedBudget.costAudit.providerInvoiceVerified, false);
-  assert.equal(agedBudget.costAudit.last30Days.recordedReviewHistoryComplete, false, "New history must not pretend to reconstruct the past month.");
-  await recordPr262AiCommitteeCost(meteredReport, dayLater);
-  await recordPr262AiCommitteeCost(meteredReport, dayLater);
-  const repeatAudit = await getPr262AiCostAudit(dayLater);
-  assert.equal(repeatAudit.last48Hours.recordedReviews, 3, "A later real review of the same fingerprint counts once, while a repeated recording stays idempotent.");
-  assert.equal(repeatAudit.last48Hours.completeTokenUsageEstimateUsd, 0.0024);
-  const thirtyFiveDaysLater = new Date(now.getTime() + 35 * 24 * 60 * 60_000);
-  await reservePr262AiCommitteeBudget({ candidateFingerprint: "retain-history" }, thirtyFiveDaysLater);
-  assert.equal(state.payload.entries.length, 0);
-  assert.equal(state.payload.auditEntries.length, 3, "All recorded review history remains durable beyond 35 days after current-window cleanup.");
-  assert.equal((await getPr262AiCostAudit(thirtyFiveDaysLater)).last30Days.recordedReviewHistoryComplete, true);
-  const fortySixDaysLater = new Date(now.getTime() + 46 * 24 * 60 * 60_000);
-  await reservePr262AiCommitteeBudget({ candidateFingerprint: "bounded-history" }, fortySixDaysLater);
-  assert.equal(state.payload.auditEntries.length, 1, "Only entries inside the 45-day retention window remain after a mutation.");
-
-  state = { payload: { version: 1, updatedAt: now.toISOString(), entries: [
-    { id: "legacy", recordedAt: hourLater.toISOString(), ticker: "SAFE", alertType: null, costUsd: 0.5, source: "actual_tokens" },
-  ], reservations: [] }, etag: `"etag-${++etagCounter}"` };
-  await reservePr262AiCommitteeBudget({ candidateFingerprint: "migrate-audit" }, dayLater);
-  assert.equal(state.payload.auditEntries.length, 1, "Migration preserves legacy raw entries even when they expire from the fuse in this write.");
-  const migratedAudit = await getPr262AiCostAudit(dayLater);
-  assert.equal(migratedAudit.last48Hours.completeTokenUsageEstimateUsd, 0.5);
-  assert.equal(migratedAudit.last48Hours.recordedReviewHistoryComplete, false);
-
-  state = { payload: { version: 1, updatedAt: now.toISOString(), entries: "damaged", reservations: [] }, etag: `"etag-${++etagCounter}"` };
-  await assert.rejects(() => getPr262AiDailyBudgetStatus(now), /pr262_ai_daily_cost_state_unreadable/, "Damaged accounting must fail closed instead of reopening paid capacity.");
+  reset(Array.from({ length: 205 }, (_, i) => charge(`tiny-${i}`, 0.01)));
+  await recordPr262AiCommitteeCost(report("latest", [{ status: "completed", usageReported: true }], 1), now);
+  assert.equal(state.payload.entries.length, 206, "Every in-window charge remains counted.");
+  state.payload.entries = "damaged";
+  await assert.rejects(() => getPr262AiDailyBudgetStatus(now), /state_unreadable/);
 } finally {
   for (const key of Object.keys(process.env)) if (!(key in originalEnvironment)) delete process.env[key];
   Object.assign(process.env, originalEnvironment);
 }
-
-console.log(JSON.stringify({
-  ok: true,
-  tenDollarFuseReservesBeforePaidReview: true,
-  concurrentReservationsCannotOverspend: true,
-  optimisticConflictsRetryWithoutLostCost: true,
-  damagedAccountingFailsClosed: true,
-  duplicateCostIsIdempotent: true,
-  hardLimitCannotBeRaisedByEnvironment: true,
-  safeReservationCannotBeLoweredByEnvironment: true,
-  dailyLimitBelowReservationDeniesPaidReview: true,
-  incompleteUsageRetainsFullReservation: true,
-  activeFingerprintUsesExactReservationExpiry: true,
-  recordedFingerprintUsesExactCostExpiry: true,
-  globalFuseUsesExactCumulativeCapacityExpiry: true,
-  raceTimeGlobalFuseUsesExactRetry: true,
-  highVolumeCannotEvictInWindowSpend: true,
-  auditRetains45DaysWithoutChangingRollingFuse: true,
-  auditSeparatesTokenEstimatesUnknownAllocationsAndReservations: true,
-  auditReportsIncompleteHistoricalCoverage: true,
-  auditRepeatedFingerprintUsesReviewTimestamp: true,
-  auditMigratesLegacyEntriesBeforeCleanup: true,
-}, null, 2));
+console.log("Cost accounting: actual token receipts, zero rejected-request charges, recoverable quota cooldown, legacy estimate removal, separate uncertainty holds, concurrent $10 cap and 45-day audit passed.");

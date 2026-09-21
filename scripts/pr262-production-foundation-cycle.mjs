@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 import { isApprovedPr262PremergeProductionRollout } from "./pr262-premerge-production-rollout.mjs";
+import { retryFoundationRequest } from "./helpers/retry-foundation-request.mjs";
 
 const PR262_BRANCH = "agent/combined-opportunity-engine";
 const PRODUCTION_STORAGE_PREFIX = "production/pr262/";
@@ -41,6 +42,7 @@ for (const key of [
   "DATABASE_URL",
   "DIRECT_URL",
   "OPENAI_API_KEY",
+  "OPENAI_ADMIN_KEY",
   "STRIPE_SECRET_KEY",
   "STRIPE_WEBHOOK_SECRET",
   "TELEGRAM_BOT_TOKEN",
@@ -78,11 +80,11 @@ try {
   if (!await waitForHealth(app)) throw new Error("pr262_foundation_app_health_timeout");
   for (let round = 1; round <= MAX_BATCH_ROUNDS; round += 1) {
     const endpoint = `${baseUrl}/api/internal/combined-opportunity-engine/production-foundation${forceOnce ? "?force=true" : ""}`;
-    const response = await fetch(endpoint, {
+    const response = await retryFoundationRequest(() => fetch(endpoint, {
       method: "POST",
       headers: { "x-swing-up-pr262-foundation-token": token },
       signal: AbortSignal.timeout(240_000),
-    });
+    }), { onRetry: detail => console.info(`[pr262-foundation-retry] ${JSON.stringify({ round, ...detail })}`) });
     const raw = await response.text();
     let body;
     try { body = JSON.parse(raw); } catch { body = { raw: raw.slice(0, 2_000) }; }

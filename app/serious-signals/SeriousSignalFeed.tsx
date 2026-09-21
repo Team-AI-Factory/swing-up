@@ -16,7 +16,7 @@ type LiveAlert = {
   priceObservedAt: string | null;
   outlook?: PriceOutlook;
   finalJudgeConfidence: number;
-  committee: { completed: number; failed: number; recommendation: string };
+  committee: { completed: number; planned?: number; failed: number; recommendation: string };
   evidence: Array<{ source: string | null; url: string }>;
   delivery: {
     status: string;
@@ -403,7 +403,7 @@ export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
                   {alert.outlook ? <SignalPriceOutlook outlook={alert.outlook} action={alert.alertType} /> : null}
                   <p className="muted"><strong>Price observed:</strong> {alert.priceObservedAt ? `${formatTime(alert.priceObservedAt)} Bangkok time` : "Observation time unavailable"}. This is the quote recorded with the alert; prices may have changed.</p>
                   <p><strong>Detected:</strong> {formatTime(alert.createdAt)} Bangkok time</p>
-                  <p><strong>Committee:</strong> {alert.committee.completed}/14 completed, {alert.committee.failed} failed, recommendation {alert.committee.recommendation}.</p>
+                  <p><strong>Committee:</strong> All {alert.committee.completed} selected reviewers completed their checks.</p>
                   {alert.evidence.length ? (
                     <div className="button-row">
                       {alert.evidence.slice(0, 4).map((evidence, index) => (

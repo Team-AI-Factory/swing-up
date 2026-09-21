@@ -84,6 +84,8 @@ export type MarketQuote = {
   quoteAgeMs?: number | null;
   /** False once either the provider response or market observation is too old to support Buy/Sell. */
   actionableForSeriousSignal?: boolean;
+  priceBasis?: "live_or_delayed" | "last_completed_session" | "unavailable";
+  marketOpen?: boolean;
   marketSession?: "pre_market" | "regular" | "post_market" | "latest_close" | "halted" | "unknown";
 };
 

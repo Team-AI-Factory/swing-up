@@ -32,6 +32,7 @@ new Function("require", "module", "exports", output)((name) => {
   if (name === "node:crypto") return crypto;
   if (name === "@/lib/r2-warehouse") return storage;
   if (name === "@/lib/opportunity-engine/pr262-storage") return { pr262StorageKey: (relative) => `production/pr262/${relative}` };
+  if (["@/lib/ai-committee/review-policy", "@/lib/equity-signal/us-market-calendar"].includes(name)) return loadTsModule(name);
   throw new Error(`Unexpected Watch Out authority import: ${name}`);
 }, loaded, loaded.exports);
 

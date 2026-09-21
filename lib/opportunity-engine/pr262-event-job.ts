@@ -1,3 +1,4 @@
+import { completeCommitteeReview, committeeRequestsRejectedWithoutUsage } from "@/lib/ai-committee/review-policy";
 import { verifiedCompanyProfile } from "@/lib/company-profile";
 import { ensureCompanyProfile, warmFoundationCompanyProfiles } from "@/lib/opportunity-engine/company-profile-cache";
 import { recordResearchEvidence, readEvidenceFollowup, verifiedFactsCache, reserveRejectionAudit } from "@/lib/opportunity-engine/pr262-research-evidence";
@@ -60,7 +61,7 @@ const MAX_COMMITTEE_CALLS_PER_DAY = 20;
 const MAX_STATE_RUNS = 200;
 const MAX_HISTORY_RECORDS = 50_000;
 const PROVIDER_RESERVATION_RETENTION_MS = 2 * 24 * 60 * 60_000;
-const FULL_SOURCE_MAX_BYTES = 500_000;
+const FULL_SOURCE_MAX_BYTES = 2_000_000;
 const FULL_SOURCE_MAX_REDIRECTS = 3;
 const FULL_SOURCE_ABSOLUTE_TIMEOUT_MS = 15_000;
 const DNS_IPV4_FALLBACK_TIMEOUT_MS = 2_000;
@@ -509,6 +510,18 @@ async function reserveCommitteeCall(input: {
   return { allowed: false as const, nextRetryAt: null };
 }
 
+async function releaseRejectedCommitteeCall(eventId: string, report: Json, now: Date) {
+  if (!committeeRequestsRejectedWithoutUsage(report.committee)) return;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const loaded = await loadCommitteeBudgetState(now);
+    const reservations = loaded.state.reservations.filter(row => row.eventId !== eventId || row.candidateFingerprint !== report.candidateFingerprint);
+    if (reservations.length === loaded.state.reservations.length) return;
+    const result = await writeVersionedJsonToR2(COMMITTEE_BUDGET_KEY, { ...loaded.state, updatedAt: now.toISOString(), reservations }, loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true });
+    if (result.written) return;
+  }
+  throw new Error("pr262_rejected_committee_release_failed");
+}
+
 function receiptChannel(event: Pr262SensorEvent): EventReceipt["channel"] {
   if (event.source === "sec") return "sec_current_filings";
   if (event.source === "company_news") return "google_news_rss";
@@ -637,7 +650,29 @@ async function resolve4Within(hostname: string, timeoutMs = DNS_IPV4_FALLBACK_TI
   });
 }
 
-async function defaultResolveHost(hostname: string, ipv4FallbackTimeoutMs = DNS_IPV4_FALLBACK_TIMEOUT_MS) {
+const ipv4DnsCache = new Map<string, { addresses: string[]; expiresAt: number }>();
+async function resolve4OverHttps(hostname: string, fetchImpl: typeof fetch = fetch) {
+  const prior = ipv4DnsCache.get(hostname);
+  if (prior && prior.expiresAt > Date.now()) return prior.addresses;
+  let addresses: string[] = [];
+  try {
+    const url = new URL("https://dns.google/resolve");
+    url.searchParams.set("name", hostname);
+    url.searchParams.set("type", "A");
+    url.searchParams.set("edns_client_subnet", "0.0.0.0/0");
+    const response = await fetchImpl(url, { redirect: "error", signal: AbortSignal.timeout(2000), headers: { Accept: "application/dns-json" } });
+    if (!response.ok) throw new Error("dns_https_failed");
+    const body = object(await response.json());
+    if (body.Status === 0 && body.TC !== true && Array.isArray(body.Answer)) {
+      addresses = body.Answer.map(object).filter(row => row.type === 1 && net.isIP(String(row.data)) === 4).map(row => String(row.data)).slice(0, 8);
+    }
+  } catch { /* Keep the original resolver result and normal retry policy. */ }
+  if (ipv4DnsCache.size > 500) ipv4DnsCache.clear();
+  ipv4DnsCache.set(hostname, { addresses, expiresAt: Date.now() + (addresses.length ? 60_000 : 15_000) });
+  return addresses;
+}
+
+async function defaultResolveHost(hostname: string, ipv4FallbackTimeoutMs = DNS_IPV4_FALLBACK_TIMEOUT_MS, httpsResolver = resolve4OverHttps) {
   let lookupFailure: unknown = null;
   let addresses: string[] = [];
   try {
@@ -656,6 +691,9 @@ async function defaultResolveHost(hostname: string, ipv4FallbackTimeoutMs = DNS_
     const ipv4Fallback = await resolve4Within(hostname, ipv4FallbackTimeoutMs);
     addresses = [...new Set([...addresses, ...ipv4Fallback])];
   }
+  // Public DNS over HTTPS survives an unavailable OS A-record resolver. Every
+  // answer still passes public-IP validation and the existing pinned transport.
+  if (!addresses.some(address => net.isIP(address) === 4)) addresses = [...new Set([...addresses, ...await httpsResolver(hostname)])];
 
   if (addresses.length > 0) return addresses;
   if (lookupFailure) throw lookupFailure;
@@ -1495,7 +1533,7 @@ function committeeApproved(report: Json, pointer: Json) {
     && halt.currentStateKnown === true
     && officialEvidence
     && committee.ok === true
-    && committee.agentsCompleted === 14
+    && completeCommitteeReview(committee)
     && committee.agentsFailed === 0
     && judge.verdict === "positive"
     && Number(judge.confidence) >= 80
@@ -1644,7 +1682,7 @@ async function finalizePersistedResult(input: {
           exactIssuerMapping: true,
           currentEvidenceGatesPassed: true,
           freshQuoteAndHaltStateKnown: true,
-          fullCommitteeAgentsCompleted: 14,
+          fullCommitteeAgentsCompleted: Number(object(report.committee).agentsCompleted),
           finalJudgePositiveMinimumConfidence: 80,
           historicalCasesRequired: false,
         },
@@ -1691,7 +1729,7 @@ function retryableReport(report: Json, allowOpenAi: boolean) {
   const quote = object(selected.quote);
   const halt = object(report.tradingHaltSafety);
   if (report.openAiCalled === true
-    && (committee.ok !== true || Number(committee.agentsCompleted) !== 14 || Number(committee.agentsFailed) !== 0)) return true;
+    && (committee.ok !== true || !completeCommitteeReview(committee) || Number(committee.agentsFailed) !== 0)) return true;
   if (status === "candidate_needs_more_data" && object(report.researchReview).admitted === true
     && object(committee.output).overallRecommendation !== "reject") return true;
   if (status === "candidate_company_profile_pending") return true;
@@ -2073,6 +2111,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
           },
         }));
     assertJobActive();
+    if (report.openAiCalled === true) await releaseRejectedCommitteeCall(event.id, report, now);
     const evidenceProgress = await recordResearchEvidence({ event: object(resolved.event), report,
       companyAnalysis: valuationAnalysis ? object(valuationAnalysis) : undefined,
       sourceDecisionGrade: source.decisionGrade, sourceFailureReason, now: clock(),
@@ -2389,7 +2428,7 @@ export const PR262_EVENT_JOB_KEYS = {
 } as const;
 
 
-/** One raw-foundation profile per maintenance pass, sharing the event worker lease and unchanged provider caps. */
+/** Warm queued-event profiles first, sharing the event worker lease and unchanged provider caps. */
 export async function warmPr262CompanyProfiles(now = new Date(), fetchImpl: typeof fetch = fetch) {
   const eventId = "company-profile-foundation-maintenance";
   const claim = await claimEvent(eventId, now);

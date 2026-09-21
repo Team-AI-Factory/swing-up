@@ -1,3 +1,4 @@
+import { completeCommitteeReview } from "@/lib/ai-committee/review-policy";
 import { verifiedCompanyProfile } from "@/lib/company-profile";
 import crypto from "node:crypto";
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
@@ -89,7 +90,7 @@ function committeeProof(report: Json, pointer: Json) {
     && halt.currentStateKnown === true
     && officialEvidence
     && committee.ok === true
-    && committee.agentsCompleted === 14
+    && completeCommitteeReview(committee)
     && committee.agentsFailed === 0
     && judge.verdict === "positive"
     && Number(judge.confidence) >= 80
@@ -128,7 +129,7 @@ export async function promotePr262SeriousWatchOut(resultKey: string | null | und
       exactIssuerMapping: true,
       currentEvidenceGatesPassed: true,
       freshQuoteAndHaltStateKnown: true,
-      fullCommitteeAgentsCompleted: 14,
+      fullCommitteeAgentsCompleted: Number(proof.committee.agentsCompleted),
       finalJudgePositiveMinimumConfidence: 80,
       historicalCasesRequired: false,
     },

@@ -1,3 +1,5 @@
+import { completeCommitteeReview } from "@/lib/ai-committee/review-policy";
+import { PR262_REVIEW_MAX_PROMPT_BYTES, PR262_REVIEW_MAX_COST_USD } from "@/lib/opportunity-engine/pr262-ai-daily-cost";
 import { verifiedCompanyProfile, type CompanyIdentity, type VerifiedCompanyProfile } from "@/lib/company-profile";
 import { committeeExplanation } from "@/lib/signal-explanation";
 import crypto from "node:crypto";
@@ -267,7 +269,8 @@ function evidencePack(candidate: ImpactCandidate, providers: ProviderResult[], m
   ];
   const dataFreshnessWarnings = [
     ...receipts.filter((receipt) => freshness(now, receipt.publishedAt).freshness !== "fresh").map((receipt) => `${receipt.publisher} receipt is older than 24 hours.`),
-    ...(candidate.quote && (candidate.quote.delayedMinutes ?? 0) > 30 ? [`Market snapshot is ${candidate.quote.delayedMinutes} minutes behind the scan time; treat it as an entry-readiness warning, never as proof that the event worked.`] : []),
+    ...(candidate.quote?.priceBasis === "last_completed_session" ? ["US trading is closed. This is a dated price from the latest completed trading session, not a live executable quote. Recheck the price when trading resumes."] : []),
+    ...(candidate.quote && candidate.quote.priceBasis !== "last_completed_session" && (candidate.quote.delayedMinutes ?? 0) > 30 ? [`Market snapshot is ${candidate.quote.delayedMinutes} minutes behind the scan time; treat it as an entry-readiness warning, never as proof that the event worked.`] : []),
   ];
   return {
     analysisKind: candidate.eventFamily === "valuation_gap" ? "valuation" : "event",
@@ -712,17 +715,16 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       dryRun: false,
       confirmRun: true,
       mode: "preview",
-      maxAgents: 13,
-      maxCostUsd: 0.75,
+      reviewPolicy: "focused_v1",
+      maxCostUsd: PR262_REVIEW_MAX_COST_USD,
       signal: input.signal,
-      // PR262's $0.75 pre-call reservation is a hard bound only for this
-      // documented model family and a bounded prompt. A deployment cannot
-      // silently switch the 14-role review to a more expensive model.
+      // The temporary exposure bound uses this model and bounded inputs; only
+      // provider-reported usage is recorded as spending.
       allowedModels: ["gpt-4.1-mini", "gpt-4.1-mini-2025-04-14"],
-      maximumPromptBytes: 100_000,
+      maximumPromptBytes: PR262_REVIEW_MAX_PROMPT_BYTES,
     });
     const results = Array.isArray(committee.agentResults) ? committee.agentResults : [];
-    selectedCandidate.plainLanguageExplanation = committeeExplanation(results.find(result => result.agentId === "explainer_agent" && result.status === "completed")?.keyFindings ?? []);
+    selectedCandidate.plainLanguageExplanation = committeeExplanation(results.find(result => ["explainer_agent", "analyst_agent"].includes(result.agentId) && result.status === "completed")?.keyFindings ?? []);
     const completed = results.filter((result) => result.status === "completed").length;
     const failed = results.filter((result) => result.status === "failed" || result.status === "blocked").length;
     const technicalFailure = !committee.ok || failed > 0;
@@ -731,7 +733,7 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
     const finalJudge = results.find((result) => result.agentId === "final_judge");
     const recommendation = committee.committeeOutput?.overallRecommendation ?? "needs_more_data";
     const seriousSignalFound = committee.ok === true
-      && completed === 14
+      && completeCommitteeReview({ ok: committee.ok, agentsCompleted: completed, agentsFailed: failed, output: committee.committeeOutput })
       && failed === 0
       && recommendation === "approve"
       && finalJudge?.verdict === "positive"

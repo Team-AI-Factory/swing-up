@@ -1,5 +1,7 @@
 import { readCompanyProfiles } from "@/lib/opportunity-engine/company-profile-cache";
 import { verifiedCompanyProfile } from "@/lib/company-profile";
+import { completeCommitteeReview } from "@/lib/ai-committee/review-policy";
+import { usQuoteFreshness } from "@/lib/equity-signal/us-market-calendar";
 import { explainCandidate } from "@/lib/signal-explanation";
 import { candidatePriceOutlook, compareSignalPotential } from "@/lib/signal-outlook";
 import crypto from "node:crypto";
@@ -254,18 +256,19 @@ function validatedOutbox(raw: unknown, outboxKey: string) {
     || ["halted", "unknown"].includes(String(quote.marketSession ?? "unknown"))
     || quoteObservedAtMs === null
     || quoteObservedAtMs > createdAtMs + 5 * 60_000
-    || createdAtMs - quoteObservedAtMs > 15 * 60_000) {
+    || !usQuoteFreshness(String(quote.observedAt), new Date(createdAtMs)).usable) {
     throw new Error("serious_signal_delivery_market_state_not_actionable");
   }
+  // Legacy outboxes did not always serialize `ok`; their original 14-role proof remains valid.
+  if (!completeCommitteeReview({ ...committee, ok: committee.ok ?? (Number(committee.agentsCompleted) === 14) })) throw new Error("serious_signal_delivery_incomplete_committee");
   if (authority.exactIssuerMapping !== true
     || authority.currentEvidenceGatesPassed !== true
     || authority.freshQuoteAndHaltStateKnown !== true
-    || Number(authority.fullCommitteeAgentsCompleted) !== 14
+    || Number(authority.fullCommitteeAgentsCompleted) !== Number(committee.agentsCompleted)
     || Number(authority.finalJudgePositiveMinimumConfidence) < 80
     || authority.historicalCasesRequired !== false) {
     throw new Error("serious_signal_delivery_authority_missing");
   }
-  if (Number(committee.agentsCompleted) !== 14 || Number(committee.agentsFailed) !== 0) throw new Error("serious_signal_delivery_incomplete_committee");
   if (judge.verdict !== "positive" || Number(judge.confidence) < 80 || output.overallRecommendation !== "approve") {
     throw new Error("serious_signal_delivery_committee_not_approved");
   }
@@ -316,7 +319,7 @@ function messageFor(input: ReturnType<typeof validatedOutbox>) {
     `What could go wrong: ${explanation.whatCouldGoWrong}`,
     "",
     `Final Judge confidence: ${Number.isFinite(confidence) ? confidence : "n/a"}/100`,
-    "14/14 committee roles completed; current evidence gates passed.",
+    `All ${Number(input.committee.agentsCompleted)} selected Committee reviewers completed their checks.`,
     "",
     "This is an automated Swing Up market alert, not a guarantee of outcome.",
   ].join("\n").slice(0, 3900);
@@ -1291,7 +1294,7 @@ export async function getSeriousSignalStatus(options: { hours?: number; limit?: 
         price: finite(quote.price),
         priceObservedAt: text(quote.observedAt, 64),
         finalJudgeConfidence: Number(validated.judge.confidence),
-        committee: { completed: 14, failed: 0, recommendation: "approve" },
+        committee: { completed: Number(validated.committee.agentsCompleted), planned: Number(validated.committee.agentsCompleted), failed: 0, recommendation: "approve" },
         evidence: safeEvidenceUrls(validated.candidate),
         delivery: job ? {
           status: job.status,

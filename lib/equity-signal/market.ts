@@ -1,4 +1,5 @@
 import type { ImpactCandidate, MarketQuote, ProviderResult, ProviderStatus } from "@/lib/equity-signal/types";
+import { usQuoteFreshness } from "@/lib/equity-signal/us-market-calendar";
 
 const YAHOO_CHART_URLS = [
   "https://query1.finance.yahoo.com/v8/finance/chart",
@@ -297,15 +298,20 @@ function quoteForConsumer(outcome: CachedQuote, now: Date): MarketQuote | null {
   const quoteAgeMs = Number.isFinite(observedAtMs)
     ? Math.max(0, now.getTime() - observedAtMs)
     : null;
+  const freshness = usQuoteFreshness(outcome.quote.observedAt, now);
   return {
     ...outcome.quote,
     providerFetchedAt: outcome.quoteFetchedAt === null ? null : new Date(outcome.quoteFetchedAt).toISOString(),
     cacheAgeMs,
     quoteAgeMs,
+    priceBasis: freshness.basis,
+    marketOpen: freshness.marketOpen,
+    ...(freshness.usable && !freshness.marketOpen && outcome.quote.marketSession !== "halted" ? { marketSession: "latest_close" as const } : {}),
     actionableForSeriousSignal: cacheAgeMs !== null
       && cacheAgeMs <= MAX_ACTIONABLE_QUOTE_CACHE_AGE_MS
       && quoteAgeMs !== null
-      && quoteAgeMs <= MAX_ACTIONABLE_QUOTE_CACHE_AGE_MS
+      && freshness.usable
+      && outcome.quote.marketSession !== "halted"
       && observedAtMs <= now.getTime() + 5 * 60_000,
   };
 }

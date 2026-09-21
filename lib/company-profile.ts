@@ -1,9 +1,10 @@
 /** Company descriptions must be extracts from a dated, identity-verified source. */
-export const COMPANY_PROFILE_PARSER_REVISION = 2;
+export const COMPANY_PROFILE_PARSER_REVISION = 3;
 export type CompanyIdentity = { ticker?: unknown; company?: unknown; cik?: unknown };
 export type VerifiedCompanyProfile = {
   version: 1; status: "verified"; ticker: string; company: string; cik: string;
   business: string; customers: string; description: string;
+  industry?: string; industrySourceUrl?: string;
   sourceType: "sec_annual_filing"; sourceUrl: string; sourceFiledAt: string; verifiedAt: string;
 };
 const object = (v: unknown): Record<string, unknown> => v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
@@ -92,7 +93,10 @@ export function verifiedCompanyProfile(value: unknown, identity: CompanyIdentity
     if (url.protocol !== "https:" || url.hostname !== "www.sec.gov" || url.username || url.password || url.search || url.hash
       || !new RegExp(`^/Archives/edgar/data/${Number(cik)}/\\d{18}/[A-Za-z0-9._-]+\\.html?$`).test(url.pathname)) return null;
   } catch { return null; }
-  return { ...p, business, customers, description } as VerifiedCompanyProfile;
+  const industryUrl = `https://data.sec.gov/submissions/CIK${cik}.json`;
+  const industry = p.industrySourceUrl === industryUrl && text(p.industry).length >= 3 && text(p.industry).length <= 160
+    ? text(p.industry) : undefined;
+  return { ...p, business, customers, description, industry, industrySourceUrl: industry ? industryUrl : undefined } as VerifiedCompanyProfile;
 }
 
 export function annualBusinessText(html: string, form: string) {

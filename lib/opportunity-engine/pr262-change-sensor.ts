@@ -1419,13 +1419,14 @@ export async function readNextPr262PendingSensorEvent(input: {
   now?: Date;
   minimumPriority?: number;
   excludedEventIds?: readonly string[];
+  preferValuation?: boolean;
 } = {}) {
   const now = input.now ?? new Date();
   const state = (await loadSensorState(now)).state;
   const nowMs = now.getTime();
   const minimumPriority = Math.max(0, Math.min(100, input.minimumPriority ?? 80));
   const excludedEventIds = new Set(input.excludedEventIds ?? []);
-  return state.pending.find((event) => {
+  const ready = state.pending.filter((event) => {
     const retryAt = event.queueNextAttemptAt ? Date.parse(event.queueNextAttemptAt) : Number.NaN;
     const retryDue = !Number.isFinite(retryAt)
       || retryAt <= nowMs
@@ -1438,7 +1439,8 @@ export async function readNextPr262PendingSensorEvent(input: {
       && event.priority >= minimumPriority
       && processingReady(event)
       && retryDue;
-  }) ?? null;
+  });
+  return (input.preferValuation ? ready.find(event => event.kind === "valuation_review") : null) ?? ready[0] ?? null;
 }
 
 export async function applyPr262PendingSensorEventMutations(

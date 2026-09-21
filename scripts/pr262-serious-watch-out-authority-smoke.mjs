@@ -33,6 +33,7 @@ new Function("require", "module", "exports", output)((name) => {
   if (name === "@/lib/r2-warehouse") return storage;
   if (name === "@/lib/opportunity-engine/pr262-storage") return { pr262StorageKey: (relative) => `production/pr262/${relative}` };
   if (["@/lib/ai-committee/review-policy", "@/lib/equity-signal/us-market-calendar"].includes(name)) return loadTsModule(name);
+  if (name === "@/lib/alert-details") return loadTsModule(name);
   throw new Error(`Unexpected Watch Out authority import: ${name}`);
 }, loaded, loaded.exports);
 
@@ -42,6 +43,7 @@ function resultPayload(overrides = {}) {
     ticker: "RISK",
     cik: "0001234567",
     direction: "downside",
+    currency: "USD", industry: "Application software", valuationRange: { conservativeValue: 10, baseValue: 15, optimisticValue: 22 },
     evidenceFingerprint: "risk-fingerprint",
     eventHeadline: "RISK reports a material data breach",
     whatHappened: "The issuer confirmed a data breach in an official filing.",

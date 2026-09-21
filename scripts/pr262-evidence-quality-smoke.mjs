@@ -7,6 +7,7 @@ const now = new Date("2026-09-17T23:00:00Z");
 const event = { id: "timed-event", ticker: "TEST", cik: "0000000001", observedAt: "2026-09-17T22:00:00Z", firstQueuedAt: "2026-09-17T22:05:00Z" };
 const candidate = { ticker: "TEST", company: "Test Software", cik: event.cik, direction: "upside",
   companyProfile: companyProfileFixture({ ticker: "TEST", company: "Test Software", cik: event.cik }, now),
+  currency: "USD", valuationRange: { conservativeValue: 80, baseValue: 125, optimisticValue: 150 },
   fundamentals: { available: true },
   quote: { price: 100, observedAt: "2026-09-17T22:50:00Z", providerFetchedAt: "2026-09-17T22:58:00Z", actionableForSeriousSignal: true } };
 const committee = { ok: true, agentsFailed: 0, startedAt: "2026-09-17T22:30:00Z", finishedAt: "2026-09-17T22:31:00Z", agentsCompleted: 14, output: { overallRecommendation: "needs_more_data" } };

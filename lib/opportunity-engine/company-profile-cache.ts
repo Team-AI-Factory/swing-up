@@ -6,7 +6,7 @@ const UNIVERSE = pr262StorageKey("equity-universe/v1.json");
 type Json = Record<string, unknown>;
 const object = (v: unknown): Json => v && typeof v === "object" && !Array.isArray(v) ? v as Json : {};
 const text = (v: unknown) => typeof v === "string" ? v.trim() : "";
-type Filing = { url: string; form: string; filedAt: string };
+type Filing = { url: string; form: string; filedAt: string; industry?: string };
 type Entry = { ticker: string; company: string; cik: string; updatedAt: string; nextAttemptAt: string; profile: VerifiedCompanyProfile | null; filing?: Filing; error?: string; parserRevision?: number };
 async function load() {
   const saved = await readVersionedTextFromR2(KEY);
@@ -29,7 +29,7 @@ async function store(entry: Entry) {
   for (let i = 0; i < 4; i++) {
     const { saved, entries } = await load();
     const result = await writeVersionedJsonToR2(KEY, { version: 1, updatedAt: entry.updatedAt,
-      entries: [entry, ...entries.filter(row => row.cik !== entry.cik || row.ticker !== entry.ticker)].slice(0, 1000) },
+      entries: [entry, ...entries.filter(row => row.cik !== entry.cik || row.ticker !== entry.ticker)] },
     saved.etag ? { expectedEtag: saved.etag } : { createOnly: true });
     if (!result.conflict) { if (!result.written) throw new Error("company_profile_cache_write_failed"); return; }
   }
@@ -93,7 +93,8 @@ function annualFiling(body: Json, identity: CompanyIdentity, now: Date): Filing 
     const age = now.getTime() - Date.parse(filedAt);
     if (!Number.isFinite(age) || age < 0 || age > 550 * 86400000 || !/^\d{10}-\d{2}-\d{6}$/.test(accession)
       || !/^[A-Za-z0-9._-]+\.html?$/.test(document)) continue;
-    return { url: `https://www.sec.gov/Archives/edgar/data/${Number(identity.cik)}/${accession.replace(/-/g, "")}/${document}`, form: String(forms[i]), filedAt };
+    return { url: `https://www.sec.gov/Archives/edgar/data/${Number(identity.cik)}/${accession.replace(/-/g, "")}/${document}`, form: String(forms[i]), filedAt,
+      industry: text(body.sicDescription).slice(0, 160) || undefined };
   }
   return null;
 }
@@ -105,15 +106,15 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
   const { entries } = await load();
   const prior = entries.find(entry => same(entry, exact));
   const cached = verifiedCompanyProfile(prior?.profile, exact, now);
-  if (cached) return cached;
+  if (cached && (cached.industry || (prior?.parserRevision === COMPANY_PROFILE_PARSER_REVISION && Date.parse(prior.nextAttemptAt) > now.getTime()))) return cached;
   if (retryDeferred(prior, now)) return null;
-  const entry: Entry = { ...exact, cik: exact.cik, updatedAt: now.toISOString(), nextAttemptAt: new Date(now.getTime() + 60 * 60000).toISOString(), profile: null, parserRevision: COMPANY_PROFILE_PARSER_REVISION };
+  const entry: Entry = { ...exact, cik: exact.cik, updatedAt: now.toISOString(), nextAttemptAt: new Date(now.getTime() + 60 * 60000).toISOString(), profile: cached, parserRevision: COMPANY_PROFILE_PARSER_REVISION };
   // Persist backoff before network; budget wrappers still make their own durable reservations.
   await store(entry);
   const request = async (url: string, complete?: (text: string) => boolean) => boundedText(await fetchImpl(url, { headers: { Accept: "text/html,application/json", "User-Agent": "SwingUp/1.0 support@swingup.app" }, cache: "no-store", redirect: "error", signal: AbortSignal.timeout(12000) }), complete);
   try {
     const priorFilingAge = now.getTime() - Date.parse(prior?.filing?.filedAt ?? "");
-    const filing = !prior?.profile && prior?.filing && now.getTime() - Date.parse(prior.updatedAt) <= 86400000 && priorFilingAge >= 0 && priorFilingAge <= 550 * 86400000
+    const filing = !prior?.profile && prior?.filing && prior.parserRevision === COMPANY_PROFILE_PARSER_REVISION && now.getTime() - Date.parse(prior.updatedAt) <= 86400000 && priorFilingAge >= 0 && priorFilingAge <= 550 * 86400000
       ? prior.filing : annualFiling(object(JSON.parse(await request(`https://data.sec.gov/submissions/CIK${exact.cik}.json`))), exact, now);
     if (!filing) throw new Error("company_profile_annual_filing_unavailable");
     if (!new RegExp(`^https://www\\.sec\\.gov/Archives/edgar/data/${Number(exact.cik)}/\\d{18}/[A-Za-z0-9._-]+\\.html?$`).test(filing.url)) throw new Error("company_profile_filing_identity_mismatch");
@@ -127,16 +128,17 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
     const source = sourceSaved.found && sourceSaved.text ? object(JSON.parse(sourceSaved.text)) : {};
     const cachedSection = source.url === filing.url && source.filedAt === filing.filedAt ? text(source.businessText) : "";
     const sectionHeading = filing.form === "20-F" ? "Item 4. Information on the Company" : "Item 1. Business";
-    let profile = cachedSection ? extract(`${sectionHeading}\n${String(source.businessText)}`) : null;
+    let profile = cached?.sourceUrl === filing.url ? cached : cachedSection ? extract(`${sectionHeading}\n${String(source.businessText)}`) : null;
     // Earlier parsers could stop the stream at an incomplete list introduction.
     // If that old excerpt no longer verifies, permit one longer source read.
-    if (!cachedSection || (!profile && source.parserRevision !== COMPANY_PROFILE_PARSER_REVISION)) {
+    if (!profile && (!cachedSection || source.parserRevision !== COMPANY_PROFILE_PARSER_REVISION)) {
       const html = await request(filing.url, body => Boolean(extract(body)));
       const businessText = annualBusinessText(html, filing.form);
       if (businessText) await writeVersionedJsonToR2(sourceKey, { version: 1, parserRevision: COMPANY_PROFILE_PARSER_REVISION, url: filing.url, filedAt: filing.filedAt, businessText, collectedAt: now.toISOString() }, sourceSaved.etag ? { expectedEtag: sourceSaved.etag } : { createOnly: true });
       profile = extract(html);
     }
     if (!profile) throw new Error("company_profile_products_and_customers_not_extracted");
+    if (filing.industry) profile = { ...profile, industry: filing.industry, industrySourceUrl: `https://data.sec.gov/submissions/CIK${exact.cik}.json` };
     entry.profile = profile;
     entry.nextAttemptAt = new Date(now.getTime() + 30 * 86400000).toISOString();
     await store(entry);
@@ -151,7 +153,7 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
     const providerRetry = entry.error.match(/next_retry_at=([^;\s]+)/)?.[1];
     if (providerRetry && Date.parse(providerRetry) > Date.parse(entry.nextAttemptAt)) entry.nextAttemptAt = providerRetry;
     await store(entry);
-    return null;
+    return cached;
   }
 }
 
@@ -164,9 +166,10 @@ export async function warmFoundationCompanyProfiles(fetchImpl: typeof fetch, now
   const reservation = await writeVersionedJsonToR2(cadenceKey, { version: 1, checkedAt: now.toISOString() },
     cadence.etag ? { expectedEtag: cadence.etag } : { createOnly: true });
   if (!reservation.written || reservation.conflict) return { attempted: 0, verified: 0 };
-  const [foundation, universe, { entries }, sensor] = await Promise.all([
+  const [foundation, universe, { entries }, sensor, exposure] = await Promise.all([
     readVersionedTextFromR2(pr262StorageKey("value-investing/resumable/latest/index.json")),
     readVersionedTextFromR2(UNIVERSE), load(), readVersionedTextFromR2(pr262StorageKey("sensor/state-v1.json")),
+    readVersionedTextFromR2(pr262StorageKey("sensor/exposure-index-v1.json")),
   ]);
   const snapshot = foundation.found && foundation.text ? object(JSON.parse(foundation.text)) : {};
   const listed = universe.found && universe.text ? object(JSON.parse(universe.text)) : {};
@@ -176,7 +179,10 @@ export async function warmFoundationCompanyProfiles(fetchImpl: typeof fetch, now
   const sensorState = sensor.found && sensor.text ? object(JSON.parse(sensor.text)) : {};
   const pending = Array.isArray(sensorState.pending) ? sensorState.pending.map(object).filter(event => now.getTime() - Date.parse(text(event.observedAt)) < 3 * 86400000) : [];
   const queuedTickers = new Set(pending.map(row => row.ticker));
-  const candidates = [...pending, ...[groups.buy, groups.sell, groups.watchOut].flatMap(group => Array.isArray(group) ? group.map(object) : [])];
+  const exposureRows = exposure.found && exposure.text ? object(JSON.parse(exposure.text)).entries : [];
+  const opportunities = [groups.buy, groups.sell, groups.watchOut, snapshot.qualityPriceWatchlist].flatMap(group => Array.isArray(group) ? group.map(object) : []);
+  const priorityTickers = new Set([...pending, ...opportunities].map(row => row.ticker));
+  const candidates = [...pending, ...opportunities, ...(Array.isArray(exposureRows) ? exposureRows.map(object) : [])];
   const due = candidates.flatMap(candidate => {
     const listing = universeRows.find(row => row.ticker === candidate.ticker && Array.isArray(row.sourceNames) && row.sourceNames.includes("SEC company_tickers_exchange"));
     const cik = profileCik(listing?.cik);
@@ -184,11 +190,18 @@ export async function warmFoundationCompanyProfiles(fetchImpl: typeof fetch, now
     if (candidate.cik && profileCik(candidate.cik) !== cik) return [];
     const identity = { ticker: candidate.ticker, company: candidate.company || listing?.company || listing?.name, cik };
     const saved = entries.find(entry => same(entry, identity));
-    if (verifiedCompanyProfile(saved?.profile, identity, now) || retryDeferred(saved, now)) return [];
-    return [{ identity, priority: queuedTickers.has(candidate.ticker) ? 1 : 0, lastAttempt: Date.parse(saved?.updatedAt ?? "") || 0 }];
+    const verified = verifiedCompanyProfile(saved?.profile, identity, now);
+    if ((verified && (verified.industry || (saved?.parserRevision === COMPANY_PROFILE_PARSER_REVISION && Date.parse(saved.nextAttemptAt) > now.getTime()))) || retryDeferred(saved, now)) return [];
+    return [{ identity, priority: queuedTickers.has(candidate.ticker) ? 2 : priorityTickers.has(candidate.ticker) ? 1 : 0, lastAttempt: Date.parse(saved?.updatedAt ?? "") || 0 }];
   }).filter((row, index, all) => all.findIndex(other => other.identity.ticker === row.identity.ticker) === index)
-    .sort((a, b) => b.priority - a.priority || a.lastAttempt - b.lastAttempt).slice(0, 2);
+    .sort((a, b) => b.priority - a.priority || a.lastAttempt - b.lastAttempt);
+  // Keep the same two-requested-issuer limit. One background slot prevents
+  // a constant event backlog from permanently excluding the rest of the universe.
+  const selected = due.slice(0, 1);
+  const background = due.find(row => row.priority === 0 && row !== selected[0]);
+  const second = background ?? due.find(row => row !== selected[0]);
+  if (second) selected.push(second);
   // Two independent issuers fit the existing worker window; provider quotas still apply to every request.
-  const results = await Promise.allSettled(due.map(candidate => ensureCompanyProfile(candidate.identity, fetchImpl, now)));
-  return { attempted: due.length, verified: results.filter(result => result.status === "fulfilled" && result.value).length };
+  const results = await Promise.allSettled(selected.map(candidate => ensureCompanyProfile(candidate.identity, fetchImpl, now)));
+  return { attempted: selected.length, verified: results.filter(result => result.status === "fulfilled" && result.value).length };
 }

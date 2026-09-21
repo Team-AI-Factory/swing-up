@@ -125,6 +125,7 @@ export type Pr262EventJobInput = {
   signal?: AbortSignal;
   deadlineAtMs?: number;
   excludedEventIds?: readonly string[];
+  preferValuation?: boolean;
   queueMutationSink?: (mutation: Pr262PendingSensorEventMutation) => void;
 };
 
@@ -1492,7 +1493,7 @@ async function persistTrackedFinding(report: Json, now: Date) {
   throw new Error("pr262_event_history_write_conflict");
 }
 
-function committeeApproved(report: Json, pointer: Json) {
+function committeeApproved(report: Json, pointer: Json, now = new Date()) {
   const committee = object(report.committee);
   const judge = object(committee.finalJudge);
   const output = object(committee.output);
@@ -1506,7 +1507,7 @@ function committeeApproved(report: Json, pointer: Json) {
   const candidateCik = normalizedCik(candidate.cik);
   const pointerCik = normalizedCik(pointer.cik);
   return report.seriousSignalFound === true
-    && Boolean(verifiedCompanyProfile(candidate.companyProfile, candidate))
+    && Boolean(verifiedCompanyProfile(candidate.companyProfile, candidate, now))
     && report.actionableSignalFound === true
     && (report.alertType === "buy" || report.alertType === "sell")
     && candidateTicker !== null
@@ -1652,7 +1653,7 @@ async function finalizePersistedResult(input: {
     error: error instanceof Error ? error.message.replace(/\s+/g, " ").slice(0, 180) : "optional_history_write_failed",
   }));
   let outboxKey: string | null = null;
-  if (committeeApproved(report, pointer)) {
+  if (committeeApproved(report, pointer, input.now)) {
     const alertType = String(report.alertType);
     const fingerprint = text(report.candidateFingerprint) ?? safeSegment(input.eventId);
     const seriousWatchOut = alertType === "sell"
@@ -1732,7 +1733,7 @@ function retryableReport(report: Json, allowOpenAi: boolean) {
     && (committee.ok !== true || !completeCommitteeReview(committee) || Number(committee.agentsFailed) !== 0)) return true;
   if (status === "candidate_needs_more_data" && object(report.researchReview).admitted === true
     && object(committee.output).overallRecommendation !== "reject") return true;
-  if (status === "candidate_company_profile_pending") return true;
+  if (["candidate_company_profile_pending", "candidate_alert_details_pending"].includes(status)) return true;
   if (status === "qualified_event_market_quote_unavailable") return true;
   if (status === "qualified_event_watch_only"
     && (halt.currentStateKnown !== true || quote.actionableForSeriousSignal !== true)) return true;
@@ -1755,6 +1756,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
     now,
     minimumPriority: 80,
     excludedEventIds: input.excludedEventIds,
+    preferValuation: input.preferValuation,
   });
   if (!event) {
     return { ok: true, mode: "pr262_targeted_event_job", status: "idle", checkedAt: now.toISOString(), eventsProcessed: 0, aiCalls: 0 };

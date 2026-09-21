@@ -391,7 +391,7 @@ const stubs = {
       }
       assert.equal(reserved, true, "Committee reservation must be granted");
       const selectedCandidate = {
-        companyProfile: companyProfileFixture({ ticker: "EXCT", company: "Exact Issuer Corp", cik: "0001234567" }),
+        companyProfile: companyProfileFixture({ ticker: "EXCT", company: "Exact Issuer Corp", cik: "0001234567" }, input.now),
         ticker: "EXCT",
         company: "Exact Issuer Corp",
         cik: "0001234567",

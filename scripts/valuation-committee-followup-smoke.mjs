@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 const now = new Date("2026-09-16T15:00:00Z");
 const analysis = { ticker: "TEST", company: "Test Software", industry: "Software", sector: "Technology", currency: "USD",
-  observedAt: now.toISOString(), currentPrice: 50, fairValue: { baseValue: 100, methods: [{ method: "earnings_power", value: 95 }, { method: "owner_earnings_fcf", value: 105 }] },
-  scores: { fairValueConfidence: 90, evidenceCompleteness: 90 }, fundamentals: { revenue: 1000000000 }, decision: { action: "buy" } };
+  observedAt: now.toISOString(), currentPrice: 50, fairValue: { conservativeValue: 95, baseValue: 100, optimisticValue: 105, methods: [{ method: "earnings_power", value: 95 }, { method: "owner_earnings_fcf", value: 105 }] },
+  scores: { fairValueConfidence: 90, evidenceCompleteness: 90, businessQuality: 85, balanceSheet: 75, risk: 20 }, fundamentals: { revenue: 1000000000 }, decision: { action: "buy" } };
 const receipt = { id: "valuation:TEST", title: "Test valuation review", summary: JSON.stringify(analysis), url: "https://www.tradingview.com/symbols/NASDAQ-TEST/", publisher: "TradingView company financials", publishedAt: now.toISOString(), channel: "market_price_sensor", official: false, primarySource: false, scheduled: false, symbolHints: ["TEST"], companyHints: ["Test Software"], rawEventType: "valuation_review" };
 const provider = name => ({ provider: name, status: "connected", checkedAt: now.toISOString(), nextRetryAt: null, sourceUrls: [], receipts: [], recordsRead: 1, error: null, entitlementVerified: true, cached: false });
 let roleCalls = 0, quoteReady = true, livePrice = 50, denyBudget = false, missingFacts = false, reservations = 0;
@@ -164,3 +164,9 @@ assert.equal(held.status, "candidate_company_profile_pending");
 assert.equal(held.openAiCalled, false);
 await evidence.recordResearchEvidence({ event, report: { ...denied, openAiCalled: false, selectedCandidate: { ...approved.selectedCandidate, quote: { ...approved.selectedCandidate.quote, price: 60, observedAt: new Date(now.getTime() + 3600000).toISOString() } } }, companyAnalysis: analysis, sourceDecisionGrade: true, sourceFailureReason: null, now: new Date(now.getTime() + 3600000) });
 assert.equal((await evidence.readResearchAlerts())[0].committeeApproved, false, "An unpaid refresh at a different quote invalidates the previous approval");
+
+const riskBeforeCalls = roleCalls;
+const trapped = await runner.runEquitySignalLab({ ...input, targetedContext: { ...input.targetedContext, storedCompanyAnalysis: { ...analysis, scores: { ...analysis.scores, risk: 85 } } } });
+assert.equal(trapped.status, "candidate_valuation_risk_rejected");
+assert.equal(trapped.openAiCalled, false);
+assert.equal(roleCalls, riskBeforeCalls, "A known failing value-trap screen must not spend Committee budget");

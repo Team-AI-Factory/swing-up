@@ -132,16 +132,23 @@ const cjsModule = { exports: {} };
 const localRequire = (name) => {
   if (name === "node:crypto") return awaitImportCrypto;
   if (name in stubs) return stubs[name];
-  if (["@/lib/company-profile", "@/lib/signal-explanation", "@/lib/equity-signal/valuation-candidate"].includes(name)) return loadTsModule(name);
+  if (["@/lib/alert-details", "@/lib/company-profile", "@/lib/signal-explanation", "@/lib/equity-signal/valuation-candidate"].includes(name)) return loadTsModule(name);
   if (["@/lib/ai-committee/review-policy", "@/lib/equity-signal/us-market-calendar"].includes(name)) return loadTsModule(name);
   if (name === "@/lib/opportunity-engine/pr262-ai-daily-cost") return loadTsModule(name, { "@/lib/r2-warehouse": {} });
   throw new Error(`Unexpected runner import: ${name}`);
 };
 const awaitImportCrypto = { createHash: () => ({ update() { return this; }, digest: () => "0123456789abcdef0123456789abcdef" }) };
 new Function("require", "module", "exports", output)(localRequire, cjsModule, cjsModule.exports);
-const runEquitySignalLab = input => cjsModule.exports.runEquitySignalLab({
+// Approved-path fixtures now include the required, separately supported value range.
+const runEquitySignalLab = async input => cjsModule.exports.runEquitySignalLab({
   resolveCompanyProfile: async identity => companyProfileFixture(identity, input.now),
   ...input,
+  targetedContext: {
+    universe: (await stubs["@/lib/equity-signal/universe"].loadEquityUniverse()).snapshot,
+    receipts: [receipt], providers: [provider("official_events"), haltProvider], historicalSignalsComplete: true,
+    ...input.targetedContext,
+    storedCompanyAnalysis: { currency: "USD", industry: "Application software", fairValue: { conservativeValue: 80, baseValue: 120, optimisticValue: 140 } },
+  },
 });
 
 const held = await runEquitySignalLab({ now: new Date("2026-07-22T10:00:00.000Z"), allowOpenAi: false });
@@ -286,7 +293,10 @@ const heldResearch = async (label, change, overrides = {}) => {
   return result;
 };
 await heldResearch("stale price", () => { quoteActionable = false; });
-await heldResearch("missing price", () => { candidate.quote = null; });
+restore(); candidate.quote = null;
+const noPriceReview = await runEquitySignalLab(researchInput);
+assert.equal(noPriceReview.status, "candidate_alert_details_pending");
+assert.equal(noPriceReview.openAiCalled, false, "Collect the absent price before paying for a review");
 await heldResearch("unknown halt state", () => {}, { targetedContext: { ...researchInput.targetedContext, providers: [provider("targeted_full_source")] } });
 await heldResearch("partial source", () => {}, { targetedContext: { ...researchInput.targetedContext, sourceEvidenceIncomplete: true } });
 await heldResearch("materiality near miss", () => {

@@ -99,14 +99,29 @@ Object.assign(currentEntry(), { error: "company_profile_products_and_customers_n
 const sourceKey = `research-evidence/company-profile-sources/${identity.cik}/${filing.url.split("/").slice(-2).join("-")}.json`;
 objects.set(sourceKey, { version: 1, url: filing.url, filedAt: filing.filedAt, businessText: profiles.annualBusinessText(html.replace(fixture.business, "Our company provides products for the following lines of business:"), "10-K") });
 assert.ok(await cache.ensureCompanyProfile(identity, fetcher, now));
-assert.equal(requests, 1, "Reuse the exact filing locator and fetch a fuller old excerpt only once");
+assert.equal(requests, 2, "Refresh SEC industry metadata once and fetch a fuller old excerpt once");
 assert.equal(currentEntry().parserRevision, profiles.COMPANY_PROFILE_PARSER_REVISION);
 assert.equal(objects.get(sourceKey).parserRevision, profiles.COMPANY_PROFILE_PARSER_REVISION);
 assert.ok(await cache.ensureCompanyProfile(identity, fetcher, new Date(now.getTime() + 60000)));
-assert.equal(requests, 1, "A recovered profile returns to ordinary cache reuse");
+assert.equal(requests, 2, "A recovered profile returns to ordinary cache reuse");
 seed(null);
 Object.assign(currentEntry(), { error: "company_profile_products_and_customers_not_extracted", filing, parserRevision: profiles.COMPANY_PROFILE_PARSER_REVISION });
 assert.equal(await cache.ensureCompanyProfile(identity, fetcher, now), null);
 assert.equal(requests, 0, "An unchanged current parser must not bypass failed-extraction backoff");
 
 console.log("PASS: valid cache reuse, invalid-success immediate refresh, parser-revision recovery, cache-only read validation, maintenance selection, durable failed-attempt and provider backoff");
+
+// Cache retention cannot erase the rest of a 4,958-company universe.
+seed(null, now.toISOString());
+objects.get(key).entries.push(...Array.from({ length: 1001 }, (_, index) => ({ ticker: `X${index}`, company: `Company ${index}`, cik: String(index + 2).padStart(10, "0"), profile: null, updatedAt: now.toISOString(), nextAttemptAt: now.toISOString() })));
+assert.ok(await cache.ensureCompanyProfile(identity, fetcher, now));
+assert.equal(objects.get(key).entries.length, 1002);
+// An older valid business description can acquire SEC industry without another filing download.
+seed({ ...fixture, industry: undefined, industrySourceUrl: undefined });
+const industryProfile = await cache.ensureCompanyProfile(identity, async url => {
+  requests++; assert.match(String(url), /submissions/);
+  return Response.json({ ...submissions, sicDescription: "Services-Prepackaged Software" });
+}, now);
+assert.equal(requests, 1);
+assert.equal(industryProfile.industry, "Services-Prepackaged Software");
+assert.equal(industryProfile.verifiedAt, fixture.verifiedAt, "Metadata enrichment does not renew the description's evidence age");

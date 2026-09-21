@@ -7,6 +7,7 @@ import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-wareho
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 import { explainCandidate, plainEvidenceGaps } from "@/lib/signal-explanation";
 import { candidatePriceOutlook } from "@/lib/signal-outlook";
+import { alertDetails, completePriceOutlook, industryLabel } from "@/lib/alert-details";
 import type { VerifiedFactsCache, VerifiedFactsSnapshot } from "@/lib/equity-signal/fundamentals";
 
 type Json = Record<string, unknown>;
@@ -79,7 +80,7 @@ export async function readResearchAlerts(): Promise<Json[]> {
   return rows.map(row => {
     const profile = profiles.get(String(row.ticker));
     return profile && profile.company === row.company && profileCik(row.cik) === profile.cik
-      ? { ...row, cik: profile.cik, companyProfile: profile } : row;
+      ? { ...row, cik: profile.cik, companyProfile: profile, industry: industryLabel(row.industry, profile.industry) } : row;
   });
 }
 
@@ -142,7 +143,8 @@ export function evidenceTasks(report: Json) {
         ? "Retrieve the exact primary filing; no event exhibit is required by the source."
         : "Retrieve the exact source document and assess any explicitly referenced required exhibit.";
   return { gaps: gaps.slice(0, 20), tasks: [
-    ...(/company profile|products or services|customers/i.test(joined) ? [{ type: "company_profile", action: "Retrieve the exact issuer annual filing and verify its business and customers before publication.", complete: false }] : []),
+    ...(/company profile|products or services|customers|industry|classification/i.test(joined) ? [{ type: "company_profile", action: "Retrieve the exact issuer's business description, customers and SEC industry classification before publication.", complete: false }] : []),
+    ...(/valuation|forecast range|currency/i.test(joined) ? [{ type: "valuation_inputs", action: "Refresh this issuer's financial model and currency; require a supported three-case price range. Do not invent a target.", ticker: text(candidate.ticker), complete: false }] : []),
     ...(/source|filing|exhibit|proof|Truth/i.test(joined) ? [{ type: "source_document", action: documentAction, documents, sourceUrls: (Array.isArray(candidate.receipts) ? candidate.receipts : []).map(item => safeUrl(object(item).url)).filter(Boolean).slice(0, 3), complete: false }] : []),
     ...(/fundamental|magnitude|material|financial|revenue/i.test(joined) || financialMetrics.length ? [{ type: "financial_facts", action: comparativeMetrics.length ? "Retrieve dated current and comparable prior-year facts with the same reporting duration." : "Refresh dated company facts and compare the event's size with the company.", fields: [...financialMetrics, ...comparativeMetrics], comparison: comparativeMetrics.length ? "prior_year_same_duration" : null, complete: false }] : []),
     ...(/price|quote|market|halt/i.test(joined) ? [{ type: "market_evidence", action: "Refresh the price observation and trading-halt check.", ticker: text(candidate.ticker), fields: ["price", "observedAt", "marketSession", "tradingHaltState"], previousObservationAt: text(object(candidate.quote).observedAt) || null, complete: false }] : []),
@@ -155,6 +157,7 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
   const candidate = object(report.selectedCandidate);
   const committee = object(report.committee);
   const output = object(committee.output);
+  const screeningRejected = report.status === "candidate_valuation_risk_rejected";
   const paid = report.openAiCalled === true;
   const eventId = text(event.id);
   const nextEvidenceCheckAt = new Date(now.getTime() + 15 * 60_000).toISOString();
@@ -167,8 +170,10 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
   const requiredFinancialFields = requestedTasks.tasks.flatMap(task => task.type === "financial_facts" && "fields" in task ? task.fields : []);
   const financialItems = Array.isArray(object(candidate.fundamentals).items) ? object(candidate.fundamentals).items as unknown[] : [];
   const financialFactsRequired = ["valuation_gap", "earnings_guidance", "financing_dilution", "contract_award", "merger_acquisition"].includes(String(candidate.eventFamily)) || requiredFinancialFields.length > 0;
+  const details = alertDetails(candidate, input.companyAnalysis, now);
   const completeness = {
     companyProfile: Boolean(verifiedCompanyProfile(candidate.companyProfile, candidate, now)),
+    industry: Boolean(details.industry), priceScenarios: completePriceOutlook(details.outlook),
     issuer: Boolean((candidate.ticker ?? event.ticker) && (candidate.cik ?? event.cik)), sourceDocument: input.sourceDecisionGrade,
     financialFacts: !financialFactsRequired || (object(candidate.fundamentals).available === true
       && requiredFinancialFields.every(metric => financialItems.some(item => object(item).metric === metric))),
@@ -178,6 +183,7 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
   };
   const known = Object.values(completeness).filter(Boolean).length;
   const collectionGaps = [
+    ...details.missing,
     ...(!completeness.companyProfile ? ["A verified company profile with products or services and customers is required."] : []),
     ...(!completeness.sourceDocument ? ["The source document or required filing exhibit is incomplete."] : []),
     ...(!completeness.financialFacts ? ["Verified financial fundamentals are missing."] : []),
@@ -267,7 +273,7 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
     }
   }
   if (candidate.ticker && (report.seriousSignalFound !== true || input.approvedResultKey)) {
-    const approved = Boolean(input.approvedResultKey) && report.seriousSignalFound === true && completeCommitteeReview(committee) && Number(committee.agentsFailed) === 0 && output.overallRecommendation === "approve";
+    const approved = details.complete && Boolean(input.approvedResultKey) && report.seriousSignalFound === true && completeCommitteeReview(committee) && Number(committee.agentsFailed) === 0 && output.overallRecommendation === "approve";
     const alert = { id: hash(eventId), eventId, createdAt: now.toISOString(), eventObservedAt: event.observedAt,
       ticker: candidate.ticker, company: candidate.company, cik: candidate.cik, companyProfile: candidate.companyProfile ?? null, action: candidate.direction === "upside" ? "buy" : candidate.direction === "downside" ? "sell" : "watch_out",
       valuationObservedAt: input.companyAnalysis?.observedAt ?? null,
@@ -275,11 +281,11 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
       eventHeadline: candidate.eventHeadline, kind: candidate.eventFamily === "valuation_gap" ? "valuation" : "event",
       currentPrice: object(candidate.quote).price ?? null, priceObservedAt: object(candidate.quote).observedAt ?? null,
       currency: input.companyAnalysis?.currency ?? candidate.currency ?? null,
-      industry: input.companyAnalysis?.industry ?? candidate.industry ?? null, sector: input.companyAnalysis?.sector ?? candidate.sector ?? null,
+      industry: details.industry, sector: input.companyAnalysis?.sector ?? candidate.sector ?? null,
       eventFamily: candidate.eventFamily, outlook: candidatePriceOutlook(candidate, input.companyAnalysis),
       fairValue: object(input.companyAnalysis?.fairValue).baseValue ?? null,
-      userAlertEligible: completeness.companyProfile && output.overallRecommendation !== "reject", committeeApproved: approved,
-      committeeStatus: approved ? "approved" : output.overallRecommendation === "reject" ? "rejected" : output.overallRecommendation === "approve" ? "approved_pending_checks" : needsFollowup ? "needs_more_data" : "awaiting_review",
+      userAlertEligible: details.complete && !screeningRejected && output.overallRecommendation !== "reject", committeeApproved: approved,
+      committeeStatus: screeningRejected ? "not_eligible" : approved ? "approved" : output.overallRecommendation === "reject" ? "rejected" : output.overallRecommendation === "approve" ? "approved_pending_checks" : needsFollowup ? "needs_more_data" : "awaiting_review",
       committee: { completed: Number(committee.agentsCompleted ?? 0), failed: Number(committee.agentsFailed ?? 0), confidence: object(committee.finalJudge).confidence ?? null },
       publicationStatus: approved ? "committee_approved_alert" : "provisional_alert",
       explanation: { ...explainCandidate(candidate, input.companyAnalysis), missingInformation: plainEvidenceGaps(paid ? tasks.gaps : Array.isArray(previousReview.gaps) ? previousReview.gaps as string[] : tasks.gaps) },
@@ -293,20 +299,26 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
       const prior = current.found && current.text ? object(JSON.parse(current.text)) : {};
       const rows = Array.isArray(prior.alerts) ? prior.alerts.map(object) : [];
       const previous = rows.find(x => x.id === alert.id);
-      if (!paid && previous && output.overallRecommendation !== "reject" && !input.approvedResultKey) {
+      if (!paid && previous && !screeningRejected && output.overallRecommendation !== "reject" && !input.approvedResultKey) {
         alert.committee = previous.committee as typeof alert.committee;
         const sameReviewedSnapshot = previous.currentPrice === alert.currentPrice
           && previous.priceObservedAt === alert.priceObservedAt
           && previous.valuationObservedAt === alert.valuationObservedAt
           && previous.reviewEvidenceFingerprint === alert.reviewEvidenceFingerprint
           && Boolean(alert.reviewEvidenceFingerprint)
-          && completeness.companyProfile;
+          && details.complete;
         alert.committeeApproved = sameReviewedSnapshot && previous.committeeApproved === true;
         alert.committeeStatus = previous.committeeApproved === true && !sameReviewedSnapshot ? "awaiting_review" : collectionComplete && previous.committeeApproved !== true
           ? "awaiting_review"
           : needsFollowup && previous.committeeStatus === "awaiting_review" ? "needs_more_data" : text(previous.committeeStatus);
         alert.publicationStatus = alert.committeeApproved ? "committee_approved_alert" : "provisional_alert";
-        alert.userAlertEligible = completeness.companyProfile && previous.userAlertEligible === true;
+        alert.userAlertEligible = details.complete && previous.committeeStatus !== "rejected";
+        if (["rejected", "not_eligible"].includes(String(previous.committeeStatus))) {
+          alert.committeeApproved = false;
+          alert.committeeStatus = String(previous.committeeStatus);
+          alert.publicationStatus = "provisional_alert";
+          alert.userAlertEligible = false;
+        }
       }
       const alerts = [alert, ...rows.filter(x => x.id !== alert.id)].slice(0, 100);
       const written = await writeVersionedJsonToR2(RESEARCH_ALERT_INDEX_KEY, { version: 1, updatedAt: now.toISOString(), alerts }, current.etag ? { expectedEtag: current.etag } : { createOnly: true });

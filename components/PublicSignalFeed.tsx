@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { SignalPriceOutlook } from "@/components/SignalPriceOutlook";
 import type { PriceOutlook } from "@/lib/signal-outlook";
 type Signal = { id: string; ticker: string; company: string; action: string; currentPrice: number | null; priceObservedAt?: string | null; fairValue: number | null;
-  outlook: PriceOutlook; eventObservedAt?: string | null;
+  outlook: PriceOutlook; eventObservedAt?: string | null; industry: string;
   committeeApproved: boolean; committeeStatus: string; createdAt: string; confidence?: number | null;
   explanation: { companyDoes: string; whatHappened: string; whyItMatters: string; whatCouldHappen: string; whatCouldGoWrong: string; missingInformation: string[] };
   sources: Array<{ label: string; url: string }> };
@@ -23,15 +23,16 @@ export function PublicSignalFeed() {
   const visible = signals.filter(s => filter === "all" || (filter === "approved" ? s.committeeApproved : s.action === filter));
   return <section id="live-alerts"><h2>Live opportunities and risk alerts</h2>
     <p>Provisional alerts are available while research continues. The approval badge shows whether the AI Committee has approved a Serious Signal.</p>
-    <p className="muted">Buy opportunities first, then Sell opportunities. Each group is ordered by the largest potential move to its base estimate, using the displayed price. Estimates still being collected appear last within their group.</p>
+    <p className="muted">Buy opportunities first, then Sell opportunities. Each group is ordered by the largest potential move to its base estimate, using the displayed price. Company details and price comparisons are checked before an alert appears.</p>
     {coverage ? <p>{coverage.companies} companies processed. {coverage.companiesWithFairValue != null ? `${coverage.companiesWithFairValue} have a model value; ${coverage.companiesWithoutFairValue ?? "unknown"} still need valuation inputs.` : "Valuation completeness has not yet been reported."}</p> : null}
-    {quality?.available ? <details><summary>How complete is the evidence?</summary><p>Across {quality.uniqueEvents} tracked events today, {quality.averageCompletenessPercent} out of 100 evidence checks passed on average. The seven checks cover company identity, the source document, financial facts, an available price, a current price, direction, and trading-halt status.</p>{quality.averageMinutesToFirstReview != null ? <p>Average time from the recorded event to its first Committee review: {quality.averageMinutesToFirstReview} minutes.</p> : <p>No Committee review time has been recorded in this sample yet.</p>}</details> : null}
+    {quality?.available ? <details><summary>How complete is the evidence?</summary><p>Across {quality.uniqueEvents} tracked events today, {quality.averageCompletenessPercent} out of 100 evidence checks passed on average. Checks cover company identity, business and industry, source documents, financial facts, current prices, valuation scenarios, direction and trading-halt status.</p>{quality.averageMinutesToFirstReview != null ? <p>Average time from the recorded event to its first Committee review: {quality.averageMinutesToFirstReview} minutes.</p> : <p>No Committee review time has been recorded in this sample yet.</p>}</details> : null}
     <label>Show <select value={filter} onChange={e => { setFilter(e.target.value); setVisibleCount(20); }} aria-label="Filter signals"><option value="all">All alerts</option><option value="buy">Buy opportunities</option><option value="sell">Sell opportunities</option><option value="watch_out">Watch out</option><option value="approved">Committee approved</option></select></label>
     {error ? <p role="status">{error}</p> : null}
     {!error && !visible.length ? <p>No matching live alert is currently available.</p> : null}
     <div className="grid">{visible.slice(0, visibleCount).map(s => <article className="card alert-card" key={s.id}>
       <div className="button-row"><span className="badge">{s.committeeApproved ? "SERIOUS SIGNAL" : "PROVISIONAL ALERT"} · {s.action.replaceAll("_", " ").toUpperCase()}</span><span className="badge">{s.committeeApproved ? "Committee approved" : s.committeeStatus === "approved_pending_checks" ? "Positive review · final checks pending" : s.committeeStatus === "needs_more_data" ? "Collecting more information" : "Awaiting Committee review"}</span></div>
       <h3>{s.ticker} — {s.company}</h3>
+      <p><strong>Industry:</strong> {s.industry}</p>
       <p><strong>What the company does:</strong> {s.explanation.companyDoes}</p>
       {s.outlook ? <SignalPriceOutlook outlook={s.outlook} action={s.action} /> : null}
       <p><strong>What is happening:</strong> {s.explanation.whatHappened}</p>

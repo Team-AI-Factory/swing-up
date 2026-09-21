@@ -1,5 +1,5 @@
 import { completeCommitteeReview } from "@/lib/ai-committee/review-policy";
-import { verifiedCompanyProfile } from "@/lib/company-profile";
+import { alertDetails } from "@/lib/alert-details";
 import crypto from "node:crypto";
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
@@ -64,7 +64,7 @@ function committeeProof(report: Json, pointer: Json) {
     receipt.official === true || receipt.primarySource === true || receipt.channel === "sec_current_filings");
   const ruleId = riskRule(candidate);
   const approved = report.seriousSignalFound === true
-    && Boolean(verifiedCompanyProfile(candidate.companyProfile, candidate))
+    && alertDetails(candidate).complete
     && report.actionableSignalFound === true
     && report.alertType === "sell"
     && candidate.direction === "downside"

@@ -96,7 +96,10 @@ export function verifiedCompanyProfile(value: unknown, identity: CompanyIdentity
   const industryUrl = `https://data.sec.gov/submissions/CIK${cik}.json`;
   const industry = p.industrySourceUrl === industryUrl && text(p.industry).length >= 3 && text(p.industry).length <= 160
     ? text(p.industry) : undefined;
-  return { ...p, business, customers, description, industry, industrySourceUrl: industry ? industryUrl : undefined } as VerifiedCompanyProfile;
+  const normalized = { ...p, business, customers, description } as VerifiedCompanyProfile;
+  if (industry) { normalized.industry = industry; normalized.industrySourceUrl = industryUrl; }
+  else { delete normalized.industry; delete normalized.industrySourceUrl; }
+  return normalized;
 }
 
 export function annualBusinessText(html: string, form: string) {

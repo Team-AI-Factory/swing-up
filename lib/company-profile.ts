@@ -1,4 +1,5 @@
 /** Company descriptions must be extracts from a dated, identity-verified source. */
+export const COMPANY_PROFILE_PARSER_REVISION = 2;
 export type CompanyIdentity = { ticker?: unknown; company?: unknown; cik?: unknown };
 export type VerifiedCompanyProfile = {
   version: 1; status: "verified"; ticker: string; company: string; cik: string;
@@ -22,18 +23,28 @@ function decodeSourceEntities(value: string) {
   }).replace(/&(nbsp|quot|apos|lsquo|rsquo|ldquo|rdquo|ndash|mdash|reg|copy|trade|lt|gt|amp);/gi, (_, name: string) => ({ nbsp: " ", quot: '"', apos: "'", lsquo: "‘", rsquo: "’", ldquo: "“", rdquo: "”", ndash: "–", mdash: "—", reg: "®", copy: "©", trade: "™", lt: "<", gt: ">", amp: "&" })[name.toLowerCase()] ?? _);
 }
 function issuerSubject(identity: CompanyIdentity) {
-  const company = text(identity.company).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return `(?:we|the company|our company|our business${company ? `|${company}` : ""})`;
+  const name = text(identity.company);
+  const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const company = escape(name);
+  // A filing may use its issuer's complete brand name without a legal suffix.
+  // Do not invent a shortened first-word alias for a multi-word company.
+  const brand = name.replace(/,?\s+(?:Inc(?:orporated)?|Corp(?:oration)?|Ltd|Limited|PLC|LLC|L\.P)\.?$/i, "").trim();
+  const alias = brand !== name && /^[A-Za-z][A-Za-z0-9’' &.-]+$/.test(brand) && !/^(?:the|company|group|holdings)$/i.test(brand) ? `|${escape(brand)}` : "";
+  return `(?:we|the company|our company|our business${company ? `|${company}` : ""}${alias})`;
 }
 function operatingBusiness(sentence: string, identity: CompanyIdentity) {
-  if (filingBoilerplate.test(sentence) || unresolvedEntity.test(sentence)) return false;
+  // A list introduction is not the list itself. Continue to a complete source
+  // sentence instead of publishing a product-free description as verified.
+  if (filingBoilerplate.test(sentence) || unresolvedEntity.test(sentence)
+    || /:\s*$/.test(sentence)
+    || /\b(?:the following|as follows|listed below|described below)\s*[.:]?$/i.test(sentence)) return false;
   // Match dated context without deleting any words from the retained source.
   const statement = sentence.replace(/^(?:As of (?:January|February|March|April|May|June|July|August|September|October|November|December) \d{1,2}, \d{4},|With a history dating back to \d{4},)\s+/i, "");
   // Allow an issuer's parenthetical name or legal-form apposition, but require
   // its main predicate to describe operations, not incorporation or financing.
   const subject = `${issuerSubject(identity)}(?:\\s*\\([^)]{0,180}\\))?(?:,\\s*(?:a|an|the)\\s+[^,]{1,100},)?\\s+`;
   const action = "(?:(?:primarily|principally|mainly|currently)\\s+)?(?:manufactures?|designs?|develops?|produces?|provides?|operates?|operated|distributes?|sells?|offers?|delivers?|supplies)\\b";
-  const operator = "(?:is|are)\\s+(?:a\\s+|an\\s+|the\\s+)?[^.!?]{0,120}\\b(?:manufacturer|developer|producer|provider|operator|distributor|retailer|supplier|bank|utility|utilities)\\b";
+  const operator = "(?:is|are)\\s+(?:a\\s+|an\\s+|the\\s+)?[^.!?]{0,120}\\b(?:manufacturer|developer|producer|provider|operator|distributor|retailer|supplier|bank|utility|utilities|insurer|underwriter|roaster)\\b";
   if (new RegExp(`^${subject}(?:${action}|${operator})`, "i").test(statement)) return true;
   // Annual reports may use a shorter issuer name (e.g. American Water). Only
   // complete leading identity words directly followed by operations qualify.

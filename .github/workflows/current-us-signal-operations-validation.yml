@@ -35,7 +35,7 @@ jobs:
           branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
           test "${branch}" != "main"
           case "${branch}" in
-            agent/combined-opportunity-engine|agent/pr262-sector-specialist-valuations|codex/clear-ranked-alerts-20260917|codex/reliable-alerts-20260921) ;;
+            agent/combined-opportunity-engine|agent/pr262-sector-specialist-valuations|codex/clear-ranked-alerts-20260917|codex/reliable-alerts-20260921|codex/profile-recovery-20260921) ;;
             *) echo "Signal-operations validation is not approved for ${branch}." >&2; exit 1 ;;
           esac
           echo "Validating current U.S. signal operations on ${branch}"

@@ -40,6 +40,11 @@ Queued-event profiles are warmed before background valuation profiles. Exact
 annual business sections are cached by issuer and accession. Missing extractable
 business/customer descriptions back off for a day; they are never filled with
 invented prose. Existing successful document and financial-fact caches are reused.
+Incomplete list introductions cannot qualify as business descriptions. The parser
+also recognizes the issuer's complete brand without its legal suffix. A parser
+revision revisits earlier extraction failures once, reusing the exact source or
+retrieving a fuller excerpt if the earlier parser stopped too soon. Real network
+and provider-budget backoffs remain authoritative.
 
 The source downloader uses a bounded IPv4 DNS-over-HTTPS fallback when local A
 resolution fails, then retains public-address validation and pinned HTTPS. Source

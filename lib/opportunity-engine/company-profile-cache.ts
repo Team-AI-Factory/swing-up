@@ -1,13 +1,13 @@
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
-import { annualBusinessText, extractCompanyProfile, profileCik, verifiedCompanyProfile, type CompanyIdentity, type VerifiedCompanyProfile } from "@/lib/company-profile";
+import { COMPANY_PROFILE_PARSER_REVISION, annualBusinessText, extractCompanyProfile, profileCik, verifiedCompanyProfile, type CompanyIdentity, type VerifiedCompanyProfile } from "@/lib/company-profile";
 const KEY = pr262StorageKey("research-evidence/company-profiles-v1.json");
 const UNIVERSE = pr262StorageKey("equity-universe/v1.json");
 type Json = Record<string, unknown>;
 const object = (v: unknown): Json => v && typeof v === "object" && !Array.isArray(v) ? v as Json : {};
 const text = (v: unknown) => typeof v === "string" ? v.trim() : "";
 type Filing = { url: string; form: string; filedAt: string };
-type Entry = { ticker: string; company: string; cik: string; updatedAt: string; nextAttemptAt: string; profile: VerifiedCompanyProfile | null; filing?: Filing; error?: string };
+type Entry = { ticker: string; company: string; cik: string; updatedAt: string; nextAttemptAt: string; profile: VerifiedCompanyProfile | null; filing?: Filing; error?: string; parserRevision?: number };
 async function load() {
   const saved = await readVersionedTextFromR2(KEY);
   const body = saved.found && saved.text ? object(JSON.parse(saved.text)) : {};
@@ -17,6 +17,10 @@ function same(entry: CompanyIdentity, identity: CompanyIdentity) {
   return entry.ticker === identity.ticker && entry.company === identity.company && profileCik(entry.cik) === profileCik(identity.cik);
 }
 function retryDeferred(entry: Entry | undefined, now: Date) {
+  // Revisit parsing failures once after a parser repair, using the saved exact
+  // source first. Network and provider-budget failures retain their backoff.
+  if (entry?.error === "company_profile_products_and_customers_not_extracted"
+    && entry.parserRevision !== COMPANY_PROFILE_PARSER_REVISION) return false;
   // A successful profile's refresh date must not defer replacement after current verification rejects it.
   // Pending and failed attempts persist a null profile and still retain their retrieval backoff.
   return !entry?.profile && Date.parse(entry?.nextAttemptAt ?? "") > now.getTime();
@@ -103,7 +107,7 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
   const cached = verifiedCompanyProfile(prior?.profile, exact, now);
   if (cached) return cached;
   if (retryDeferred(prior, now)) return null;
-  const entry: Entry = { ...exact, cik: exact.cik, updatedAt: now.toISOString(), nextAttemptAt: new Date(now.getTime() + 60 * 60000).toISOString(), profile: null };
+  const entry: Entry = { ...exact, cik: exact.cik, updatedAt: now.toISOString(), nextAttemptAt: new Date(now.getTime() + 60 * 60000).toISOString(), profile: null, parserRevision: COMPANY_PROFILE_PARSER_REVISION };
   // Persist backoff before network; budget wrappers still make their own durable reservations.
   await store(entry);
   const request = async (url: string, complete?: (text: string) => boolean) => boundedText(await fetchImpl(url, { headers: { Accept: "text/html,application/json", "User-Agent": "SwingUp/1.0 support@swingup.app" }, cache: "no-store", redirect: "error", signal: AbortSignal.timeout(12000) }), complete);
@@ -124,10 +128,12 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
     const cachedSection = source.url === filing.url && source.filedAt === filing.filedAt ? text(source.businessText) : "";
     const sectionHeading = filing.form === "20-F" ? "Item 4. Information on the Company" : "Item 1. Business";
     let profile = cachedSection ? extract(`${sectionHeading}\n${String(source.businessText)}`) : null;
-    if (!cachedSection) {
+    // Earlier parsers could stop the stream at an incomplete list introduction.
+    // If that old excerpt no longer verifies, permit one longer source read.
+    if (!cachedSection || (!profile && source.parserRevision !== COMPANY_PROFILE_PARSER_REVISION)) {
       const html = await request(filing.url, body => Boolean(extract(body)));
       const businessText = annualBusinessText(html, filing.form);
-      if (businessText) await writeVersionedJsonToR2(sourceKey, { version: 1, url: filing.url, filedAt: filing.filedAt, businessText, collectedAt: now.toISOString() }, sourceSaved.etag ? { expectedEtag: sourceSaved.etag } : { createOnly: true });
+      if (businessText) await writeVersionedJsonToR2(sourceKey, { version: 1, parserRevision: COMPANY_PROFILE_PARSER_REVISION, url: filing.url, filedAt: filing.filedAt, businessText, collectedAt: now.toISOString() }, sourceSaved.etag ? { expectedEtag: sourceSaved.etag } : { createOnly: true });
       profile = extract(html);
     }
     if (!profile) throw new Error("company_profile_products_and_customers_not_extracted");

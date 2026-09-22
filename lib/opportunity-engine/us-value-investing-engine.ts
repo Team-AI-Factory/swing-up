@@ -4,6 +4,7 @@ import {
 } from "@/lib/r2-warehouse";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 import type { SpecialistValuationMethod } from "@/lib/opportunity-engine/us-sector-specialist-valuation";
+import type { ValuationCoverageAssessment } from "@/lib/opportunity-engine/valuation-coverage";
 
 export type ValueAlertAction = "buy" | "sell" | "watch_out" | "watch" | "no_action";
 export type ValueAlertTier =
@@ -15,7 +16,7 @@ export type ValueAlertTier =
   | "insufficient_evidence";
 
 export type ValueMethod = {
-  method: "earnings_power" | "owner_earnings_fcf" | "graham_value" | SpecialistValuationMethod["method"];
+  method: "earnings_power" | "owner_earnings_fcf" | "graham_value" | "industry_sales_comparison" | SpecialistValuationMethod["method"];
   value: number;
   assumption: string;
 };
@@ -32,6 +33,7 @@ export type UsValueCompanyAnalysis = {
   currentPrice: number;
   marketCap: number | null;
   estimatedAverageDollarVolume10d: number | null;
+  valuationCoverage?: ValuationCoverageAssessment;
   fundamentals: {
     revenue: number | null;
     netIncome: number | null;
@@ -555,15 +557,18 @@ function analyzeRow(row: RawRow, observedAt: string): UsValueCompanyAnalysis {
     methods.push({ method: "graham_value", value: Math.sqrt(22.5 * row.dilutedEpsTtm * bookValuePerShare), assumption: "Conservative Graham earnings-and-book-value cross-check." });
   }
   const plausibleMethods = methods
-    .filter((method) => method.value >= row.currentPrice * 0.2 && method.value <= row.currentPrice * 5)
-    .map((method) => ({ ...method, value: rounded(method.value) ?? method.value }));
+    .filter((method) => Number.isFinite(method.value) && method.value > 0)
+    .map((method) => ({ ...method, value: rounded(method.value) ?? method.value }))
+    .filter((method) => method.value > 0);
   const methodValues = plausibleMethods.map((method) => method.value);
   const baseValue = median(methodValues);
   const conservativeValue = methodValues.length ? Math.min(...methodValues) : null;
   const optimisticValue = methodValues.length ? Math.max(...methodValues) : null;
   const completeness = evidenceCompleteness(row);
   const methodScore = Math.min(36, plausibleMethods.length * 12);
-  const fairValueConfidence = Math.round(clamp(30 + methodScore + completeness * 0.2 + businessQuality * 0.14 - risk * 0.08));
+  const extremeValuation = baseValue !== null && (baseValue < row.currentPrice * 0.2 || baseValue > row.currentPrice * 5);
+  const fairValueConfidence = Math.min(extremeValuation || plausibleMethods.length < 2 ? 69 : 100,
+    Math.round(clamp(30 + methodScore + completeness * 0.2 + businessQuality * 0.14 - risk * 0.08)));
   const upsideToBase = baseValue !== null ? ((baseValue / row.currentPrice) - 1) * 100 : null;
   const discountToBase = baseValue !== null ? (1 - row.currentPrice / baseValue) * 100 : null;
   const buyBelowPrice = baseValue !== null ? baseValue * 0.75 : null;
@@ -628,7 +633,8 @@ function analyzeRow(row: RawRow, observedAt: string): UsValueCompanyAnalysis {
     publicationStatus = "watchlist_internal";
     reasons.push(`Quality is ${businessQuality}/100; wait for price at or below ${rounded(buyBelowPrice)?.toFixed(2) ?? "the margin-of-safety threshold"}.`);
   }
-  if (baseValue === null) blockers.push("Fewer than two plausible independent fair-value methods were available.");
+  if (baseValue === null) blockers.push("The available earnings and cash-flow inputs do not support a positive valuation yet.");
+  if (extremeValuation) blockers.push("The value is far from the current price; verify currency, share units and sustainable earnings before using this gap.");
   if (businessQuality < 75) blockers.push("Business quality is below the serious Buy threshold.");
   if (!profitable) blockers.push("Positive earnings, free cash flow, and diluted EPS were not all present.");
   if (!liquid) blockers.push("Market capitalization or trading liquidity is below the serious-alert threshold.");

@@ -50,6 +50,7 @@ const { verifiedCompanyProfile } = loadTsModule("@/lib/company-profile");
 const cjsModule = { exports: {} };
 new Function("require", "module", "exports", output)((name) => {
   if (name === "@/lib/opportunity-engine/company-profile-cache") return {
+    readCompanyProfileCoverage: async () => ({ totalCompanies: 1, verifiedProfiles: profileAvailable ? 1 : 0 }),
     readCompanyProfiles: async identities => new Map(identities.flatMap(identity => {
       const exact = { ...identity, cik: "0000000001" };
       const profile = verifiedCompanyProfile(companyProfileFixture(exact), exact);

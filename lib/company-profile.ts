@@ -1,5 +1,5 @@
 /** Company descriptions must be extracts from a dated, identity-verified source. */
-export const COMPANY_PROFILE_PARSER_REVISION = 3;
+export const COMPANY_PROFILE_PARSER_REVISION = 4;
 export type CompanyIdentity = { ticker?: unknown; company?: unknown; cik?: unknown };
 export type VerifiedCompanyProfile = {
   version: 1; status: "verified"; ticker: string; company: string; cik: string;
@@ -9,6 +9,13 @@ export type VerifiedCompanyProfile = {
 };
 const object = (v: unknown): Record<string, unknown> => v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
 const text = (v: unknown) => typeof v === "string" ? v.replace(/\s+/g, " ").trim() : "";
+export function sameCompanyName(left: unknown, right: unknown) {
+  const normalize = (value: unknown) => text(value).toLowerCase()
+    .replace(/\s+(?:[-–]\s*)?class\s+[a-z]\b.*$/, "")
+    .replace(/[.,]/g, "").replace(/\s+(?:incorporated|inc|corporation|corp|limited|ltd|plc|llc)$/, "")
+    .replace(/\s+/g, " ").trim();
+  return Boolean(normalize(left)) && normalize(left) === normalize(right);
+}
 export const profileCik = (v: unknown) => /^\d{1,10}$/.test(String(v ?? "")) && Number(v) > 0 ? String(v).padStart(10, "0") : null;
 const placeholder = /not yet been verified|still being collected|is the listed company|is classified in|company profile.*(?:missing|unavailable)/i;
 const customerSubjects = "(?:customers?|clients?|consumers?|patients?|subscribers?|end.users?|end.markets?|markets?|customer base|client base|customer segments?|market segments?)";
@@ -40,7 +47,12 @@ function operatingBusiness(sentence: string, identity: CompanyIdentity) {
     || /:\s*$/.test(sentence)
     || /\b(?:the following|as follows|listed below|described below)\s*[.:]?$/i.test(sentence)) return false;
   // Match dated context without deleting any words from the retained source.
-  const statement = sentence.replace(/^(?:As of (?:January|February|March|April|May|June|July|August|September|October|November|December) \d{1,2}, \d{4},|With a history dating back to \d{4},)\s+/i, "");
+  const statement = sentence.replace(/^(?:As of (?:January|February|March|April|May|June|July|August|September|October|November|December) \d{1,2}, \d{4},|With a history dating back to \d{4},|Within our reportable segments,|In aggregate,|In addition,)\s+/i, "");
+  // A product portfolio can identify the business more precisely than a
+  // generic sentence about operating facilities. Keep the whole source text.
+  if (/^Our product portfolio\b.{10,220}\b(?:includes?|comprises?|is based on)\s+.{20,}/i.test(statement)
+    && !/\b(?:broad|wide|comprehensive|diverse) (?:range|variety|selection) of products and services\b/i.test(statement)) return true;
+  if (/^(?:we|the company)\s+(?:manufacture|manufactures|sell|sells|provide|provides|offer|offers)\s+(?:our|its|the) products\s+(?:at|within|through|to)\b/i.test(statement)) return false;
   // Allow an issuer's parenthetical name or legal-form apposition, but require
   // its main predicate to describe operations, not incorporation or financing.
   const subject = `${issuerSubject(identity)}(?:\\s*\\([^)]{0,180}\\))?(?:,\\s*(?:a|an|the)\\s+[^,]{1,100},)?\\s+`;
@@ -64,19 +76,25 @@ function customerDescriptionRank(sentence: string, identity: CompanyIdentity) {
   const explicit = sentence.match(customerPredicate);
   const direct = new RegExp(`^${issuerSubject(identity)}\\s+(?:(?:primarily|mainly|principally)\\s+)?(?:serves?\\s+|(?:sells?|provides?|offers?|suppl(?:y|ies)|delivers?)\\s+.{1,220}?\\s+to\\s+)(.+)`, "i");
   const relationship = /^We have (?:well-established |established |long-standing )?relationships with (.+?), which we serve\b/i;
-  const recipient = explicit?.[1] ?? sentence.match(direct)?.[1] ?? sentence.match(relationship)?.[1];
+  const passiveProducts = /^Our (?:[\w-]+\s+){0,5}products\s+are\s+(?:also\s+)?(?:sold|offered|distributed|marketed|supplied)\s+(?:primarily\s+)?(?:through|to)\s+(.+)/i;
+  const providerMarkets = new RegExp(`^${issuerSubject(identity)}\\s+(?:is|are)\\s+.{0,100}\\b(?:provider|supplier|manufacturer|distributor)\\b.{0,150}\\bto\\s+customers\\s+in\\s+(.+)`, "i");
+  const contextual = sentence.replace(/^Within our reportable segments,\s*/i, "");
+  const recipient = explicit?.[1] ?? contextual.match(direct)?.[1] ?? sentence.match(relationship)?.[1]
+    ?? sentence.match(passiveProducts)?.[1] ?? sentence.match(providerMarkets)?.[1];
   if (!recipient) return 0;
-  const group = recipient.replace(/^(?:(?:primarily|mainly|principally|largely|generally|predominantly)\s+)*(?:in\s+)?/i, "");
+  const group = recipient.replace(/^(?:(?:primarily|mainly|principally|largely|generally|predominantly)\s+)*(?:customers\s+in\s+|in\s+)?/i, "");
+  const namedIndustries = /\b(?:biopharma(?:ceutical)?|healthcare|education|government|automotive|aerospace|semiconductor|telecommunications|data center|cloud|industrial|energy|consumer|applied materials)\b/i.test(group)
+    && /\b(?:markets?|industries|sectors?)\b/i.test(group);
   // These predicates describe usage, terms, geography or satisfaction, not a
   // customer population. Retain the original sentence when it does qualify.
-  if (group.length < 4 || !buyerGroups.test(group) || /^(?:from|able|likely|using|provided|required|offered|encouraged|expected|invited|eligible|entitled|satisfied|located|based|concentrated|subject|responsible|supported|served|purchasing|important|critical|essential|diverse|highly|intensely|competitive|fragmented|characterized|help|enable|ensure|improve|access|use|store|manage|our\b|their\b|customers?\b|clients?\b|consumers?\s+(?:who|that)\s+(?:use|access))\b/i.test(group)) return 0;
+  if (group.length < 4 || (!buyerGroups.test(group) && !namedIndustries) || /^(?:from|able|likely|using|provided|required|offered|encouraged|expected|invited|eligible|entitled|satisfied|located|based|concentrated|subject|responsible|supported|served|purchasing|important|critical|essential|diverse|highly|intensely|competitive|fragmented|characterized|help|enable|ensure|improve|access|use|store|manage|our\b|their\b|customers?\b|clients?\b|consumers?\s+(?:who|that)\s+(?:use|access))\b/i.test(group)) return 0;
   return explicit ? 2 : 1;
 }
 export function verifiedCompanyProfile(value: unknown, identity: CompanyIdentity, now = new Date()): VerifiedCompanyProfile | null {
   const p = object(value);
   const ticker = text(identity.ticker).toUpperCase(), cik = profileCik(identity.cik);
   if (!ticker || !cik || !text(identity.company) || p.version !== 1 || p.status !== "verified"
-    || p.ticker !== ticker || p.cik !== cik || text(p.company) !== text(identity.company)
+    || p.ticker !== ticker || p.cik !== cik || !sameCompanyName(p.company, identity.company)
     || p.sourceType !== "sec_annual_filing") return null;
   // Decode old cached source extracts before comparing the complete description.
   // Identity, age, provenance and factual predicates still all revalidate below.
@@ -85,7 +103,7 @@ export function verifiedCompanyProfile(value: unknown, identity: CompanyIdentity
   if (!Number.isFinite(verified) || !Number.isFinite(filed) || verified > now.getTime() || filed > verified
     || now.getTime() - verified > 30 * 86400000 || now.getTime() - filed > 550 * 86400000
     || business.length < 60 || customers.length < 25 || description.length > 2400
-    || !operatingBusiness(business, identity) || !customerDescriptionRank(customers, identity)
+    || !operatingBusiness(business, { ...identity, company: p.company }) || !customerDescriptionRank(customers, { ...identity, company: p.company })
     || description !== (business === customers ? business : `${business} ${customers}`)
     || placeholder.test(description)) return null;
   try {
@@ -130,7 +148,10 @@ export function extractCompanyProfile(input: { identity: CompanyIdentity; html: 
     .map(text).filter(sentence => sentence.length >= 25 && sentence.length <= 1100);
   const reject = /forward.looking|risk factors|may not|no assurance|could adversely|table of contents|incorporated by reference|annual report|securities and exchange|not yet|we expect|we believe|we intend/i;
   const useful = sentences.filter(sentence => !reject.test(sentence));
-  const business = useful.find(sentence => sentence.length >= 60 && operatingBusiness(sentence, input.identity));
+  const business = useful.filter(sentence => sentence.length >= 60 && operatingBusiness(sentence, input.identity))
+    .map(sentence => ({ sentence, rank: /^Our product portfolio/i.test(sentence) ? 3
+      : /\b(?:sell|sells|design|designs|develop|develops|manufacture|manufactures)\b/i.test(sentence) ? 2 : 1 }))
+    .sort((a, b) => b.rank - a.rank)[0]?.sentence;
   const customers = useful.map(sentence => ({ sentence, rank: customerDescriptionRank(sentence, input.identity) }))
     .filter(candidate => candidate.rank > 0).sort((a, b) => b.rank - a.rank)[0]?.sentence;
   if (!business || !customers) return null;

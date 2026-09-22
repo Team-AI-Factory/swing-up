@@ -10,6 +10,7 @@ import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-wareho
 import { pr262StorageKey, resolvePr262StoragePrefix } from "@/lib/opportunity-engine/pr262-storage";
 import { isPr262ApprovedPremergeProductionRollout } from "@/lib/opportunity-engine/pr262-runtime";
 import { getValuationWatchlistStatus } from "@/lib/opportunity-engine/valuation-watchlist-feed";
+import { VALUATION_MODEL_REVISION } from "@/lib/opportunity-engine/valuation-coverage";
 
 export const dynamic = "force-dynamic";
 
@@ -38,7 +39,7 @@ function safeError(error: unknown) {
 }
 
 function freshComplete(state: Awaited<ReturnType<typeof readResumableUsValueState>>, now = Date.now()) {
-  if (state?.status !== "complete" || !state.completedAt) return false;
+  if (state?.status !== "complete" || !state.completedAt || state.modelRevision !== VALUATION_MODEL_REVISION) return false;
   const completedAt = Date.parse(state.completedAt);
   return Number.isFinite(completedAt)
     && completedAt <= now + 5 * 60_000
@@ -111,6 +112,8 @@ async function foundationCandidateSummary() {
     companyProfiles,
     cycleId: watchlist.foundation.cycleId,
     complete: watchlist.foundation.complete,
+    coverage: watchlist.foundation.coverage,
+    companyProfileCoverage: watchlist.companyProfileCoverage,
     buyCount: watchlist.summary.buyResearch,
     sellCount: watchlist.summary.sellResearch,
     watchOutCount: watchlist.summary.watchOutResearch,

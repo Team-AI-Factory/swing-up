@@ -14,6 +14,7 @@ import {
   type HardenedUsValueInvestingCycle,
 } from "@/lib/opportunity-engine/us-value-investing-safety";
 import { pr262StorageKey, resolvePr262StoragePrefix } from "@/lib/opportunity-engine/pr262-storage";
+import { VALUATION_MODEL_REVISION, valuationCoverageSummary } from "@/lib/opportunity-engine/valuation-coverage";
 
 const PR262_BRANCH = "agent/combined-opportunity-engine";
 const STORAGE_PREFIX = resolvePr262StoragePrefix();
@@ -33,6 +34,7 @@ const TOP_WATCHLIST_LIMIT = 500;
 type SignalAction = "buy" | "sell" | "watch_out";
 
 type ResumableBatchSummary = {
+  valuationCoverage?: ReturnType<typeof valuationCoverageSummary>;
   batchIndex: number;
   startIndex: number;
   endIndexExclusive: number;
@@ -71,6 +73,8 @@ type ResumableBatchObject = {
 };
 
 export type ResumableUsValueState = {
+  modelRevision?: number;
+  valuationCoverage?: ReturnType<typeof valuationCoverageSummary>;
   version: 1;
   branch: string;
   cycleId: string;
@@ -212,7 +216,7 @@ function universeFingerprint(items: UsValueCompanyAnalysis[]) {
 }
 
 function cycleId(checkedAt: string, fingerprint: string) {
-  return `${dateKey(checkedAt)}-${fingerprint.slice(0, 12)}`;
+  return `${dateKey(checkedAt)}-${fingerprint.slice(0, 12)}-model-${VALUATION_MODEL_REVISION}`;
 }
 
 function batchKey(state: ResumableUsValueState, batchIndex: number) {
@@ -292,6 +296,8 @@ function newState(input: {
     version: 1,
     branch: RUNTIME_BRANCH,
     cycleId: cycleId(input.checkedAt, input.fingerprint),
+    modelRevision: VALUATION_MODEL_REVISION,
+    valuationCoverage: valuationCoverageSummary([]),
     status: "running",
     startedAt: input.checkedAt,
     updatedAt: input.checkedAt,
@@ -339,6 +345,7 @@ function buildBatch(
     persistedAt: new Date().toISOString(),
     universeFingerprint: state.universeFingerprint,
     batch: {
+      valuationCoverage: valuationCoverageSummary(analyses),
       batchIndex,
       startIndex,
       endIndexExclusive: startIndex + analyses.length,
@@ -370,6 +377,11 @@ function applyBatch(state: ResumableUsValueState, key: string, batch: ResumableB
   state.companiesStored += batch.batch.companyCount;
   state.companiesWithFairValue += batch.batch.companiesWithFairValue;
   state.companiesWithoutFairValue += batch.batch.companiesWithoutFairValue;
+  const coverage = state.valuationCoverage ??= valuationCoverageSummary([]);
+  const added = batch.batch.valuationCoverage ?? valuationCoverageSummary(batch.analyses);
+  for (const key of ["counts", "missingInputs"] as const) {
+    for (const [name, count] of Object.entries(added[key])) coverage[key][name] = (coverage[key][name] ?? 0) + count;
+  }
   state.seriousAlertCounts.buy += batch.batch.seriousBuyCount;
   state.seriousAlertCounts.sell += batch.batch.seriousSellCount;
   state.seriousAlertCounts.watchOut += batch.batch.seriousWatchOutCount;
@@ -482,6 +494,7 @@ async function finalizeState(state: ResumableUsValueState, checkedAt: string, et
     latestSourceCheckedAt: state.latestSourceCheckedAt,
     universeFingerprint: state.universeFingerprint,
     coverage: {
+      valuationQuality: state.valuationCoverage,
       totalCompanies: state.totalCompanies,
       companiesStored: state.companiesStored,
       companiesWithFairValue: state.companiesWithFairValue,
@@ -547,7 +560,7 @@ export async function runResumableUsValueBatch(input: {
   const prior = loaded.state;
   const sourceChangedAfterComplete = prior?.status === "complete" && prior.sourceCheckedAt !== hardened.checkedAt;
   const universeChanged = Boolean(prior && (prior.universeFingerprint !== fingerprint || prior.totalCompanies !== sortedAnalyses.length));
-  const needsNewCycle = !prior || universeChanged || sourceChangedAfterComplete;
+  const needsNewCycle = !prior || universeChanged || sourceChangedAfterComplete || prior.modelRevision !== VALUATION_MODEL_REVISION;
   let state = needsNewCycle
     ? newState({ checkedAt: hardened.checkedAt, fingerprint, totalCompanies: sortedAnalyses.length })
     : prior;

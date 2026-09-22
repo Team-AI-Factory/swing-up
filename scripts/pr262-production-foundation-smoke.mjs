@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
+import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 
 const nodeRequire = createRequire(import.meta.url);
 const routeSource = readFileSync(new URL("../app/api/internal/combined-opportunity-engine/production-foundation/route.ts", import.meta.url), "utf8");
@@ -16,6 +17,7 @@ let exposureBuilds = 0;
 let forceGateRevision = 0;
 const forceGateObjects = new Map();
 const stubs = {
+  "@/lib/opportunity-engine/valuation-coverage": loadTsModule("@/lib/opportunity-engine/valuation-coverage"),
   "@/lib/opportunity-engine/pr262-event-job": { warmPr262CompanyProfiles: async () => ({ attempted: 1, verified: 1, status: "checked" }) },
   "next/server": {
     NextResponse: {
@@ -118,6 +120,7 @@ try {
   assert.deepEqual(runInput, { foundationOnly: true, requireCompleteUniverse: true });
 
   storedState = {
+    modelRevision: stubs["@/lib/opportunity-engine/valuation-coverage"].VALUATION_MODEL_REVISION,
     status: "complete",
     completedAt: new Date().toISOString(),
     cycleId: "cycle-complete",
@@ -167,6 +170,10 @@ try {
   const approvedPremerge = await loaded.exports.POST(request);
   assert.equal(approvedPremerge.status, 200, "The exact guarded PR environment may run the approved production foundation before merge.");
   assert.equal(approvedPremerge.body.reason, "production_foundation_fresh");
+  delete storedState.modelRevision;
+  const obsoleteModel = await loaded.exports.POST(request);
+  assert.equal(obsoleteModel.body.skipped, undefined, "A recently collected baseline must be recalculated after a model revision");
+  assert.equal(runCount, 4);
 } finally {
   if (priorEnvironment.branch === undefined) delete process.env.RAILWAY_GIT_BRANCH;
   else process.env.RAILWAY_GIT_BRANCH = priorEnvironment.branch;

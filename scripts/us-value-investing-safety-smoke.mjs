@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
+import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 
 const source = readFileSync(new URL("../lib/opportunity-engine/us-value-investing-safety.ts", import.meta.url), "utf8");
 const specialistSource = readFileSync(new URL("../lib/opportunity-engine/us-sector-specialist-valuation.ts", import.meta.url), "utf8");
@@ -32,6 +33,7 @@ new Function("require", "module", "exports", output)((name) => {
   };
   if (name === "@/lib/opportunity-engine/pr262-storage") return { pr262StorageKey: (relative) => `branch-labs/pr-262/${relative}` };
   if (name === "@/lib/opportunity-engine/us-sector-specialist-valuation") return specialistModule.exports;
+  if (name === "@/lib/opportunity-engine/valuation-coverage") return loadTsModule(name);
   throw new Error(`Unexpected import in value safety smoke: ${name}`);
 }, cjsModule, cjsModule.exports);
 const {

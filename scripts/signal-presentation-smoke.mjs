@@ -111,7 +111,7 @@ const analyses = [
 ];
 const watchlist = loadTsModule("@/lib/opportunity-engine/valuation-watchlist-feed", {
   "@/lib/opportunity-engine/pr262-storage": { pr262StorageKey: value => value },
-  "@/lib/opportunity-engine/company-profile-cache": { readCompanyProfiles: async items => new Map(items.map(item => [item.ticker, companyProfileFixture(item)])) },
+  "@/lib/opportunity-engine/company-profile-cache": { readCompanyProfiles: async items => new Map(items.map(item => [item.ticker, companyProfileFixture(item)])), readCompanyProfileCoverage: async () => null },
   "@/lib/opportunity-engine/pr262-research-evidence": { readResearchAlerts: async () => [] },
   "@/lib/r2-warehouse": { readVersionedTextFromR2: async key => ({ found: true, text: JSON.stringify(key.includes("watchlist-live-prices") ? { checkedAt: new Date().toISOString(), prices: [{ ticker: "A", price: 50 }, { ticker: "B", price: 190 }] } : { kind: "us_value_investing_resumable_summary", seriousAlerts: { buy: analyses }, coverage: {} }) }) },
 });

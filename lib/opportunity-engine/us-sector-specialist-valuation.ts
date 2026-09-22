@@ -413,8 +413,9 @@ export function evaluateSectorSpecialistValuation(input: SectorSpecialistInput, 
   if (!sectorKind) return null;
   const built = buildModel(input, sectorKind);
   const methods = built.methods
-    .filter((method) => Number.isFinite(method.value) && method.value > input.currentPrice * 0.2 && method.value < input.currentPrice * 5)
-    .map((method) => ({ ...method, value: round(method.value) ?? method.value }));
+    .filter((method) => Number.isFinite(method.value) && method.value > 0)
+    .map((method) => ({ ...method, value: round(method.value) ?? method.value }))
+    .filter((method) => method.value > 0);
   const values = methods.map((method) => method.value).sort((left, right) => left - right);
   const conservativeValue = values.length ? values[0] : null;
   const baseValue = median(values);
@@ -425,6 +426,7 @@ export function evaluateSectorSpecialistValuation(input: SectorSpecialistInput, 
   const premiumToBasePercent = baseValue !== null ? ((input.currentPrice / baseValue) - 1) * 100 : null;
   const premiumToOptimisticPercent = optimisticValue !== null ? ((input.currentPrice / optimisticValue) - 1) * 100 : null;
   const thresholds = built.thresholds;
+  const extremeValuation = baseValue !== null && (baseValue < input.currentPrice * 0.2 || baseValue > input.currentPrice * 5);
   const missingInputs = built.requiredInputs.filter((name) => {
     const mapping: Record<string, number | null> = {
       diluted_eps_ttm: input.fundamentals.dilutedEpsTtm,
@@ -443,6 +445,7 @@ export function evaluateSectorSpecialistValuation(input: SectorSpecialistInput, 
     return !present(mapping[name] ?? null);
   });
   const commonEvidence = built.evidenceScore >= thresholds.minimumEvidenceScore
+    && !extremeValuation
     && methods.length >= thresholds.minimumMethodCount
     && methodSpreadPercent !== null
     && methodSpreadPercent <= thresholds.maximumMethodSpreadPercent;
@@ -460,6 +463,7 @@ export function evaluateSectorSpecialistValuation(input: SectorSpecialistInput, 
   const watch = !buy && !sell && !watchOut && commonEvidence && built.qualityScore >= 65 && built.riskScore <= 60 && baseValue !== null;
   const action: SpecialistAction = buy ? "buy" : sell ? "sell" : watchOut ? "watch_out" : watch ? "watch" : "research_only";
   const blockers = [
+    ...(extremeValuation ? ["The value is far from the current price; verify share units, currency and sector assumptions before promotion."] : []),
     ...(built.evidenceScore < thresholds.minimumEvidenceScore ? [`Sector-specific evidence score ${built.evidenceScore}/100 is below ${thresholds.minimumEvidenceScore}/100.`] : []),
     ...(methods.length < thresholds.minimumMethodCount ? [`Only ${methods.length} usable specialist valuation method(s); at least ${thresholds.minimumMethodCount} are required.`] : []),
     ...(methodSpreadPercent === null ? ["Specialist valuation-method agreement cannot be measured yet."] : methodSpreadPercent > thresholds.maximumMethodSpreadPercent ? [`Specialist valuation methods disagree by ${methodSpreadPercent.toFixed(1)}%, above the ${thresholds.maximumMethodSpreadPercent}% limit.`] : []),

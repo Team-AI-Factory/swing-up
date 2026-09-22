@@ -8,6 +8,7 @@ import type {
 } from "@/lib/opportunity-engine/us-value-investing-engine";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 import { evaluateSectorSpecialistValuation } from "@/lib/opportunity-engine/us-sector-specialist-valuation";
+import { assessValuationCoverage, completeValuationCoverage } from "@/lib/opportunity-engine/valuation-coverage";
 
 export type HardenedUsValueInvestingCycle = UsValueInvestingCycle & {
   methodology: UsValueInvestingCycle["methodology"] & {
@@ -130,7 +131,9 @@ export function hardenUsValueCompanyAnalysis(item: UsValueCompanyAnalysis): UsVa
         : null),
       marginOfSafetyPercent: specialist.fairValue.conservativeUpsidePercent,
     },
-  } : item;
+  } : { ...item };
+  assessed.valuationCoverage = assessValuationCoverage(assessed);
+  if (assessed.valuationCoverage.status === "needs_validation") assessed.scores = { ...assessed.scores, fairValueConfidence: Math.min(69, assessed.scores.fairValueConfidence) };
   const diagnostics = valuationDiagnostics(assessed);
   const eligibleExchange = ELIGIBLE_EXCHANGES.has(assessed.exchange.toUpperCase());
   const sensiblePrice = Number.isFinite(assessed.currentPrice) && assessed.currentPrice >= 1;
@@ -264,9 +267,9 @@ export function hardenUsValueCompanyAnalysis(item: UsValueCompanyAnalysis): UsVa
 }
 
 function buildHardened(raw: UsValueInvestingCycle): HardenedUsValueInvestingCycle {
-  const eligible = raw.analyses
+  const eligible = completeValuationCoverage(raw.analyses
     .filter((item) => ELIGIBLE_EXCHANGES.has(item.exchange.toUpperCase()))
-    .map(hardenUsValueCompanyAnalysis);
+    .map(hardenUsValueCompanyAnalysis));
   const seriousBuy = eligible
     .filter((item) => item.decision.tier === "serious_foundation_buy")
     .sort((left, right) => (right.fairValue.upsideToBasePercent ?? -Infinity) - (left.fairValue.upsideToBasePercent ?? -Infinity));

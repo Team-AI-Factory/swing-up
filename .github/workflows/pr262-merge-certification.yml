@@ -80,6 +80,7 @@ jobs:
           npm run smoke:valuation-committee-followup
           npm run smoke:signal-presentation
           node scripts/complete-value-alerts-smoke.mjs
+          node scripts/company-coverage-smoke.mjs
           npm run smoke:company-profile
           npm run smoke:pr262-evidence-quality
           npm run smoke:exact-evidence-followup

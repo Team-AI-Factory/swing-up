@@ -155,6 +155,13 @@ try {
     signal: AbortSignal.timeout(240_000),
   });
   const body = await response.text();
+  try {
+    const result = JSON.parse(body);
+    console.log(`[pr262-coverage] ${JSON.stringify({ checkedAt: result.checkedAt, companyProfiles: result.companyProfiles,
+      processing: { admitted: result.processing?.funnel?.admittedThisCycle, completed: result.processing?.eventsProcessed,
+        deferred: result.processing?.eventDeferrals, aiReviews: result.processing?.aiCalls,
+        serious: (result.processing?.seriousBuys ?? 0) + (result.processing?.seriousSells ?? 0) + (result.processing?.seriousWatchOuts ?? 0) } })}`);
+  } catch { /* The existing response/error handling below remains authoritative. */ }
   console.log(`[pr262-cron] mode=${deliveryTest ? "delivery_test" : analysisOnly ? "analysis_only" : "sensor_and_analysis"} status=${response.status} ${body.slice(0, 50_000)}`);
   if (!response.ok) throw new Error(`pr262_cron_route_http_${response.status}`);
   exitCode = 0;

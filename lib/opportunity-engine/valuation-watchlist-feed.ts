@@ -1,6 +1,6 @@
 import type { VerifiedCompanyProfile } from "@/lib/company-profile";
 import { completePriceOutlook, industryLabel } from "@/lib/alert-details";
-import { readCompanyProfiles } from "@/lib/opportunity-engine/company-profile-cache";
+import { readCompanyProfiles, readCompanyProfileCoverage } from "@/lib/opportunity-engine/company-profile-cache";
 import { explainSignal, plainEvidenceGaps } from "@/lib/signal-explanation";
 import { buildPriceOutlook, compareSignalPotential } from "@/lib/signal-outlook";
 import { readResearchAlerts } from "@/lib/opportunity-engine/pr262-research-evidence";
@@ -154,6 +154,7 @@ function arrayOfAnalyses(value: unknown) {
 
 export async function getValuationWatchlistStatus(options: { limit?: number; action?: WatchlistAction } = {}) {
   const requestedLimit = Number(options.limit ?? 60);
+  const companyProfileCoverage = await readCompanyProfileCoverage().catch(() => null);
   const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(1000, Math.floor(requestedLimit))) : 60;
   const [current, livePriceCurrent, reviews] = await Promise.all([
     readVersionedTextFromR2(LATEST_FOUNDATION_SUMMARY_KEY),
@@ -164,6 +165,7 @@ export async function getValuationWatchlistStatus(options: { limit?: number; act
     return {
       ok: true as const,
       generatedAt: new Date().toISOString(),
+      companyProfileCoverage,
       foundation: { available: false, complete: false, cycleId: null, completedAt: null, sourceCheckedAt: null, coverage: null },
       livePricing: { available: false, checkedAt: null, ageMinutes: null, source: null },
       summary: { total: 0, buyResearch: 0, sellResearch: 0, watchOutResearch: 0, priceWatch: 0, specialistModelApplied: 0 },
@@ -221,6 +223,7 @@ export async function getValuationWatchlistStatus(options: { limit?: number; act
   return {
     ok: true as const,
     generatedAt: new Date().toISOString(),
+    companyProfileCoverage,
     foundation: {
       available: true,
       complete: parsed.status === "complete",
@@ -233,6 +236,7 @@ export async function getValuationWatchlistStatus(options: { limit?: number; act
         companiesWithoutFairValue: finite(coverage.companiesWithoutFairValue),
         totalCompanies: finite(coverage.totalCompanies),
         percent: finite(coverage.coveragePercent),
+        valuationQuality: coverage.valuationQuality ?? null,
       },
     },
     livePricing: {

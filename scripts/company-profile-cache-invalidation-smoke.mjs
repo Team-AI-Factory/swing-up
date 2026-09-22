@@ -109,6 +109,19 @@ Object.assign(currentEntry(), { error: "company_profile_products_and_customers_n
 assert.equal(await cache.ensureCompanyProfile(identity, fetcher, now), null);
 assert.equal(requests, 0, "An unchanged current parser must not bypass failed-extraction backoff");
 
+// A quota failure before refreshed metadata arrives must retain the exact
+// report reference. Its saved text can recover without another provider call.
+seed(null, now.toISOString());
+Object.assign(currentEntry(), { error: "company_profile_products_and_customers_not_extracted", filing, parserRevision: 1 });
+objects.set(sourceKey, { version: 1, url: filing.url, filedAt: filing.filedAt, businessText: profiles.annualBusinessText(html, "10-K") });
+assert.equal(await cache.ensureCompanyProfile(identity, budgetDeferred, now), null);
+assert.deepEqual(currentEntry().filing, filing, "Network failure cannot erase the saved source's filing metadata");
+assert.equal(currentEntry().nextAttemptAt, providerRetry);
+const recoveredDuringBackoff = await cache.warmFoundationCompanyProfiles(budgetDeferred, now);
+assert.equal(recoveredDuringBackoff.recoveredFromSavedSources, 1, "A provider pause must not block verification from an existing exact report");
+assert.equal(currentEntry().profile.customers, fixture.customers);
+assert.equal(requests, 1, "Saved-source recovery makes no second provider request during backoff");
+
 console.log("PASS: valid cache reuse, invalid-success immediate refresh, parser-revision recovery, cache-only read validation, maintenance selection, durable failed-attempt and provider backoff");
 
 // Cache retention cannot erase the rest of a 4,958-company universe.

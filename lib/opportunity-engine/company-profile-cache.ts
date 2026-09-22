@@ -108,10 +108,12 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
   const cached = verifiedCompanyProfile(prior?.profile, exact, now);
   if (cached && (cached.industry || (prior?.parserRevision === COMPANY_PROFILE_PARSER_REVISION && Date.parse(prior.nextAttemptAt) > now.getTime()))) return cached;
   if (retryDeferred(prior, now)) return null;
-  const entry: Entry = { ...exact, cik: exact.cik, updatedAt: now.toISOString(), nextAttemptAt: new Date(now.getTime() + 60 * 60000).toISOString(), profile: cached, parserRevision: COMPANY_PROFILE_PARSER_REVISION };
+  const entry: Entry = { ...exact, cik: exact.cik, updatedAt: now.toISOString(), nextAttemptAt: new Date(now.getTime() + 60 * 60000).toISOString(), profile: cached,
+    filing: prior?.filing, cachedParserRevision: prior?.cachedParserRevision, parserRevision: COMPANY_PROFILE_PARSER_REVISION };
   // Persist backoff before network; budget wrappers still make their own durable reservations.
   await store(entry);
   const request = async (url: string, complete?: (text: string) => boolean) => boundedText(await fetchImpl(url, { headers: { Accept: "text/html,application/json", "User-Agent": "SwingUp/1.0 support@swingup.app" }, cache: "no-store", redirect: "error", signal: AbortSignal.timeout(12000) }), complete);
+  let phase = "issuer_submissions";
   try {
     const priorFilingAge = now.getTime() - Date.parse(prior?.filing?.filedAt ?? "");
     const filing = !prior?.profile && prior?.filing && priorFilingAge >= 0 && priorFilingAge <= 550 * 86400000
@@ -120,7 +122,9 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
       ? prior.filing : annualFiling(object(JSON.parse(await request(`https://data.sec.gov/submissions/CIK${exact.cik}.json`))), exact, now);
     if (!filing) throw new Error("company_profile_annual_filing_unavailable");
     if (!new RegExp(`^https://www\\.sec\\.gov/Archives/edgar/data/${Number(exact.cik)}/\\d{18}/[A-Za-z0-9._-]+\\.html?$`).test(filing.url)) throw new Error("company_profile_filing_identity_mismatch");
+    if (filing.url !== prior?.filing?.url) entry.cachedParserRevision = undefined;
     entry.filing = filing;
+    phase = "annual_filing";
     await store(entry);
     const extract = (html: string) => extractCompanyProfile({ identity: exact, html, form: filing.form, sourceUrl: filing.url, filedAt: filing.filedAt, now });
     // Reuse the exact annual business section across parser retries. It is
@@ -151,7 +155,7 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
     if (/products_and_customers_not_extracted|annual_filing_unavailable/.test(entry.error)) entry.nextAttemptAt = new Date(now.getTime() + 86400000).toISOString();
     const reason = entry.error.match(/^company_profile_[a-z0-9_]+/i)?.[0]
       ?? (/budget|quota|cadence/i.test(entry.error) ? "provider_budget_deferred" : error instanceof Error && error.name === "TimeoutError" ? "source_timeout" : "source_request_failed");
-    console.info(JSON.stringify({ kind: "pr262_company_profile_result", ticker: exact.ticker, status: "pending", phase: entry.filing ? "annual_filing" : "issuer_submissions", reason }));
+    console.info(JSON.stringify({ kind: "pr262_company_profile_result", ticker: exact.ticker, status: "pending", phase, reason }));
     const providerRetry = entry.error.match(/next_retry_at=([^;\s]+)/)?.[1];
     if (providerRetry && Date.parse(providerRetry) > Date.parse(entry.nextAttemptAt)) entry.nextAttemptAt = providerRetry;
     await store(entry);
@@ -161,8 +165,7 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
 
 /** Re-read saved source text after a parser repair without spending SEC calls. */
 async function recoverCachedProfiles(entries: Entry[], listings: Json[], now: Date) {
-  const eligible = entries.filter(entry => entry.filing && entry.parserRevision !== COMPANY_PROFILE_PARSER_REVISION && entry.cachedParserRevision !== COMPANY_PROFILE_PARSER_REVISION
-    && entry.error === "company_profile_products_and_customers_not_extracted"
+  const eligible = entries.filter(entry => entry.filing && !entry.profile && entry.cachedParserRevision !== COMPANY_PROFILE_PARSER_REVISION
     && listings.some(row => row.ticker === entry.ticker && profileCik(row.cik) === entry.cik
       && Array.isArray(row.sourceNames) && row.sourceNames.includes("SEC company_tickers_exchange"))).slice(0, 20);
   const recovered: Entry[] = [];

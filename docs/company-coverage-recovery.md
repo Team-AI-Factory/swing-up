@@ -8,6 +8,8 @@ The next foundation run recalculates a previous model revision, using revision-s
 
 Profile parser revision 4 recognizes product portfolios, passive distribution statements and industry customer groups. Name formatting differences are accepted only while ticker, SEC issuer identity and source checks still match. Each maintenance cycle may re-read twenty saved annual business sections without SEC downloads, then handles the existing two-company retrieval allowance. One background retrieval slot ensures companies outside the current event queue also receive attention. Failed saved-source reads remain retryable, and one failure does not stop other recoveries.
 
+A failed metadata refresh also retains the previous report reference. Saved-source recovery can run during network/provider backoff, including when a failed request has already recorded the current parser revision. It only bypasses the need for a network request; source identity, filing date and description verification still apply.
+
 The public valuation-watchlist response now includes foundation valuation-quality counts and missing-input counts, plus company-profile coverage across the SEC-backed universe. These are different denominators and must not be combined. Profile coverage includes verified descriptions, verified industries and categorized pending reasons. The compact cron coverage log makes these counts visible without truncating a large event response.
 
 Fair-value coverage is not the same as validated investment advice. Peer comparisons, extreme estimates, stale prices, incomplete profiles and incomplete scenarios retain their existing publication restrictions. Paid model usage, provider quotas, production storage prefix and Railway schedules are unchanged.

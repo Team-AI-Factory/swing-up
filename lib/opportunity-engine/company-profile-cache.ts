@@ -295,7 +295,7 @@ export async function warmFoundationCompanyProfiles(fetchImpl: typeof fetch, now
     .sort((a, b) => b.priority - a.priority || a.lastAttempt - b.lastAttempt);
   // Expand useful work inside the same time window and provider allowances.
   // One background issuer retains progress beyond today's event queue.
-  const selected = due.slice(0, 11);
+  const selected = due.slice(0, 1);
   const background = due.find(row => row.priority === 0 && !selected.includes(row));
   const backgroundSlot = background ?? due.find(row => !selected.includes(row));
   if (backgroundSlot) selected.push(backgroundSlot);
@@ -322,6 +322,6 @@ export async function warmFoundationCompanyProfiles(fetchImpl: typeof fetch, now
     }
   };
   await Promise.all([worker(), worker()]);
-  return { attempted, verified, eligibleCompanies: due.length, maximumCompaniesPerPass: 12, deadlineReached: options.signal?.aborted === true,
+  return { attempted, verified, eligibleCompanies: due.length, maximumCompaniesPerPass: 2, deadlineReached: options.signal?.aborted === true,
     ...(recoveredFromSavedSources ? { recoveredFromSavedSources } : {}) };
 }

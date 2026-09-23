@@ -53,6 +53,17 @@ assert.equal(previous.periodEnd, "2025-06-30");
 assert.equal(compared.candidate.fundamentals.items.find(item => item.metric === "revenue").value, 120);
 await fundamentals.enrichCandidateFundamentals(candidate(), fetchFacts, new Date(now.getTime() + 60000), { ...cache, requiredMetrics: financialTask.fields });
 assert.equal(requests, 2, "A verified complete comparison must be reused without another collection");
+const incompleteRefresh = await fundamentals.enrichCandidateFundamentals(candidate(), async () => { throw new Error("sec_company_facts_http_503"); }, new Date(now.getTime() + 60000), { ...cache, requiredMetrics: ["operating_cash_flow"] });
+assert.equal(incompleteRefresh.candidate.fundamentals.available, true, "Previously verified facts survive failure to fetch an additional field");
+assert.equal(incompleteRefresh.candidate.fundamentals.checkedAt, now.toISOString(), "Fallback must not renew evidence age");
+assert.equal(incompleteRefresh.provider.cached, true);
+assert.equal(incompleteRefresh.provider.status, "temporarily_unavailable", "A cached fallback must not claim the failed provider is healthy");
+assert.equal(incompleteRefresh.candidate.fundamentals.items.some(item => item.metric === "operating_cash_flow"), false);
+assert.match(incompleteRefresh.candidate.fundamentals.error, /refresh_incomplete/);
+for (const invalid of [{ ...saved, cik: "0000000002" }, { ...saved, fundamentals: { ...saved.fundamentals, checkedAt: "2026-09-17T00:00:00Z" } }]) {
+  const rejected = await fundamentals.enrichCandidateFundamentals(candidate(), async () => { throw new Error("network_down"); }, now, { ...cache, read: async () => invalid });
+  assert.equal(rejected.candidate.fundamentals.available, false, "Stale or wrong-issuer data cannot become the fallback");
+}
 const absent = structuredClone(body);
 absent.facts["us-gaap"].Revenues.units.USD = [body.facts["us-gaap"].Revenues.units.USD[0], body.facts["us-gaap"].Revenues.units.USD[1]];
 const missing = await fundamentals.enrichCandidateFundamentals(candidate(), async () => Response.json(absent), now, { ...cache, read: async () => null, requiredMetrics: financialTask.fields });

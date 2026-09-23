@@ -1,9 +1,12 @@
+import { negativeEarningsEvidence, type NegativeEarningsEvidence } from "@/lib/valuation-availability";
+
 type Json = Record<string, unknown>;
 const object = (value: unknown): Json => value && typeof value === "object" && !Array.isArray(value) ? value as Json : {};
 const positive = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
 const round = (value: number) => Math.round(value * 100) / 100;
 
 export type PriceOutlook = {
+  fairValueUnavailable?: NegativeEarningsEvidence;
   currency: string | null;
   currentPrice: number | null;
   basis: "valuation" | "historical_scenarios" | "unavailable";
@@ -61,11 +64,11 @@ export function buildPriceOutlook(input: {
   };
 }
 
-export function candidatePriceOutlook(candidate: Json, analysis?: Json): PriceOutlook {
+export function candidatePriceOutlook(candidate: Json, analysis?: Json, now = new Date()): PriceOutlook {
   const forecast = object(candidate.priceForecast), fair = object(analysis?.fairValue ?? candidate.valuationRange);
   const forecastReady = ["provisional", "calibrating", "calibrated"].includes(String(forecast.status))
     && [forecast.lowPrice, forecast.medianPrice, forecast.highPrice].every(value => positive(value) !== null);
-  return buildPriceOutlook({
+  const outlook = buildPriceOutlook({
     currentPrice: object(candidate.quote).price ?? candidate.price, currency: analysis?.currency ?? candidate.currency,
     action: candidate.direction, timeHorizon: candidate.timeHorizon,
     conservative: forecastReady ? forecast.lowPrice : fair.conservativeValue,
@@ -73,6 +76,9 @@ export function candidatePriceOutlook(candidate: Json, analysis?: Json): PriceOu
     optimistic: forecastReady ? forecast.highPrice : fair.optimisticValue,
     basis: forecastReady ? "historical_scenarios" : "valuation", forecastHorizon: forecastReady ? forecast.horizon : null,
   });
+  const loss = ![fair.conservativeValue, fair.baseValue, fair.optimisticValue].some(value => positive(value) !== null)
+    ? negativeEarningsEvidence(candidate, now) : null;
+  return loss ? { ...outlook, fairValueUnavailable: loss } : outlook;
 }
 
 type Ranked = { action?: unknown; ticker?: unknown; id?: unknown; outlook?: PriceOutlook | null; userAlertEligible?: boolean; committeeStatus?: unknown };

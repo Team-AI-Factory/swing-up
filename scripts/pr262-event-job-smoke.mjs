@@ -578,7 +578,7 @@ new Function("require", "module", "exports", output)((name) => {
   if (name in stubs) return stubs[name];
   if (["@/lib/company-profile", "@/lib/opportunity-engine/company-profile-cache"].includes(name)) return loadTsModule(name, stubs);
   if (name === "@/lib/opportunity-engine/pr262-research-evidence") return loadTsModule(name, stubs);
-  if (["@/lib/ai-committee/review-policy", "@/lib/equity-signal/us-market-calendar"].includes(name)) return loadTsModule(name);
+  if (["@/lib/ai-committee/review-policy", "@/lib/equity-signal/us-market-calendar", "@/lib/opportunity-engine/pr262-review-blockers"].includes(name)) return loadTsModule(name);
   throw new Error(`Unexpected event-job import: ${name}`);
 }, cjsModule, cjsModule.exports);
 
@@ -1090,6 +1090,9 @@ const collectionOnly = await runPr262EventJob({ now: new Date("2026-08-11T10:24:
   beforeOpenAiCall: async () => { duplicatePaidReservations++; return true; }, });
 assert.equal(duplicatePaidReservations, 0, "Same evidence must stop before reserving another paid Committee");
 assert.equal(collectionOnly.openAiCalled, false);
+assert.equal(collectionOnly.blockerCategory, "same_evidence");
+assert.equal(collectionOnly.costControl.reservationBlockedReason, "paid_evidence_cooldown");
+assert.match(lastRetryMutation.error, /blocker=same_evidence/);
 assert.equal(collectionOnly.evidenceFollowupScheduled, true);
 assert.equal(lastRetryMutation.nextRetryAt, "2026-08-11T10:39:00.000Z");
 
@@ -1106,9 +1109,11 @@ const cycleStartBudgetDenied = await runPr262EventJob({
     return true;
   },
   aiReservationRetryAt: () => exactGlobalBudgetRetryAt,
+  aiReservationBlockedReason: () => "daily_cost_fuse",
 });
 assert.equal(cycleStartBudgetDenied.status, "event_job_deferred");
 assert.equal(cycleStartBudgetDenied.openAiCalled, false);
+assert.equal(cycleStartBudgetDenied.blockerCategory, "ai_budget");
 assert.equal(cycleStartReservationCalls, 0, "A cycle-start full fuse must not attempt a second reservation.");
 assert.equal(lastRetryMutation.nextRetryAt, exactGlobalBudgetRetryAt, "A cycle-start full fuse must wait for its exact cumulative capacity boundary.");
 
@@ -1132,9 +1137,11 @@ const deniedBeforeOpenAi = await runPr262EventJob({
   allowOpenAi: true,
   beforeOpenAiCall: async () => false,
   aiReservationRetryAt: () => exactReservationRetryAt,
+  aiReservationBlockedReason: () => "candidate_already_reserved",
 });
 assert.equal(deniedBeforeOpenAi.status, "event_job_deferred");
 assert.equal(deniedBeforeOpenAi.nonterminal, true);
+assert.equal(deniedBeforeOpenAi.blockerCategory, "same_evidence", "An existing candidate reservation must not be reported as a dollar-budget block");
 assert.equal(deniedBeforeOpenAi.openAiCalled, false, "A denied reservation is the proven no-OpenAI-call path.");
 assert.equal(deniedBeforeOpenAi.nonterminalAuditKey, null, "A no-call deferral needs no paid-attempt audit.");
 assert.equal(lastRetryMutation.nextRetryAt, exactReservationRetryAt, "An active reservation denial must use its exact expiry instead of generic backoff.");

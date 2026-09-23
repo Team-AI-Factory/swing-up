@@ -1,5 +1,5 @@
 /** Company descriptions must be extracts from a dated, identity-verified source. */
-export const COMPANY_PROFILE_PARSER_REVISION = 4;
+export const COMPANY_PROFILE_PARSER_REVISION = 5;
 export type CompanyIdentity = { ticker?: unknown; company?: unknown; cik?: unknown };
 export type VerifiedCompanyProfile = {
   version: 1; status: "verified"; ticker: string; company: string; cik: string;
@@ -56,6 +56,7 @@ function operatingBusiness(sentence: string, identity: CompanyIdentity) {
   // Allow an issuer's parenthetical name or legal-form apposition, but require
   // its main predicate to describe operations, not incorporation or financing.
   const subject = `${issuerSubject(identity)}(?:\\s*\\([^)]{0,180}\\))?(?:,\\s*(?:a|an|the)\\s+[^,]{1,100},)?\\s+`;
+  if (new RegExp(`^${subject}(?:is|are)\\s+(?:a|an)\\s+(?:(?:clinical|preclinical|development|commercial)[- ]stage\\s+)?(?:biopharmaceutical|biotechnology|pharmaceutical|medical device)\\s+compan(?:y|ies)\\b.{0,160}\\b(?:developing|development|discovery|discovering|treatments|therapies|therapeutics|vaccines|medicines)\\b`, "i").test(statement)) return true;
   const action = "(?:(?:primarily|principally|mainly|currently)\\s+)?(?:manufactures?|designs?|develops?|produces?|provides?|operates?|operated|distributes?|sells?|offers?|delivers?|supplies)\\b";
   const operator = "(?:is|are)\\s+(?:a\\s+|an\\s+|the\\s+)?[^.!?]{0,120}\\b(?:manufacturer|developer|producer|provider|operator|distributor|retailer|supplier|bank|utility|utilities|insurer|underwriter|roaster)\\b";
   if (new RegExp(`^${subject}(?:${action}|${operator})`, "i").test(statement)) return true;
@@ -73,6 +74,9 @@ function operatingBusiness(sentence: string, identity: CompanyIdentity) {
 /** A customer mention in a product feature is not a description of who buys it. */
 function customerDescriptionRank(sentence: string, identity: CompanyIdentity) {
   if (customerCaveat.test(sentence) || filingBoilerplate.test(sentence) || unresolvedEntity.test(sentence)) return 0;
+  // Pre-commercial issuers cannot name a buyer population that does not yet
+  // exist. Preserve their explicit source statement about product revenue.
+  if (new RegExp(`^${issuerSubject(identity)}\\s+have\\s+(?:(?:not(?: yet)? generated (?:any )?revenue from (?:product sales|the sale of (?:our )?products))|(?:no (?:approved|commercially available) products.{0,100}have not generated (?:any )?revenue from product sales))[.!]?$`, "i").test(sentence)) return 1;
   const explicit = sentence.match(customerPredicate);
   const direct = new RegExp(`^${issuerSubject(identity)}\\s+(?:(?:primarily|mainly|principally)\\s+)?(?:serves?\\s+|(?:sells?|provides?|offers?|suppl(?:y|ies)|delivers?)\\s+.{1,220}?\\s+to\\s+)(.+)`, "i");
   const relationship = /^We have (?:well-established |established |long-standing )?relationships with (.+?), which we serve\b/i;
@@ -125,6 +129,7 @@ export function annualBusinessText(html: string, form: string) {
   // Plain-text source excerpts already supply their own paragraph boundaries.
   const source = /<[a-z][^>]*>/i.test(html) ? html.replace(/\r?\n/g, " ") : html;
   const clean = decodeSourceEntities(source.replace(/<(?:script|style|ix:header)\b[^>]*>[\s\S]*?<\/(?:script|style|ix:header)>/gi, " ")
+    .replace(/<li\b[^>]*>/gi, "\n• ")
     // Keep block boundaries so an unpunctuated section heading cannot become
     // part of the next factual sentence. Inline spans still join with spaces.
     .replace(/<\/(?:p|div|h[1-6]|li|tr)>|<br\s*\/?\s*>/gi, "\n")
@@ -142,11 +147,23 @@ export function annualBusinessText(html: string, form: string) {
 /** Select whole source sentences. No generated product or customer claims. */
 export function extractCompanyProfile(input: { identity: CompanyIdentity; html: string; form: string; sourceUrl: string; filedAt: string; now: Date }) {
   const section = annualBusinessText(input.html, input.form);
-  const sentences = section.split(/\n+/).flatMap(paragraph => paragraph
+  const paragraphs = section.split(/\n+/);
+  // Join only actual adjacent list items after a customer-list introduction.
+  // An empty heading still fails; preserve every word of the source list.
+  const sourceParagraphs = paragraphs.map((paragraph, index) => {
+    if (!/^(?:Our |The company's )?(?:primary |principal |main )?(?:customers|clients|end markets)\s+(?:include|comprise|are|consist of)(?: the following)?\s*:\s*$/i.test(paragraph)) return paragraph;
+    const items: string[] = [];
+    for (const next of paragraphs.slice(index + 1, index + 9)) {
+      if (!/^(?:[•●▪‣-]|\(?[a-z0-9]{1,2}[.)])\s+/i.test(next) || next.length > 180) break;
+      items.push(next);
+    }
+    return items.length ? [paragraph.replace(/:\s*$/, " :"), ...items].join(" ") : paragraph;
+  });
+  const sentences = sourceParagraphs.flatMap(paragraph => paragraph
     .replace(/\b(?:Inc|Corp|Co|Ltd|L\.P|L\.L\.C|U\.S|U\.K)\./gi, abbreviation => abbreviation.replace(/\./g, "\uE000"))
     .split(/(?<=[.!?])\s+(?=[A-Z“"])/).map(sentence => sentence.replace(/\uE000/g, ".")))
     .map(text).filter(sentence => sentence.length >= 25 && sentence.length <= 1100);
-  const reject = /forward.looking|risk factors|may not|no assurance|could adversely|table of contents|incorporated by reference|annual report|securities and exchange|not yet|we expect|we believe|we intend/i;
+  const reject = /forward.looking|risk factors|may not|no assurance|could adversely|table of contents|incorporated by reference|annual report|securities and exchange|we expect|we believe|we intend/i;
   const useful = sentences.filter(sentence => !reject.test(sentence));
   const business = useful.filter(sentence => sentence.length >= 60 && operatingBusiness(sentence, input.identity))
     .map(sentence => ({ sentence, rank: /^Our product portfolio/i.test(sentence) ? 3

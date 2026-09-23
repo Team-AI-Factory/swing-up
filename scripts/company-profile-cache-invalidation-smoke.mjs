@@ -1,3 +1,4 @@
+const profileCounts = ({ attempted, verified }) => ({ attempted, verified });
 import assert from "node:assert/strict";
 import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 import { companyProfileFixture } from "./helpers/company-profile-fixture.mjs";
@@ -51,7 +52,7 @@ assert.deepEqual(await cache.ensureCompanyProfile(identity, fetcher, now), fixtu
 assert.equal(requests, 0, "Valid cached profiles are reused without provider requests");
 assert.equal(writes, 0, "Valid cache reuse does not write storage");
 assert.equal((await cache.readCompanyProfiles([identity], now)).size, 1);
-assert.deepEqual(await cache.warmFoundationCompanyProfiles(fetcher, now), { attempted: 0, verified: 0 });
+assert.deepEqual(profileCounts(await cache.warmFoundationCompanyProfiles(fetcher, now)), { attempted: 0, verified: 0 });
 assert.equal(requests, 0, "The warmer also skips valid profiles");
 
 seed(invalidProfile);
@@ -65,9 +66,9 @@ assert.ok(await cache.ensureCompanyProfile(identity, fetcher, new Date(now.getTi
 assert.equal(requests, 2, "The replacement profile is reused");
 
 seed(invalidProfile);
-assert.deepEqual(await cache.warmFoundationCompanyProfiles(fetcher, now), { attempted: 1, verified: 1 }, "Maintenance selects invalid prior successes despite their future refresh dates");
+assert.deepEqual(profileCounts(await cache.warmFoundationCompanyProfiles(fetcher, now)), { attempted: 1, verified: 1 }, "Maintenance selects invalid prior successes despite their future refresh dates");
 assert.equal(requests, 2);
-assert.deepEqual(await cache.warmFoundationCompanyProfiles(fetcher, new Date(now.getTime() + 60000)), { attempted: 0, verified: 0 });
+assert.deepEqual(profileCounts(await cache.warmFoundationCompanyProfiles(fetcher, new Date(now.getTime() + 60000))), { attempted: 0, verified: 0 });
 assert.equal(requests, 2, "The fifteen-minute maintenance cadence still applies");
 
 seed(invalidProfile);
@@ -77,7 +78,7 @@ assert.equal(requests, 1, "The invalid prior success is attempted immediately ev
 assert.equal(currentEntry().profile, null);
 assert.equal(currentEntry().nextAttemptAt, new Date(now.getTime() + 3600000).toISOString());
 assert.equal(await cache.ensureCompanyProfile(identity, broken, new Date(now.getTime() + 60000)), null);
-assert.deepEqual(await cache.warmFoundationCompanyProfiles(broken, new Date(now.getTime() + 15 * 60000)), { attempted: 0, verified: 0 });
+assert.deepEqual(profileCounts(await cache.warmFoundationCompanyProfiles(broken, new Date(now.getTime() + 15 * 60000))), { attempted: 0, verified: 0 });
 assert.equal(requests, 1, "Both direct retrieval and maintenance honor a real failure's backoff");
 assert.ok(await cache.ensureCompanyProfile(identity, fetcher, new Date(now.getTime() + 3600000)));
 assert.equal(requests, 3, "Retrieval resumes when the failure backoff expires");
@@ -88,7 +89,7 @@ const budgetDeferred = async () => { requests++; throw new Error(`provider_budge
 assert.equal(await cache.ensureCompanyProfile(identity, budgetDeferred, now), null);
 assert.equal(currentEntry().nextAttemptAt, providerRetry);
 assert.equal(await cache.ensureCompanyProfile(identity, fetcher, new Date(now.getTime() + 2 * 3600000)), null);
-assert.deepEqual(await cache.warmFoundationCompanyProfiles(fetcher, new Date(now.getTime() + 2 * 3600000)), { attempted: 0, verified: 0 });
+assert.deepEqual(profileCounts(await cache.warmFoundationCompanyProfiles(fetcher, new Date(now.getTime() + 2 * 3600000))), { attempted: 0, verified: 0 });
 assert.equal(requests, 1, "An extended provider-budget backoff remains authoritative after invalidation");
 
 // Old parser failures can recover immediately using a fuller exact source,
@@ -138,3 +139,21 @@ const industryProfile = await cache.ensureCompanyProfile(identity, async url => 
 assert.equal(requests, 1);
 assert.equal(industryProfile.industry, "Services-Prepackaged Software");
 assert.equal(industryProfile.verifiedAt, fixture.verifiedAt, "Metadata enrichment does not renew the description's evidence age");
+
+seed(null, now.toISOString());
+const archiveName = `CIK${identity.cik}-submissions-001.json`;
+const archiveSubmissions = { ...submissions, sicDescription: "Services-Prepackaged Software", filings: { recent: { form: ["4"] }, files: [
+  { name: "https://untrusted.example/index.json", filingFrom: "2026-01-01", filingTo: "2026-09-01" },
+  { name: "CIK0000000002-submissions-001.json", filingFrom: "2026-01-01", filingTo: "2026-09-01" },
+  { name: archiveName, filingFrom: "2026-01-01", filingTo: "2026-09-01" },
+] } };
+const archiveRequests = [];
+const archiveRecovered = await cache.ensureCompanyProfile(identity, async url => {
+  archiveRequests.push(String(url));
+  if (String(url).endsWith(archiveName)) return Response.json(submissions.filings.recent);
+  return String(url).includes("submissions") ? Response.json(archiveSubmissions) : new Response(html);
+}, now);
+assert.ok(archiveRecovered, "An annual report in an exact SEC historical index should recover automatically");
+assert.equal(archiveRequests.length, 3);
+assert.equal(archiveRequests.some(url => /untrusted|CIK0000000002/.test(url)), false, "Only the verified issuer's named SEC indexes may be fetched");
+assert.equal(archiveRecovered.industry, "Services-Prepackaged Software");

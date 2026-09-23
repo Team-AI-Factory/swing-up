@@ -69,4 +69,17 @@ assert.equal(quality.timing.quoteAgeMinutes.missingEvents, 1);
 assert.equal(quality.averageMinutesToFirstReview, 30);
 assert.equal(quality.timing.eventToFirstCommitteeMinutes.measuredEvents, 1);
 assert.match(quality.scope, /not a whole-universe success rate/);
+const negativeCandidate = { ...candidate, eventFamily: "regulatory_approval", valuationRange: null,
+  fundamentals: { available: true, checkedAt: now.toISOString(), sourceUrl: "https://data.sec.gov/api/xbrl/companyfacts/CIK0000000001.json",
+    items: [{ metric: "net_income", value: -1000, unit: "USD", periodEnd: "2026-06-30", filedAt: "2026-08-01" }] } };
+const exception = await evidence.recordResearchEvidence({ ...input, event: { ...event, id: "loss-event" },
+  report: { ...report, selectedCandidate: negativeCandidate, openAiCalled: false, committee: null, status: "qualified_signal_openai_not_requested" } });
+assert.equal(exception.quality.fields.priceScenarios, false);
+assert.equal(exception.quality.applicability.priceScenarios, false);
+assert.equal(exception.quality.requiredFields, 9);
+assert.equal(exception.quality.completenessPercent, 100, "A documented inapplicable estimate does not repeatedly request impossible inputs");
+const exceptionSummary = metrics.summarizeEvidenceQuality([exception.quality]);
+assert.equal(exceptionSummary.completeEvidenceEvents, 1);
+assert.equal(exceptionSummary.negativeEarningsEventExceptions, 1);
+assert.equal(exceptionSummary.completedCommitteeReviews, 0, "An evidence exception cannot manufacture Committee completion");
 console.log("Evidence content, unique-event denominators, quote/source ages, missing timing, actual Committee timing and cross-day first-review preservation passed.");

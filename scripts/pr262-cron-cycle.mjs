@@ -160,7 +160,20 @@ try {
     console.log(`[pr262-coverage] ${JSON.stringify({ checkedAt: result.checkedAt, companyProfiles: result.companyProfiles,
       processing: { admitted: result.processing?.funnel?.admittedThisCycle, completed: result.processing?.eventsProcessed,
         deferred: result.processing?.eventDeferrals, aiReviews: result.processing?.aiCalls,
+        readiness: result.processing?.readiness, queue: result.processing?.queueHealthAtEnd,
+        deferralBlockerCounts: result.processing?.deferralBlockerCounts,
         serious: (result.processing?.seriousBuys ?? 0) + (result.processing?.seriousSells ?? 0) + (result.processing?.seriousWatchOuts ?? 0) } })}`);
+    for (const event of result.processing?.eventResults ?? []) {
+      if (event.nonterminal === true) console.log(`[pr262-blocker] ${JSON.stringify({ checkedAt: event.checkedAt,
+        eventId: event.eventId, ticker: event.ticker, category: event.blockerCategory ?? "other_evidence_or_retry",
+        reservationReason: event.costControl?.reservationBlockedReason ?? null,
+        nextEvidenceCheckAt: event.evidenceProgress?.nextEvidenceCheckAt ?? null })}`);
+      if (!event.openAiCalled) continue;
+      console.log(`[pr262-review] ${JSON.stringify({ checkedAt: event.checkedAt, eventId: event.eventId, ticker: event.ticker,
+        status: event.analysisDiagnostics?.committee?.status, completed: event.analysisDiagnostics?.committee?.agentsCompleted,
+        failed: event.analysisDiagnostics?.committee?.agentsFailed, approved: event.seriousSignalFound === true,
+        blockers: event.analysisDiagnostics?.blockers, outboxKey: event.outboxKey })}`);
+    }
   } catch { /* The existing response/error handling below remains authoritative. */ }
   console.log(`[pr262-cron] mode=${deliveryTest ? "delivery_test" : analysisOnly ? "analysis_only" : "sensor_and_analysis"} status=${response.status} ${body.slice(0, 50_000)}`);
   if (!response.ok) throw new Error(`pr262_cron_route_http_${response.status}`);

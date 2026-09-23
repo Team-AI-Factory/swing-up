@@ -73,7 +73,7 @@ export function branchProviderCallRequest(value: RequestInfo | URL, now: Date): 
     return { ...base, provider: "sec_edgar", quotaKey: "sec_filing_details", cadenceKey: `sec_filing_detail:${path}`, rollingWindowMs: day, maximumCallsInWindow: 1_800, minimumIntervalMs: 59 * minute };
   }
   if (secArchiveHost || host === "data.sec.gov") {
-    return { ...base, provider: "sec_edgar", quotaKey: "sec_official_feeds", cadenceKey: `sec:${path}`, rollingWindowMs: day, maximumCallsInWindow: 400, minimumIntervalMs: 4.5 * minute };
+    return { ...base, provider: "sec_edgar", quotaKey: "sec_official_feeds", cadenceKey: `sec:${path}`, rollingWindowMs: day, maximumCallsInWindow: 2400, minimumIntervalMs: 4.5 * minute };
   }
   if (host === "news.google.com") {
     return { ...base, provider: "google_news", quotaKey: "google_news_public_rss", cadenceKey: "google_news_event_discovery", rollingWindowMs: day, maximumCallsInWindow: 300, minimumIntervalMs: 4.5 * minute };

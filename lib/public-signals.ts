@@ -40,7 +40,7 @@ export function assemblePublicSignals(candidates: Candidate[], recent: Json[], a
       fairValue: row.fairValue, outlook, committeeApproved: row.committeeApproved === true, committeeStatus: row.committeeStatus,
       publicationStatus: row.publicationStatus, sources: row.sources,
       explanation: publicExplanation(row.explanation, { company: String(row.company), ticker: row.ticker, cik: row.cik, companyProfile: row.companyProfile, industry: row.industry ?? context?.industry, sector: row.sector ?? context?.sector, headline: row.eventHeadline, eventFamily: row.eventFamily }),
-      kind: row.kind, confidence: object(row.committee).confidence ?? null,
+      kind: row.kind, eventFamily: row.eventFamily, confidence: object(row.committee).confidence ?? null,
     };
   }).filter(row => publicAlertDetailsComplete(row));
   const reviewedValuations = new Set(events.filter(row => row.kind === "valuation").map(row => row.ticker));

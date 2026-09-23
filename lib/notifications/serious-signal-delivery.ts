@@ -1,3 +1,4 @@
+import { NEGATIVE_EARNINGS_NOTICE } from "@/lib/valuation-availability";
 import { readCompanyProfiles } from "@/lib/opportunity-engine/company-profile-cache";
 import { verifiedCompanyProfile } from "@/lib/company-profile";
 import { alertDetails, industryLabel } from "@/lib/alert-details";
@@ -316,11 +317,10 @@ function messageFor(input: ReturnType<typeof validatedOutbox>) {
     `${input.ticker}${price !== null ? ` @ ${price}` : ""}`,
     `Industry: ${details.industry}`,
     `Recorded price: ${money(outlook.currentPrice)} · ${text(quote.observedAt) ?? ""}`,
-    `${outlook.basis === "valuation" ? "Estimated business value" : "Historical price scenarios"}:`,
-    scenario("Conservative", outlook.conservative),
-    scenario("Base", outlook.base),
-    scenario("Optimistic", outlook.optimistic),
-    outlook.horizon,
+    ...(details.valuationException ? [NEGATIVE_EARNINGS_NOTICE] : [
+      `${outlook.basis === "valuation" ? "Estimated business value" : "Historical price scenarios"}:`,
+      scenario("Conservative", outlook.conservative), scenario("Base", outlook.base), scenario("Optimistic", outlook.optimistic), outlook.horizon,
+    ]),
     "",
     `What the company does: ${explanation.companyDoes}`,
     event.slice(0, 240),

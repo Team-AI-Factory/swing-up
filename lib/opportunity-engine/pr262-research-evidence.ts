@@ -6,7 +6,6 @@ import { evidenceTiming, summarizeEvidenceQuality } from "@/lib/opportunity-engi
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 import { explainCandidate, plainEvidenceGaps } from "@/lib/signal-explanation";
-import { candidatePriceOutlook } from "@/lib/signal-outlook";
 import { alertDetails, completePriceOutlook, industryLabel } from "@/lib/alert-details";
 import type { VerifiedFactsCache, VerifiedFactsSnapshot } from "@/lib/equity-signal/fundamentals";
 
@@ -181,7 +180,9 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
     direction: candidate.direction === "upside" || candidate.direction === "downside",
     tradingHaltCheck: object(report.tradingHaltSafety).currentStateKnown === true,
   };
-  const known = Object.values(completeness).filter(Boolean).length;
+  const applicableFields = Object.entries(completeness).filter(([field]) => field !== "priceScenarios" || !details.valuationException);
+  const requiredFieldCount = applicableFields.length;
+  const known = applicableFields.filter(([, complete]) => complete).length;
   const collectionGaps = [
     ...details.missing,
     ...(!completeness.companyProfile ? ["A verified company profile with products or services and customers is required."] : []),
@@ -195,23 +196,24 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
     ...requestedTasks.gaps, ...collectionGaps,
   ] });
   const timing = evidenceTiming({ event, candidate, committee, previous: object(object(previousFollowup.quality).timing), collection: input.collectionTiming, paid, now });
-  const quality = { fields: completeness, availableFields: known, requiredFields: Object.keys(completeness).length,
-    applicability: { financialFacts: financialFactsRequired },
+  const quality = { fields: completeness, availableFields: known, requiredFields: requiredFieldCount,
+    applicability: { financialFacts: financialFactsRequired, priceScenarios: !details.valuationException },
+    valuationException: details.valuationException ? "verified_negative_earnings_event" : null,
     committeeCompleted: completeCommitteeReview(committee),
     reviewOutcome: completeCommitteeReview(committee)
       ? output.overallRecommendation === "approve" ? "approved" : output.overallRecommendation === "reject" ? "rejected" : "incomplete_evidence"
       : paid && Number(committee.agentsFailed) > 0 ? "technical_failure"
       : report.status === "qualified_signal_openai_reservation_denied" || report.status === "qualified_signal_openai_not_requested" ? "budget_deferred"
-      : known < Object.keys(completeness).length ? "incomplete_evidence" : "awaiting_review",
-    completenessPercent: Math.round(known / Object.keys(completeness).length * 100),
+      : known < requiredFieldCount ? "incomplete_evidence" : "awaiting_review",
+    completenessPercent: Math.round(known / requiredFieldCount * 100),
     evidenceAgeMinutes: timing.sourceAgeMinutes,
     timing,
     eventToReviewMinutes: timing.eventToFirstCommitteeMinutes,
     sourceFailureReason: input.sourceFailureReason, committeeRolesCompleted: Number(committee.agentsCompleted ?? 0),
   };
-  const collectionComplete = known === Object.keys(completeness).length
+  const collectionComplete = known === requiredFieldCount
     && (report.status === "qualified_signal_openai_reservation_denied" || report.status === "qualified_signal_openai_not_requested");
-  const needsFollowup = !collectionComplete && (paid || previousFollowup.status === "collecting_evidence" || Boolean(candidate.ticker && known < Object.keys(completeness).length)) && report.seriousSignalFound !== true && output.overallRecommendation !== "reject";
+  const needsFollowup = !collectionComplete && (paid || previousFollowup.status === "collecting_evidence" || Boolean(candidate.ticker && known < requiredFieldCount)) && report.seriousSignalFound !== true && output.overallRecommendation !== "reject";
   if (needsFollowup) {
     const key = `${ROOT}/followups/${hash(eventId)}.json`;
     const current = await readVersionedTextFromR2(key);
@@ -282,7 +284,7 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
       currentPrice: object(candidate.quote).price ?? null, priceObservedAt: object(candidate.quote).observedAt ?? null,
       currency: input.companyAnalysis?.currency ?? candidate.currency ?? null,
       industry: details.industry, sector: input.companyAnalysis?.sector ?? candidate.sector ?? null,
-      eventFamily: candidate.eventFamily, outlook: candidatePriceOutlook(candidate, input.companyAnalysis),
+      eventFamily: candidate.eventFamily, outlook: details.outlook,
       fairValue: object(input.companyAnalysis?.fairValue).baseValue ?? null,
       userAlertEligible: details.complete && !screeningRejected && output.overallRecommendation !== "reject", committeeApproved: approved,
       committeeStatus: screeningRejected ? "not_eligible" : approved ? "approved" : output.overallRecommendation === "reject" ? "rejected" : output.overallRecommendation === "approve" ? "approved_pending_checks" : needsFollowup ? "needs_more_data" : "awaiting_review",

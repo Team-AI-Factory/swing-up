@@ -444,3 +444,29 @@ assert.equal((await sensor.readNextPr262PendingSensorEvent({ now, preferValuatio
 assert.equal((await sensor.readNextPr262PendingSensorEvent({ now }))?.id, urgentNews.id);
 putObject(sensorStateKey, { ...persisted, pending: [urgentNews, { ...dueValuation, queueNextAttemptAt: new Date(now.getTime() + 3600000).toISOString() }] });
 assert.equal((await sensor.readNextPr262PendingSensorEvent({ now, preferValuation: true }))?.id, urgentNews.id);
+
+const firstQueuedAt = new Date(now.getTime() - 55 * 60000).toISOString();
+putObject(sensorStateKey, { ...persisted, pending: [{ ...urgentNews, firstQueuedAt }] });
+assert.equal((await sensor.readNextPr262PendingSensorEvent({ now }))?.firstQueuedAt, firstQueuedAt,
+  "Loading a stored event must preserve the real queue-entry time for latency reporting.");
+putObject(sensorStateKey, { ...persisted, pending: [urgentNews] });
+assert.equal((await sensor.readNextPr262PendingSensorEvent({ now }))?.firstQueuedAt, undefined,
+  "Legacy queue-entry times must remain unknown rather than invented.");
+putObject(sensorStateKey, { ...persisted, pending: [{ ...urgentNews, firstQueuedAt: new Date(now.getTime() + 60000).toISOString() }] });
+assert.equal((await sensor.readNextPr262PendingSensorEvent({ now }))?.firstQueuedAt, undefined);
+
+const profileWaiting = { ...dueValuation, queueLastError: "pr262_event_report_retry:candidate_company_profile_pending",
+  queueAttempts: 3, queueNextAttemptAt: new Date(now.getTime() + 3600000).toISOString() };
+putObject(sensorStateKey, { ...persisted, pending: [urgentNews, profileWaiting] });
+assert.equal((await sensor.readNextPr262PendingSensorEvent({ now, preferredEventIds: [profileWaiting.id, urgentNews.id],
+  readyProfileEventIds: [profileWaiting.id] }))?.id, profileWaiting.id,
+  "A verified recovered profile wakes the actual queue selection without clearing other retry restrictions.");
+assert.equal((await sensor.readNextPr262PendingSensorEvent({ now, preferredEventIds: [profileWaiting.id],
+  readyProfileEventIds: [profileWaiting.id], excludedEventIds: [profileWaiting.id] })), null,
+  "An exhausted readiness plan must not silently admit unplanned work");
+putObject(sensorStateKey, { ...persisted, pending: [dueValuation, urgentNews] });
+assert.equal((await sensor.readNextPr262PendingSensorEvent({ now, preferValuation: true,
+  preferredEventIds: [urgentNews.id, dueValuation.id] }))?.id, urgentNews.id,
+  "Legacy valuation preference cannot override the fresh-event admission order");
+assert.equal(await sensor.readNextPr262PendingSensorEvent({ now, preferredEventIds: [] }), null,
+  "An empty ready lane stays empty instead of recycling blocked candidates");

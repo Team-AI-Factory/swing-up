@@ -39,6 +39,7 @@ import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 import { promotePr262SeriousWatchOut } from "@/lib/opportunity-engine/pr262-serious-watch-out-authority";
 import { createPr262SensorBudgetedFetch } from "@/lib/opportunity-engine/pr262-sensor-fetch-budget";
 import { safeFullSourceErrorTelemetry, safeNetworkErrorCodes } from "@/lib/network-error-telemetry";
+import { pr262ReservationBlocker } from "@/lib/opportunity-engine/pr262-review-blockers";
 
 const STATE_KEY = pr262StorageKey("event-job/state-v1.json");
 const LEASE_KEY = pr262StorageKey("event-job/runtime/lease-v1.json");
@@ -57,7 +58,7 @@ const LEASE_HEARTBEAT_MS = 60_000;
 const COMMITTEE_WINDOW_MS = 24 * 60 * 60_000;
 const EVIDENCE_REVIEW_COOLDOWN_MS = 12 * 60 * 60_000;
 const FULL_SOURCE_RETRY_COOLDOWN_MS = 2 * 60 * 60_000;
-const MAX_COMMITTEE_CALLS_PER_DAY = 20;
+const MAX_COMMITTEE_CALLS_PER_DAY = 60;
 const MAX_STATE_RUNS = 200;
 const MAX_HISTORY_RECORDS = 50_000;
 const PROVIDER_RESERVATION_RETENTION_MS = 2 * 24 * 60 * 60_000;
@@ -119,6 +120,7 @@ export type Pr262EventJobInput = {
   aiProviderBlockedReason?: EquitySignalLabInput["aiProviderBlockedReason"];
   beforeOpenAiCall?: NonNullable<EquitySignalLabInput["beforeOpenAiCall"]>;
   aiReservationRetryAt?: () => string | null;
+  aiReservationBlockedReason?: () => string | null;
   resolveHost?: (hostname: string) => Promise<string[]>;
   fullSourceTransport?: FullSourceTransport;
   clock?: () => Date;
@@ -126,6 +128,8 @@ export type Pr262EventJobInput = {
   deadlineAtMs?: number;
   excludedEventIds?: readonly string[];
   preferValuation?: boolean;
+  preferredEventIds?: readonly string[];
+  readyProfileEventIds?: readonly string[];
   queueMutationSink?: (mutation: Pr262PendingSensorEventMutation) => void;
 };
 
@@ -487,18 +491,18 @@ async function reserveCommitteeCall(input: {
     try {
       await assertLeaseOwned(input.eventId, input.ownerId, input.now);
     } catch {
-      return { allowed: false as const, nextRetryAt: null };
+      return { allowed: false as const, nextRetryAt: null, reason: "lease_unavailable" };
     }
     const loaded = await loadCommitteeBudgetState(input.now);
     const recent = loaded.state.reservations.filter((item) => input.now.getTime() - Date.parse(item.reservedAt) < COMMITTEE_WINDOW_MS);
     const sameEvidence = recent.find((item) => item.candidateFingerprint === input.reservation.candidateFingerprint
       && input.now.getTime() - Date.parse(item.reservedAt) < EVIDENCE_REVIEW_COOLDOWN_MS);
     if (sameEvidence) {
-      return { allowed: false as const, nextRetryAt: new Date(Date.parse(sameEvidence.reservedAt) + EVIDENCE_REVIEW_COOLDOWN_MS).toISOString() };
+      return { allowed: false as const, nextRetryAt: new Date(Date.parse(sameEvidence.reservedAt) + EVIDENCE_REVIEW_COOLDOWN_MS).toISOString(), reason: "same_evidence" };
     }
     if (recent.length >= MAX_COMMITTEE_CALLS_PER_DAY) {
       const oldest = [...recent].sort((left, right) => Date.parse(left.reservedAt) - Date.parse(right.reservedAt))[0];
-      return { allowed: false as const, nextRetryAt: new Date(Date.parse(oldest.reservedAt) + COMMITTEE_WINDOW_MS).toISOString() };
+      return { allowed: false as const, nextRetryAt: new Date(Date.parse(oldest.reservedAt) + COMMITTEE_WINDOW_MS).toISOString(), reason: "daily_review_limit" };
     }
     const next: EventJobCommitteeBudgetState = {
       version: 1,
@@ -506,9 +510,10 @@ async function reserveCommitteeCall(input: {
       reservations: [...recent, { eventId: input.eventId, reservedAt: input.now.toISOString(), ...input.reservation }],
     };
     const written = await writeVersionedJsonToR2(COMMITTEE_BUDGET_KEY, next, loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true });
-    if (!written.conflict) return { allowed: true as const, nextRetryAt: null };
+    if (!written.conflict && !written.written) throw new Error("pr262_committee_reservation_write_failed");
+    if (!written.conflict) return { allowed: true as const, nextRetryAt: null, reason: "reserved" };
   }
-  return { allowed: false as const, nextRetryAt: null };
+  return { allowed: false as const, nextRetryAt: null, reason: "reservation_conflict" };
 }
 
 async function releaseRejectedCommitteeCall(eventId: string, report: Json, now: Date) {
@@ -1198,6 +1203,7 @@ function validatedFoundationValueAnalysis(
   value: unknown,
   ticker: string,
   now: Date,
+  allowMissingFairValue = false,
 ): UsValueCompanyAnalysis | null {
   const analysis = object(value);
   const observedAt = text(analysis.observedAt);
@@ -1218,8 +1224,9 @@ function validatedFoundationValueAnalysis(
     || now.getTime() - observedMs > FOUNDATION_ANALYSIS_MAX_AGE_MS
     || !Number.isFinite(currentPrice)
     || currentPrice <= 0
-    || methods.length === 0
-    || !fairValues.some((candidate) => typeof candidate === "number" && Number.isFinite(candidate) && candidate > 0)
+    || !Array.isArray(fairValue.methods)
+    || (!allowMissingFairValue && (methods.length === 0
+      || !fairValues.some((candidate) => typeof candidate === "number" && Number.isFinite(candidate) && candidate > 0)))
     || typeof scores.evidenceCompleteness !== "number"
     || !Number.isFinite(scores.evidenceCompleteness)
     || typeof scores.fairValueConfidence !== "number"
@@ -1761,6 +1768,8 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
     minimumPriority: 80,
     excludedEventIds: input.excludedEventIds,
     preferValuation: input.preferValuation,
+    preferredEventIds: input.preferredEventIds,
+    readyProfileEventIds: input.readyProfileEventIds,
   });
   if (!event) {
     return { ok: true, mode: "pr262_targeted_event_job", status: "idle", checkedAt: now.toISOString(), eventsProcessed: 0, aiCalls: 0 };
@@ -2024,6 +2033,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
           resolved.valueAnalysis,
           resolved.directoryEntry.ticker,
           now,
+          !valuationReview,
         );
         // Current event evidence must not be hidden merely because optional
         // valuation context is unavailable. A complete fresh foundation
@@ -2034,7 +2044,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       }
     }
     const valuationAnalysis = companyRefresh?.analysis ?? foundationAnalysisFallback
-      ?? validatedFoundationValueAnalysis(resolved.valueAnalysis, resolved.directoryEntry.ticker, now);
+      ?? validatedFoundationValueAnalysis(resolved.valueAnalysis, resolved.directoryEntry.ticker, now, !valuationReview);
     if (valuationReview && valuationAnalysis) {
       source.receipts[0] = { ...baseReceipt, rawEventType: "valuation_review", primarySource: false, official: false,
         summary: `Company-first valuation assessment. ${JSON.stringify({ company: valuationAnalysis.company, sector: valuationAnalysis.sector, industry: valuationAnalysis.industry, observedAt: valuationAnalysis.observedAt, currentPrice: valuationAnalysis.currentPrice, fairValue: valuationAnalysis.fairValue, fundamentals: valuationAnalysis.fundamentals, scores: valuationAnalysis.scores })}` };
@@ -2057,19 +2067,23 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
     await renewLease(event.id, ownerId, clock());
     const eventReceipts = [...source.receipts, ...haltProvider.receipts];
     let committeeRetryAt: string | null = null;
+    let committeeBlockedReason: string | null = null;
     const beforeOpenAiCall: NonNullable<EquitySignalLabInput["beforeOpenAiCall"]> = async (reservation) => {
       assertJobActive();
       if (priorFollowup.candidateFingerprint === reservation.candidateFingerprint
         && Date.parse(String(priorFollowup.paidReviewNotBefore ?? "")) > now.getTime()) {
         committeeRetryAt = String(priorFollowup.paidReviewNotBefore);
+        committeeBlockedReason = "paid_evidence_cooldown";
         return false;
       }
       if (input.beforeOpenAiCall && !await input.beforeOpenAiCall(reservation)) {
         committeeRetryAt = input.aiReservationRetryAt?.() ?? null;
+        committeeBlockedReason = input.aiReservationBlockedReason?.() ?? null;
         return false;
       }
       const decision = await reserveCommitteeCall({ eventId: event.id, ownerId, now, reservation });
       committeeRetryAt = decision.nextRetryAt;
+      committeeBlockedReason = decision.allowed ? null : decision.reason;
       assertJobActive();
       return decision.allowed;
     };
@@ -2098,7 +2112,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
           allowIncompleteCommitteeReview: true,
           verifiedFactsCache: { ...verifiedFactsCache, requiredMetrics: (Array.isArray(priorFollowup.tasks) ? priorFollowup.tasks : []).flatMap(task => Array.isArray(object(task).fields) ? object(task).fields as string[] : []) },
           reserveRejectionAudit: () => reserveRejectionAudit(event.id, now),
-          resolveCompanyProfile: identity => ensureCompanyProfile(identity, quotaAwareFetch, now),
+          resolveCompanyProfile: identity => ensureCompanyProfile(identity, quotaAwareFetch, now, { signal: jobAbort.signal }),
           fetchImpl: quotaAwareFetch,
           signal: jobAbort.signal,
           now,
@@ -2126,6 +2140,11 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
           : source === collectedSource && (source.decisionGrade || researchSourceUsable) ? sourceCollectionFinishedAt : null },
     }).catch(error => ({ evidenceFollowupScheduled: Boolean(priorFollowup.status === "collecting_evidence" || report.status === "candidate_needs_more_data"), nextEvidenceCheckAt: new Date(now.getTime() + 15 * 60000).toISOString(), error: error instanceof Error ? error.message.slice(0, 180) : "evidence_progress_write_failed" }));
     const retryClassificationAllowsAi = event.source === "market_price" ? allowOpenAi : effectiveAllowOpenAi;
+    const reservationBlocker = report.status === "qualified_signal_openai_reservation_denied"
+      ? pr262ReservationBlocker(committeeBlockedReason)
+      : report.status === "committee_provider_access_blocked" ? "ai_provider"
+      : report.status === "qualified_signal_openai_not_requested" && input.aiReservationBlockedReason?.()
+        ? pr262ReservationBlocker(input.aiReservationBlockedReason()) : null;
     const costControl = {
       evidenceProgress,
       companiesOpened: 1,
@@ -2140,11 +2159,13 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       optionalHistoryContextPreparedBeforeCommittee: history.available,
       optionalHistoryContextRequiredForCommittee: false,
       durableProviderBudgets: true,
+      reservationBlocker,
+      reservationBlockedReason: committeeBlockedReason ?? input.aiReservationBlockedReason?.() ?? null,
     };
     if (retryableReport(report, retryClassificationAllowsAi) && eventAgeMs <= 7 * 24 * 60 * 60_000) {
       const reportStatus = text(report.status) ?? "unknown";
       const capacityOnly = reportStatus === "qualified_signal_openai_reservation_denied" && !evidenceProgress.evidenceFollowupScheduled;
-      const retryReason = `pr262_event_report_retry:${reportStatus}${capacityOnly ? ":awaiting_paid_capacity_only" : ""}`;
+      const retryReason = `pr262_event_report_retry:${reportStatus}${reservationBlocker ? `:blocker=${reservationBlocker}` : ""}${capacityOnly ? ":awaiting_paid_capacity_only" : ""}`;
       const paidAttempt = report.openAiCalled === true;
       // A real or conservatively admitted paid Committee attempt must not be
       // retried while its rolling 24-hour cost record remains active. The
@@ -2238,6 +2259,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
         evidenceFollowupScheduled: evidenceProgress.evidenceFollowupScheduled,
         evidenceProgress,
         error: `${retryReason}; event_id=${event.id}; ticker=${event.ticker ?? "unknown"}; cik=${event.cik ?? "unknown"}; next_retry_at=${nextRetryAt}`,
+        blockerCategory: reportStatus === "candidate_company_profile_pending" ? "missing_profile" : reservationBlocker,
         checkedAt: attemptCheckedAt,
         eventsProcessed: 0,
         recoveredPersistedResult: false,
@@ -2434,19 +2456,21 @@ export const PR262_EVENT_JOB_KEYS = {
 } as const;
 
 
-/** Warm queued-event profiles first, sharing the event worker lease and unchanged provider caps. */
-export async function warmPr262CompanyProfiles(now = new Date(), fetchImpl: typeof fetch = fetch) {
+/** Warm queued-event profiles first, sharing the event worker lease and durable provider budgets. */
+export async function warmPr262CompanyProfiles(now = new Date(), fetchImpl: typeof fetch = fetch, signal?: AbortSignal) {
   const eventId = "company-profile-foundation-maintenance";
   const claim = await claimEvent(eventId, now);
   if (claim.status !== "claimed" || !claim.ownerId) return { attempted: 0, verified: 0, status: "worker_busy" };
   const ownerId = claim.ownerId;
   try {
     const budgeted: typeof fetch = async (request, init) => {
+      signal?.throwIfAborted();
       const requestBudget = branchProviderCallRequest(request, now);
       if (requestBudget) await reserveProviderCall({ eventId, ownerId, now, request: requestBudget });
+      signal?.throwIfAborted();
       return fetchImpl(request, init);
     };
-    const shared = await createPr262SensorBudgetedFetch({ now, fetchImpl: budgeted });
-    return { ...(await warmFoundationCompanyProfiles(shared.fetchImpl, now)), status: "checked" };
+    const shared = await createPr262SensorBudgetedFetch({ now, fetchImpl: budgeted, signal });
+    return { ...(await warmFoundationCompanyProfiles(shared.fetchImpl, now, { signal })), status: "checked" };
   } finally { await releaseLease(eventId, ownerId, new Date()); }
 }

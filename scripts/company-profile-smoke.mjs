@@ -1,3 +1,4 @@
+const profileCounts = ({ attempted, verified }) => ({ attempted, verified });
 import assert from "node:assert/strict";
 import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 import { companyProfileFixture } from "./helpers/company-profile-fixture.mjs";
@@ -93,6 +94,7 @@ for (const customers of customerDecoys) {
   assert.equal(extractSentences(fixture.business, `${customers} ${fixture.customers}`)?.customers, fixture.customers, "Incidental clauses cannot outrank later actual buyer groups");
 }
 const validOperatingProfiles = [
+  ["We are a clinical-stage biopharmaceutical company focused on developing novel therapies for serious autoimmune diseases.", "We have not yet generated any revenue from product sales."],
   ["We are an underwriter of property and casualty insurance for commercial businesses worldwide.", "Our primary customers are companies and insurance brokers serving commercial enterprises."],
   ["We are the largest publicly traded water and wastewater utility in the United States.", "A customer is defined as a person, business, municipality or any other entity that purchases our water or wastewater services."],
   ["We provide residential solar energy systems, electricity leases and related maintenance services.", "Our primary customers are homeowners who lease solar electricity systems and receive ongoing maintenance services."],
@@ -106,6 +108,8 @@ for (const [business, customers] of validOperatingProfiles) {
   assert.equal(valid?.customers, customers);
   assert.ok(profile.verifiedCompanyProfile(valid, identity, now));
 }
+assert.ok(extractSentences(fixture.business, "Our customers include:</p><ul><li>hospitals and clinics</li><li>pharmaceutical manufacturers</li></ul><p>"), "Actual source list items can complete a customer introduction");
+assert.equal(extractSentences(fixture.business, "Our customers include:"), null, "An empty customer list remains incomplete");
 for (const suffix of ["Inc.", "Corp.", "Co."]) {
   const exactIdentity = { ...identity, company: `Diagnostic Products ${suffix}` };
   const business = `${exactIdentity.company}, a Utah corporation, develops diagnostic testing products and related laboratory instruments.`;
@@ -189,8 +193,8 @@ assert.equal(requests, 2, "Missing profiles continue retrieval after cooldown");
 objects.clear(); requests = 0;
 objects.set("equity-universe/v1.json", { version: 1, entries: [{ ...identity, sourceNames: ["SEC company_tickers_exchange"] }] });
 objects.set("value-investing/resumable/latest/index.json", { kind: "us_value_investing_resumable_summary", seriousAlerts: { buy: [identity] } });
-assert.deepEqual(await cache.warmFoundationCompanyProfiles(fetcher, now), { attempted: 1, verified: 1 });
-assert.deepEqual(await cache.warmFoundationCompanyProfiles(fetcher, new Date(now.getTime() + 60000)), { attempted: 0, verified: 0 });
+assert.deepEqual(profileCounts(await cache.warmFoundationCompanyProfiles(fetcher, now)), { attempted: 1, verified: 1 });
+assert.deepEqual(profileCounts(await cache.warmFoundationCompanyProfiles(fetcher, new Date(now.getTime() + 60000))), { attempted: 0, verified: 0 });
 assert.equal(requests, 2, "Raw foundation warming is bounded by durable fifteen-minute cadence");
 // Keep cache migration coverage in both existing CI entry points for this smoke.
 await import("./company-profile-cache-invalidation-smoke.mjs");

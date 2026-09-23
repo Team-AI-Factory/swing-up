@@ -1,5 +1,7 @@
 import { spawnSync } from "node:child_process";
 const checks = [
+  "pr262-backlog-readiness",
+  "pr262-profile-recovery-capacity",
   "reliable-alert-recovery", "ai-committee-failure-diagnostics", "ai-committee-provider-guardrails",
   "pr262-ai-daily-cost-fuse", "pr262-event-job", "pr262-committee-authority", "pr262-serious-watch-out-authority",
   "serious-signal-delivery", "equity-event-first-runner", "equity-event-sources", "equity-sec-filing-details",

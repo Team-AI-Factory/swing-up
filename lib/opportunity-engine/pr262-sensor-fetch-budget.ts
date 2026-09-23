@@ -29,7 +29,7 @@ function policyFor(request: RequestInfo | URL): Policy | null {
     return { provider: "sec_edgar", quotaKey: "sensor_sec_current_filings", cadenceKey: `sensor_sec:${form}`, maximumPer24Hours: 650, minimumIntervalMs: 4.5 * MINUTE_MS };
   }
   if (host === "data.sec.gov" && path.startsWith("/submissions/")) {
-    return { provider: "sec_edgar", quotaKey: "sensor_sec_submissions", cadenceKey: `sensor_sec_submission:${path}`, maximumPer24Hours: 1200, minimumIntervalMs: 29 * MINUTE_MS };
+    return { provider: "sec_edgar", quotaKey: "sensor_sec_submissions", cadenceKey: `sensor_sec_submission:${path}`, maximumPer24Hours: 190, minimumIntervalMs: 29 * MINUTE_MS };
   }
   if (host === "news.google.com") return { provider: "google_news", quotaKey: "sensor_google_news", cadenceKey: "sensor_google_news", maximumPer24Hours: 300, minimumIntervalMs: 4.5 * MINUTE_MS };
   if (host === "api.gdeltproject.org") return { provider: "gdelt", quotaKey: "sensor_gdelt", cadenceKey: "sensor_gdelt", maximumPer24Hours: 100, minimumIntervalMs: 14 * MINUTE_MS };

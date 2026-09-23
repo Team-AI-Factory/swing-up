@@ -25,7 +25,7 @@ export function verifiedNegativeEarnings(value: unknown, identity: Json, now = n
 export function negativeEarningsEvidence(candidate: Json, now = new Date()): NegativeEarningsEvidence | null {
   const fundamentals = object(candidate.fundamentals), issuer = cik(candidate.cik);
   if (!issuer || fundamentals.available !== true || !Array.isArray(fundamentals.items)
-    || now.getTime() - Date.parse(String(fundamentals.checkedAt ?? "")) > 6 * 3600000) return null;
+    || now.getTime() - Date.parse(String(fundamentals.checkedAt ?? "")) > 30 * 86400000) return null;
   // Prefer the latest period, then net income over EPS for the same period.
   // A later profitable period must not inherit an earlier loss exception.
   const earnings = fundamentals.items.map(object).filter(item => ["net_income", "diluted_eps"].includes(String(item.metric)) && number(item.value))
@@ -37,5 +37,5 @@ export function negativeEarningsEvidence(candidate: Json, now = new Date()): Neg
 /** This is a model-work policy, not exclusion from event screening. */
 export function hasNegativeEarnings(fundamentals: unknown) {
   const facts = object(fundamentals);
-  return number(facts.dilutedEpsTtm) ? facts.dilutedEpsTtm < 0 : number(facts.netIncome) && facts.netIncome < 0;
+  return (number(facts.dilutedEpsTtm) && facts.dilutedEpsTtm < 0)\n    || (number(facts.netIncome) && facts.netIncome < 0);
 }

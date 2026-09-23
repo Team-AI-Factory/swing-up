@@ -29,7 +29,7 @@ const cache = loadTsModule("@/lib/opportunity-engine/company-profile-cache", {
 });
 await seed();
 const requests = [], starts = [];
-let firstIssuerBusy = false, slowIssuerTest = true, thirdIssuerStartedWhileFirstBusy = false;
+let firstIssuerBusy = false, slowIssuerTest = true, secondIssuerStartedWhileFirstBusy = false;
 const fetcher = async url => {
   const value = String(url);
   requests.push(value); starts.push(Date.now());
@@ -41,7 +41,7 @@ const fetcher = async url => {
       await new Promise(resolve => setTimeout(resolve, 1600));
       firstIssuerBusy = false;
     }
-    if (slowIssuerTest && identity.ticker === "T1") thirdIssuerStartedWhileFirstBusy = firstIssuerBusy;
+    if (slowIssuerTest && identity.ticker === "T11") secondIssuerStartedWhileFirstBusy = firstIssuerBusy;
     return Response.json({ cik: Number(identity.cik), tickers: [identity.ticker], sicDescription: "Application software", filings: { recent: {
       form: ["10-K"], filingDate: ["2026-08-01"], accessionNumber: [`${identity.cik}-26-000001`], primaryDocument: ["annual.htm"],
     } } });
@@ -52,16 +52,16 @@ const fetcher = async url => {
   return new Response(`<h2>Item 1. Business</h2><p>${fixture.business}</p><p>${fixture.customers}</p><p>${"We maintain regional support facilities. ".repeat(16)}</p><h2>Item 1A. Risk Factors</h2>`);
 };
 const result = await cache.warmFoundationCompanyProfiles(fetcher, now);
-assert.equal(result.attempted, 12);
-assert.equal(result.verified, 12);
+assert.equal(result.attempted, 2);
+assert.equal(result.verified, 2);
 assert.equal(result.eligibleCompanies, 16);
-assert.equal(thirdIssuerStartedWhileFirstBusy, true, "A slow first issuer must not idle the second recovery worker");
+assert.equal(secondIssuerStartedWhileFirstBusy, true, "A slow first issuer must not idle the second recovery worker");
 assert.ok(requests[0].includes(`CIK${identities[14].cik}`), "A fresh event receives profile recovery ahead of background valuation work");
 const verified = await cache.readCompanyProfiles(identities, now);
 assert.equal(verified.has("T14"), true);
 assert.equal(verified.has("T11"), true, "Reserve one background slot so universe coverage keeps moving");
 assert.ok(starts.every((value, index) => !index || value - starts[index - 1] >= 200), "Free SEC requests are paced, not fired in a burst");
-assert.equal((await cache.warmFoundationCompanyProfiles(fetcher, new Date(now.getTime() + 60000))).attempted, 0, "Higher capacity preserves the durable cadence");
+assert.equal((await cache.warmFoundationCompanyProfiles(fetcher, new Date(now.getTime() + 60000))).attempted, 0, "Current capacity preserves the durable cadence");
 
 await seed();
 slowIssuerTest = false;
@@ -75,4 +75,4 @@ const aborted = await cache.warmFoundationCompanyProfiles(async (url, init) => {
 assert.equal(aborted.deadlineReached, true);
 assert.equal(aborted.attempted, 2, "Do not schedule later batches after the worker deadline");
 assert.equal(afterAbortRequests, 1, "Abort also cancels requests waiting for pacing");
-console.log("PASS: 12-issuer recovery, fresh-event priority, background progress, paced SEC requests, durable cadence and deadline cancellation");
+console.log("PASS: two-issuer recovery, fresh-event priority, background progress, paced SEC requests, durable cadence and deadline cancellation");

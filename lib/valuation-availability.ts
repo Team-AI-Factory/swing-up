@@ -37,5 +37,6 @@ export function negativeEarningsEvidence(candidate: Json, now = new Date()): Neg
 /** This is a model-work policy, not exclusion from event screening. */
 export function hasNegativeEarnings(fundamentals: unknown) {
   const facts = object(fundamentals);
-  return (number(facts.dilutedEpsTtm) && facts.dilutedEpsTtm < 0)\n    || (number(facts.netIncome) && facts.netIncome < 0);
+  return (number(facts.dilutedEpsTtm) && facts.dilutedEpsTtm < 0)
+    || (number(facts.netIncome) && facts.netIncome < 0);
 }

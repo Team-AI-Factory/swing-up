@@ -120,7 +120,7 @@ function queueHealthSnapshot(state: Awaited<ReturnType<typeof readPr262ChangeSen
 }
 
 function capacityForQueue(ready: number) {
-  if (ready >= 100) return 24;
+  if (ready >= 100) return 12;
   if (ready >= 30) return 8;
   return 4;
 }

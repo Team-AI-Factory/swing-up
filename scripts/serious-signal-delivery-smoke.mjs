@@ -443,7 +443,10 @@ try {
   lossOutbox.candidate.valuationRange = null;
   lossOutbox.candidate.quote.observedAt = observedAt;
   lossOutbox.candidate.fundamentals = { available: true, sourceUrl: "https://data.sec.gov/api/xbrl/companyfacts/CIK0001234567.json", checkedAt: wallNow.toISOString(),
-    items: [{ metric: "net_income", value: -1000000, unit: "USD", periodEnd: period, filedAt: period }] };
+    items: [
+      { metric: "diluted_eps", value: 0.25, unit: "USD/shares", periodEnd: period, filedAt: period },
+      { metric: "net_income", value: -1000000, unit: "USD", periodEnd: period, filedAt: period },
+    ] };
   const lossKey = `${prefix}serious-signal/outbox/event-job/buy/LOSS/fingerprint.json`;
   await write(lossKey, lossOutbox, { createOnly: true });
   const lossDelivery = await deliverSeriousSignalOutbox(lossKey, { now: wallNow });

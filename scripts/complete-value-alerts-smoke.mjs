@@ -19,6 +19,28 @@ for (const change of [{ companyProfile: null }, { currency: null }, { quote: { p
 assert.equal(publicAlertDetailsComplete({ ...candidate, industry: details.industry, outlook: details.outlook }, now), true);
 assert.equal(publicAlertDetailsComplete({ ...candidate, outlook: { ...details.outlook, base: { price: null, changePercent: null } } }, now), false);
 
+const day = new Date(now.getTime() - 86400000).toISOString().slice(0, 10);
+const lossCandidate = { ...candidate, eventFamily: "regulatory_approval", valuationRange: null,
+  fundamentals: { available: true, checkedAt: now.toISOString(), sourceUrl: "https://data.sec.gov/api/xbrl/companyfacts/CIK0000000001.json",
+    items: [{ metric: "net_income", value: -1000000, unit: "USD", periodEnd: day, filedAt: day }] } };
+const lossDetails = alertDetails(lossCandidate, undefined, now);
+assert.equal(lossDetails.complete, true);
+assert.equal(lossDetails.valuationException, true);
+assert.equal(completePriceOutlook(lossDetails.outlook), false, "An explicit exception never masquerades as a numeric forecast");
+assert.equal(lossDetails.outlook.base.price, null);
+assert.equal(lossDetails.outlook.potentialPercent, null);
+const publicLoss = { ...lossCandidate, kind: "event", outlook: lossDetails.outlook };
+assert.equal(publicAlertDetailsComplete(publicLoss, now), true);
+for (const change of [{ eventFamily: "valuation_gap" }, { kind: "valuation" }, { eventFamily: "unknown" }, { cik: "0000000002" }, { currency: null }, { quote: { price: null } }, { companyProfile: null }]) {
+  assert.equal(alertDetails({ ...lossCandidate, ...change }, undefined, now).complete, false, "Losses cannot bypass identity, price, profile or valuation-only requirements");
+}
+assert.equal(publicAlertDetailsComplete({ ...publicLoss, kind: "valuation" }, now), false);
+const { assemblePublicSignals } = loadTsModule("@/lib/public-signals");
+assert.equal(assemblePublicSignals([], [{ ...publicLoss, id: "loss-event", action: "buy", userAlertEligible: true }]).length, 1, "The exception must survive the actual public feed filter");
+const revived = { ...lossCandidate, fundamentals: { ...lossCandidate.fundamentals, items: [...lossCandidate.fundamentals.items,
+  { metric: "net_income", value: 100, unit: "USD", periodEnd: now.toISOString().slice(0, 10), filedAt: now.toISOString().slice(0, 10) }] } };
+assert.equal(alertDetails(revived, undefined, now).valuationException, false, "A later profit removes the earlier loss exception");
+
 const all = Array.from({ length: 2000 }, (_, index) => ({ ticker: `T${String(index).padStart(4, "0")}`, tradingViewSymbol: `NYSE:T${index}` }));
 const seen = new Set(); let offset = 0;
 for (let round = 0; round < 5; round++) {

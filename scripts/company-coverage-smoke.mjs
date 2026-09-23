@@ -21,8 +21,17 @@ assert.ok(harden(extreme).scores.fairValueConfidence < 70);
 const tiny = make({ dilutedEpsTtm: 0.000001, freeCashFlow: -1, netIncome: -1, priceToBook: null });
 assert.equal(tiny.fairValue.baseValue, null, "An estimate rounded to zero must not count as a usable positive value");
 
-const target = make({ dilutedEpsTtm: -1, netIncome: -50e6, freeCashFlow: -20e6, priceToSales: 1.5 });
+const lossMaking = make({ dilutedEpsTtm: -1, netIncome: -50e6, freeCashFlow: -20e6, priceToSales: 1.5 });
+const target = make({ dilutedEpsTtm: 0, netIncome: 0, freeCashFlow: -20e6, priceToSales: 1.5 });
 const peers = Array.from({ length: 10 }, (_, i) => make({ ticker: `P${i}`, company: `Peer Company ${i}`, tradingViewSymbol: `NASDAQ:P${i}`, priceToSales: 2 + i / 10 }));
+const deferred = coverage.completeValuationCoverage([lossMaking, ...peers])[0];
+assert.equal(deferred.valuationCoverage.status, "negative_earnings_deferred");
+assert.equal(deferred.fairValue.baseValue, null, "Do not fill loss-making issuers with peer guesses merely to raise coverage");
+const mixedLoss = { ...target, fundamentals: { ...target.fundamentals, dilutedEpsTtm: 0.25, netIncome: -50e6 } };
+const mixedDeferred = coverage.completeValuationCoverage([mixedLoss, ...peers])[0];
+assert.equal(mixedDeferred.valuationCoverage.status, "negative_earnings_deferred", "Negative net income must not be hidden by non-negative EPS");
+assert.equal(mixedDeferred.fairValue.baseValue, null, "Mixed earnings metrics must not generate a peer-comparison fair value");
+assert.notEqual(coverage.assessValuationCoverage(make({ dilutedEpsTtm: 2, netIncome: 50e6 })).status, "negative_earnings_deferred", "Normal daily refresh resumes supported valuation when earnings recover");
 const comparison = coverage.completeValuationCoverage([target, ...peers])[0];
 assert.equal(comparison.valuationCoverage.status, "peer_comparison");
 assert.equal(comparison.valuationCoverage.peerCount, 10);

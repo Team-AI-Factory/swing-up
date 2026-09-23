@@ -2,12 +2,14 @@ import { completeCommitteeReview } from "@/lib/ai-committee/review-policy";
 import { PR262_REVIEW_MAX_PROMPT_BYTES, PR262_REVIEW_MAX_COST_USD } from "@/lib/opportunity-engine/pr262-ai-daily-cost";
 import { verifiedCompanyProfile, type CompanyIdentity, type VerifiedCompanyProfile } from "@/lib/company-profile";
 import { committeeExplanation } from "@/lib/signal-explanation";
+import { NEGATIVE_EARNINGS_NOTICE } from "@/lib/valuation-availability";
 import crypto from "node:crypto";
 import { alertDetails, industryLabel } from "@/lib/alert-details";
 import { runAiCommittee, TRUSTED_IN_MEMORY_EVIDENCE } from "@/lib/ai-committee/orchestrator";
 import type { AiCommitteeEvidencePack, EvidenceStrength } from "@/lib/ai-committee/evidence-pack";
 import { getAiCommitteeProviderStatus } from "@/lib/ai-committee/provider";
 import { buildImpactCandidates, fingerprintCandidate } from "@/lib/equity-signal/analysis";
+import { reviewEvidenceRevision } from "@/lib/equity-signal/review-evidence-revision";
 import { collectEventSources } from "@/lib/equity-signal/event-sources";
 import { buildValuationCandidate, reassessValuationCandidate } from "@/lib/equity-signal/valuation-candidate";
 import type { UsValueCompanyAnalysis } from "@/lib/opportunity-engine/us-value-investing-engine";
@@ -269,6 +271,7 @@ function evidencePack(candidate: ImpactCandidate, providers: ProviderResult[], m
     ...(fundamentalsRelevant && !fundamentalsAvailable ? ["fundamentalsEvidence"] : []),
   ];
   const dataFreshnessWarnings = [
+    ...(candidate.fundamentals?.error ? [`Financial data refresh is incomplete: ${candidate.fundamentals.error}. Retained facts keep their original dates; requested missing fields remain unresolved.`] : []),
     ...receipts.filter((receipt) => freshness(now, receipt.publishedAt).freshness !== "fresh").map((receipt) => `${receipt.publisher} receipt is older than 24 hours.`),
     ...(candidate.quote?.priceBasis === "last_completed_session" ? ["US trading is closed. This is a dated price from the latest completed trading session, not a live executable quote. Recheck the price when trading resumes."] : []),
     ...(candidate.quote && candidate.quote.priceBasis !== "last_completed_session" && (candidate.quote.delayedMinutes ?? 0) > 30 ? [`Market snapshot is ${candidate.quote.delayedMinutes} minutes behind the scan time; treat it as an entry-readiness warning, never as proof that the event worked.`] : []),
@@ -581,8 +584,8 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       await input.resolveCompanyProfile?.(best) ?? targeted?.storedCompanyAnalysis?.companyProfile, best, now);
     // Stable evidence revisions allow another review when missing facts arrive.
     // Fetch timestamps and small quote ticks cannot manufacture new evidence.
-    const evidenceRevision = crypto.createHash("sha256").update(JSON.stringify({
-      source: best.receipts.filter(r => r.channel !== "nasdaq_trade_halts").map(r => [r.id, r.summary]),
+    const evidenceRevision = reviewEvidenceRevision({
+      source: best.receipts.filter(r => r.channel !== "nasdaq_trade_halts").map(r => ({ id: r.id, summary: r.summary, rawEventType: r.rawEventType })),
       companyProfile: companyProfile ? { business: companyProfile.business, customers: companyProfile.customers, sourceUrl: companyProfile.sourceUrl, sourceFiledAt: companyProfile.sourceFiledAt } : null,
       industry: industryLabel(targeted?.storedCompanyAnalysis?.industry, companyProfile?.industry),
       outlookRange: (() => {
@@ -598,7 +601,7 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
         return { base: value?.baseValue, low: value?.conservativeValue, high: value?.optimisticValue,
           currentPriceSupportsValuation: best.gateChecks.currentPriceSupportsValuation };
       })() : null,
-    })).digest("hex").slice(0, 16);
+    });
     const fingerprint = inclusiveReview ? `${fingerprintCandidate(best)}:${evidenceRevision}` : fingerprintCandidate(best);
     const selectedCandidate = {
       companyProfile,
@@ -698,6 +701,11 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
     });
     pack.sourceLinks = [...new Set([...pack.sourceLinks, companyProfile.sourceUrl])];
     pack.sourceNames = [...new Set([...pack.sourceNames, "SEC annual business and customer disclosures"])];
+    if (details.valuationException) {
+      pack.fundamentalsEvidence.items.push({ source: "valuation_availability", ...details.outlook.fairValueUnavailable,
+        explanation: NEGATIVE_EARNINGS_NOTICE,
+        reviewPolicy: "A documented loss prevents an earnings-based value estimate, not event review. Assess the event's material effect, direction, cash runway, dilution, financing and priced-in risks. Do not invent a target or percentage return." });
+    }
     const researchGaps = [...new Set([
       ...(best.failedGateChecks ?? []),
       ...(best.direction === "unknown" ? ["direction_unresolved"] : []),

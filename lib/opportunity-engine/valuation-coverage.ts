@@ -1,8 +1,9 @@
 import type { UsValueCompanyAnalysis } from "@/lib/opportunity-engine/us-value-investing-engine";
+import { hasNegativeEarnings } from "@/lib/valuation-availability";
 
-export const VALUATION_MODEL_REVISION = 2;
+export const VALUATION_MODEL_REVISION = 3;
 export type ValuationCoverageAssessment = {
-  status: "fundamental_estimate" | "peer_comparison" | "needs_validation" | "missing_inputs" | "specialist_inputs" | "non_positive_earnings_and_cashflow";
+  status: "fundamental_estimate" | "peer_comparison" | "needs_validation" | "missing_inputs" | "specialist_inputs" | "non_positive_earnings_and_cashflow" | "negative_earnings_deferred";
   missingInputs: string[];
   warnings: string[];
   peerTickers?: string[];
@@ -30,6 +31,8 @@ export function assessValuationCoverage(item: UsValueCompanyAnalysis): Valuation
         ...(values.length < 2 ? ["Only one valuation method is supported; independent corroboration is still needed."] : []),
       ] };
   }
+  if (hasNegativeEarnings(item.fundamentals)) return { status: "negative_earnings_deferred", missingInputs,
+    warnings: ["Earnings are negative and this model has no supported fair value. Recheck on the normal financial refresh; event-triggered opportunities remain eligible for review."] };
   return { status: specialist(item) ? "specialist_inputs"
     : missingInputs.length ? "missing_inputs" : "non_positive_earnings_and_cashflow", missingInputs,
     warnings: ["A supported value could not yet be calculated. An analyst target or the market price is not substituted for fair value."] };
@@ -45,7 +48,7 @@ export function completeValuationCoverage(items: UsValueCompanyAnalysis[]): UsVa
   return items.map(item => {
     let result = item;
     const f = item.fundamentals;
-    if (!positive(item.fairValue.baseValue) && !specialist(item) && item.currency === "USD"
+    if (!positive(item.fairValue.baseValue) && !hasNegativeEarnings(f) && !specialist(item) && item.currency === "USD"
       && item.industry && positive(item.currentPrice) && positive(item.valuation.priceToSales)
       && (f.revenue ?? 0) >= 50_000_000 && positive(f.grossMarginPercent)
       && f.revenueGrowthTtmPercent !== null && Number.isFinite(f.revenueGrowthTtmPercent)) {

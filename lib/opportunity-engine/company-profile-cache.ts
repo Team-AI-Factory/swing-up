@@ -1,3 +1,4 @@
+import { setTimeout as pause } from "node:timers/promises";
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 import { COMPANY_PROFILE_PARSER_REVISION, annualBusinessText, extractCompanyProfile, profileCik, sameCompanyName, verifiedCompanyProfile, type CompanyIdentity, type VerifiedCompanyProfile } from "@/lib/company-profile";
@@ -99,8 +100,8 @@ function annualFiling(body: Json, identity: CompanyIdentity, now: Date): Filing 
   return null;
 }
 
-/** At most one SEC submissions request and one annual filing; caller supplies the existing budgeted fetch. */
-export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl: typeof fetch, now = new Date()) {
+/** Exact issuer metadata, at most two named historical indexes, and one annual filing. */
+export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl: typeof fetch, now = new Date(), options: { signal?: AbortSignal } = {}) {
   const exact = { ticker: text(identity.ticker).toUpperCase(), company: text(identity.company), cik: profileCik(identity.cik) };
   if (!exact.cik || !exact.company || !/^[A-Z0-9.-]{1,12}$/.test(exact.ticker)) return null;
   const { entries } = await load();
@@ -112,14 +113,32 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
     filing: prior?.filing, cachedParserRevision: prior?.cachedParserRevision, parserRevision: COMPANY_PROFILE_PARSER_REVISION };
   // Persist backoff before network; budget wrappers still make their own durable reservations.
   await store(entry);
-  const request = async (url: string, complete?: (text: string) => boolean) => boundedText(await fetchImpl(url, { headers: { Accept: "text/html,application/json", "User-Agent": "SwingUp/1.0 support@swingup.app" }, cache: "no-store", redirect: "error", signal: AbortSignal.timeout(12000) }), complete);
+  const request = async (url: string, complete?: (text: string) => boolean) => boundedText(await fetchImpl(url, { headers: { Accept: "text/html,application/json", "User-Agent": "SwingUp/1.0 support@swingup.app" }, cache: "no-store", redirect: "error", signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(12000)]) : AbortSignal.timeout(12000) }), complete);
   let phase = "issuer_submissions";
   try {
     const priorFilingAge = now.getTime() - Date.parse(prior?.filing?.filedAt ?? "");
-    const filing = !prior?.profile && prior?.filing && priorFilingAge >= 0 && priorFilingAge <= 550 * 86400000
+    let filing = !prior?.profile && prior?.filing && priorFilingAge >= 0 && priorFilingAge <= 550 * 86400000
       && ((prior.filing.industry && now.getTime() - Date.parse(prior.filing.checkedAt ?? prior.updatedAt) <= 7 * 86400000)
         || (prior.parserRevision === COMPANY_PROFILE_PARSER_REVISION && now.getTime() - Date.parse(prior.updatedAt) <= 86400000))
-      ? prior.filing : annualFiling(object(JSON.parse(await request(`https://data.sec.gov/submissions/CIK${exact.cik}.json`))), exact, now);
+      ? prior.filing : null;
+    if (!filing) {
+      const submissions = object(JSON.parse(await request(`https://data.sec.gov/submissions/CIK${exact.cik}.json`)));
+      filing = annualFiling(submissions, exact, now); // validates root issuer before following archive references
+      if (!filing) {
+        const files = object(submissions.filings).files;
+        const archives = (Array.isArray(files) ? files.map(object) : []).filter(file =>
+          new RegExp(`^CIK${exact.cik}-submissions-\\d{3}\\.json$`).test(text(file.name))
+          && Date.parse(text(file.filingTo)) >= now.getTime() - 550 * 86400000
+          && Date.parse(text(file.filingFrom)) <= now.getTime())
+          .sort((a, b) => text(b.filingTo).localeCompare(text(a.filingTo))).slice(0, 2);
+        for (const archive of archives) {
+          const recent = object(JSON.parse(await request(`https://data.sec.gov/submissions/${text(archive.name)}`)));
+          if (recent.cik != null && profileCik(recent.cik) !== exact.cik) throw new Error("company_profile_issuer_mismatch");
+          filing = annualFiling({ ...submissions, filings: { recent } }, exact, now);
+          if (filing) break;
+        }
+      }
+    }
     if (!filing) throw new Error("company_profile_annual_filing_unavailable");
     if (!new RegExp(`^https://www\\.sec\\.gov/Archives/edgar/data/${Number(exact.cik)}/\\d{18}/[A-Za-z0-9._-]+\\.html?$`).test(filing.url)) throw new Error("company_profile_filing_identity_mismatch");
     if (filing.url !== prior?.filing?.url) entry.cachedParserRevision = undefined;
@@ -229,7 +248,7 @@ export async function readCompanyProfileCoverage(now = new Date()) {
 }
 
 /** The maintenance input is the raw foundation, never the profile-filtered public feed. */
-export async function warmFoundationCompanyProfiles(fetchImpl: typeof fetch, now = new Date()) {
+export async function warmFoundationCompanyProfiles(fetchImpl: typeof fetch, now = new Date(), options: { signal?: AbortSignal } = {}) {
   const cadenceKey = pr262StorageKey("research-evidence/company-profile-maintenance-v1.json");
   const cadence = await readVersionedTextFromR2(cadenceKey);
   const last = cadence.found && cadence.text ? Date.parse(text(object(JSON.parse(cadence.text)).checkedAt)) : NaN;
@@ -255,6 +274,10 @@ export async function warmFoundationCompanyProfiles(fetchImpl: typeof fetch, now
   const exposureRows = exposure.found && exposure.text ? object(JSON.parse(exposure.text)).entries : [];
   const opportunities = [groups.buy, groups.sell, groups.watchOut, snapshot.qualityPriceWatchlist].flatMap(group => Array.isArray(group) ? group.map(object) : []);
   const priorityTickers = new Set([...pending, ...opportunities].map(row => row.ticker));
+  const valuationTickers = new Set(opportunities.map(row => row.ticker));
+  const freshQueuedTickers = new Set(pending.filter(row => now.getTime() - Date.parse(text(row.observedAt)) <= 86400000).map(row => row.ticker));
+  const freshOfficialTickers = new Set(pending.filter(row => now.getTime() - Date.parse(text(row.observedAt)) <= 86400000
+    && (row.source === "sec" || row.source === "official" || /^(issuer_ir_|issuer_sec_)/.test(text(row.sourceProvider)))).map(row => row.ticker));
   const candidates: Json[] = [...pending, ...opportunities, ...(Array.isArray(exposureRows) ? exposureRows.map(object) : []),
     ...universeRows.map(row => ({ ...row, company: row.company || row.name }))];
   const due = candidates.flatMap(candidate => {
@@ -266,17 +289,39 @@ export async function warmFoundationCompanyProfiles(fetchImpl: typeof fetch, now
     const saved = entries.find(entry => same(entry, identity));
     const verified = verifiedCompanyProfile(saved?.profile, identity, now);
     if ((verified && (verified.industry || (saved?.parserRevision === COMPANY_PROFILE_PARSER_REVISION && Date.parse(saved.nextAttemptAt) > now.getTime()))) || retryDeferred(saved, now)) return [];
-    return [{ identity, priority: queuedTickers.has(candidate.ticker) ? 2 : priorityTickers.has(candidate.ticker) ? 1 : 0, lastAttempt: Date.parse(saved?.updatedAt ?? "") || 0 }];
+    return [{ identity, priority: freshOfficialTickers.has(candidate.ticker) ? 5 : freshQueuedTickers.has(candidate.ticker) ? 4 : valuationTickers.has(candidate.ticker) ? 3
+      : queuedTickers.has(candidate.ticker) ? 2 : priorityTickers.has(candidate.ticker) ? 1 : 0, lastAttempt: Date.parse(saved?.updatedAt ?? "") || 0 }];
   }).filter((row, index, all) => all.findIndex(other => other.identity.ticker === row.identity.ticker) === index)
     .sort((a, b) => b.priority - a.priority || a.lastAttempt - b.lastAttempt);
-  // Keep the same two-requested-issuer limit. One background slot prevents
-  // a constant event backlog from permanently excluding the rest of the universe.
+  // Expand useful work inside the same time window and provider allowances.
+  // One background issuer retains progress beyond today's event queue.
   const selected = due.slice(0, 1);
-  const background = due.find(row => row.priority === 0 && row !== selected[0]);
-  const second = background ?? due.find(row => row !== selected[0]);
-  if (second) selected.push(second);
-  // Two independent issuers fit the existing worker window; provider quotas still apply to every request.
-  const results = await Promise.allSettled(selected.map(candidate => ensureCompanyProfile(candidate.identity, fetchImpl, now)));
-  return { attempted: selected.length, verified: results.filter(result => result.status === "fulfilled" && result.value).length,
+  const background = due.find(row => row.priority === 0 && !selected.includes(row));
+  const backgroundSlot = background ?? due.find(row => !selected.includes(row));
+  if (backgroundSlot) selected.push(backgroundSlot);
+  let attempted = 0, verified = 0;
+  let nextRequestAt = 0;
+  let pacingTail: Promise<void> = Promise.resolve();
+  const pacedFetch: typeof fetch = async (request, init) => {
+    const ready = pacingTail.then(async () => {
+      await pause(Math.max(0, nextRequestAt - Date.now()), undefined, { signal: init?.signal ?? options.signal });
+      nextRequestAt = Date.now() + 250;
+    });
+    pacingTail = ready.catch(() => undefined);
+    await ready;
+    return fetchImpl(request, init);
+  };
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < selected.length && !options.signal?.aborted) {
+      const candidate = selected[cursor++];
+      attempted++;
+      // Keep both slots useful: a slow issuer must not hold the other slot idle.
+      const profile = await ensureCompanyProfile(candidate.identity, pacedFetch, now, options).catch(() => null);
+      if (profile) verified++;
+    }
+  };
+  await Promise.all([worker(), worker()]);
+  return { attempted, verified, eligibleCompanies: due.length, maximumCompaniesPerPass: 2, deadlineReached: options.signal?.aborted === true,
     ...(recoveredFromSavedSources ? { recoveredFromSavedSources } : {}) };
 }

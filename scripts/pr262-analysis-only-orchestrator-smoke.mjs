@@ -71,6 +71,11 @@ const queueHygiene = {
   capacityDropped: 0,
 };
 const stubs = {
+  "@/lib/opportunity-engine/pr262-review-blockers": loadTsModule("@/lib/opportunity-engine/pr262-review-blockers"),
+  "@/lib/opportunity-engine/pr262-queue-readiness": {
+    readPr262QueueAdmissionPlan: async () => ({ status: "checked", profileReadyCount: state.pending.length,
+      profileBlockedCount: 0, discoveryAllowance: 0, preferredEventIds: undefined, readyProfileEventIds: [], excludedEventIds: [], eventsDeleted: 0 }),
+  },
   "@/lib/ai-committee/provider": {
     probeOpenAiCommitteeProviderAccess: async () => {
       accessDiagnosticCalls++;
@@ -188,6 +193,7 @@ const stubs = {
         eventMode = "idle";
         assert.equal(input.allowOpenAi, false, "Definitively unavailable access must block paid reviews before reservation");
         assert.equal(input.aiProviderBlockedReason, expectedProviderBlocker);
+        assert.equal(input.aiReservationBlockedReason(), "provider_access");
         assert.equal(await input.beforeOpenAiCall({ candidateFingerprint: "provider-blocked", ticker: "SAFE", direction: "upside" }), false);
         return { ok: true, status: "event_job_deferred", nonterminal: true, openAiCalled: false, eventsProcessed: 0, analysisDiagnostics: { status: "committee_provider_access_blocked" } };
       }
@@ -231,6 +237,7 @@ const stubs = {
         eventMode = "idle";
         assert.equal(input.allowOpenAi, false, "A full cycle-start fuse must disable paid analysis.");
         assert.equal(input.aiReservationRetryAt(), cycleStartBudgetRetryAt);
+        assert.equal(input.aiReservationBlockedReason(), "daily_cost_fuse");
         input.queueMutationSink({
           action: "retry",
           eventId: state.pending[0].id,
@@ -254,6 +261,7 @@ const stubs = {
         const admitted = await input.beforeOpenAiCall({ candidateFingerprint: "race-time-full", ticker: "SAFE", direction: "upside" });
         assert.equal(admitted, false);
         assert.equal(input.aiReservationRetryAt(), raceTimeBudgetRetryAt);
+        assert.equal(input.aiReservationBlockedReason(), "daily_cost_fuse");
         input.queueMutationSink({
           action: "retry",
           eventId: state.pending[0].id,

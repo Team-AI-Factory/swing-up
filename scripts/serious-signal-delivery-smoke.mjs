@@ -56,7 +56,7 @@ new Function("require", "module", "exports", output)((specifier) => {
   }
   if (specifier === "@/lib/opportunity-engine/pr262-storage") return { pr262StorageKey: storageKey };
   if (specifier === "@/lib/opportunity-engine/pr262-runtime") return { isPr262ApprovedPremergeProductionRollout: () => false };
-  if (specifier === "@/lib/alert-details") return loadTsModule(specifier);
+  if (specifier === "@/lib/alert-details" || specifier === "@/lib/valuation-availability") return loadTsModule(specifier);
   if (specifier === "@/lib/company-profile" || specifier === "@/lib/signal-explanation" || specifier === "@/lib/signal-outlook") return loadTsModule(specifier);
   if (["@/lib/ai-committee/review-policy", "@/lib/equity-signal/us-market-calendar"].includes(specifier)) return loadTsModule(specifier);
   throw new Error(`Unexpected delivery import: ${specifier}`);
@@ -429,6 +429,52 @@ try {
   broken.committee.output.modelUsageSummary.roleDiagnostics.pop();
   await write(brokenKey, broken, { createOnly: true });
   await assert.rejects(() => deliverSeriousSignalOutbox(brokenKey, { now: weekend }), /incomplete_committee/);
+  // Exercise real delivery validation and user text for the authorized loss
+  // exception, with in-memory storage and no external notifications.
+  process.env.SWING_UP_PR262_EXTERNAL_NOTIFICATIONS_ENABLED = "false";
+  const wallNow = new Date();
+  const calendar = loadTsModule("@/lib/equity-signal/us-market-calendar");
+  const observedAt = Array.from({ length: 7 * 24 * 4 }, (_, index) => new Date(wallNow.getTime() - index * 15 * 60000).toISOString())
+    .find(at => calendar.usQuoteFreshness(at, wallNow).usable);
+  assert.ok(observedAt);
+  const lossOutbox = validOutbox("LOSS", wallNow.toISOString());
+  const period = new Date(wallNow.getTime() - 60 * 86400000).toISOString().slice(0, 10);
+  lossOutbox.candidate.eventFamily = "regulatory_approval";
+  lossOutbox.candidate.valuationRange = null;
+  lossOutbox.candidate.quote.observedAt = observedAt;
+  lossOutbox.candidate.fundamentals = { available: true, sourceUrl: "https://data.sec.gov/api/xbrl/companyfacts/CIK0001234567.json", checkedAt: wallNow.toISOString(),
+    items: [
+      { metric: "diluted_eps", value: 0.25, unit: "USD/shares", periodEnd: period, filedAt: period },
+      { metric: "net_income", value: -1000000, unit: "USD", periodEnd: period, filedAt: period },
+    ] };
+  const lossKey = `${prefix}serious-signal/outbox/event-job/buy/LOSS/fingerprint.json`;
+  await write(lossKey, lossOutbox, { createOnly: true });
+  const lossDelivery = await deliverSeriousSignalOutbox(lossKey, { now: wallNow });
+  assert.equal(lossDelivery.ok, true, "A fully approved loss-making event must reach the real delivery handler");
+  assert.match(lossDelivery.message, /reported negative earnings/);
+  assert.match(lossDelivery.message, /Recorded price: USD 42/);
+  assert.doesNotMatch(lossDelivery.message, /undefined|null%|Conservative:|Base:/, "Unknown targets and returns must not become malformed prices");
+  const lossFeed = await getSeriousSignalStatus({ now: wallNow, hours: 48 });
+  assert.equal(lossFeed.alerts.find(alert => alert.ticker === "LOSS")?.outlook.fairValueUnavailable.reason, "negative_earnings", "The notice survives the delivered Serious Signal feed");
+  const delayedLossFeed = await getSeriousSignalStatus({ now: new Date(wallNow.getTime() + 7 * 3600000), hours: 48 });
+  assert.equal(delayedLossFeed.alerts.find(alert => alert.ticker === "LOSS")?.outlook.fairValueUnavailable.reason, "negative_earnings",
+    "A delivered loss notice must survive beyond the six-hour collection-cache window");
+  for (const [ticker, direction, baseValue] of [["GAIN50", "upside", 63], ["DROP80", "downside", 8.4]]) {
+    const rankedOutbox = validOutbox(ticker, wallNow.toISOString());
+    rankedOutbox.alertType = direction === "upside" ? "buy" : "sell";
+    rankedOutbox.candidate.direction = direction;
+    rankedOutbox.candidate.quote.observedAt = observedAt;
+    rankedOutbox.candidate.valuationRange = { conservativeValue: baseValue * 0.8, baseValue, optimisticValue: baseValue * 1.2 };
+    const key = `${prefix}serious-signal/outbox/event-job/${rankedOutbox.alertType}/${ticker}/fingerprint.json`;
+    await write(key, rankedOutbox, { createOnly: true });
+    assert.equal((await deliverSeriousSignalOutbox(key, { now: wallNow })).ok, true);
+  }
+  const rankedFeed = await getSeriousSignalStatus({ now: wallNow, hours: 48, limit: 1 });
+  assert.equal(rankedFeed.alerts[0].ticker, "DROP80", "Serious alerts rank Buy/Sell together before applying the display limit");
+  assert.equal(rankedFeed.alerts[0].outlook.potentialPercent, 80);
+  const completeRankedFeed = await getSeriousSignalStatus({ now: wallNow, hours: 48 });
+  assert.deepEqual(completeRankedFeed.alerts.filter(alert => ["GAIN50", "DROP80", "LOSS"].includes(alert.ticker)).map(alert => alert.ticker),
+    ["DROP80", "GAIN50", "LOSS"], "The negative-earnings exception remains visible after supported percentages");
 } finally {
   globalThis.fetch = originalFetch;
   for (const key of Object.keys(process.env)) if (!(key in originalEnvironment)) delete process.env[key];

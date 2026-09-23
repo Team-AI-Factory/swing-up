@@ -2,7 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { SignalPriceOutlook } from "@/components/SignalPriceOutlook";
-import type { PriceOutlook } from "@/lib/signal-outlook";
+import { compareSignalPotential, type PriceOutlook } from "@/lib/signal-outlook";
 
 type LiveAlert = {
   id: string;
@@ -173,7 +173,7 @@ function ValuationWatchlistPanel({
       <p>
         These live alerts explain potential opportunities and risks from the company valuation screen. Each alert shows its actual Committee review status.
       </p>
-      <p className="muted">Buy opportunities first, then Sell opportunities; highest potential move to base value first within each group.</p>
+      <p className="muted">Buy and Sell opportunities are ranked together, largest potential percentage move to base value first. Sell percentages show the potential price decline. Alerts without a supported target follow, then Watch Out alerts.</p>
       <p className="muted">
         Permanent link: <a href="/serious-signals#valuation-watchlist">/serious-signals#valuation-watchlist</a> · refreshes within one minute of new company or price information.
       </p>
@@ -196,7 +196,7 @@ function ValuationWatchlistPanel({
             <section className="card"><h3>No valuation alert has completed all company-detail and price-comparison checks yet.</h3></section>
           ) : (
             <div className="grid">
-              {watchlist.candidates.map((item) => (
+              {[...watchlist.candidates].sort(compareSignalPotential).map((item) => (
                 <article className="card alert-card" id={item.anchor} key={item.id}>
                   <div className="button-row">
                     <span className="badge">{watchlistLabel(item.action)}</span>
@@ -369,6 +369,7 @@ export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
             <div className="card"><span className="muted">Delivered / Needs attention</span><div className="kpi">{feed.summary.delivered} / {feed.summary.deliveryAttentionNeeded}</div></div>
           </div>
           <p className="muted">Last checked {formatTime(feed.generatedAt)} Bangkok time. Window begins {formatTime(feed.window.from)}.</p>
+          <p className="muted">Buy and Sell alerts are ranked together, largest potential percentage move to the base estimate first. Sell percentages show the potential price decline. Alerts without a supported target follow, then Watch Out alerts.</p>
           <p className="muted">
             Sensor: {feed.sensor.verifiedLive
               ? `live via ${feed.sensor.owner === "cloudflare_worker" ? "Cloudflare" : "Railway"}${feed.sensor.lastScanAt ? ` · last scan ${formatTime(feed.sensor.lastScanAt)}` : ""}`
@@ -392,7 +393,7 @@ export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
             </section>
           ) : (
             <div className="grid">
-              {feed.alerts.slice(0, compact ? 3 : 100).map((alert) => (
+              {[...feed.alerts].sort(compareSignalPotential).slice(0, compact ? 3 : 100).map((alert) => (
                 <article className="card alert-card" key={alert.id}>
                   <div className="button-row">
                     <span className="badge">{alertLabel(alert.alertType)}</span>

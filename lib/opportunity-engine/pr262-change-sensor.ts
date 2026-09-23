@@ -908,6 +908,8 @@ function normalizePersistedEvent(value: unknown, now: Date): Pr262SensorEvent | 
     && Boolean(cik);
   const observedAt = parseTimestamp(String(item.observedAt ?? ""), now);
   if (!observedAt) return null;
+  const firstQueuedAt = typeof item.firstQueuedAt === "string" && Date.parse(item.firstQueuedAt) <= now.getTime()
+    ? parseTimestamp(item.firstQueuedAt, now) : null;
   const id = source === "sec" && accession ? `sec:${accession}` : typeof item.id === "string" && item.id ? item.id : hash(`${source}|${rawUrl}|${title}|${observedAt}`);
   return {
     id,
@@ -915,6 +917,7 @@ function normalizePersistedEvent(value: unknown, now: Date): Pr262SensorEvent | 
     sourceProvider: typeof item.sourceProvider === "string" ? item.sourceProvider : source,
     sourceHealthStatus: item.sourceHealthStatus === "partial" ? "partial" : "connected",
     observedAt,
+    ...(firstQueuedAt ? { firstQueuedAt } : {}),
     title,
     url: canonicalSecIndexUrl ?? (typeof item.url === "string" ? item.url : rawUrl),
     sourceUrl: rawUrl,
@@ -1330,7 +1333,7 @@ export async function runPr262ChangeSensor(
     .filter((event) => !seen.has(event.id))
     .sort((left, right) => pendingOrder(left, right, now.getTime()))
     .slice(0, MAX_FRESH_PER_RUN);
-  const partitioned = partitionPr262PendingEventsWithTelemetry([...state.pending, ...fresh], now);
+  const partitioned = partitionPr262PendingEventsWithTelemetry([...state.pending, ...fresh.map(event => ({ ...event, firstQueuedAt: now.toISOString() }))], now);
   const pending = partitioned.pending;
   const retainedPendingIds = new Set(pending.map((event) => event.id));
   const droppedPendingIds = new Set(partitioned.droppedEventIds);
@@ -1420,6 +1423,8 @@ export async function readNextPr262PendingSensorEvent(input: {
   minimumPriority?: number;
   excludedEventIds?: readonly string[];
   preferValuation?: boolean;
+  preferredEventIds?: readonly string[];
+  readyProfileEventIds?: readonly string[];
 } = {}) {
   const now = input.now ?? new Date();
   const state = (await loadSensorState(now)).state;
@@ -1431,6 +1436,8 @@ export async function readNextPr262PendingSensorEvent(input: {
     const retryDue = !Number.isFinite(retryAt)
       || retryAt <= nowMs
       || foundationValuationFallbackRetryEligible(event)
+      || (input.readyProfileEventIds?.includes(event.id) === true
+        && /candidate_company_profile_pending/.test(event.queueLastError ?? ""))
       // Migrate legacy incomplete and budget-blocked cases into evidence collection.
       // The independent Committee ledgers still enforce every paid-call limit.
       || (/(candidate_needs_more_data|qualified_signal_openai_reservation_denied)(;|$)/.test(event.queueLastError ?? "")
@@ -1440,6 +1447,13 @@ export async function readNextPr262PendingSensorEvent(input: {
       && processingReady(event)
       && retryDue;
   });
+  if (input.preferredEventIds) {
+    const ranks = new Map(input.preferredEventIds.map((id, index) => [id, index]));
+    // A prepared admission plan is authoritative. Legacy retry migration and
+    // valuation preference must not pull blocked work back into the ready lane.
+    return ready.filter(event => ranks.has(event.id))
+      .sort((a, b) => ranks.get(a.id)! - ranks.get(b.id)!)[0] ?? null;
+  }
   return (input.preferValuation ? ready.find(event => event.kind === "valuation_review") : null) ?? ready[0] ?? null;
 }
 

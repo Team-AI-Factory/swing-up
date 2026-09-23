@@ -132,7 +132,7 @@ const cjsModule = { exports: {} };
 const localRequire = (name) => {
   if (name === "node:crypto") return awaitImportCrypto;
   if (name in stubs) return stubs[name];
-  if (["@/lib/alert-details", "@/lib/company-profile", "@/lib/signal-explanation", "@/lib/equity-signal/valuation-candidate"].includes(name)) return loadTsModule(name);
+  if (["@/lib/alert-details", "@/lib/company-profile", "@/lib/signal-explanation", "@/lib/valuation-availability", "@/lib/equity-signal/valuation-candidate", "@/lib/equity-signal/review-evidence-revision"].includes(name)) return loadTsModule(name);
   if (["@/lib/ai-committee/review-policy", "@/lib/equity-signal/us-market-calendar"].includes(name)) return loadTsModule(name);
   if (name === "@/lib/opportunity-engine/pr262-ai-daily-cost") return loadTsModule(name, { "@/lib/r2-warehouse": {} });
   throw new Error(`Unexpected runner import: ${name}`);
@@ -147,7 +147,7 @@ const runEquitySignalLab = async input => cjsModule.exports.runEquitySignalLab({
     universe: (await stubs["@/lib/equity-signal/universe"].loadEquityUniverse()).snapshot,
     receipts: [receipt], providers: [provider("official_events"), haltProvider], historicalSignalsComplete: true,
     ...input.targetedContext,
-    storedCompanyAnalysis: { currency: "USD", industry: "Application software", fairValue: { conservativeValue: 80, baseValue: 120, optimisticValue: 140 } },
+    storedCompanyAnalysis: input.targetedContext?.storedCompanyAnalysis ?? { currency: "USD", industry: "Application software", fairValue: { conservativeValue: 80, baseValue: 120, optimisticValue: 140 } },
   },
 });
 
@@ -373,4 +373,21 @@ assert.equal(missingProfile.openAiCalled, false, "Unverified products and custom
 assert.equal(missingProfile.seriousSignalFound, false);
 const wrongIssuerProfile = await runEquitySignalLab({ ...researchInput, resolveCompanyProfile: async identity => companyProfileFixture({ ...identity, cik: "0000000002" }, researchInput.now) });
 assert.equal(wrongIssuerProfile.status, "candidate_company_profile_pending", "The real profile validator must reject another issuer's profile");
+restore();
+candidate.fundamentals.sourceUrl = "https://data.sec.gov/api/xbrl/companyfacts/CIK0000000001.json";
+candidate.fundamentals.items.push({ metric: "net_income", value: -1000000, unit: "USD", filedAt: "2026-07-21", periodEnd: "2026-06-30", form: "10-Q" });
+const lossInput = { ...researchInput, targetedContext: { ...researchInput.targetedContext,
+  storedCompanyAnalysis: { currency: "USD", industry: "Biotechnology", fairValue: { methods: [], baseValue: null, conservativeValue: null, optimisticValue: null } } } };
+const eventWithoutFairValue = await runEquitySignalLab(lossInput);
+assert.equal(eventWithoutFairValue.status, "serious_buy", "A loss-making company can pass the real runner after complete event evidence and mocked unanimous Committee approval, without a fair value");
+assert.equal(eventWithoutFairValue.selectedCandidate.valuationRange.baseValue, null);
+quoteActionable = false;
+assert.equal((await runEquitySignalLab(lossInput)).seriousSignalFound, false, "The valuation exception cannot bypass current-price checks");
+quoteActionable = true;
+committeeFails = true;
+assert.equal((await runEquitySignalLab(lossInput)).seriousSignalFound, false, "The valuation exception cannot bypass Committee completion");
+committeeFails = false;
+candidate.fundamentals.items.at(-1).value = 1000000;
+assert.equal((await runEquitySignalLab(lossInput)).status, "candidate_alert_details_pending", "Missing values for a profitable issuer cannot activate the loss exception");
+restore();
 console.log(JSON.stringify({ ok: true, eventQualifiedAtZeroPercentMove: true, cryptoDisabled: true, priorMoveNotRequired: true, strictCommitteeStillRequired: true, historyNeverBlocksCurrentEvidence: true, targetedCurrentEvidenceCanReachCommitteeWithoutHistory: true, paidCommitteeFailureRetainsCostReservation: true, staleQuoteCannotBecomeActionable: true, unknownHaltStateForcesWatch: true, historyStillStoredAndRefined: true, strongHistoryStillImprovesForecastContext: true, noWritesOrPublishing: true }, null, 2));

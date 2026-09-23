@@ -103,6 +103,7 @@ export async function enrichCandidateFundamentals(candidate: ImpactCandidate | n
     const provider: ProviderResult = { provider: "sec_company_facts", status: candidate ? "not_configured" : "not_due", checkedAt: null, nextRetryAt: null, sourceUrls: sourceUrl ? [sourceUrl] : [], receipts: [], recordsRead: 0, error: candidate ? "candidate_has_no_sec_cik_mapping" : null, entitlementVerified: true, cached: false };
     return { candidate, provider };
   }
+  let reusableSaved: VerifiedFactsSnapshot | null = null;
   try {
     const saved = await cache?.read(candidate.cik).catch(() => null);
     const checked = Date.parse(saved?.fundamentals.checkedAt ?? "");
@@ -111,9 +112,13 @@ export async function enrichCandidateFundamentals(candidate: ImpactCandidate | n
       && Number.isFinite(Date.parse(item.filedAt ?? "")) && Date.parse(item.filedAt!) <= now.getTime()
       && Number.isFinite(Date.parse(item.periodEnd ?? "")) && Date.parse(item.periodEnd!) <= now.getTime());
     const requestedFactsPresent = (cache?.requiredMetrics ?? []).every(metric => saved?.fundamentals.items.some(item => item.metric === metric));
-    if (saved?.cik === candidate.cik && saved.fundamentals.sourceUrl === sourceUrl && saved.fundamentals.available && datedFacts && requestedFactsPresent && Number.isFinite(checked)
+    if (saved?.cik === candidate.cik && saved.fundamentals.sourceUrl === sourceUrl && saved.fundamentals.available && datedFacts && Number.isFinite(checked)
       && checked <= now.getTime() && now.getTime() - checked <= 6 * 60 * 60_000
       && (candidate.eventFamily === "valuation_gap" || checked >= eventAt)) {
+      reusableSaved = saved;
+    }
+    if (reusableSaved && requestedFactsPresent) {
+      const saved = reusableSaved;
       candidate.fundamentals = structuredClone(saved.fundamentals);
       if (candidate.eventFamily !== "valuation_gap") applyCompanyScale(candidate, saved.annualRevenue, sourceUrl, now);
       const provider: ProviderResult = { provider: "sec_company_facts", status: "connected", checkedAt: saved.fundamentals.checkedAt, nextRetryAt: null, sourceUrls: [sourceUrl], receipts: [], recordsRead: saved.fundamentals.items.length, error: null, entitlementVerified: true, cached: true, cacheAgeMs: now.getTime() - checked };
@@ -149,8 +154,12 @@ export async function enrichCandidateFundamentals(candidate: ImpactCandidate | n
   } catch (error) {
     const message = error instanceof Error ? error.message.slice(0, 160) : "sec_company_facts_failed";
     const status = /cadence_guard|rolling_quota_guard/.test(message) ? "not_due" as const : /429|rate/i.test(message) ? "rate_limited" as const : "temporarily_unavailable" as const;
-    candidate.fundamentals = { available: false, sourceUrl, checkedAt: now.toISOString(), latestFiledAt: null, fiscalPeriodEnd: null, items: [], error: message };
-    const provider: ProviderResult = { provider: "sec_company_facts", status, checkedAt: null, nextRetryAt: null, sourceUrls: [sourceUrl], receipts: [], recordsRead: 0, error: status === "not_due" ? null : message, entitlementVerified: true, cached: false };
+    // A failed request for an additional field does not invalidate the other
+    // verified facts. Preserve their actual observation time and the gap.
+    candidate.fundamentals = reusableSaved ? { ...structuredClone(reusableSaved.fundamentals), error: `refresh_incomplete:${message}` }
+      : { available: false, sourceUrl, checkedAt: now.toISOString(), latestFiledAt: null, fiscalPeriodEnd: null, items: [], error: message };
+    if (reusableSaved && candidate.eventFamily !== "valuation_gap") applyCompanyScale(candidate, reusableSaved.annualRevenue, sourceUrl, now);
+    const provider: ProviderResult = { provider: "sec_company_facts", status, checkedAt: reusableSaved?.fundamentals.checkedAt ?? null, nextRetryAt: null, sourceUrls: [sourceUrl], receipts: [], recordsRead: candidate.fundamentals.items.length, error: status === "not_due" ? null : message, entitlementVerified: true, cached: Boolean(reusableSaved) };
     return { candidate, provider };
   }
 }

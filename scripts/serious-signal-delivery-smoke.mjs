@@ -452,7 +452,10 @@ try {
   assert.match(lossDelivery.message, /Recorded price: USD 42/);
   assert.doesNotMatch(lossDelivery.message, /undefined|null%|Conservative:|Base:/, "Unknown targets and returns must not become malformed prices");
   const lossFeed = await getSeriousSignalStatus({ now: wallNow, hours: 48 });
-  assert.equal(lossFeed.alerts.find(alert => alert.ticker === "LOSS")?.outlook.fairValueUnavailable.reason, "negative_earnings", "The notice survives the delivered Serious Signal feed");\n  const delayedLossFeed = await getSeriousSignalStatus({ now: new Date(wallNow.getTime() + 7 * 3600000), hours: 48 });\n  assert.equal(delayedLossFeed.alerts.find(alert => alert.ticker === "LOSS")?.outlook.fairValueUnavailable.reason, "negative_earnings",\n    "A delivered loss notice must survive beyond the six-hour collection-cache window");
+  assert.equal(lossFeed.alerts.find(alert => alert.ticker === "LOSS")?.outlook.fairValueUnavailable.reason, "negative_earnings", "The notice survives the delivered Serious Signal feed");
+  const delayedLossFeed = await getSeriousSignalStatus({ now: new Date(wallNow.getTime() + 7 * 3600000), hours: 48 });
+  assert.equal(delayedLossFeed.alerts.find(alert => alert.ticker === "LOSS")?.outlook.fairValueUnavailable.reason, "negative_earnings",
+    "A delivered loss notice must survive beyond the six-hour collection-cache window");
 } finally {
   globalThis.fetch = originalFetch;
   for (const key of Object.keys(process.env)) if (!(key in originalEnvironment)) delete process.env[key];

@@ -27,7 +27,7 @@ const peers = Array.from({ length: 10 }, (_, i) => make({ ticker: `P${i}`, compa
 const deferred = coverage.completeValuationCoverage([lossMaking, ...peers])[0];
 assert.equal(deferred.valuationCoverage.status, "negative_earnings_deferred");
 assert.equal(deferred.fairValue.baseValue, null, "Do not fill loss-making issuers with peer guesses merely to raise coverage");
-const mixedLoss = make({ dilutedEpsTtm: 0.25, netIncome: -50e6, freeCashFlow: -20e6, priceToSales: 1.5 });
+const mixedLoss = { ...target, fundamentals: { ...target.fundamentals, dilutedEpsTtm: 0.25, netIncome: -50e6 } };
 const mixedDeferred = coverage.completeValuationCoverage([mixedLoss, ...peers])[0];
 assert.equal(mixedDeferred.valuationCoverage.status, "negative_earnings_deferred", "Negative net income must not be hidden by non-negative EPS");
 assert.equal(mixedDeferred.fairValue.baseValue, null, "Mixed earnings metrics must not generate a peer-comparison fair value");

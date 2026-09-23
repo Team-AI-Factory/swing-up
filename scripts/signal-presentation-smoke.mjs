@@ -26,12 +26,19 @@ assert.equal(make("buy", 200, 100, 80, 150).potentialPercent, null, "An erased b
 const ordered = [
   { ticker: "RISK", action: "watch_out", outlook: make("watch_out"), risk: 100 },
   { ticker: "SELL", action: "sell", outlook: sell },
+  { ticker: "SELL80", alertType: "sell", outlook: make("sell", 100, 20, 10, 30) },
   { ticker: "UNKNOWN", action: "buy", outlook: make("buy", 0) },
   { ticker: "BUY50", action: "buy", outlook: buy },
   { ticker: "BUY10", action: "buy", outlook: make("buy", 100, 110, 80, 120) },
   { ticker: "REJECTED", action: "buy", outlook: buy, committeeStatus: "rejected" },
 ].sort(compareSignalPotential);
-assert.deepEqual(ordered.map(row => row.ticker), ["BUY50", "BUY10", "UNKNOWN", "SELL", "RISK", "REJECTED"]);
+assert.deepEqual(ordered.map(row => row.ticker), ["SELL80", "BUY50", "SELL", "BUY10", "UNKNOWN", "RISK", "REJECTED"],
+  "Buy and Sell must share a highest-percentage-first ranking, including the Serious feed's alertType field");
+for (const invalidPotential of [NaN, Infinity, -5, null]) {
+  const invalidRow = { action: "buy", ticker: "BAD", outlook: { ...buy, potentialPercent: invalidPotential } };
+  assert.ok(compareSignalPotential(invalidRow, { action: "sell", outlook: sell }) > 0,
+    "Invalid or unavailable returns cannot displace a supported opportunity");
+}
 const forecast = candidatePriceOutlook({ direction: "upside", currency: "USD", quote: { price: 100 }, timeHorizon: "hours_to_10_trading_days", priceForecast: { status: "provisional", lowPrice: 90, medianPrice: 110, highPrice: 130, horizon: "7D" } });
 assert.equal(forecast.horizon, "7 calendar days from the price observation");
 assert.equal(forecast.basis, "historical_scenarios");
@@ -76,6 +83,9 @@ assert.doesNotMatch(feed[1].explanation.whatHappened, /Official|SEC|PROSPECTUS/)
 assert.equal(feed[1].committeeApproved, false);
 assert.equal(assemblePublicSignals([candidate], [event], "approved").length, 0);
 assert.equal(assemblePublicSignals([candidate], [event], "sell")[0].id, "event");
+const largerSell = { ...event, id: "sell-80", outlook: make("sell", 100, 20, 10, 30), fairValue: 20 };
+assert.deepEqual(assemblePublicSignals([candidate], [largerSell]).map(row => row.id), ["sell-80", "buy-1"],
+  "The public feed must put a supported 80% decline before a 50% rise");
 
 // A valuation review cannot keep an obsolete quote or transfer its approval to
 // a fresh price, even when the underlying daily valuation has not changed.

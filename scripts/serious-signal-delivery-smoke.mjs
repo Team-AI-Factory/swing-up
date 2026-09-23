@@ -459,6 +459,22 @@ try {
   const delayedLossFeed = await getSeriousSignalStatus({ now: new Date(wallNow.getTime() + 7 * 3600000), hours: 48 });
   assert.equal(delayedLossFeed.alerts.find(alert => alert.ticker === "LOSS")?.outlook.fairValueUnavailable.reason, "negative_earnings",
     "A delivered loss notice must survive beyond the six-hour collection-cache window");
+  for (const [ticker, direction, baseValue] of [["GAIN50", "upside", 63], ["DROP80", "downside", 8.4]]) {
+    const rankedOutbox = validOutbox(ticker, wallNow.toISOString());
+    rankedOutbox.alertType = direction === "upside" ? "buy" : "sell";
+    rankedOutbox.candidate.direction = direction;
+    rankedOutbox.candidate.quote.observedAt = observedAt;
+    rankedOutbox.candidate.valuationRange = { conservativeValue: baseValue * 0.8, baseValue, optimisticValue: baseValue * 1.2 };
+    const key = `${prefix}serious-signal/outbox/event-job/${rankedOutbox.alertType}/${ticker}/fingerprint.json`;
+    await write(key, rankedOutbox, { createOnly: true });
+    assert.equal((await deliverSeriousSignalOutbox(key, { now: wallNow })).ok, true);
+  }
+  const rankedFeed = await getSeriousSignalStatus({ now: wallNow, hours: 48, limit: 1 });
+  assert.equal(rankedFeed.alerts[0].ticker, "DROP80", "Serious alerts rank Buy/Sell together before applying the display limit");
+  assert.equal(rankedFeed.alerts[0].outlook.potentialPercent, 80);
+  const completeRankedFeed = await getSeriousSignalStatus({ now: wallNow, hours: 48 });
+  assert.deepEqual(completeRankedFeed.alerts.filter(alert => ["GAIN50", "DROP80", "LOSS"].includes(alert.ticker)).map(alert => alert.ticker),
+    ["DROP80", "GAIN50", "LOSS"], "The negative-earnings exception remains visible after supported percentages");
 } finally {
   globalThis.fetch = originalFetch;
   for (const key of Object.keys(process.env)) if (!(key in originalEnvironment)) delete process.env[key];

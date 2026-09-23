@@ -61,6 +61,9 @@ jobs:
           npm run smoke:pr262-ai-daily-cost-fuse
           npm run smoke:pr262-analysis-only-orchestrator
           npm run smoke:pr262-sensor-queue-hygiene
+          node scripts/pr262-backlog-readiness-smoke.mjs
+          node scripts/pr262-profile-recovery-capacity-smoke.mjs
+          node scripts/pr262-pending-queue-fresh-start-smoke.mjs
           npm run smoke:pr262-trade-halt-snapshot
           npm run smoke:pr262-lightweight-sensor-v3-bootstrap
           npm run smoke:pr262-production-foundation

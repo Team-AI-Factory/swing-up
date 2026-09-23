@@ -1,5 +1,15 @@
 # Backlog recovery: 23 September 2026
 
+## Latest continuation: shared Buy/Sell ranking and reset hold
+
+GitHub publishing access was verified on 23 September. This continuation builds on PR305 head `27bcda621a47d18a080c9573c9f8edf831b0f363`, including its cost-preserving capacity limits and preview isolation fixes; it does not restore the earlier proposed capacity increases.
+
+Provisional, valuation-watchlist and authenticated Serious feeds now rank Buy and Sell together by the supported percentage move to the base estimate, highest first. Sell uses the percentage decline from the displayed price; it is not a return calculated against the lower target price. Unsupported targets remain unavailable and follow numeric opportunities. Watch Out follows Buy/Sell. API ranking happens before limits, and client refreshes use the same comparator. Tests exercise an 80% Sell ahead of a 50% Buy through actual public-feed assembly and Serious-feed delivery, including a one-item limit.
+
+The standalone fresh-start script was corrected to accept the real version-2 sensor queue and to retain the original scan timestamp. Its tests obtain the schema from the actual sensor reader and verify backups, preserved history, concurrent arrivals and interrupted-run recovery. It is not invoked by ordinary application deployment. Automatic approval review rejected executing the production reset because it removes pending events and required explicit approval for that operation. Do not retry the reset through another route or create a new reset ID. The reset service's next-start command was changed to an inert approval-pending message; no completed reset is claimed.
+
+The binding budget remains $20 total per month across providers. Keep paid Committee review disabled and retain existing production schedules, replicas, request quotas and two-profile/12-admission limits until measured all-provider costs establish headroom. Passing tests and deployment do not prove profile completeness or genuine Serious Alert delivery. Observe actual completed cycles and report missing evidence, same-evidence locks and the paid-review hold separately.
+
 ## Verified production diagnosis
 
 Between 22 September 05:05 UTC and 23 September 03:18 UTC, 111 logged sensor/recovery cycles returned HTTP 200. They recorded 14 paid Committee attempts and no approved Serious Alerts. Complete event diagnostics independently verified 12 completed reviews; two attempts lacked complete diagnostics because long log lines were truncated. The queue grew from 213 to 408. Company-profile gaps accounted for 532 of 612 repeated deferrals.

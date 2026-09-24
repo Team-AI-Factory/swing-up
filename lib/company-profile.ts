@@ -1,5 +1,5 @@
 /** Company descriptions must be extracts from a dated, identity-verified source. */
-export const COMPANY_PROFILE_PARSER_REVISION = 5;
+export const COMPANY_PROFILE_PARSER_REVISION = 6;
 export type CompanyIdentity = { ticker?: unknown; company?: unknown; cik?: unknown };
 export type VerifiedCompanyProfile = {
   version: 1; status: "verified"; ticker: string; company: string; cik: string;
@@ -80,7 +80,7 @@ function customerDescriptionRank(sentence: string, identity: CompanyIdentity) {
   const explicit = sentence.match(customerPredicate);
   const direct = new RegExp(`^${issuerSubject(identity)}\\s+(?:(?:primarily|mainly|principally)\\s+)?(?:serves?\\s+|(?:sells?|provides?|offers?|suppl(?:y|ies)|delivers?)\\s+.{1,220}?\\s+to\\s+)(.+)`, "i");
   const relationship = /^We have (?:well-established |established |long-standing )?relationships with (.+?), which we serve\b/i;
-  const passiveProducts = /^Our (?:[\w-]+\s+){0,5}products\s+are\s+(?:also\s+)?(?:sold|offered|distributed|marketed|supplied)\s+(?:primarily\s+)?(?:through|to)\s+(.+)/i;
+  const passiveProducts = /^Our (?:[\w-]+\s+){0,5}(?:products(?: and services)?|services(?: and products)?)\s+are\s+(?:also\s+)?(?:sold|offered|distributed|marketed|supplied)\s+(?:primarily\s+)?(?:through|to)\s+(.+)/i;
   const providerMarkets = new RegExp(`^${issuerSubject(identity)}\\s+(?:is|are)\\s+.{0,100}\\b(?:provider|supplier|manufacturer|distributor)\\b.{0,150}\\bto\\s+customers\\s+in\\s+(.+)`, "i");
   const contextual = sentence.replace(/^Within our reportable segments,\s*/i, "");
   const recipient = explicit?.[1] ?? contextual.match(direct)?.[1] ?? sentence.match(relationship)?.[1]
@@ -145,13 +145,17 @@ export function annualBusinessText(html: string, form: string) {
 }
 
 /** Select whole source sentences. No generated product or customer claims. */
-export function extractCompanyProfile(input: { identity: CompanyIdentity; html: string; form: string; sourceUrl: string; filedAt: string; now: Date }) {
+type ProfileExtractionInput = { identity: CompanyIdentity; html: string; form: string; sourceUrl: string; filedAt: string; now: Date };
+export function inspectCompanyProfileExtraction(input: ProfileExtractionInput) {
   const section = annualBusinessText(input.html, input.form);
+  if (!section) return { profile: null, reason: "company_profile_business_section_missing" };
   const paragraphs = section.split(/\n+/);
   // Join only actual adjacent list items after a customer-list introduction.
   // An empty heading still fails; preserve every word of the source list.
   const sourceParagraphs = paragraphs.map((paragraph, index) => {
-    if (!/^(?:Our |The company's )?(?:primary |principal |main )?(?:customers|clients|end markets)\s+(?:include|comprise|are|consist of)(?: the following)?\s*:\s*$/i.test(paragraph)) return paragraph;
+    const customerList = /^(?:Our |The company's )?(?:primary |principal |main )?(?:customers|clients|end markets)\s+(?:include|comprise|are|consist of)(?: the following)?\s*:\s*$/i.test(paragraph);
+    const businessList = new RegExp(`^${issuerSubject(input.identity)}\\s+(?:provides?|offers?|manufactures?|sells?)\\s+.{0,150}(?:the following|as follows|lines of business)\\s*:\\s*$`, "i").test(paragraph);
+    if (!customerList && !businessList) return paragraph;
     const items: string[] = [];
     for (const next of paragraphs.slice(index + 1, index + 9)) {
       if (!/^(?:[•●▪‣-]|\(?[a-z0-9]{1,2}[.)])\s+/i.test(next) || next.length > 180) break;
@@ -171,8 +175,15 @@ export function extractCompanyProfile(input: { identity: CompanyIdentity; html: 
     .sort((a, b) => b.rank - a.rank)[0]?.sentence;
   const customers = useful.map(sentence => ({ sentence, rank: customerDescriptionRank(sentence, input.identity) }))
     .filter(candidate => candidate.rank > 0).sort((a, b) => b.rank - a.rank)[0]?.sentence;
-  if (!business || !customers) return null;
-  return verifiedCompanyProfile({ version: 1, status: "verified", ticker: text(input.identity.ticker).toUpperCase(), company: text(input.identity.company),
+  if (!business || !customers) return { profile: null, reason: !business && !customers ? "company_profile_business_and_customers_not_extracted"
+    : !business ? "company_profile_business_not_extracted" : "company_profile_customers_not_extracted" };
+  const profile = verifiedCompanyProfile({ version: 1, status: "verified", ticker: text(input.identity.ticker).toUpperCase(), company: text(input.identity.company),
     cik: profileCik(input.identity.cik), business, customers, description: business === customers ? business : `${business} ${customers}`,
     sourceType: "sec_annual_filing", sourceUrl: input.sourceUrl, sourceFiledAt: input.filedAt, verifiedAt: input.now.toISOString() }, input.identity, input.now);
+  return { profile, reason: profile ? null : "company_profile_identity_or_freshness_invalid" };
+}
+
+/** Select whole source sentences. No generated product or customer claims. */
+export function extractCompanyProfile(input: ProfileExtractionInput) {
+  return inspectCompanyProfileExtraction(input).profile;
 }

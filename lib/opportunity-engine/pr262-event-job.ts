@@ -1762,7 +1762,8 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
   const clock = input.clock ?? (input.now ? () => input.now! : () => new Date());
   const now = input.now ?? clock();
   const fetchImpl = input.fetchImpl ?? fetch;
-  const allowOpenAi = input.allowOpenAi ?? process.env.SWING_UP_PR262_EVENT_JOB_OPENAI_ENABLED === "true";
+  const allowOpenAi = (input.allowOpenAi ?? process.env.SWING_UP_PR262_EVENT_JOB_OPENAI_ENABLED === "true")
+    && process.env.SWING_UP_PR262_EVENT_JOB_OPENAI_ENABLED !== "false" && process.env.AI_COMMITTEE_ENABLED !== "false";
   const event = await readNextPr262PendingSensorEvent({
     now,
     minimumPriority: 80,
@@ -2140,7 +2141,11 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
           : source === collectedSource && (source.decisionGrade || researchSourceUsable) ? sourceCollectionFinishedAt : null },
     }).catch(error => ({ evidenceFollowupScheduled: Boolean(priorFollowup.status === "collecting_evidence" || report.status === "candidate_needs_more_data"), nextEvidenceCheckAt: new Date(now.getTime() + 15 * 60000).toISOString(), error: error instanceof Error ? error.message.slice(0, 180) : "evidence_progress_write_failed" }));
     const retryClassificationAllowsAi = event.source === "market_price" ? allowOpenAi : effectiveAllowOpenAi;
-    const reservationBlocker = report.status === "qualified_signal_openai_reservation_denied"
+    const committeeDisabled = report.technicalFailureFingerprint === "ai_committee_disabled"
+      || (report.status === "qualified_signal_openai_not_requested"
+        && (process.env.AI_COMMITTEE_ENABLED === "false" || process.env.SWING_UP_PR262_EVENT_JOB_OPENAI_ENABLED === "false"));
+    const reservationBlocker = committeeDisabled ? "committee_disabled"
+      : report.status === "qualified_signal_openai_reservation_denied"
       ? pr262ReservationBlocker(committeeBlockedReason)
       : report.status === "committee_provider_access_blocked" ? "ai_provider"
       : report.status === "qualified_signal_openai_not_requested" && input.aiReservationBlockedReason?.()

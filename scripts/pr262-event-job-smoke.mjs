@@ -1117,6 +1117,29 @@ assert.equal(cycleStartBudgetDenied.blockerCategory, "ai_budget");
 assert.equal(cycleStartReservationCalls, 0, "A cycle-start full fuse must not attempt a second reservation.");
 assert.equal(lastRetryMutation.nextRetryAt, exactGlobalBudgetRetryAt, "A cycle-start full fuse must wait for its exact cumulative capacity boundary.");
 
+// An explicit deployed cost hold is stronger than an individual caller's allow flag.
+const savedCommitteeFlag = process.env.AI_COMMITTEE_ENABLED;
+const savedEventAiFlag = process.env.SWING_UP_PR262_EVENT_JOB_OPENAI_ENABLED;
+try {
+  for (const flag of ["AI_COMMITTEE_ENABLED", "SWING_UP_PR262_EVENT_JOB_OPENAI_ENABLED"]) {
+    process.env[flag] = "false";
+    committeeFingerprint = `fingerprint-held-${flag}`;
+    setSecEventIdentity(flag === "AI_COMMITTEE_ENABLED" ? "000071" : "000072", "2026-08-11T10:09:00.000Z");
+    let heldReservations = 0;
+    const held = await runPr262EventJob({ now: new Date("2026-08-11T10:10:00.000Z"), allowOpenAi: true,
+      beforeOpenAiCall: async () => { heldReservations++; return true; } });
+    assert.equal(held.openAiCalled, false);
+    assert.equal(heldReservations, 0);
+    assert.equal(held.blockerCategory, "committee_disabled");
+    assert.match(lastRetryMutation.error, /blocker=committee_disabled/);
+    assert.equal(held.eventsProcessed, 0, "Parking a held review is not a completed analysis");
+    delete process.env[flag];
+  }
+} finally {
+  if (savedCommitteeFlag === undefined) delete process.env.AI_COMMITTEE_ENABLED; else process.env.AI_COMMITTEE_ENABLED = savedCommitteeFlag;
+  if (savedEventAiFlag === undefined) delete process.env.SWING_UP_PR262_EVENT_JOB_OPENAI_ENABLED; else process.env.SWING_UP_PR262_EVENT_JOB_OPENAI_ENABLED = savedEventAiFlag;
+}
+
 runnerResultMode = "market_quote_unavailable";
 committeeFingerprint = "fingerprint-quote-unavailable";
 setSecEventIdentity("000013", "2026-08-11T10:10:00.000Z");

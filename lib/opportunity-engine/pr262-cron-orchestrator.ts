@@ -21,7 +21,7 @@ import {
   type Pr262PendingSensorEventMutation,
 } from "@/lib/opportunity-engine/pr262-change-sensor";
 import { runPr262EventJob, warmPr262CompanyProfiles } from "@/lib/opportunity-engine/pr262-event-job";
-import { readPr262QueueAdmissionPlan } from "@/lib/opportunity-engine/pr262-queue-readiness";
+import { readPr262QueueAdmissionPlan, unavailablePr262QueueAdmissionPlan } from "@/lib/opportunity-engine/pr262-queue-readiness";
 import { pr262QueueBlocker } from "@/lib/opportunity-engine/pr262-review-blockers";
 import { runPr262LightweightSensorV3 } from "@/lib/opportunity-engine/pr262-lightweight-sensor-v3";
 import { createPr262SensorBudgetedFetch } from "@/lib/opportunity-engine/pr262-sensor-fetch-budget";
@@ -263,11 +263,8 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
     ? await warmPr262CompanyProfiles(new Date(), profileFetch, profileSignal).catch(() => ({ attempted: 0, verified: 0, status: "temporarily_unavailable" }))
     : { attempted: 0, verified: 0, status: "cycle_deadline_reserve" };
   assertCycleActive();
-  const admissionPlan = await readPr262QueueAdmissionPlan(state.pending, new Date()).catch(() => ({
-    status: "temporarily_unavailable" as const, profileReadyCount: null, profileBlockedCount: null,
-    blockerCounts: null, freshAuthoritativeReadyCount: null, oldestProfileReadyAgeMinutes: null,
-    discoveryAllowance: null, preferredEventIds: undefined, readyProfileEventIds: undefined, excludedEventIds: [] as string[], eventsDeleted: 0,
-  }));
+  const admissionPlan = await readPr262QueueAdmissionPlan(state.pending, new Date())
+    .catch(() => unavailablePr262QueueAdmissionPlan(state.pending));
   const eventResults: Json[] = [];
   const notificationResults: Json[] = [];
   const aiCostResults: Json[] = [];
@@ -286,8 +283,10 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
   let deadlineStoppedAdmissions = false;
   const queueMutations: Pr262PendingSensorEventMutation[] = [];
   const excludedEventIds = new Set<string>(admissionPlan.excludedEventIds);
+  const committeePaused = process.env.AI_COMMITTEE_ENABLED === "false" || process.env.SWING_UP_PR262_EVENT_JOB_OPENAI_ENABLED === "false";
 
   for (let index = 0; index < capacity; index += 1) {
+    if (admissionPlan.preferredEventIds?.length === 0) break;
     const remainingMs = processingDeadlineAtMs - Date.now();
     if (remainingMs < MIN_EVENT_START_BUDGET_MS || cycleSignal.aborted) {
       deadlineStoppedAdmissions = true;
@@ -307,7 +306,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
         preferValuation: !admissionPlan.preferredEventIds && index === 1,
         preferredEventIds: admissionPlan.preferredEventIds,
         readyProfileEventIds: admissionPlan.readyProfileEventIds,
-        allowOpenAi: aiBudget.allowed && aiBudget.accountingHealthy && !providerBlockedReason,
+        allowOpenAi: !committeePaused && aiBudget.allowed && aiBudget.accountingHealthy && !providerBlockedReason,
         aiProviderBlockedReason: providerBlockedReason ?? undefined,
         excludedEventIds: [...excludedEventIds],
         queueMutationSink: (mutation) => {
@@ -315,6 +314,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
           excludedEventIds.add(mutation.eventId);
         },
         beforeOpenAiCall: async (reservation) => {
+          if (committeePaused) { aiReservationBlockedReason = "committee_disabled"; return false; }
           if (providerBlockedReason) { aiReservationBlockedReason = "provider_access"; return false; }
           try {
             const reserved = await reservePr262AiCommitteeBudget({
@@ -542,6 +542,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
     && (recoveryStatus.skipped === true || recoveryStatus.ok === true);
   const operationalOk = (sensor?.ok ?? true)
     && mappingHealthy
+    && admissionPlan.status === "checked"
     && eventFailures === 0
     && queuePersistenceHealthy
     && aiBudget.accountingHealthy
@@ -617,6 +618,9 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
       capacity,
       readiness: { status: admissionPlan.status, profileReadyCount: admissionPlan.profileReadyCount,
         profileBlockedCount: admissionPlan.profileBlockedCount, discoveryAllowance: admissionPlan.discoveryAllowance,
+        profileBlockedCompanyCount: admissionPlan.profileBlockedCompanyCount, parkedProfileEventCount: admissionPlan.parkedProfileEventCount,
+        committeeHeldCount: admissionPlan.committeeHeldCount, oldestProfileReadyQueueWaitMinutes: admissionPlan.oldestProfileReadyQueueWaitMinutes,
+        profileReadyQueueAgeUnknownCount: admissionPlan.profileReadyQueueAgeUnknownCount,
         blockerCounts: admissionPlan.blockerCounts, freshAuthoritativeReadyCount: admissionPlan.freshAuthoritativeReadyCount,
         oldestProfileReadyAgeMinutes: admissionPlan.oldestProfileReadyAgeMinutes, eventsDeleted: 0 },
       deferralBlockerCounts: eventResults.filter(result => result.nonterminal === true || result.status === "event_job_deferred")

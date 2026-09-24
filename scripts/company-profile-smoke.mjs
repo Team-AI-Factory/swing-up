@@ -79,6 +79,21 @@ for (const business of businessDecoys) {
 // The live EG card exposed this source-list heading without the product list.
 const unfinishedBusiness = "Our company provides products for the following lines of business:";
 assert.equal(extractSentences(unfinishedBusiness, fixture.customers), null, "An unfinished product list cannot verify a company profile");
+const completeProductList = `${unfinishedBusiness}</p><ul><li>inventory management software</li><li>warehouse scheduling applications</li></ul><p>`;
+const listProfile = extractSentences(completeProductList, fixture.customers);
+assert.ok(listProfile, "Actual adjacent product list items complete the issuer's own business sentence");
+assert.match(listProfile.business, /inventory management software/);
+assert.match(listProfile.business, /warehouse scheduling applications/);
+assert.equal(extractSentences(`${unfinishedBusiness}</p><h3>Other companies</h3><ul><li>inventory management software</li></ul><p>`, fixture.customers), null,
+  "A heading between introduction and list must not attach unrelated products");
+const serviceCustomers = "Our services are offered primarily to hospitals, outpatient clinics and government agencies.";
+assert.equal(extractSentences(fixture.business, serviceCustomers)?.customers, serviceCustomers, "A service company's explicit buyers qualify without invented product claims");
+assert.equal(extractSentences(fixture.business, "Our services are offered primarily to help customers manage their information."), null);
+const extractionCheck = override => profile.inspectCompanyProfileExtraction({ identity, html, form: "10-K", sourceUrl: fixture.sourceUrl,
+  filedAt: fixture.sourceFiledAt, now, ...override });
+assert.equal(extractionCheck({ html: "No business section is present." }).reason, "company_profile_business_section_missing");
+assert.equal(extractionCheck({ html: html.replace(fixture.customers, "No single customer accounted for 10 percent of sales.") }).reason, "company_profile_customers_not_extracted");
+assert.equal(extractionCheck({ sourceUrl: fixture.sourceUrl.replace("/1/", "/2/") }).reason, "company_profile_identity_or_freshness_invalid");
 assert.equal(profile.verifiedCompanyProfile({ ...fixture, business: unfinishedBusiness, description: `${unfinishedBusiness} ${fixture.customers}` }, identity, now), null, "Incomplete cached descriptions invalidate immediately");
 assert.equal(extractSentences(`${unfinishedBusiness}</p><p>${fixture.business}`, fixture.customers)?.business, fixture.business, "Selection continues to the next complete operating description");
 const customerDecoys = [

@@ -8,17 +8,19 @@ if (!preview || !branch || branch.toLowerCase() === "main") {
   process.exit(1);
 }
 
+const webServiceId = "d02bf6e1-4140-418f-aa5c-b67dcc2d8d15";
+if (process.argv.includes("--workers-disabled") || process.env.RAILWAY_SERVICE_ID !== webServiceId) {
+  // No application module, network request, storage client or job is loaded.
+  // Inert workers do not need live credentials or a writable preview prefix.
+  console.log(`[railway-preview] workers_disabled environment=${environmentName} mode=ui_build_only`);
+  process.exit(0);
+}
+
 const expectedPrefix = `branch-labs/pr-${preview[1]}/`;
 if (process.env.SWING_UP_PR262_STORAGE_PREFIX !== expectedPrefix
   || process.env.SWING_UP_R2_WRITE_PREFIX !== expectedPrefix) {
   console.error("railway_preview_storage_prefix_mismatch");
   process.exit(1);
-}
-
-const webServiceId = "d02bf6e1-4140-418f-aa5c-b67dcc2d8d15";
-if (process.argv.includes("--workers-disabled") || process.env.RAILWAY_SERVICE_ID !== webServiceId) {
-  console.log(`[railway-preview] workers_disabled environment=${environmentName} mode=ui_build_only`);
-  process.exit(0);
 }
 
 const { spawn } = await import("node:child_process");

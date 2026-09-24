@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { loadTsModule } from "./helpers/load-typescript-module.mjs";
-const { planPr262QueueAdmissions: plan } = loadTsModule("@/lib/opportunity-engine/pr262-queue-readiness", {
+const { planPr262QueueAdmissions: plan, unavailablePr262QueueAdmissionPlan } = loadTsModule("@/lib/opportunity-engine/pr262-queue-readiness", {
   "@/lib/opportunity-engine/company-profile-cache": { readCompanyProfiles: async () => new Map() },
 });
 const now = new Date("2026-09-23T04:00:00Z");
@@ -14,11 +14,24 @@ const original = JSON.stringify(rows);
 const result = plan(rows, new Set([...incoming.map(row => row.ticker), old.ticker]), now);
 assert.equal(result.profileBlockedCount, 400);
 assert.equal(result.profileReadyCount, 8);
-assert.equal(result.excludedEventIds.length, 399, "Only one missing-profile case can occupy an expensive analysis slot.");
+assert.equal(result.excludedEventIds.length, 400, "Already examined issuers cannot repeatedly occupy expensive analysis slots.");
 assert.deepEqual(result.preferredEventIds.slice(0, 4), ["NEW0", "NEW1", "NEW2", "RETRY"], "New events must pass the retry backlog while retained evidence still gets a turn.");
-assert.equal(result.preferredEventIds.at(-1), "BLOCK0");
+assert.equal(result.discoveryAllowance, 0);
+assert.equal(result.profileBlockedCompanyCount, 400);
+assert.equal(result.parkedProfileEventCount, 400);
 assert.equal(JSON.stringify(rows), original, "Scheduling preserves every retained event and its attempt history.");
 assert.equal(result.eventsDeleted, 0);
+const discovery = event("FIRST");
+const repeatIssuer = event("ANOTHER", { ticker: "BLOCK0" });
+const withDiscovery = plan([...rows, discovery, repeatIssuer], new Set(incoming.map(row => row.ticker)), now);
+assert.equal(withDiscovery.preferredEventIds.at(-1), "FIRST", "A truly unexamined issuer still gets one discovery slot");
+assert.ok(withDiscovery.excludedEventIds.includes("ANOTHER"), "A new event cannot bypass an existing issuer's missing-profile hold");
+assert.equal(withDiscovery.profileBlockedCompanyCount, 402, "Multiple events for the same issuer count as one company");
+assert.equal(withDiscovery.discoveryAllowance, 1);
+const unavailable = unavailablePr262QueueAdmissionPlan(rows);
+assert.deepEqual(unavailable.preferredEventIds, [], "A failed readiness read must not admit the entire backlog");
+assert.equal(unavailable.excludedEventIds.length, rows.length);
+assert.equal(unavailable.eventsDeleted, 0);
 const waiting = event("RECOVERED", { queueAttempts: 5, queueLastError: "pr262_event_report_retry:candidate_company_profile_pending", queueNextAttemptAt: "2026-09-24T04:00:00Z" });
 assert.deepEqual(plan([waiting], new Set(["RECOVERED"]), now).readyProfileEventIds, ["RECOVERED"], "An actually recovered profile can wake its waiting event immediately.");
 assert.equal(plan([waiting], new Set(), now).preferredEventIds.length, 0, "Unresolved profiles cannot bypass backoff.");
@@ -39,6 +52,18 @@ const lockPlan = plan([...locked, ...incoming, ...missing], new Set([...locked, 
 for (const row of locked) assert.equal(lockPlan.blockerCounts[row.id], 1);
 assert.equal(lockPlan.blockerCounts.missing_profile, 400);
 assert.equal(lockPlan.profileReadyCount, 7, "Future review locks are not counted as ready work");
+const heldReview = event("HELD", { queueAttempts: 2, queueLastError: "pr262_event_report_retry:configuration_blocker:blocker=committee_disabled" });
+const legacyHeldReview = event("LEGACY", { queueAttempts: 2, queueLastError: "pr262_event_report_retry:configuration_blocker" });
+const pausedPlan = plan([heldReview, legacyHeldReview, ...incoming], new Set(["HELD", "LEGACY", ...incoming.map(row => row.ticker)]), now, { committeePaused: true });
+assert.equal(pausedPlan.committeeHeldCount, 2);
+assert.equal(pausedPlan.blockerCounts.committee_disabled, 2);
+assert.equal(pausedPlan.profileReadyCount, incoming.length, "Paused final review does not repeatedly consume source-analysis work");
+assert.ok(!pausedPlan.preferredEventIds.includes("HELD"));
+assert.ok(plan([heldReview], new Set(["HELD"]), now, { committeePaused: false }).preferredEventIds.includes("HELD"), "A lifted hold makes the retained event eligible again without any deletion");
+const exactAge = event("AGE", { firstQueuedAt: "2026-09-23T03:40:00Z", observedAt: "2026-09-22T04:00:00Z" });
+const agePlan = plan([exactAge, incoming[0]], new Set(["AGE", incoming[0].ticker]), now);
+assert.equal(agePlan.oldestProfileReadyQueueWaitMinutes, 20, "Publication age must not be reported as actual queue wait");
+assert.equal(agePlan.profileReadyQueueAgeUnknownCount, 1);
 const freshSec = event("NEWSEC", { source: "sec", priority: 90, cik: "0000001234", accession: "0000001234-26-000001",
   identityMethod: "official_sec_archive_link", canonicalSecIndexUrl: "https://www.sec.gov/Archives/edgar/data/1234/000000123426000001/0000001234-26-000001-index.html" });
 const freshValuation = event("VALUE", { source: "market_price", priority: 100 });

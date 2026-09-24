@@ -23,6 +23,7 @@ let advanceCycleClock = () => {};
 const recordedCostKeys = [];
 const releasedFingerprints = [];
 let mappingHealthy = true;
+let readinessUnavailable = false;
 let deliveryHealthy = true;
 let eventMode = "idle";
 let aiBudgetMode = "available";
@@ -73,8 +74,14 @@ const queueHygiene = {
 const stubs = {
   "@/lib/opportunity-engine/pr262-review-blockers": loadTsModule("@/lib/opportunity-engine/pr262-review-blockers"),
   "@/lib/opportunity-engine/pr262-queue-readiness": {
-    readPr262QueueAdmissionPlan: async () => ({ status: "checked", profileReadyCount: state.pending.length,
-      profileBlockedCount: 0, discoveryAllowance: 0, preferredEventIds: undefined, readyProfileEventIds: [], excludedEventIds: [], eventsDeleted: 0 }),
+    unavailablePr262QueueAdmissionPlan: loadTsModule("@/lib/opportunity-engine/pr262-queue-readiness", {
+      "@/lib/opportunity-engine/company-profile-cache": {},
+    }).unavailablePr262QueueAdmissionPlan,
+    readPr262QueueAdmissionPlan: async () => {
+      if (readinessUnavailable) throw new Error("synthetic_readiness_storage_failure");
+      return { status: "checked", profileReadyCount: state.pending.length,
+        profileBlockedCount: 0, discoveryAllowance: 0, preferredEventIds: undefined, readyProfileEventIds: [], excludedEventIds: [], eventsDeleted: 0 };
+    },
   },
   "@/lib/ai-committee/provider": {
     probeOpenAiCommitteeProviderAccess: async () => {
@@ -638,6 +645,18 @@ try {
   advanceCycleClock = () => {};
   eventMode = "idle";
 }
+
+readinessUnavailable = true;
+const eventsBeforeReadFailure = eventCalls;
+const reservationsBeforeReadFailure = paidReservationCalls;
+const queueBeforeReadFailure = JSON.stringify(state.pending);
+const unavailableCycle = await loaded.exports.runPr262AnalysisOnlyCycle({ maxCycleMs: 90_000 });
+assert.equal(unavailableCycle.ok, false, "Readiness storage failures must be visible to monitoring");
+assert.equal(unavailableCycle.processing.readiness.status, "temporarily_unavailable");
+assert.equal(eventCalls, eventsBeforeReadFailure, "Failed readiness must not trigger event jobs or provider calls");
+assert.equal(paidReservationCalls, reservationsBeforeReadFailure);
+assert.equal(JSON.stringify(state.pending), queueBeforeReadFailure, "The blocked cycle preserves all work");
+readinessUnavailable = false;
 
 console.log(JSON.stringify({
   ok: true,

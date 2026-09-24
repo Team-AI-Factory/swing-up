@@ -1,14 +1,14 @@
 import { setTimeout as pause } from "node:timers/promises";
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
-import { COMPANY_PROFILE_PARSER_REVISION, annualBusinessText, extractCompanyProfile, profileCik, sameCompanyName, verifiedCompanyProfile, type CompanyIdentity, type VerifiedCompanyProfile } from "@/lib/company-profile";
+import { COMPANY_PROFILE_PARSER_REVISION, annualBusinessText, extractCompanyProfile, inspectCompanyProfileExtraction, profileCik, sameCompanyName, verifiedCompanyProfile, type CompanyIdentity, type VerifiedCompanyProfile } from "@/lib/company-profile";
 const KEY = pr262StorageKey("research-evidence/company-profiles-v1.json");
 const UNIVERSE = pr262StorageKey("equity-universe/v1.json");
 type Json = Record<string, unknown>;
 const object = (v: unknown): Json => v && typeof v === "object" && !Array.isArray(v) ? v as Json : {};
 const text = (v: unknown) => typeof v === "string" ? v.trim() : "";
 type Filing = { url: string; form: string; filedAt: string; industry?: string; checkedAt?: string };
-type Entry = { ticker: string; company: string; cik: string; updatedAt: string; nextAttemptAt: string; profile: VerifiedCompanyProfile | null; filing?: Filing; error?: string; parserRevision?: number; cachedParserRevision?: number };
+type Entry = { ticker: string; company: string; cik: string; updatedAt: string; nextAttemptAt: string; profile: VerifiedCompanyProfile | null; filing?: Filing; error?: string; extractionFailure?: string; parserRevision?: number; cachedParserRevision?: number };
 async function load() {
   const saved = await readVersionedTextFromR2(KEY);
   const body = saved.found && saved.text ? object(JSON.parse(saved.text)) : {};
@@ -44,14 +44,17 @@ export async function readCompanyProfiles(identities: CompanyIdentity[], now = n
   const universe = universeSaved.found && universeSaved.text ? object(JSON.parse(universeSaved.text)) : {};
   if (universe.version !== 1 || universe.scope !== "active_us_exchange_listed_common_equities_and_adrs") return result;
   const listings = Array.isArray(universe.entries) ? universe.entries.map(object) : [];
+  const listingByTicker = new Map(listings.filter(row => Array.isArray(row.sourceNames) && row.sourceNames.includes("SEC company_tickers_exchange"))
+    .map(row => [row.ticker, row]));
+  const entryByIssuer = new Map(entries.map(entry => [`${entry.ticker}:${entry.cik}`, entry]));
   for (const identity of identities) {
     const ticker = text(identity.ticker).toUpperCase();
-    const listing = listings.find(row => row.ticker === ticker && Array.isArray(row.sourceNames) && row.sourceNames.includes("SEC company_tickers_exchange"));
+    const listing = listingByTicker.get(ticker);
     const cik = profileCik(listing?.cik);
     if (!cik || (identity.cik && profileCik(identity.cik) !== cik)) continue;
     const exact = { ticker, company: identity.company, cik };
-    const cached = entries.find(entry => same(entry, exact));
-    const verified = verifiedCompanyProfile(cached?.profile, exact, now);
+    const cached = entryByIssuer.get(`${ticker}:${cik}`);
+    const verified = cached && same(cached, exact) ? verifiedCompanyProfile(cached.profile, exact, now) : null;
     if (verified) result.set(ticker, verified);
   }
   return result;
@@ -145,7 +148,11 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
     entry.filing = filing;
     phase = "annual_filing";
     await store(entry);
-    const extract = (html: string) => extractCompanyProfile({ identity: exact, html, form: filing.form, sourceUrl: filing.url, filedAt: filing.filedAt, now });
+    const extract = (html: string) => {
+      const result = inspectCompanyProfileExtraction({ identity: exact, html, form: filing.form, sourceUrl: filing.url, filedAt: filing.filedAt, now });
+      entry.extractionFailure = result.reason ?? undefined;
+      return result.profile;
+    };
     // Reuse the exact annual business section across parser retries. It is
     // issuer/accession-specific and never substitutes another company's text.
     const sourceKey = pr262StorageKey(`research-evidence/company-profile-sources/${exact.cik}/${filing.url.split("/").slice(-2).join("-")}.json`);
@@ -171,8 +178,9 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
     return profile;
   } catch (error) {
     entry.error = error instanceof Error ? error.message.slice(0, 200) : "company_profile_fetch_failed";
+    if (entry.error !== "company_profile_products_and_customers_not_extracted") delete entry.extractionFailure;
     if (/products_and_customers_not_extracted|annual_filing_unavailable/.test(entry.error)) entry.nextAttemptAt = new Date(now.getTime() + 86400000).toISOString();
-    const reason = entry.error.match(/^company_profile_[a-z0-9_]+/i)?.[0]
+    const reason = entry.extractionFailure ?? entry.error.match(/^company_profile_[a-z0-9_]+/i)?.[0]
       ?? (/budget|quota|cadence/i.test(entry.error) ? "provider_budget_deferred" : error instanceof Error && error.name === "TimeoutError" ? "source_timeout" : "source_request_failed");
     console.info(JSON.stringify({ kind: "pr262_company_profile_result", ticker: exact.ticker, status: "pending", phase, reason }));
     const providerRetry = entry.error.match(/next_retry_at=([^;\s]+)/)?.[1];
@@ -183,10 +191,13 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
 }
 
 /** Re-read saved source text after a parser repair without spending SEC calls. */
-async function recoverCachedProfiles(entries: Entry[], listings: Json[], now: Date) {
+async function recoverCachedProfiles(entries: Entry[], listings: Json[], now: Date, queuedTickers: ReadonlySet<unknown> = new Set()) {
+  const listedIssuers = new Set(listings.filter(row => Array.isArray(row.sourceNames) && row.sourceNames.includes("SEC company_tickers_exchange"))
+    .map(row => `${row.ticker}:${profileCik(row.cik)}`));
   const eligible = entries.filter(entry => entry.filing && !entry.profile && entry.cachedParserRevision !== COMPANY_PROFILE_PARSER_REVISION
-    && listings.some(row => row.ticker === entry.ticker && profileCik(row.cik) === entry.cik
-      && Array.isArray(row.sourceNames) && row.sourceNames.includes("SEC company_tickers_exchange"))).slice(0, 20);
+    && listedIssuers.has(`${entry.ticker}:${entry.cik}`))
+    .sort((a, b) => Number(queuedTickers.has(b.ticker)) - Number(queuedTickers.has(a.ticker))
+      || Date.parse(a.updatedAt) - Date.parse(b.updatedAt)).slice(0, 20);
   const recovered: Entry[] = [];
   const checked: Entry[] = [];
   for (let start = 0; start < eligible.length; start += 4) {
@@ -232,13 +243,14 @@ export async function readCompanyProfileCoverage(now = new Date()) {
   const listings = (Array.isArray(universe.entries) ? universe.entries.map(object) : [])
     .filter(row => profileCik(row.cik) && Array.isArray(row.sourceNames) && row.sourceNames.includes("SEC company_tickers_exchange"));
   const errors: Record<string, number> = {};
+  const entryByIssuer = new Map(entries.map(entry => [`${entry.ticker}:${entry.cik}`, entry]));
   let verified = 0, industry = 0;
   for (const row of listings) {
-    const entry = entries.find(item => item.ticker === row.ticker && item.cik === profileCik(row.cik));
+    const entry = entryByIssuer.get(`${row.ticker}:${profileCik(row.cik)}`);
     const profile = entry && verifiedCompanyProfile(entry.profile, entry, now);
     if (profile) { verified++; if (profile.industry) industry++; }
     else if (entry?.error) {
-      const reason = entry.error.match(/^company_profile_[a-z0-9_]+/i)?.[0]
+      const reason = entry.extractionFailure ?? entry.error.match(/^company_profile_[a-z0-9_]+/i)?.[0]
         ?? (/quota|budget|cadence/i.test(entry.error) ? "provider_budget_deferred" : "source_request_failed");
       errors[reason] = (errors[reason] ?? 0) + 1;
     }
@@ -251,9 +263,11 @@ export async function readCompanyProfileCoverage(now = new Date()) {
 export async function warmFoundationCompanyProfiles(fetchImpl: typeof fetch, now = new Date(), options: { signal?: AbortSignal } = {}) {
   const cadenceKey = pr262StorageKey("research-evidence/company-profile-maintenance-v1.json");
   const cadence = await readVersionedTextFromR2(cadenceKey);
-  const last = cadence.found && cadence.text ? Date.parse(text(object(JSON.parse(cadence.text)).checkedAt)) : NaN;
+  const previousPass = cadence.found && cadence.text ? object(JSON.parse(cadence.text)) : {};
+  const last = Date.parse(text(previousPass.checkedAt));
   if (Number.isFinite(last) && now.getTime() - last < 15 * 60000) return { attempted: 0, verified: 0 };
-  const reservation = await writeVersionedJsonToR2(cadenceKey, { version: 1, checkedAt: now.toISOString() },
+  const turn = ((Number(previousPass.turn) || 0) + 1) % 4;
+  const reservation = await writeVersionedJsonToR2(cadenceKey, { version: 1, checkedAt: now.toISOString(), turn },
     cadence.etag ? { expectedEtag: cadence.etag } : { createOnly: true });
   if (!reservation.written || reservation.conflict) return { attempted: 0, verified: 0 };
   const [foundation, universe, cached, sensor, exposure] = await Promise.all([
@@ -265,12 +279,12 @@ export async function warmFoundationCompanyProfiles(fetchImpl: typeof fetch, now
   const listed = universe.found && universe.text ? object(JSON.parse(universe.text)) : {};
   if (listed.version !== 1) return { attempted: 0, verified: 0 };
   const universeRows = Array.isArray(listed.entries) ? listed.entries.map(object) : [];
-  const recoveredFromSavedSources = await recoverCachedProfiles(cached.entries, universeRows, now);
-  const entries = recoveredFromSavedSources ? (await load()).entries : cached.entries;
   const groups = object(snapshot.seriousAlerts);
   const sensorState = sensor.found && sensor.text ? object(JSON.parse(sensor.text)) : {};
   const pending = Array.isArray(sensorState.pending) ? sensorState.pending.map(object).filter(event => now.getTime() - Date.parse(text(event.observedAt)) < 3 * 86400000) : [];
   const queuedTickers = new Set(pending.map(row => row.ticker));
+  const recoveredFromSavedSources = await recoverCachedProfiles(cached.entries, universeRows, now, queuedTickers);
+  const entries = recoveredFromSavedSources ? (await load()).entries : cached.entries;
   const exposureRows = exposure.found && exposure.text ? object(JSON.parse(exposure.text)).entries : [];
   const opportunities = [groups.buy, groups.sell, groups.watchOut, snapshot.qualityPriceWatchlist].flatMap(group => Array.isArray(group) ? group.map(object) : []);
   const priorityTickers = new Set([...pending, ...opportunities].map(row => row.ticker));
@@ -278,27 +292,43 @@ export async function warmFoundationCompanyProfiles(fetchImpl: typeof fetch, now
   const freshQueuedTickers = new Set(pending.filter(row => now.getTime() - Date.parse(text(row.observedAt)) <= 86400000).map(row => row.ticker));
   const freshOfficialTickers = new Set(pending.filter(row => now.getTime() - Date.parse(text(row.observedAt)) <= 86400000
     && (row.source === "sec" || row.source === "official" || /^(issuer_ir_|issuer_sec_)/.test(text(row.sourceProvider)))).map(row => row.ticker));
+  const queuedEventIds = new Map<unknown, Set<string>>();
+  for (const event of pending) {
+    const ids = queuedEventIds.get(event.ticker) ?? new Set<string>();
+    ids.add(text(event.id) || `${event.ticker}:${event.observedAt}`);
+    queuedEventIds.set(event.ticker, ids);
+  }
+  const listingByTicker = new Map(universeRows.filter(row => Array.isArray(row.sourceNames) && row.sourceNames.includes("SEC company_tickers_exchange"))
+    .map(row => [row.ticker, row]));
+  const entryByIssuer = new Map(entries.map(entry => [`${entry.ticker}:${entry.cik}`, entry]));
+  const selectedTickers = new Set<unknown>();
   const candidates: Json[] = [...pending, ...opportunities, ...(Array.isArray(exposureRows) ? exposureRows.map(object) : []),
     ...universeRows.map(row => ({ ...row, company: row.company || row.name }))];
   const due = candidates.flatMap(candidate => {
-    const listing = universeRows.find(row => row.ticker === candidate.ticker && Array.isArray(row.sourceNames) && row.sourceNames.includes("SEC company_tickers_exchange"));
+    if (selectedTickers.has(candidate.ticker)) return [];
+    const listing = listingByTicker.get(candidate.ticker);
     const cik = profileCik(listing?.cik);
     if (!cik) return [];
     if (candidate.cik && profileCik(candidate.cik) !== cik) return [];
     const identity = { ticker: candidate.ticker, company: candidate.company || listing?.company || listing?.name, cik };
-    const saved = entries.find(entry => same(entry, identity));
+    const stored = entryByIssuer.get(`${candidate.ticker}:${cik}`);
+    const saved = stored && same(stored, identity) ? stored : undefined;
     const verified = verifiedCompanyProfile(saved?.profile, identity, now);
     if ((verified && (verified.industry || (saved?.parserRevision === COMPANY_PROFILE_PARSER_REVISION && Date.parse(saved.nextAttemptAt) > now.getTime()))) || retryDeferred(saved, now)) return [];
-    return [{ identity, priority: freshOfficialTickers.has(candidate.ticker) ? 5 : freshQueuedTickers.has(candidate.ticker) ? 4 : valuationTickers.has(candidate.ticker) ? 3
-      : queuedTickers.has(candidate.ticker) ? 2 : priorityTickers.has(candidate.ticker) ? 1 : 0, lastAttempt: Date.parse(saved?.updatedAt ?? "") || 0 }];
-  }).filter((row, index, all) => all.findIndex(other => other.identity.ticker === row.identity.ticker) === index)
-    .sort((a, b) => b.priority - a.priority || a.lastAttempt - b.lastAttempt);
-  // Expand useful work inside the same time window and provider allowances.
-  // One background issuer retains progress beyond today's event queue.
+    selectedTickers.add(candidate.ticker);
+    return [{ identity, priority: freshOfficialTickers.has(candidate.ticker) ? 5 : freshQueuedTickers.has(candidate.ticker) ? 4 : queuedTickers.has(candidate.ticker) ? 3
+      : valuationTickers.has(candidate.ticker) ? 2 : priorityTickers.has(candidate.ticker) ? 1 : 0,
+      blockedEvents: queuedEventIds.get(candidate.ticker)?.size ?? 0, lastAttempt: Date.parse(saved?.updatedAt ?? "") || 0 }];
+  }).sort((a, b) => b.priority - a.priority || a.lastAttempt - b.lastAttempt || b.blockedEvents - a.blockedEvents);
+  // Keep the same two slots. Most serve queued issuers; every fourth pass
+  // retains one background turn, and every second turn serves the oldest
+  // previously attempted queued issuer so new arrivals cannot starve retries.
   const selected = due.slice(0, 1);
-  const background = due.find(row => row.priority === 0 && !selected.includes(row));
-  const backgroundSlot = background ?? due.find(row => !selected.includes(row));
-  if (backgroundSlot) selected.push(backgroundSlot);
+  const background = turn === 0 ? due.find(row => row.priority === 0 && !selected.includes(row)) : undefined;
+  const retained = turn === 2 ? due.filter(row => row.blockedEvents > 0 && row.lastAttempt > 0 && !selected.includes(row))
+    .sort((a, b) => a.lastAttempt - b.lastAttempt)[0] : undefined;
+  const secondSlot = background ?? retained ?? due.find(row => !selected.includes(row));
+  if (secondSlot) selected.push(secondSlot);
   let attempted = 0, verified = 0;
   let nextRequestAt = 0;
   let pacingTail: Promise<void> = Promise.resolve();
@@ -323,5 +353,8 @@ export async function warmFoundationCompanyProfiles(fetchImpl: typeof fetch, now
   };
   await Promise.all([worker(), worker()]);
   return { attempted, verified, eligibleCompanies: due.length, maximumCompaniesPerPass: 2, deadlineReached: options.signal?.aborted === true,
+    queuedCompaniesSelected: selected.filter(row => row.blockedEvents > 0).length,
+    queuedEventsCoveredBySelection: selected.reduce((total, row) => total + row.blockedEvents, 0),
+    backgroundTurn: Boolean(background),
     ...(recoveredFromSavedSources ? { recoveredFromSavedSources } : {}) };
 }

@@ -7,5 +7,16 @@
     "startCommand": "npm run pr262:analysis-cron",
     "cronSchedule": "7 * * * *",
     "restartPolicyType": "NEVER"
+  },
+  "environments": {
+    "pr": {
+      "build": { "buildCommand": "npm run build" },
+      "deploy": {
+        "startCommand": "node scripts/railway-preview-start.mjs",
+        "preDeployCommand": [],
+        "cronSchedule": null,
+        "restartPolicyType": "NEVER"
+      }
+    }
   }
 }

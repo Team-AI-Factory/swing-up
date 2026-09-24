@@ -56,6 +56,10 @@ assert.equal(railway.environments?.pr?.build?.buildCommand, "npm run build");
 assert.deepEqual(railway.environments?.pr?.deploy?.preDeployCommand, []);
 assert.equal(railway.environments?.pr?.deploy?.cronSchedule, null);
 assert.equal(railway.environments?.pr?.deploy?.restartPolicyType, "NEVER");
+assert.equal(railwayRecovery.environments?.pr?.deploy?.startCommand, "node scripts/railway-preview-start.mjs");
+assert.equal(railwayRecovery.environments?.pr?.deploy?.cronSchedule, null, "Recovery previews must not inherit a live recurring job");
+assert.deepEqual(railwayRecovery.environments?.pr?.deploy?.preDeployCommand, []);
+assert.equal(railwayRecovery.deploy?.cronSchedule, "7 * * * *", "The existing production schedule remains unchanged");
 
 const isolatedPreviewEnvironment = {
   RAILWAY_ENVIRONMENT_NAME: "swing-up-pr-296",
@@ -107,10 +111,6 @@ for (const overrides of [
   { RAILWAY_GIT_BRANCH: "main" },
   { RAILWAY_GIT_BRANCH: "" },
   { RAILWAY_ENVIRONMENT_NAME: "" },
-  { SWING_UP_PR262_STORAGE_PREFIX: "production/pr262/" },
-  { SWING_UP_R2_WRITE_PREFIX: "production/pr262/" },
-  { SWING_UP_PR262_STORAGE_PREFIX: "branch-labs/pr-262/" },
-  { SWING_UP_R2_WRITE_PREFIX: "" },
 ]) {
   const refusedPreview = runDisabledPreview(overrides);
   assert.equal(refusedPreview.status, 1, `Unsafe preview must fail closed: ${JSON.stringify(overrides)}`);
@@ -118,6 +118,19 @@ for (const overrides of [
   assert.doesNotMatch(refusedPreview.stdout, /workers_disabled/);
 }
 const previewWebService = { RAILWAY_SERVICE_ID: "d02bf6e1-4140-418f-aa5c-b67dcc2d8d15" };
+for (const overrides of [
+  { SWING_UP_PR262_STORAGE_PREFIX: "production/pr262/" },
+  { SWING_UP_R2_WRITE_PREFIX: "production/pr262/" },
+  { SWING_UP_PR262_STORAGE_PREFIX: "branch-labs/pr-262/" },
+  { SWING_UP_R2_WRITE_PREFIX: "" },
+]) {
+  const inertWorker = runDisabledPreview(overrides);
+  assert.equal(inertWorker.status, 0, "An inert worker must exit without network, app startup or storage access even with inherited variables");
+  assert.match(inertWorker.stdout, /workers_disabled/);
+  const refusedWeb = runDisabledPreview({ ...previewWebService, ...overrides });
+  assert.equal(refusedWeb.status, 1, "A running web preview still requires exact storage isolation");
+  assert.match(refusedWeb.stderr, /railway_preview_storage_prefix_mismatch/);
+}
 const previewWebStart = runDisabledPreview(previewWebService, { web: true });
 assert.equal(previewWebStart.status, 0, previewWebStart.stderr);
 assert.match(previewWebStart.stdout, /preview_test_spawn=\["npm","run","start"\]/);

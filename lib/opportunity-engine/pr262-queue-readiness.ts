@@ -21,7 +21,8 @@ export function planPr262QueueAdmissions(events: Pr262SensorEvent[], verifiedTic
     || readyProfileEventIds.includes(event.id));
   const ready = due.filter(event => verifiedTickers.has(event.ticker!) && !heldIds.has(event.id));
   const blocked = candidates.filter(event => !verifiedTickers.has(event.ticker!));
-  const blockerCounts: Record<string, number> = { missing_profile: blocked.length, committee_disabled: held.filter(event => verifiedTickers.has(event.ticker!)).length, same_evidence: 0, ai_budget: 0,
+  const blockerCounts: Record<string, number> = { missing_profile: blocked.length, missing_price_scenarios: 0, missing_industry: 0,
+    committee_disabled: held.filter(event => verifiedTickers.has(event.ticker!)).length, same_evidence: 0, ai_budget: 0,
     review_capacity: 0, ai_provider: 0, accounting_unavailable: 0, reservation_unclassified: 0, other_scheduled_retry: 0 };
   for (const event of candidates) {
     if (!verifiedTickers.has(event.ticker!) || heldIds.has(event.id) || readyProfileEventIds.includes(event.id)

@@ -39,11 +39,22 @@ const costWait = { ...waiting, queueLastError: "pr262_event_report_retry:qualifi
 assert.deepEqual(plan([costWait], new Set(["RECOVERED"]), now).readyProfileEventIds, [], "Profile recovery cannot bypass a paid-budget hold.");
 assert.equal(plan([costWait], new Set(["RECOVERED"]), now).blockerCounts.reservation_unclassified, 1,
   "A legacy generic denial is not evidence that the dollar budget was exhausted");
-const { pr262ReservationBlocker } = loadTsModule("@/lib/opportunity-engine/pr262-review-blockers");
+const { pr262EvidenceBlocker, pr262EvidenceRetryAt, pr262ReservationBlocker } = loadTsModule("@/lib/opportunity-engine/pr262-review-blockers");
 const reasons = { candidate_already_recorded: "same_evidence", candidate_already_reserved: "same_evidence",
   paid_evidence_cooldown: "same_evidence", daily_cost_fuse: "ai_budget", daily_review_limit: "review_capacity",
   provider_cooldown: "ai_provider", accounting_unavailable: "accounting_unavailable", lease_unavailable: "reservation_unclassified" };
 for (const [reason, category] of Object.entries(reasons)) assert.equal(pr262ReservationBlocker(reason), category);
+assert.equal(pr262EvidenceBlocker("candidate_alert_details_pending", { priceScenarios: false, industry: true }), "missing_price_scenarios");
+assert.equal(pr262EvidenceBlocker("candidate_alert_details_pending", { priceScenarios: true, industry: false }), "missing_industry");
+assert.equal(pr262EvidenceRetryAt("missing_price_scenarios", now), "2026-09-24T04:00:00.000Z",
+  "Unchanged daily valuation inputs must not consume a worker slot every 15 minutes");
+assert.equal(pr262EvidenceRetryAt("missing_profile", now), null, "Profile recovery keeps its immediate cache-driven wake-up path");
+const scenarioWait = event("SCENARIO", { queueAttempts: 9,
+  queueLastError: "pr262_event_report_retry:candidate_alert_details_pending:blocker=missing_price_scenarios",
+  queueNextAttemptAt: "2026-09-24T04:00:00Z" });
+const scenarioPlan = plan([scenarioWait], new Set(["SCENARIO"]), now);
+assert.equal(scenarioPlan.profileReadyCount, 0);
+assert.equal(scenarioPlan.blockerCounts.missing_price_scenarios, 1, "The parked scenario gap must remain separately auditable");
 const locked = ["same_evidence", "ai_budget", "review_capacity", "ai_provider", "accounting_unavailable"].map(category => event(category, {
   queueAttempts: 2, queueLastError: `pr262_event_report_retry:qualified_signal_openai_reservation_denied:blocker=${category}`,
   queueNextAttemptAt: "2026-09-23T05:00:00Z",

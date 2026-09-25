@@ -39,7 +39,7 @@ import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 import { promotePr262SeriousWatchOut } from "@/lib/opportunity-engine/pr262-serious-watch-out-authority";
 import { createPr262SensorBudgetedFetch } from "@/lib/opportunity-engine/pr262-sensor-fetch-budget";
 import { safeFullSourceErrorTelemetry, safeNetworkErrorCodes } from "@/lib/network-error-telemetry";
-import { pr262ReservationBlocker } from "@/lib/opportunity-engine/pr262-review-blockers";
+import { pr262EvidenceBlocker, pr262EvidenceRetryAt, pr262ReservationBlocker } from "@/lib/opportunity-engine/pr262-review-blockers";
 
 const STATE_KEY = pr262StorageKey("event-job/state-v1.json");
 const LEASE_KEY = pr262StorageKey("event-job/runtime/lease-v1.json");
@@ -2150,6 +2150,8 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       : report.status === "committee_provider_access_blocked" ? "ai_provider"
       : report.status === "qualified_signal_openai_not_requested" && input.aiReservationBlockedReason?.()
         ? pr262ReservationBlocker(input.aiReservationBlockedReason()) : null;
+    const evidenceBlocker = pr262EvidenceBlocker(text(report.status) ?? "", object(object(evidenceProgress).quality).fields as Record<string, unknown>);
+    const reportBlocker = evidenceBlocker ?? reservationBlocker;
     const costControl = {
       evidenceProgress,
       companiesOpened: 1,
@@ -2165,12 +2167,14 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       optionalHistoryContextRequiredForCommittee: false,
       durableProviderBudgets: true,
       reservationBlocker,
+      evidenceBlocker,
+      reportBlocker,
       reservationBlockedReason: committeeBlockedReason ?? input.aiReservationBlockedReason?.() ?? null,
     };
     if (retryableReport(report, retryClassificationAllowsAi) && eventAgeMs <= 7 * 24 * 60 * 60_000) {
       const reportStatus = text(report.status) ?? "unknown";
       const capacityOnly = reportStatus === "qualified_signal_openai_reservation_denied" && !evidenceProgress.evidenceFollowupScheduled;
-      const retryReason = `pr262_event_report_retry:${reportStatus}${reservationBlocker ? `:blocker=${reservationBlocker}` : ""}${capacityOnly ? ":awaiting_paid_capacity_only" : ""}`;
+      const retryReason = `pr262_event_report_retry:${reportStatus}${reportBlocker ? `:blocker=${reportBlocker}` : ""}${capacityOnly ? ":awaiting_paid_capacity_only" : ""}`;
       const paidAttempt = report.openAiCalled === true;
       // A real or conservatively admitted paid Committee attempt must not be
       // retried while its rolling 24-hour cost record remains active. The
@@ -2186,8 +2190,9 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       const cycleStartBudgetRetryAt = reportStatus === "qualified_signal_openai_not_requested"
         ? input.aiReservationRetryAt?.() ?? null
         : null;
-      const nextRetryAt = eventRetryAt(event, now, evidenceProgress.evidenceFollowupScheduled
-        ? evidenceProgress.nextEvidenceCheckAt : committeeRetryAt ?? preliminaryPaidRetryAt ?? cycleStartBudgetRetryAt);
+      const evidenceRetryAt = pr262EvidenceRetryAt(evidenceBlocker, now);
+      const nextRetryAt = eventRetryAt(event, now, evidenceRetryAt ?? (evidenceProgress.evidenceFollowupScheduled
+        ? evidenceProgress.nextEvidenceCheckAt : committeeRetryAt ?? preliminaryPaidRetryAt ?? cycleStartBudgetRetryAt));
       const attemptCheckedAt = text(report.checkedAt) ?? now.toISOString();
       let auditKey: string | null = null;
       let auditWrite: { written: boolean; recovered: boolean } | null = null;
@@ -2264,7 +2269,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
         evidenceFollowupScheduled: evidenceProgress.evidenceFollowupScheduled,
         evidenceProgress,
         error: `${retryReason}; event_id=${event.id}; ticker=${event.ticker ?? "unknown"}; cik=${event.cik ?? "unknown"}; next_retry_at=${nextRetryAt}`,
-        blockerCategory: reportStatus === "candidate_company_profile_pending" ? "missing_profile" : reservationBlocker,
+        blockerCategory: reportBlocker,
         checkedAt: attemptCheckedAt,
         eventsProcessed: 0,
         recoveredPersistedResult: false,

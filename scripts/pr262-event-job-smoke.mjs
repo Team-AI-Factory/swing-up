@@ -32,6 +32,7 @@ const testableSource = source
   .replace("async function fetchFullSource(", "export async function fetchFullSource(")
   .replace("async function readDecisionGradeSource(", "export async function readDecisionGradeSource(")
   .replace("function permanentlyUnreadableFullSource(", "export function permanentlyUnreadableFullSource(")
+  .replace("function eventRetryAt(", "export function eventRetryAt(")
   .replace("async function readCachedFullSource(", "export async function readCachedFullSource(")
   .replace("async function cacheFullSource(", "export async function cacheFullSource(")
   .replace("function retryableReport(", "export function retryableReport(");
@@ -582,7 +583,7 @@ new Function("require", "module", "exports", output)((name) => {
   throw new Error(`Unexpected event-job import: ${name}`);
 }, cjsModule, cjsModule.exports);
 
-const { cacheFullSource, defaultResolveHost, fetchFullSource, permanentlyUnreadableFullSource, pinnedHttpsTransport, readCachedFullSource, readDecisionGradeSource, runPr262EventJob, PR262_EVENT_JOB_KEYS } = cjsModule.exports;
+const { cacheFullSource, defaultResolveHost, eventRetryAt, fetchFullSource, permanentlyUnreadableFullSource, pinnedHttpsTransport, readCachedFullSource, readDecisionGradeSource, runPr262EventJob, PR262_EVENT_JOB_KEYS } = cjsModule.exports;
 
 assert.deepEqual(
   await defaultResolveHost("publisher.example"),
@@ -860,6 +861,17 @@ assert.equal(persistentForbiddenAttempts, 2, "A persistent publisher refusal mus
 assert.equal(persistentForbidden.providers[0].error, "full_source_http_403");
 assert.equal(permanentlyUnreadableFullSource("full_source_http_403", sourceEvent), false, "HTTP 403 must remain retryable because publisher access policies can recover.");
 assert.equal(permanentlyUnreadableFullSource("full_source_http_404", sourceEvent), true, "A confirmed missing article remains a permanent source outcome.");
+const forbiddenReason = "pr262_event_full_source_incomplete:full_source_http_403";
+assert.equal(
+  eventRetryAt({ ...sourceEvent, queueAttempts: 2, queueLastError: forbiddenReason }, securityNow, null, forbiddenReason),
+  "2026-08-12T10:00:00.000Z",
+  "The same publisher refusal must wait one day instead of repeatedly consuming ready-work admissions.",
+);
+assert.equal(
+  eventRetryAt({ ...sourceEvent, queueAttempts: 1, queueLastError: null }, securityNow, null, forbiddenReason),
+  "2026-08-11T10:10:00.000Z",
+  "A first publisher refusal keeps the normal short recovery path.",
+);
 
 const first = await runPr262EventJob({ now: new Date("2026-08-11T10:00:00.000Z"), allowOpenAi: true });
 assert.equal(first.ok, true);

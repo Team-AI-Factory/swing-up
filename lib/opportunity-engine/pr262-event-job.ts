@@ -26,6 +26,7 @@ import {
   acknowledgePr262PendingSensorEvent,
   readNextPr262PendingSensorEvent,
   retryPr262PendingSensorEvent,
+  READY_EVENT_TTL_MS,
   type Pr262PendingSensorEventMutation,
   type Pr262SensorEvent,
 } from "@/lib/opportunity-engine/pr262-change-sensor";
@@ -1723,15 +1724,31 @@ async function finalizePersistedResult(input: {
   return { report, checkedAt, historyWrite, outboxKey, pointer };
 }
 
-function retryDelay(event: Pr262SensorEvent) {
+const UNCHANGED_FORBIDDEN_SOURCE_RETRY_MS = 24 * 60 * 60_000;
+
+function unchangedForbiddenSourceFailure(event: Pr262SensorEvent, reason: string | null) {
+  const marker = "pr262_event_full_source_incomplete:full_source_http_403";
+  return reason?.includes(marker) === true && event.queueLastError?.includes(marker) === true
+    && !event.queueLastError.includes(";source_urls_changed");
+}
+
+function retryDelay(event: Pr262SensorEvent, now: Date, reason: string | null = null) {
+  if (unchangedForbiddenSourceFailure(event, reason)) {
+    // Leave one existing sensor interval before the queue's hard expiry. A
+    // repeated refusal must not schedule the event out of its own lifetime.
+    const remainingMs = Date.parse(event.observedAt) + READY_EVENT_TTL_MS - now.getTime();
+    if (Number.isFinite(remainingMs)) {
+      return Math.min(UNCHANGED_FORBIDDEN_SOURCE_RETRY_MS, Math.max(0, remainingMs - 15 * 60_000));
+    }
+  }
   return Math.min(6 * 60 * 60_000, 5 * 60_000 * (2 ** Math.min(6, event.queueAttempts)));
 }
 
-function eventRetryAt(event: Pr262SensorEvent, now: Date, requestedRetryAt: string | null) {
+function eventRetryAt(event: Pr262SensorEvent, now: Date, requestedRetryAt: string | null, reason: string | null = null) {
   const requestedMs = Date.parse(requestedRetryAt ?? "");
   return new Date(Number.isFinite(requestedMs) && requestedMs > now.getTime()
     ? requestedMs
-    : now.getTime() + retryDelay(event)).toISOString();
+    : now.getTime() + retryDelay(event, now, reason)).toISOString();
 }
 
 function retryableReport(report: Json, allowOpenAi: boolean) {
@@ -2437,7 +2454,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
     const requestedRetryAt = effectiveError instanceof ProviderBudgetError || effectiveError instanceof RetryAtError
       ? effectiveError.nextRetryAt
       : null;
-    const nextRetryAt = eventRetryAt(event, now, requestedRetryAt);
+    const nextRetryAt = eventRetryAt(event, now, requestedRetryAt, message);
     await persistQueueMutation({
       action: "retry",
       eventId: event.id,

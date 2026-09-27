@@ -11,7 +11,7 @@ const MAX_SEEN = 20_000;
 const MAX_READY_PENDING = 2_000;
 const MAX_UNRESOLVED_PENDING = 500;
 const MAX_FRESH_PER_RUN = 500;
-const READY_EVENT_TTL_MS = 48 * 60 * 60_000;
+export const READY_EVENT_TTL_MS = 48 * 60 * 60_000;
 const UNRESOLVED_EVENT_TTL_MS = 24 * 60 * 60_000;
 const FIVE_MINUTES_MS = 5 * 60_000;
 const FIFTEEN_MINUTES_MS = 15 * 60_000;
@@ -293,7 +293,7 @@ function preferredSemanticDuplicate(left: Pr262SensorEvent, right: Pr262SensorEv
   return left.id.localeCompare(right.id) <= 0 ? left : right;
 }
 
-function mergeSemanticDuplicateUrls(preferred: Pr262SensorEvent, discarded: Pr262SensorEvent) {
+function mergeSemanticDuplicateUrls(preferred: Pr262SensorEvent, discarded: Pr262SensorEvent, now: Date) {
   const alternateSourceUrls = [...new Set([
     ...(preferred.alternateSourceUrls ?? []),
     discarded.url,
@@ -301,6 +301,17 @@ function mergeSemanticDuplicateUrls(preferred: Pr262SensorEvent, discarded: Pr26
   ])]
     .filter((url) => typeof url === "string" && url.length > 0 && url !== preferred.url)
     .slice(0, 4);
+  const previousUrls = new Set([preferred.url, ...(preferred.alternateSourceUrls ?? [])]);
+  const newSourceAvailable = alternateSourceUrls.some(url => !previousUrls.has(url));
+  const refusedSource = preferred.queueLastError?.startsWith("pr262_event_full_source_incomplete:full_source_http_403");
+  if (newSourceAvailable && refusedSource) {
+    return { ...preferred, alternateSourceUrls,
+      // Keep attempt history and the prior refusal auditable. A due timestamp
+      // (rather than null) preserves secondary-news retention through retry.
+      queueNextAttemptAt: now.toISOString(),
+      queueLastError: `${preferred.queueLastError};source_urls_changed`,
+    };
+  }
   return alternateSourceUrls.length > 0 ? { ...preferred, alternateSourceUrls } : preferred;
 }
 
@@ -403,7 +414,7 @@ export function partitionPr262PendingEventsWithTelemetry(events: Pr262SensorEven
       const preferred = preferredSemanticDuplicate(current, event);
       const discarded = preferred === current ? event : current;
       markDropped(discarded, "duplicate_low_value_company_news");
-      map.set(semanticKey, mergeSemanticDuplicateUrls(preferred, discarded));
+      map.set(semanticKey, mergeSemanticDuplicateUrls(preferred, discarded, now));
     }
     return map;
   }, new Map<string, Pr262SensorEvent>()).values()];

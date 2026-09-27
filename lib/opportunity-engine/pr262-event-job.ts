@@ -1728,7 +1728,8 @@ const UNCHANGED_FORBIDDEN_SOURCE_RETRY_MS = 24 * 60 * 60_000;
 
 function unchangedForbiddenSourceFailure(event: Pr262SensorEvent, reason: string | null) {
   const marker = "pr262_event_full_source_incomplete:full_source_http_403";
-  return reason?.includes(marker) === true && event.queueLastError?.includes(marker) === true;
+  return reason?.includes(marker) === true && event.queueLastError?.includes(marker) === true
+    && !event.queueLastError.includes(";source_urls_changed");
 }
 
 function retryDelay(event: Pr262SensorEvent, now: Date, reason: string | null = null) {

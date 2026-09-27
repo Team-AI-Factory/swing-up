@@ -867,6 +867,9 @@ assert.equal(persistentForbidden.providers[0].error, "full_source_http_403");
 assert.equal(permanentlyUnreadableFullSource("full_source_http_403", sourceEvent), false, "HTTP 403 must remain retryable because publisher access policies can recover.");
 assert.equal(permanentlyUnreadableFullSource("full_source_http_404", sourceEvent), true, "A confirmed missing article remains a permanent source outcome.");
 const forbiddenReason = "pr262_event_full_source_incomplete:full_source_http_403";
+assert.equal(eventRetryAt({ ...sourceEvent, queueAttempts: 2, queueLastError: `${forbiddenReason};source_urls_changed` },
+  securityNow, null, forbiddenReason), "2026-08-11T10:20:00.000Z",
+  "A newly supplied source must first receive a normal retry, not inherit the old publisher's long refusal hold.");
 assert.equal(
   eventRetryAt({ ...sourceEvent, queueAttempts: 2, queueLastError: forbiddenReason }, securityNow, null, forbiddenReason),
   "2026-08-12T10:00:00.000Z",

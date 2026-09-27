@@ -255,6 +255,31 @@ assert.deepEqual(
   [highValueOne.url],
   "A discarded material-news duplicate must remain available as a bounded source fallback.",
 );
+const refusal = "pr262_event_full_source_incomplete:full_source_http_403";
+const sourceHeld = mappedEvent({ id: "news:source-held", priority: 100, queueAttempts: 3,
+  observedAt: new Date(now.getTime() - 8 * 60 * 60_000).toISOString(),
+  queueLastAttemptAt: new Date(now.getTime() - 60_000).toISOString(), queueLastError: refusal,
+  queueNextAttemptAt: new Date(now.getTime() + 12 * 60 * 60_000).toISOString() });
+const newSource = { ...sourceHeld, id: "news:new-source", priority: 90, queueAttempts: 0,
+  url: "https://publisher.example/new-source", queueLastError: null, queueNextAttemptAt: null };
+const [wokenSource] = sensor.partitionPr262PendingEvents([sourceHeld, newSource], now);
+assert.equal(wokenSource.queueNextAttemptAt, now.toISOString(), "A newly retained URL must wake a publisher-refusal hold.");
+assert.equal(wokenSource.queueAttempts, sourceHeld.queueAttempts, "Source recovery preserves the attempt audit.");
+assert.equal(wokenSource.queueLastAttemptAt, sourceHeld.queueLastAttemptAt);
+assert.equal(wokenSource.queueLastError, `${refusal};source_urls_changed`);
+assert.equal(sensor.partitionPr262PendingEvents([wokenSource], new Date(now.getTime() + 15 * 60_000)).length, 1,
+  "Waking an older secondary article must preserve retention through the next pass.");
+const retriedSource = { ...wokenSource, queueLastError: refusal, queueNextAttemptAt: sourceHeld.queueNextAttemptAt };
+assert.equal(sensor.partitionPr262PendingEvents([retriedSource, newSource], now)[0].queueNextAttemptAt,
+  sourceHeld.queueNextAttemptAt, "Rediscovering an already retained URL must not wake an unchanged refusal.");
+const fullAlternates = { ...sourceHeld, alternateSourceUrls: [1, 2, 3, 4].map(n => `https://publisher.example/${n}`) };
+assert.equal(sensor.partitionPr262PendingEvents([fullAlternates, newSource], now)[0].queueNextAttemptAt,
+  sourceHeld.queueNextAttemptAt, "A URL outside the bounded retained source set must not reset retry timing.");
+for (const blocker of ["ai_budget", "committee_disabled"]) {
+  const locked = { ...sourceHeld, queueLastError: `pr262_event_report_retry:configuration_blocker:blocker=${blocker}` };
+  assert.equal(sensor.partitionPr262PendingEvents([locked, newSource], now)[0].queueNextAttemptAt,
+    locked.queueNextAttemptAt, "New article URLs cannot bypass budget or Committee holds.");
+}
 assert.equal(result.pending.some((event) => event.id === boundaryHighValue.id), true, "Fresh high-value secondary news remains eligible through the exact six-hour boundary.");
 assert.equal(result.pending.some((event) => event.id === retryProtectedHighValue.id), true, "A valid scheduled retry must keep secondary news through the retry plus one sensor-cycle grace.");
 assert.equal(result.pending.some((event) => event.id === retryGraceProtectedHighValue.id), true, "Secondary news must remain available during the full sensor-cycle grace after its retry became due.");

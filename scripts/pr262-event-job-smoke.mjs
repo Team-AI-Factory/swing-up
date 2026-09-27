@@ -9,6 +9,10 @@ import { Readable } from "node:stream";
 import ts from "typescript";
 
 const source = readFileSync(new URL("../lib/opportunity-engine/pr262-event-job.ts", import.meta.url), "utf8");
+const sensorQueue = loadTsModule("@/lib/opportunity-engine/pr262-change-sensor", {
+  "@/lib/r2-warehouse": {},
+  "@/lib/opportunity-engine/pr262-storage": { pr262StorageKey: key => `branch-labs/pr-262/${key}` },
+});
 const networkTelemetrySource = readFileSync(new URL("../lib/network-error-telemetry.ts", import.meta.url), "utf8");
 assert.match(source, /createPr262SensorBudgetedFetch\([\s\S]*?eventJobBudgetedFetch/, "Sensor and event-job calls must share one durable provider-account guard.");
 assert.match(source, /FULL_SOURCE_ABSOLUTE_TIMEOUT_MS = 15_000/, "Full-source reads need a fixed wall-clock deadline");
@@ -355,43 +359,6 @@ const stubs = {
           blockers: ["The rolling OpenAI review budget is full."],
         };
       }
-      if (runnerResultMode === "market_quote_unavailable") {
-        return {
-          ok: true,
-          checkedAt: "2026-08-11T10:10:30.000Z",
-          status: "qualified_event_market_quote_unavailable",
-          seriousSignalFound: false,
-          actionableSignalFound: false,
-          alertType: null,
-          openAiCalled: false,
-          candidateFingerprint: committeeFingerprint,
-          selectedCandidate: null,
-          historicalPilot: null,
-          tradingHaltSafety: { currentStateKnown: true },
-          committee: null,
-          blockers: ["A current market quote is unavailable."],
-        };
-      }
-      const reserved = await input.beforeOpenAiCall({ candidateFingerprint: committeeFingerprint, checkedAt: "2026-08-11T10:00:00.000Z", ticker: "EXCT", direction: "upside" });
-      if (runnerResultMode === "reservation_denied") {
-        assert.equal(reserved, false, "The runner must stop before OpenAI when the durable reservation is denied.");
-        return {
-          ok: true,
-          checkedAt: "2026-08-11T10:09:00.000Z",
-          status: "qualified_signal_openai_reservation_denied",
-          seriousSignalFound: false,
-          actionableSignalFound: false,
-          alertType: null,
-          openAiCalled: false,
-          candidateFingerprint: committeeFingerprint,
-          selectedCandidate: null,
-          historicalPilot: null,
-          tradingHaltSafety: { currentStateKnown: true },
-          committee: null,
-          blockers: ["The paid Committee reservation is already active or recorded."],
-        };
-      }
-      assert.equal(reserved, true, "Committee reservation must be granted");
       const selectedCandidate = {
         companyProfile: companyProfileFixture({ ticker: "EXCT", company: "Exact Issuer Corp", cik: "0001234567" }, input.now),
         ticker: "EXCT",
@@ -428,6 +395,43 @@ const stubs = {
           cacheAgeMs: 0,
         },
       };
+      if (["market_quote_unavailable", "alert_details_quote_unavailable"].includes(runnerResultMode)) {
+        return {
+          ok: true,
+          checkedAt: "2026-08-11T10:10:30.000Z",
+          status: runnerResultMode === "alert_details_quote_unavailable" ? "candidate_alert_details_pending" : "qualified_event_market_quote_unavailable",
+          seriousSignalFound: false,
+          actionableSignalFound: false,
+          alertType: null,
+          openAiCalled: false,
+          candidateFingerprint: committeeFingerprint,
+          selectedCandidate: runnerResultMode === "alert_details_quote_unavailable" ? { ...selectedCandidate, quote: null } : null,
+          historicalPilot: null,
+          tradingHaltSafety: { currentStateKnown: true },
+          committee: null,
+          blockers: ["A current market quote is unavailable."],
+        };
+      }
+      const reserved = await input.beforeOpenAiCall({ candidateFingerprint: committeeFingerprint, checkedAt: "2026-08-11T10:00:00.000Z", ticker: "EXCT", direction: "upside" });
+      if (runnerResultMode === "reservation_denied") {
+        assert.equal(reserved, false, "The runner must stop before OpenAI when the durable reservation is denied.");
+        return {
+          ok: true,
+          checkedAt: "2026-08-11T10:09:00.000Z",
+          status: "qualified_signal_openai_reservation_denied",
+          seriousSignalFound: false,
+          actionableSignalFound: false,
+          alertType: null,
+          openAiCalled: false,
+          candidateFingerprint: committeeFingerprint,
+          selectedCandidate: null,
+          historicalPilot: null,
+          tradingHaltSafety: { currentStateKnown: true },
+          committee: null,
+          blockers: ["The paid Committee reservation is already active or recorded."],
+        };
+      }
+      assert.equal(reserved, true, "Committee reservation must be granted");
       if (runnerResultMode === "incomplete_committee") {
         return {
           ok: true,
@@ -526,6 +530,7 @@ const stubs = {
     writeVersionedJsonToR2: writeObject,
   },
   "@/lib/opportunity-engine/pr262-change-sensor": {
+    READY_EVENT_TTL_MS: sensorQueue.READY_EVENT_TTL_MS,
     readNextPr262PendingSensorEvent: async () => event,
     acknowledgePr262PendingSensorEvent: async () => { acknowledgements += 1; return { acknowledged: true, pendingCount: 0 }; },
     retryPr262PendingSensorEvent: async (mutation) => {
@@ -872,6 +877,27 @@ assert.equal(
   "2026-08-11T10:10:00.000Z",
   "A first publisher refusal keeps the normal short recovery path.",
 );
+for (const source of ["news", "company_news"]) {
+  for (const ageHours of [26, 47, 47.9]) {
+    const olderEvent = { ...sourceEvent, source, mappingStatus: "mapped", queueAttempts: 2,
+      observedAt: new Date(securityNow.getTime() - ageHours * 60 * 60_000).toISOString(),
+      queueLastError: forbiddenReason };
+    const retryAt = eventRetryAt(olderEvent, securityNow, null, forbiddenReason);
+    const expiryMs = Date.parse(olderEvent.observedAt) + sensorQueue.READY_EVENT_TTL_MS;
+    assert.ok(Date.parse(retryAt) >= securityNow.getTime(), "An older event must never retry in the past.");
+    assert.ok(Date.parse(retryAt) < expiryMs, "Repeated source refusals must remain eligible before hard expiry.");
+    const scheduled = { ...olderEvent, queueNextAttemptAt: retryAt };
+    const nextPass = new Date(Math.min(expiryMs, Date.parse(retryAt) + 15 * 60_000));
+    assert.equal(sensorQueue.partitionPr262PendingEvents([scheduled], nextPass).length, 1,
+      "The real queue partition must retain the event for the next sensor pass, including secondary news.");
+  }
+}
+assert.equal(eventRetryAt({ ...sourceEvent, queueAttempts: 2, queueLastError: forbiddenReason }, securityNow, null,
+  "pr262_event_full_source_incomplete:full_source_timeout"), "2026-08-11T10:20:00.000Z",
+  "A changed source failure retains normal retry timing.");
+assert.equal(eventRetryAt({ ...sourceEvent, queueAttempts: 2, queueLastError: forbiddenReason }, securityNow,
+  "2026-08-12T12:00:00.000Z", forbiddenReason), "2026-08-12T12:00:00.000Z",
+  "The refusal policy must not override an explicit provider-budget retry boundary.");
 
 const first = await runPr262EventJob({ now: new Date("2026-08-11T10:00:00.000Z"), allowOpenAi: true });
 assert.equal(first.ok, true);
@@ -1161,6 +1187,16 @@ await runPr262EventJob({
   aiReservationRetryAt: () => exactGlobalBudgetRetryAt,
 });
 assert.equal(lastRetryMutation.nextRetryAt, "2026-08-11T10:16:00.000Z", "An unrelated quote retry must not inherit the much later AI-budget boundary.");
+
+runnerResultMode = "alert_details_quote_unavailable";
+committeeFingerprint = "fingerprint-alert-details-quote-unavailable";
+setSecEventIdentity("000073", "2026-08-11T10:10:00.000Z");
+const quoteGap = await runPr262EventJob({ now: new Date("2026-08-11T10:11:00.000Z"), allowOpenAi: false });
+assert.equal(quoteGap.blockerCategory, null, "A missing quote must not become a daily scenario hold.");
+assert.equal(lastRetryMutation.nextRetryAt, "2026-08-11T10:26:00.000Z",
+  "Real evidence classification must retain the 15-minute follow-up for a temporary quote outage.");
+assert.equal(quoteGap.eventsProcessed, 0);
+assert.equal(quoteGap.seriousSignalFound, false);
 
 const auditCountBeforeNoCall = [...objects.keys()].filter((key) => key.startsWith(PR262_EVENT_JOB_KEYS.NONTERMINAL_AUDIT_PREFIX)).length;
 runnerResultMode = "reservation_denied";

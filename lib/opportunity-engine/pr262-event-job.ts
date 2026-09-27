@@ -26,6 +26,7 @@ import {
   acknowledgePr262PendingSensorEvent,
   readNextPr262PendingSensorEvent,
   retryPr262PendingSensorEvent,
+  READY_EVENT_TTL_MS,
   type Pr262PendingSensorEventMutation,
   type Pr262SensorEvent,
 } from "@/lib/opportunity-engine/pr262-change-sensor";
@@ -1730,8 +1731,15 @@ function unchangedForbiddenSourceFailure(event: Pr262SensorEvent, reason: string
   return reason?.includes(marker) === true && event.queueLastError?.includes(marker) === true;
 }
 
-function retryDelay(event: Pr262SensorEvent, reason: string | null = null) {
-  if (unchangedForbiddenSourceFailure(event, reason)) return UNCHANGED_FORBIDDEN_SOURCE_RETRY_MS;
+function retryDelay(event: Pr262SensorEvent, now: Date, reason: string | null = null) {
+  if (unchangedForbiddenSourceFailure(event, reason)) {
+    // Leave one existing sensor interval before the queue's hard expiry. A
+    // repeated refusal must not schedule the event out of its own lifetime.
+    const remainingMs = Date.parse(event.observedAt) + READY_EVENT_TTL_MS - now.getTime();
+    if (Number.isFinite(remainingMs)) {
+      return Math.min(UNCHANGED_FORBIDDEN_SOURCE_RETRY_MS, Math.max(0, remainingMs - 15 * 60_000));
+    }
+  }
   return Math.min(6 * 60 * 60_000, 5 * 60_000 * (2 ** Math.min(6, event.queueAttempts)));
 }
 
@@ -1739,7 +1747,7 @@ function eventRetryAt(event: Pr262SensorEvent, now: Date, requestedRetryAt: stri
   const requestedMs = Date.parse(requestedRetryAt ?? "");
   return new Date(Number.isFinite(requestedMs) && requestedMs > now.getTime()
     ? requestedMs
-    : now.getTime() + retryDelay(event, reason)).toISOString();
+    : now.getTime() + retryDelay(event, now, reason)).toISOString();
 }
 
 function retryableReport(report: Json, allowOpenAi: boolean) {

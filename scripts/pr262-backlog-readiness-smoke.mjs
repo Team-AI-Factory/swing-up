@@ -44,8 +44,13 @@ const reasons = { candidate_already_recorded: "same_evidence", candidate_already
   paid_evidence_cooldown: "same_evidence", daily_cost_fuse: "ai_budget", daily_review_limit: "review_capacity",
   provider_cooldown: "ai_provider", accounting_unavailable: "accounting_unavailable", lease_unavailable: "reservation_unclassified" };
 for (const [reason, category] of Object.entries(reasons)) assert.equal(pr262ReservationBlocker(reason), category);
-assert.equal(pr262EvidenceBlocker("candidate_alert_details_pending", { priceScenarios: false, industry: true }), "missing_price_scenarios");
-assert.equal(pr262EvidenceBlocker("candidate_alert_details_pending", { priceScenarios: true, industry: false }), "missing_industry");
+assert.equal(pr262EvidenceBlocker("candidate_alert_details_pending", { marketPrice: true, priceScenarios: false, industry: true }), "missing_price_scenarios");
+assert.equal(pr262EvidenceBlocker("candidate_alert_details_pending", { marketPrice: true, priceScenarios: true, industry: false }), "missing_industry");
+for (const marketPrice of [false, undefined]) {
+  const quoteOutage = pr262EvidenceBlocker("candidate_alert_details_pending", { marketPrice, priceScenarios: false, industry: false });
+  assert.equal(quoteOutage, null, "Missing or unknown quotes must not be classified as daily foundation gaps.");
+  assert.equal(pr262EvidenceRetryAt(quoteOutage, now), null, "Transient quote failures retain the ordinary evidence retry.");
+}
 assert.equal(pr262EvidenceRetryAt("missing_price_scenarios", now), "2026-09-24T04:00:00.000Z",
   "Unchanged daily valuation inputs must not consume a worker slot every 15 minutes");
 assert.equal(pr262EvidenceRetryAt("missing_profile", now), null, "Profile recovery keeps its immediate cache-driven wake-up path");

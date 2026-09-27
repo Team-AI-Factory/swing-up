@@ -8,6 +8,9 @@ const DAY_MS = 24 * 60 * 60_000;
 export function pr262EvidenceBlocker(reportStatus: string, fields: Record<string, unknown>): Pr262ReviewBlocker | null {
   if (reportStatus === "candidate_company_profile_pending") return "missing_profile";
   if (reportStatus !== "candidate_alert_details_pending") return null;
+  // A transient quote outage also makes priceScenarios false. It needs the
+  // normal evidence retry, not a day-long wait for foundation inputs.
+  if (fields.marketPrice !== true) return null;
   if (fields.priceScenarios === false) return "missing_price_scenarios";
   if (fields.industry === false) return "missing_industry";
   return null;

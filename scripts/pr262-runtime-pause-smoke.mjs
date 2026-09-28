@@ -59,7 +59,7 @@ assert.equal(railway.environments?.pr?.deploy?.restartPolicyType, "NEVER");
 assert.equal(railwayRecovery.environments?.pr?.deploy?.startCommand, "node scripts/railway-preview-start.mjs");
 assert.equal(railwayRecovery.environments?.pr?.deploy?.cronSchedule, null, "Recovery previews must not inherit a live recurring job");
 assert.deepEqual(railwayRecovery.environments?.pr?.deploy?.preDeployCommand, []);
-assert.equal(railwayRecovery.deploy?.cronSchedule, "7 * * * *", "The existing production schedule remains unchanged");
+assert.equal(railwayRecovery.deploy?.cronSchedule, "7,22,37,52 * * * *", "The authorized pilot reuses recovery for paced profile preparation");
 
 const isolatedPreviewEnvironment = {
   RAILWAY_ENVIRONMENT_NAME: "swing-up-pr-296",
@@ -142,11 +142,11 @@ const productionWebRefused = runDisabledPreview({ ...previewWebService, RAILWAY_
 assert.equal(productionWebRefused.status, 1);
 assert.match(productionWebRefused.stderr, /railway_preview_requires_pull_request_environment/);
 assert.equal(railwaySensor.build?.builder, "RAILPACK", "The Railway sensor uses Railway Railpack");
-assert.equal(railwaySensor.deploy?.startCommand, "npm run pr262:cron", "Railway must keep the lightweight sensor active");
+assert.equal(railwaySensor.deploy?.startCommand, "node scripts/simple-alert-pilot-cycle.mjs", "The pilot must use its branch/namespace-checked launcher");
 assert.equal(railwaySensor.deploy?.cronSchedule, "*/15 * * * *", "Railway sensing uses the approved fifteen-minute cadence");
 assert.equal(railwaySensor.deploy?.restartPolicyType, "NEVER", "A completed sensor cron waits for the next schedule");
-assert.equal(railwayRecovery.deploy?.startCommand, "npm run pr262:analysis-cron", "Railway recovery must process the existing R2 queue without duplicating source scans");
-assert.equal(railwayRecovery.deploy?.cronSchedule, "7 * * * *", "The Railway analysis cron is an hourly recovery net");
+assert.equal(railwayRecovery.deploy?.startCommand, "node scripts/simple-alert-pilot-cycle.mjs --profiles-only", "The reused recovery service only prepares profiles");
+assert.equal(railwayRecovery.deploy?.cronSchedule, "7,22,37,52 * * * *", "Profile preparation is offset from sensor cycles");
 assert.equal(railwayRecovery.deploy?.restartPolicyType, "NEVER");
 assert.equal(pkg.scripts?.["pr262:cron"], "node scripts/pr262-cron-cycle.mjs", "Package script must enter the bounded cron launcher");
 assert.equal(pkg.scripts?.["pr262:analysis-cron"], "node scripts/pr262-cron-cycle.mjs --analysis-only", "Analysis recovery must explicitly skip local sensing");
@@ -284,4 +284,4 @@ assert.match(watchOutAuthority, /completeCommitteeReview\(committee\)/, "Serious
 assert.match(watchOutAuthority, /committee\.agentsFailed\s*===\s*0/, "Serious Watch Out must reject incomplete committee runs");
 assert.match(watchOutAuthority, /judge\.verdict\s*===\s*"positive"/, "Serious Watch Out must require a positive Final Judge");
 
-console.log("PR #262 runtime recovery smoke passed: website default restored, Railway owns lightweight fifteen-minute sensing, hourly Railway recovery is separated, quiet scans avoid full R2 rewrites, the production namespace is fenced, legacy scanners are blocked, and Serious Watch Out authority is protected.");
+console.log("Runtime smoke passed: persistent web remains intact, pilot sensing and paced profile jobs have distinct commands, ordinary previews remain inert, legacy runtime boundaries and Serious Watch Out authority stay protected.");

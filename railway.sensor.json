@@ -4,7 +4,7 @@
     "builder": "RAILPACK"
   },
   "deploy": {
-    "startCommand": "npm run pr262:cron",
+    "startCommand": "node scripts/simple-alert-pilot-cycle.mjs",
     "cronSchedule": "*/15 * * * *",
     "restartPolicyType": "NEVER"
   },

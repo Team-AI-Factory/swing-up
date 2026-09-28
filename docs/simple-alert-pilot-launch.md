@@ -14,10 +14,10 @@ Reuse existing services. No new service, subscription, instance, or database is 
 
 | Existing service | ID | Pilot configuration file | Role / schedule (UTC) |
 | --- | --- | --- | --- |
-| swing-up | d02bf6e1-4140-418f-aa5c-b67dcc2d8d15 | railway.web.json | Existing web; role `web` |
-| pr262-sensor | f2ccbe38-c107-443f-b1da-74b92ae829a6 | railway.simple-pilot-sensor.json | role `sensor`; `*/15 * * * *` |
-| pr262-analysis-recovery | adc23c8d-3912-4b22-87d9-e258bc70a044 | railway.simple-pilot-profiles.json | role `profiles`; `7,22,37,52 * * * *` |
-| pr262-foundation-v2 | 0a79a28a-d264-4202-86a0-adb5f2fbffcf | railway.simple-pilot-paused.json | Inert, no cron and no broad foundation pass |
+| swing-up | d02bf6e1-4140-418f-aa5c-b67dcc2d8d15 | railway.json (existing default) | Existing web; role `web` |
+| pr262-sensor | f2ccbe38-c107-443f-b1da-74b92ae829a6 | railway.sensor.json | role `sensor`; `*/15 * * * *` |
+| pr262-analysis-recovery | adc23c8d-3912-4b22-87d9-e258bc70a044 | railway.analysis-recovery.json | role `profiles`; `7,22,37,52 * * * *` |
+| pr262-foundation-v2 | 0a79a28a-d264-4202-86a0-adb5f2fbffcf | railway.foundation.json | Inert, no cron and no broad foundation pass |
 
 For web, sensor and profiles set `SWING_UP_SIMPLE_PILOT_ENABLED=true`, `SWING_UP_SIMPLE_PILOT_ROLE` to the role above, `SWING_UP_PR262_STORAGE_PREFIX=branch-labs/simple-alerts/`, and `SWING_UP_R2_WRITE_PREFIX=branch-labs/simple-alerts/`. Runtime attests exact branch, project, environment and both prefixes. Ordinary PR previews remain inert. Keep other existing credential references unchanged. Sensor must keep both `AI_COMMITTEE_ENABLED` and `SWING_UP_PR262_EVENT_JOB_OPENAI_ENABLED` true with the existing bounded model policy. Profiles have both false; its launcher additionally removes OpenAI credentials. Both roles use the same provider allowance; the pilot reuses the existing AI spend/reservation ledger, not a fresh $10 allowance.
 
@@ -25,7 +25,7 @@ For web, sensor and profiles set `SWING_UP_SIMPLE_PILOT_ENABLED=true`, `SWING_UP
 
 The stored valuation foundation is read-only input. Pilot queues, company mapping/exposure caches, research, approvals, outboxes, delivery receipts and measurements are separate. Shared writes are restricted to the existing AI ledger, source request ledgers, refreshed official ticker universe, verified profiles and exact profile filing excerpts. Shared objects cannot be deleted by pilot exceptions. Main's queue, approvals, foundation calculations and results cannot be written through the pilot fence.
 
-Existing staged patch `e836fb56-379c-4b19-85ec-d2c7dbb45591` also contains older **service deletions** for `pr262-foundation` (`734b2d0d-14a3-4dad-b01a-aceaef7565df`) and `pr262-queue-reset-once` (`a90a72f1-dc27-4f84-bbcd-87a7e749bae0`). Do not blindly Apply all. Preserve their live inert configuration and cancel only those deletion flags before accepting a pilot launch. Postgres must remain unchanged. Nulling UI cron alone may be overridden by the repository configuration; use the explicit configuration files above and verify effective settings after deployment.
+The earlier version of staged patch `e836fb56-379c-4b19-85ec-d2c7dbb45591` contained older **service deletions** for `pr262-foundation` (`734b2d0d-14a3-4dad-b01a-aceaef7565df`) and `pr262-queue-reset-once` (`a90a72f1-dc27-4f84-bbcd-87a7e749bae0`). Those deletion requests have now been cleared by discarding and reconstructing only the intended four-service launch patch; direct read-back verifies both retired services have no staged changes. Preserve their live inert configuration. Postgres remains unchanged. Nulling UI cron alone may be overridden by the repository configuration; use the explicit configuration files above and verify effective settings after deployment.
 
 Rollback: stop the pilot worker schedules, leave the website/database available, preserve all queues, profiles and accounting. Return the web to the prior main revision only if needed. **Do not restart main scanning as rollback** without a later user instruction. The pre-pilot source main revision was `5129218b77250791dd8f813d11ad8fe242d5a767`; schedules were sensor every 15 minutes, recovery minute 7 hourly, foundation 02:17 UTC, for historical reference only.
 
@@ -69,6 +69,14 @@ Recommend adding back one feature/source family at a time only after a passed wi
 
 - Progress task `6ab38ed8ae788191af1e9dd9ff73e637` is updated for 08:00 and 20:00 Asia/Bangkok. Report good/bad results, Serious/provisional/rejected/no-signal/blocked cases, source reliability, processing reliability, profile output, card completeness, latency, spending, fixes, unresolved issues and next step.
 - Maintenance task `6ab38ef504848191b0cc0100811eda54` checks hourly for bounded reversible repairs and evidence-based expansion. It must not bypass dashboard authentication, restart main scanning, or repeatedly notify routine unchanged blockers. Report the verified incident or needed user action promptly when material.
+
+## Launch staging read-back
+
+The first connected infrastructure preparation call ended with HTTP 502 after staging partial changes. Configuration-file path changes were not staged. The pilot branch therefore updates the EXISTING Railway config files listed above, while leaving main unchanged, so repository configuration cannot silently reinstate the old jobs.
+
+The connection cannot undo individual service-deletion flags. After checking that the entire pending patch contained only the known launch edits and the two older deletions, the patch was discarded and rebuilt from the exact saved configuration. Direct read-back now proves: ONLY web, sensor, profiles and foundation-v2 have staged edits; BOTH retired services have `staged: null`; Postgres is unchanged. No deletion remains. This discarded preparation only, not live data or deployments. Pilot role variables, source branches and worker commands/schedules are staged; nothing has been applied. Dashboard two-factor verification remains required.
+
+The read of the configured cost projection returned `valuesRedacted: true`; actual current spend remains unavailable. Preserve the existing projection; do not invent a value. The pilot launch script checks its configured $20 ceiling at runtime and may refuse to start if the existing value does not meet it. A current dashboard billing check is still required to claim infrastructure headroom.
 
 ## Validation record
 

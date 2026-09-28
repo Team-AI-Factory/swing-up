@@ -4,8 +4,8 @@
     "builder": "RAILPACK"
   },
   "deploy": {
-    "startCommand": "npm run pr262:production-foundation",
-    "cronSchedule": "17 2 * * *",
+    "startCommand": "node scripts/simple-alert-paused.mjs",
+    "cronSchedule": null,
     "restartPolicyType": "NEVER"
   },
   "environments": {

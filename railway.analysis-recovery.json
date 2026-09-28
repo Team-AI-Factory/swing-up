@@ -4,13 +4,15 @@
     "builder": "RAILPACK"
   },
   "deploy": {
-    "startCommand": "npm run pr262:analysis-cron",
-    "cronSchedule": "7 * * * *",
+    "startCommand": "node scripts/simple-alert-pilot-cycle.mjs --profiles-only",
+    "cronSchedule": "7,22,37,52 * * * *",
     "restartPolicyType": "NEVER"
   },
   "environments": {
     "pr": {
-      "build": { "buildCommand": "npm run build" },
+      "build": {
+        "buildCommand": "npm run build"
+      },
       "deploy": {
         "startCommand": "node scripts/railway-preview-start.mjs",
         "preDeployCommand": [],

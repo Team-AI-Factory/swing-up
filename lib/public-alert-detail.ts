@@ -1,3 +1,4 @@
+import { companyCardFacts } from "@/lib/company-card-facts";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
 import { getAlert, type Alert, type AlertAction, type MarketSentimentImpact } from "@/lib/mock-alerts";
@@ -156,6 +157,7 @@ function liveAlertToCard(record: LiveAlertRecord): Alert {
     actionLabel: allowedActionLabel(record.action),
     ticker: record.ticker,
     company: record.company,
+    companyFacts: companyCardFacts(entry.companyProfile, { ticker: record.ticker, company: record.company, cik: entry.cik }),
     event: record.event,
     eventDate: formatDate(record.publishedAt),
     whatHappened: safeText(entry.whatHappened ?? entry.whatChanged ?? entry.summary, record.event),

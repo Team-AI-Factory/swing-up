@@ -1,0 +1,208 @@
+{
+  "name": "Simple Alerts",
+  "branch": "pilot-simple-alerts",
+  "frozenAt": "2026-09-28T07:15:02.088Z",
+  "selection": "All three buy-research names, first 12 sell-research and first 10 price-watch names alphabetically from the same profile-verified snapshot. No later return data used. Price-watch names provide comparison cases. This is a feasibility sample, not representative market coverage.",
+  "companies": [
+    {
+      "ticker": "AXS",
+      "company": "Axis Capital Holdings Limited",
+      "cik": "0001214816",
+      "initialAction": "buy_research",
+      "profileSourceUrl": "https://www.sec.gov/Archives/edgar/data/1214816/000121481626000097/axs-20251231.htm",
+      "profileFiledAt": "2026-02-27"
+    },
+    {
+      "ticker": "CUBI",
+      "company": "Customers Bancorp, Inc",
+      "cik": "0001488813",
+      "initialAction": "buy_research",
+      "profileSourceUrl": "https://www.sec.gov/Archives/edgar/data/1488813/000148881326000029/cubi-20251231.htm",
+      "profileFiledAt": "2026-02-27"
+    },
+    {
+      "ticker": "INTR",
+      "company": "Inter & Co. Inc.",
+      "cik": "0001864163",
+      "initialAction": "buy_research",
+      "profileSourceUrl": "https://www.sec.gov/Archives/edgar/data/1864163/000207097926000185/intr-20251231.htm",
+      "profileFiledAt": "2026-04-30"
+    },
+    {
+      "ticker": "AKAM",
+      "company": "Akamai Technologies, Inc.",
+      "cik": "0001086222",
+      "initialAction": "sell_research",
+      "profileSourceUrl": "https://www.sec.gov/Archives/edgar/data/1086222/000108622226000022/akam-20251231.htm",
+      "profileFiledAt": "2026-02-20"
+    },
+    {
+      "ticker": "ALNT",
+      "company": "Allient Inc.",
+      "cik": "0000046129",
+      "initialAction": "sell_research",
+      "profileSourceUrl": "https://www.sec.gov/Archives/edgar/data/46129/000110465926024123/alnt-20251231x10k.htm",
+      "profileFiledAt": "2026-03-05"
+    },
+    {
+      "ticker": "AZZ",
+      "company": "AZZ Inc.",
+      "cik": "0000008947",
+      "initialAction": "sell_research",
+      "profileSourceUrl": "https://www.sec.gov/Archives/edgar/data/8947/000000894726000068/azz-20260228.htm",
+      "profileFiledAt": "2026-04-22"
+    },
+    {
+      "ticker": "BTSG",
+      "company": "BrightSpring Health Services, Inc.",
+      "cik": "0001865782",
+      "initialAction": "sell_research",
+      "profileSourceUrl": "https://www.sec.gov/Archives/edgar/data/1865782/000119312526079454/btsg-20251231.htm",
+      "profileFiledAt": "2026-02-27"
+    },
+    {
+      "ticker": "CLH",
+      "company": "Clean Harbors, Inc.",
+      "cik": "0000822818",
+      "initialAction": "sell_research",
+      "profileSourceUrl": "https://www.sec.gov/Archives/edgar/data/822818/000082281826000009/clh-20251231.htm",
+      "profileFiledAt": "2026-02-18"
+    },
+    {
+      "ticker": "CMI",
+      "company": "Cummins Inc.",
+      "cik": "0000026172",
+      "initialAction": "sell_research",
+      "profileSourceUrl": "https://www.sec.gov/Archives/edgar/data/26172/000002617226000009/cmi-20251231.htm",
+      "profileFiledAt": "2026-02-10"
+    },
+    {
+      "ticker": "COLD",
+      "company": "Americold Realty Trust, Inc.",
+      "cik": "0001455863",
+      "initialAction": "sell_research",
+      "profileSourceUrl": "https://www.sec.gov/Archives/edgar/data/1455863/000162828026012274/art-20251231.htm",
+      "profileFiledAt": "2026-02-26"
+    },
+    {
+      "ticker": "CRAI",
+      "company": "CRA International,Inc.",
+      "cik": "0001053706",
+      "initialAction": "sell_research",
+      "profileSourceUrl": "https://www.sec.gov/Archives/edgar/data/1053706/000105370626000006/crai-20260103.htm",
+      "profileFiledAt": "2026-02-26"
+    },
+    {
+      "ticker": "DOV",
+      "company": "Dover Corporation",
+      "cik": "0000029905",
+      "initialAction": "sell_research",
+      "profileSourceUrl": "https://www.sec.gov/Archives/edgar/data/29905/000002990526000009/dov-20251231.htm",
+      "profileFiledAt": "2026-02-13"
+    },
+    {
+      "ticker": "FLEX",
+      "company": "Flex Ltd.",
+      "cik": "0000866374",
+      "initialAction": "sell_research",
+      "profileSourceUrl": "https://www.sec.gov/Archives/edgar/data/866374/000086637426000012/flex-20260331.htm",
+      "profileFiledAt": "2026-05-20"
+    },
+    {
+      "ticker": "HUM",
+      "company": "Humana Inc.",
+      "cik": "0000049071",
+      "initialAction": "sell_research",
+      "profileSourceUrl": "https://www.sec.gov/Archives/edgar/data/49071/000004907126000009/hum-20251231.htm",
+      "profileFiledAt": "2026-02-19"
+    },
+    {
+      "ticker": "ITGR",
+      "company": "Integer Holdings Corporation",
+      "cik": "0001114483",
+      "initialAction": "sell_research",
+      "profileSourceUrl": "https://www.sec.gov/Archives/edgar/data/1114483/000111448326000003/gb-20251231.htm",
+      "profileFiledAt": "2026-02-23"
+    },
+    {
+      "ticker": "AAPL",
+      "company": "Apple Inc.",
+      "cik": "0000320193",
+      "initialAction": "price_watch",
+      "profileSourceUrl": "https://www.sec.gov/Archives/edgar/data/320193/000032019325000079/aapl-20250927.htm",
+      "profileFiledAt": "2025-10-31"
+    },
+    {
+      "ticker": "AMD",
+      "company": "Advanced Micro Devices, Inc.",
+      "cik": "0000002488",
+      "initialAction": "price_watch",
+      "profileSourceUrl": "https://www.sec.gov/Archives/edgar/data/2488/000000248826000018/amd-20251227.htm",
+      "profileFiledAt": "2026-02-04"
+    },
+    {
+      "ticker": "ANET",
+      "company": "Arista Networks, Inc.",
+      "cik": "0001596532",
+      "initialAction": "price_watch",
+      "profileSourceUrl": "https://www.sec.gov/Archives/edgar/data/1596532/000159653226000013/anet-20251231.htm",
+      "profileFiledAt": "2026-02-17"
+    },
+    {
+      "ticker": "APPF",
+      "company": "AppFolio, Inc.",
+      "cik": "0001433195",
+      "initialAction": "price_watch",
+      "profileSourceUrl": "https://www.sec.gov/Archives/edgar/data/1433195/000143319526000011/appf-20251231.htm",
+      "profileFiledAt": "2026-02-05"
+    },
+    {
+      "ticker": "ATEX",
+      "company": "Anterix Inc.",
+      "cik": "0001304492",
+      "initialAction": "price_watch",
+      "profileSourceUrl": "https://www.sec.gov/Archives/edgar/data/1304492/000130449226000027/atex-20260331.htm",
+      "profileFiledAt": "2026-06-25"
+    },
+    {
+      "ticker": "AWK",
+      "company": "American Water Works Company, Inc.",
+      "cik": "0001410636",
+      "initialAction": "price_watch",
+      "profileSourceUrl": "https://www.sec.gov/Archives/edgar/data/1410636/000141063626000034/awk-20251231.htm",
+      "profileFiledAt": "2026-02-18"
+    },
+    {
+      "ticker": "AX",
+      "company": "Axos Financial, Inc.",
+      "cik": "0001299709",
+      "initialAction": "price_watch",
+      "profileSourceUrl": "https://www.sec.gov/Archives/edgar/data/1299709/000129970926000060/ax-20260630.htm",
+      "profileFiledAt": "2026-08-20"
+    },
+    {
+      "ticker": "BANF",
+      "company": "BancFirst Corporation",
+      "cik": "0000760498",
+      "initialAction": "price_watch",
+      "profileSourceUrl": "https://www.sec.gov/Archives/edgar/data/760498/000119312526075954/banf-20251231.htm",
+      "profileFiledAt": "2026-02-26"
+    },
+    {
+      "ticker": "CME",
+      "company": "CME Group Inc.",
+      "cik": "0001156375",
+      "initialAction": "price_watch",
+      "profileSourceUrl": "https://www.sec.gov/Archives/edgar/data/1156375/000115637526000009/cme-20251231.htm",
+      "profileFiledAt": "2026-02-26"
+    },
+    {
+      "ticker": "CTAS",
+      "company": "Cintas Corporation",
+      "cik": "0000723254",
+      "initialAction": "price_watch",
+      "profileSourceUrl": "https://www.sec.gov/Archives/edgar/data/723254/000072325426000028/ctas-20260531.htm",
+      "profileFiledAt": "2026-07-29"
+    }
+  ]
+}

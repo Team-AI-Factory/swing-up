@@ -1,3 +1,4 @@
+import { companyCardFacts } from "@/lib/company-card-facts";
 import { verifiedCompanyProfile } from "@/lib/company-profile";
 type Json = Record<string, unknown>;
 const object = (v: unknown): Json => v && typeof v === "object" && !Array.isArray(v) ? v as Json : {};
@@ -44,10 +45,11 @@ export function plainEventSummary(company: string, raw: unknown, headline?: unkn
   return summaries[String(family)] ?? `We're checking an update from ${company}. We have not yet established what changed in the business or what it could mean for the share price.`;
 }
 
-export function explainSignal(input: { company: string; industry?: unknown; sector?: unknown; description?: unknown; kind: "valuation" | "event"; action: string; price?: unknown; fairValue?: unknown; headline?: unknown; whatHappened?: unknown; eventFamily?: unknown; reasons?: unknown; gaps?: unknown; fundamentals?: unknown }) {
+export function explainSignal(input: { company: string; ticker?: unknown; cik?: unknown; companyProfile?: unknown; industry?: unknown; sector?: unknown; description?: unknown; kind: "valuation" | "event"; action: string; price?: unknown; fairValue?: unknown; headline?: unknown; whatHappened?: unknown; eventFamily?: unknown; reasons?: unknown; gaps?: unknown; fundamentals?: unknown }) {
   const price = number(input.price), value = number(input.fairValue);
   const money = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 2 });
   const companyDoes = explainCompany(input.company, input.industry, input.sector, input.description);
+  const companyFacts = companyCardFacts(input.companyProfile, input);
   const gaps = Array.isArray(input.gaps) ? input.gaps.filter((x): x is string => typeof x === "string").slice(0, 8) : [];
   const facts = object(input.fundamentals);
   const salesGrowth = number(facts.revenueGrowthTtmPercent), margin = number(facts.netMarginPercent);
@@ -56,7 +58,7 @@ export function explainSignal(input: { company: string; industry?: unknown; sect
   if (input.kind === "valuation") {
     const direction = price !== null && value !== null ? value > price ? "higher" : value < price ? "lower" : "unchanged" : null;
     const gap = price !== null && price > 0 && value !== null ? Math.abs((value / price - 1) * 100).toFixed(1) : null;
-    return { companyDoes,
+    return { companyDoes, companyFacts,
       whatHappened: price !== null && value !== null ? `The shares were last recorded at ${money(price)} each. Our base estimate of their value is ${money(value)} per share. This alert comes from comparing the share price with the company's finances.` : `The company check found possible business or pricing risks. We still need a reliable share price or estimate of what the business is worth.`,
       whyItMatters: `${businessFacts} The model compares the share price with what the business may be worth, using its earnings, assets or cash generation. ${direction === "higher" ? "A lower share price could offer an opportunity if the business can sustain those results." : direction === "lower" ? "The current price asks investors to pay more than the model supports. If future results do not justify that price, the shares could fall." : "More evidence is needed to establish a dependable gap."}`.trim(),
       whatCouldHappen: gap && direction ? `If the assumptions prove sound and investors price the shares at the model's base value, the share price would be about ${gap}% ${direction}. This is a scenario, not a prediction of the size or timing of a move.` : "Further evidence is needed to estimate the possible direction and size of a price move.",
@@ -76,7 +78,7 @@ export function explainSignal(input: { company: string; industry?: unknown; sect
     product_launch: "A new product may generate sales if customers adopt it; development and selling costs affect whether profits improve.",
   };
   const direction = /buy|upside/.test(input.action) ? "upward" : /sell|downside/.test(input.action) ? "downward" : "uncertain";
-  return { companyDoes,
+  return { companyDoes, companyFacts,
     whatHappened: plainEventSummary(input.company, input.whatHappened, input.headline, input.eventFamily),
     whyItMatters: causes[text(input.eventFamily)] ?? "The update may affect the company's income, costs, finances or risks. The available evidence does not yet establish the size of that effect.",
     whatCouldHappen: direction === "uncertain" ? "The direction is still unclear. More evidence is needed before describing this as a buying or selling opportunity." : `The evidence points to possible ${direction} pressure on the share price if the expected business effect happens and is not already reflected in the price.`,
@@ -88,7 +90,7 @@ export function explainSignal(input: { company: string; industry?: unknown; sect
 export function explainCandidate(candidate: Json, analysis?: Json) {
   const profile = verifiedCompanyProfile(candidate.companyProfile, candidate);
   const explanation = explainSignal({ company: text(candidate.company) || text(candidate.ticker), industry: analysis?.industry ?? candidate.industry, sector: analysis?.sector ?? candidate.sector,
-    description: profile?.description, kind: candidate.eventFamily === "valuation_gap" ? "valuation" : "event", action: text(candidate.direction),
+    ticker: candidate.ticker, cik: candidate.cik, companyProfile: profile, description: profile?.description, kind: candidate.eventFamily === "valuation_gap" ? "valuation" : "event", action: text(candidate.direction),
     price: object(candidate.quote).price, fairValue: object(analysis?.fairValue ?? candidate.valuationRange).baseValue, headline: candidate.eventHeadline,
     whatHappened: candidate.whatHappened, eventFamily: candidate.eventFamily, gaps: candidate.failedGateChecks, fundamentals: analysis?.fundamentals });
   const reviewed = object(candidate.plainLanguageExplanation);
@@ -104,6 +106,7 @@ export function publicExplanation(explanation: unknown, context: { company: stri
   const profile = verifiedCompanyProfile(context.companyProfile, context);
   return {
     companyDoes: profile?.description ?? "",
+    companyFacts: companyCardFacts(profile, context),
     whatHappened: plainEventSummary(context.company, saved.whatHappened, context.headline, context.eventFamily),
     whyItMatters: filingBoilerplate.test(text(saved.whyItMatters)) ? "The effect on the company's income, costs and risks is still being assessed." : text(saved.whyItMatters),
     whatCouldHappen: filingBoilerplate.test(text(saved.whatCouldHappen)) ? "The possible price move still needs a supported explanation." : text(saved.whatCouldHappen),

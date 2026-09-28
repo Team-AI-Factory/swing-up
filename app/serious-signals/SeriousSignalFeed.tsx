@@ -1,6 +1,8 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
+import { CompanyFacts } from "@/components/CompanyFacts";
+import type { CompanyCardFacts } from "@/lib/company-card-facts";
 import { SignalPriceOutlook } from "@/components/SignalPriceOutlook";
 import { compareSignalPotential, type PriceOutlook } from "@/lib/signal-outlook";
 
@@ -13,7 +15,7 @@ type LiveAlert = {
   alertType: "buy" | "sell" | "watch_out";
   eventHeadline: string;
   whyItMatters: string | null;
-  explanation?: { companyDoes: string; whatHappened: string; whyItMatters: string; whatCouldHappen: string; whatCouldGoWrong: string };
+  explanation?: { companyFacts?: CompanyCardFacts; companyDoes: string; whatHappened: string; whyItMatters: string; whatCouldHappen: string; whatCouldGoWrong: string };
   price: number | null;
   priceObservedAt: string | null;
   outlook?: PriceOutlook;
@@ -83,7 +85,7 @@ type ValuationWatchlistItem = {
   specialistModelApplied: boolean;
   publicationStatus: "provisional_alert" | "committee_approved_alert";
   committeeStatus: string;
-  explanation: { companyDoes: string; whatHappened: string; whyItMatters: string; whatCouldHappen: string; whatCouldGoWrong: string };
+  explanation: { companyFacts?: CompanyCardFacts; companyDoes: string; whatHappened: string; whyItMatters: string; whatCouldHappen: string; whatCouldGoWrong: string };
   userAlertEligible: boolean;
   committeeApproved: boolean;
   links: Array<{ label: string; url: string }>;
@@ -206,7 +208,7 @@ function ValuationWatchlistPanel({
                   </div>
                   <h3>{item.ticker} · {item.company}</h3>
                   <p><strong>Industry:</strong> {item.industry}</p>
-                  {item.explanation ? <><p><strong>What the company does:</strong> {item.explanation.companyDoes}</p><p><strong>What is happening:</strong> {item.explanation.whatHappened}</p><p><strong>Why it matters:</strong> {item.explanation.whyItMatters}</p><p><strong>What could happen:</strong> {item.explanation.whatCouldHappen}</p><p><strong>What could go wrong:</strong> {item.explanation.whatCouldGoWrong}</p></> : null}
+                  <CompanyFacts facts={item.explanation?.companyFacts} />{item.explanation ? <><p><strong>What is happening:</strong> {item.explanation.whatHappened}</p><p><strong>Why it matters:</strong> {item.explanation.whyItMatters}</p><p><strong>What could happen:</strong> {item.explanation.whatCouldHappen}</p><p><strong>What could go wrong:</strong> {item.explanation.whatCouldGoWrong}</p></> : null}
                   <SignalPriceOutlook outlook={item.outlook} action={item.action} />
                   <p className="muted">Price snapshot collected {formatTime(item.priceObservedAt)} Bangkok time{item.livePriceFresh ? " · sensor snapshot" : " · foundation snapshot"}. This is the collection time; the exchange trade time is unavailable. Prices may have changed.</p>
                   {item.livePriceAlert ? <p><strong>Live market move:</strong> {item.livePriceAlert.changePercent !== null ? `${item.livePriceAlert.changePercent.toFixed(1)}%` : "change unavailable"}{item.livePriceAlert.relativeVolume !== null ? ` · ${item.livePriceAlert.relativeVolume.toFixed(1)}x relative volume` : ""}. This remains provisional research until current evidence and the Committee approve it.</p> : null}
@@ -403,7 +405,7 @@ export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
                   <h2>{alert.ticker} {alert.price !== null ? `· $${alert.price.toLocaleString("en-US")}` : ""}</h2>
                   <p><strong>Industry:</strong> {alert.industry}</p>
                   <p><strong>What happened:</strong> {alert.explanation?.whatHappened ?? "The business effect is being assessed."}</p>
-                  {alert.explanation ? <><p><strong>What the company does:</strong> {alert.explanation.companyDoes}</p><p><strong>What could happen:</strong> {alert.explanation.whatCouldHappen}</p><p><strong>What could go wrong:</strong> {alert.explanation.whatCouldGoWrong}</p></> : null}
+                  <CompanyFacts facts={alert.explanation?.companyFacts} />{alert.explanation ? <><p><strong>What could happen:</strong> {alert.explanation.whatCouldHappen}</p><p><strong>What could go wrong:</strong> {alert.explanation.whatCouldGoWrong}</p></> : null}
                   <p><strong>Why it matters:</strong> {alert.explanation?.whyItMatters ?? alert.whyItMatters ?? "The full verified explanation is not available in the sanitized feed."}</p>
                   {alert.outlook ? <SignalPriceOutlook outlook={alert.outlook} action={alert.alertType} /> : null}
                   <p className="muted"><strong>Price observed:</strong> {alert.priceObservedAt ? `${formatTime(alert.priceObservedAt)} Bangkok time` : "Observation time unavailable"}. This is the quote recorded with the alert; prices may have changed.</p>

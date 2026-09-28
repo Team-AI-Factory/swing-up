@@ -1,3 +1,4 @@
+import type { CompanyCardFacts } from "@/lib/company-card-facts";
 export type AlertAction = "BUY" | "WATCH" | "AVOID";
 export type FullAlertActionLabel = "Buy Candidate" | "Speculative Buy Candidate" | "Watch" | "Sell Review" | "Avoid" | "No Action";
 
@@ -16,6 +17,7 @@ export type AlertRippleItem = { group: "Direct winner" | "Supplier/customer" | "
 export type AlertCheckItem = { label: string; status: string; available: boolean };
 
 export type Alert = {
+  companyFacts?: CompanyCardFacts;
   id: string;
   action: AlertAction;
   actionLabel?: FullAlertActionLabel;

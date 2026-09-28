@@ -1,9 +1,11 @@
+import { extractRevenueGeography, revenueGeographyFromQuote, type RevenueGeography } from "@/lib/company-revenue-geography";
 /** Company descriptions must be extracts from a dated, identity-verified source. */
 export const COMPANY_PROFILE_PARSER_REVISION = 6;
 export type CompanyIdentity = { ticker?: unknown; company?: unknown; cik?: unknown };
 export type VerifiedCompanyProfile = {
   version: 1; status: "verified"; ticker: string; company: string; cik: string;
   business: string; customers: string; description: string;
+  revenueGeography?: RevenueGeography;
   industry?: string; industrySourceUrl?: string;
   sourceType: "sec_annual_filing"; sourceUrl: string; sourceFiledAt: string; verifiedAt: string;
 };
@@ -121,6 +123,9 @@ export function verifiedCompanyProfile(value: unknown, identity: CompanyIdentity
   const normalized = { ...p, business, customers, description } as VerifiedCompanyProfile;
   if (industry) { normalized.industry = industry; normalized.industrySourceUrl = industryUrl; }
   else { delete normalized.industry; delete normalized.industrySourceUrl; }
+  const geography = revenueGeographyFromQuote(object(p.revenueGeography).quote, text(p.sourceFiledAt));
+  if (geography) normalized.revenueGeography = geography;
+  else delete normalized.revenueGeography;
   return normalized;
 }
 
@@ -178,7 +183,7 @@ export function inspectCompanyProfileExtraction(input: ProfileExtractionInput) {
   if (!business || !customers) return { profile: null, reason: !business && !customers ? "company_profile_business_and_customers_not_extracted"
     : !business ? "company_profile_business_not_extracted" : "company_profile_customers_not_extracted" };
   const profile = verifiedCompanyProfile({ version: 1, status: "verified", ticker: text(input.identity.ticker).toUpperCase(), company: text(input.identity.company),
-    cik: profileCik(input.identity.cik), business, customers, description: business === customers ? business : `${business} ${customers}`,
+    cik: profileCik(input.identity.cik), business, customers, revenueGeography: extractRevenueGeography(input.html, input.filedAt), description: business === customers ? business : `${business} ${customers}`,
     sourceType: "sec_annual_filing", sourceUrl: input.sourceUrl, sourceFiledAt: input.filedAt, verifiedAt: input.now.toISOString() }, input.identity, input.now);
   return { profile, reason: profile ? null : "company_profile_identity_or_freshness_invalid" };
 }

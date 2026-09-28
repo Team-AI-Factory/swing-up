@@ -1,0 +1,22 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { loadTsModule } from "./helpers/load-typescript-module.mjs";
+import { companyProfileFixture } from "./helpers/company-profile-fixture.mjs";
+
+const cohort = JSON.parse(readFileSync(new URL("../config/simple-alert-pilot.json", import.meta.url)));
+const { assessSimpleAlertPilot } = loadTsModule("@/lib/simple-alert-pilot", { "@/config/simple-alert-pilot.json": cohort });
+const now = new Date();
+const candidates = cohort.companies.map(identity => ({ ...identity, companyProfile: companyProfileFixture(identity, now), userAlertEligible: true, committeeApproved: false }));
+const snapshot = { ok: true, generatedAt: now.toISOString(), candidates };
+const result = assessSimpleAlertPilot(snapshot, now);
+assert.equal(result.totals.companies, 25);
+assert.equal(result.totals.verifiedProfiles, 25);
+assert.equal(result.totals.reportedCommitteeApproved, 0);
+assert.equal(result.deliveryReceiptsVerified, false);
+assert.equal(result.totals.revenueCountryVerified, 0);
+assert.equal(assessSimpleAlertPilot({ ...snapshot, candidates: [] }, now).companies.filter(row => row.status === "missing_or_ambiguous").length, 25);
+assert.equal(assessSimpleAlertPilot({ ...snapshot, candidates: [{ ...candidates[0], cik: "999" }] }, now).totals.verifiedProfiles, 0);
+assert.equal(assessSimpleAlertPilot({ ...snapshot, candidates: [...candidates, candidates[0]] }, now).totals.verifiedProfiles, 24);
+assert.throws(() => assessSimpleAlertPilot(snapshot, new Date(now.getTime() + 31 * 60000)), /stale/);
+assert.throws(() => assessSimpleAlertPilot({ ...snapshot, ok: false }, now), /unavailable/);
+console.log("PASS: fixed 25-company cohort, identity and freshness checks, explicit missing coverage, no implied approvals or delivery");

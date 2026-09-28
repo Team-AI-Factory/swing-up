@@ -137,7 +137,7 @@ function sanitizeCandidate(item: UsValueCompanyAnalysis, action: WatchlistAction
     userAlertEligible: action !== "price_watch" && directionStillSupported && !["rejected", "not_eligible"].includes(String(review?.committeeStatus)),
     committeeApproved: approvedForThisSnapshot,
     committeeStatus: approvedForThisSnapshot ? "approved" : review?.committeeApproved === true ? "awaiting_review" : String(review?.committeeStatus ?? "awaiting_review"),
-    explanation: explainSignal({ company: String(item.company ?? ticker), sector: item.sector, industry: item.industry, description: companyProfile.description, kind: "valuation", action, price: currentPrice, fairValue: baseValue, fundamentals: item.fundamentals, gaps: plainEvidenceGaps(blockers) }),
+    explanation: explainSignal({ company: String(item.company ?? ticker), sector: item.sector, industry: item.industry, ticker, cik: companyProfile.cik, companyProfile, description: companyProfile.description, kind: "valuation", action, price: currentPrice, fairValue: baseValue, fundamentals: item.fundamentals, gaps: plainEvidenceGaps(blockers) }),
     links: [
       { label: "Company business and customers — annual filing", url: companyProfile.sourceUrl },
       ...(tradingViewUrl ? [{ label: "Market and valuation", url: tradingViewUrl }] : []),

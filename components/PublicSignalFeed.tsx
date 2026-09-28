@@ -1,11 +1,13 @@
 "use client";
 import { useEffect, useState } from "react";
+import { CompanyFacts } from "@/components/CompanyFacts";
+import type { CompanyCardFacts } from "@/lib/company-card-facts";
 import { SignalPriceOutlook } from "@/components/SignalPriceOutlook";
 import { compareSignalPotential, type PriceOutlook } from "@/lib/signal-outlook";
 type Signal = { id: string; ticker: string; company: string; action: string; currentPrice: number | null; priceObservedAt?: string | null; fairValue: number | null;
   outlook: PriceOutlook; eventObservedAt?: string | null; industry: string;
   committeeApproved: boolean; committeeStatus: string; createdAt: string; confidence?: number | null;
-  explanation: { companyDoes: string; whatHappened: string; whyItMatters: string; whatCouldHappen: string; whatCouldGoWrong: string; missingInformation: string[] };
+  explanation: { companyFacts?: CompanyCardFacts; companyDoes: string; whatHappened: string; whyItMatters: string; whatCouldHappen: string; whatCouldGoWrong: string; missingInformation: string[] };
   sources: Array<{ label: string; url: string }> };
 export function PublicSignalFeed() {
   const [visibleCount, setVisibleCount] = useState(20);
@@ -33,7 +35,7 @@ export function PublicSignalFeed() {
       <div className="button-row"><span className="badge">{s.committeeApproved ? "SERIOUS SIGNAL" : "PROVISIONAL ALERT"} · {s.action.replaceAll("_", " ").toUpperCase()}</span><span className="badge">{s.committeeApproved ? "Committee approved" : s.committeeStatus === "approved_pending_checks" ? "Positive review · final checks pending" : s.committeeStatus === "needs_more_data" ? "Collecting more information" : "Awaiting Committee review"}</span></div>
       <h3>{s.ticker} — {s.company}</h3>
       <p><strong>Industry:</strong> {s.industry}</p>
-      <p><strong>What the company does:</strong> {s.explanation.companyDoes}</p>
+      <CompanyFacts facts={s.explanation.companyFacts} />
       {s.outlook ? <SignalPriceOutlook outlook={s.outlook} action={s.action} /> : null}
       <p><strong>What is happening:</strong> {s.explanation.whatHappened}</p>
       <p><strong>Why this matters:</strong> {s.explanation.whyItMatters}</p>

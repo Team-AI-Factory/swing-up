@@ -1,3 +1,4 @@
+import { pilotIncludes } from "@/lib/simple-alert-pilot-scope";
 import type { VerifiedCompanyProfile } from "@/lib/company-profile";
 import { completePriceOutlook, industryLabel } from "@/lib/alert-details";
 import { readCompanyProfiles, readCompanyProfileCoverage } from "@/lib/opportunity-engine/company-profile-cache";
@@ -214,7 +215,7 @@ export async function getValuationWatchlistStatus(options: { limit?: number; act
     ["price_watch", arrayOfAnalyses(parsed.qualityPriceWatchlist)],
   ];
   const profiles = await readCompanyProfiles(groups.flatMap(([, items]) => items)).catch(() => new Map<string, VerifiedCompanyProfile>());
-  const all = groups.flatMap(([action, items]) => items.flatMap(item =>
+  const all = groups.flatMap(([action, items]) => items.filter(pilotIncludes).flatMap(item =>
     sanitizeCandidate(item, action, cycleId, livePrices.get(item.ticker.toUpperCase()), reviews.find(r => r.kind === "valuation" && r.ticker === item.ticker && r.valuationObservedAt === item.observedAt), profiles.get(item.ticker.toUpperCase())) ?? []))
     .sort(compareSignalPotential);
   const filtered = options.action ? all.filter((item) => item.action === options.action) : all;

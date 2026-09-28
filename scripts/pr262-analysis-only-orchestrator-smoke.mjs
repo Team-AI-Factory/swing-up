@@ -370,6 +370,7 @@ const stubs = {
 };
 const loaded = { exports: {} };
 new Function("require", "module", "exports", output)((name) => {
+  if (["@/lib/simple-alert-pilot-runtime", "@/lib/simple-alert-pilot-scope"].includes(name)) return loadTsModule(name);
   if (name in stubs) return stubs[name];
   throw new Error(`Unexpected analysis-only orchestrator import: ${name}`);
 }, loaded, loaded.exports);

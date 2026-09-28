@@ -1,3 +1,4 @@
+import { pilotSharedMutationAllowed, SIMPLE_PILOT_PREFIX } from "@/lib/simple-alert-pilot-runtime";
 import crypto from "node:crypto";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { prisma } from "@/lib/db/client";
@@ -155,7 +156,7 @@ export function assertR2MutationKeyAllowed(
 ) {
   if (!R2_MUTATION_METHODS.has(method.toUpperCase())) return;
   const prefix = normalizeR2WritePrefix(configuredPrefix);
-  if (prefix && (!key || !key.startsWith(prefix))) {
+  if (prefix && (!key || !key.startsWith(prefix)) && !(prefix === SIMPLE_PILOT_PREFIX && pilotSharedMutationAllowed(method, key))) {
     throw new Error("r2_mutation_outside_write_prefix");
   }
 }

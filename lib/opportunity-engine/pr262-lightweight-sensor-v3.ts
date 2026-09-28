@@ -1,3 +1,5 @@
+import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
+import { pilotIncludes, pilotSourceEnabled } from "@/lib/simple-alert-pilot-scope";
 import crypto from "node:crypto";
 import { selectMarketWatch, mergeWatchPrices } from "@/lib/opportunity-engine/market-watch-selection";
 import {
@@ -503,6 +505,7 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
   });
   const universe = await loadEquityUniverse(fetchImpl, now);
   const resolver = buildStructuredTickerResolver(universe.snapshot.entries);
+  exposure.entries = exposure.entries.filter(pilotIncludes);
   const loaded = await loadState();
   const state = loaded.state;
   const summaries: SourceSummary[] = [];
@@ -522,6 +525,10 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
   }
 
   const run = async (provider: string, cadenceMs: number, urls: string[], worker: () => Promise<{ status: string; recordsRead: number; receipts?: EventReceipt[]; events?: Pr262SensorEvent[]; error?: string | null }>) => {
+    if (!pilotSourceEnabled(provider)) {
+      summaries.push({ provider, attempted: false, status: "outside_pilot_scope", recordsRead: 0, newEvents: 0, error: null, nextRetryAt: null });
+      return;
+    }
     const key = `v3_${provider}`;
     if (!due(state.sourceHealth, key, cadenceMs, now)) {
       summaries.push({ provider, attempted: false, status: "not_due", recordsRead: 0, newEvents: 0, error: null, nextRetryAt: null });
@@ -536,7 +543,7 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
         return;
       }
       const converted = value.events ?? (value.receipts ?? []).flatMap((receipt) => receiptToEvent(receipt, provider, resolver, now) ?? []);
-      events.push(...converted);
+      events.push(...converted.filter(pilotIncludes));
       state.sourceHealth[key] = health(key, value.status, value.recordsRead, value.error ?? null, urls, now, state.sourceHealth[key], cadenceMs);
       summaries.push({ provider, attempted: true, status: value.status, recordsRead: value.recordsRead, newEvents: converted.length, error: value.error ?? null, nextRetryAt: state.sourceHealth[key].nextRetryAt });
     } catch (error) {
@@ -640,7 +647,7 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
     liveWatchlistPricePersistence = { written: true, reason: null };
   }
 
-  if (due(state.sourceHealth, "v3_macro", TWELVE_HOURS_MS, now)) {
+  if (!isSimpleAlertPilot() && due(state.sourceHealth, "v3_macro", TWELVE_HOURS_MS, now)) {
     try {
       const macro = await fetchMacroContext(fetchImpl, now);
       const meaningful = macro.context.regime.filter((label) => label !== "no_extreme_macro_change_in_latest_official_observations");
@@ -778,14 +785,14 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
     summaries.push({ provider: "direct_issuer_feeds", attempted: true, status: "temporarily_unavailable", recordsRead: 0, newEvents: 0, error: message, nextRetryAt: null, attemptCount: null, successCount: null, failureCount: null });
   }
 
-  const fanout = events.flatMap((event) => fanOut(event, exposure.entries));
-  const deduped = [...[...events, ...fanout].reduce((map, event) => {
+  const fanout = isSimpleAlertPilot() ? [] : events.flatMap((event) => fanOut(event, exposure.entries));
+  const deduped = [...[...events, ...fanout].filter(pilotIncludes).reduce((map, event) => {
     const current = map.get(event.id); if (!current || event.priority > current.priority) map.set(event.id, event); return map;
   }, new Map<string, Pr262SensorEvent>()).values()];
   // Valuation thresholds now enter a bounded company-first review queue.
   // Unexplained price/volume moves remain visible research without inventing a cause.
   const retiredUnimportantPending = state.pending.filter((event) => event.priority < MIN_IMPORTANT_PRIORITY || researchOnlyPriceEvent(event));
-  const importantPending = state.pending.filter((event) => event.priority >= MIN_IMPORTANT_PRIORITY && !researchOnlyPriceEvent(event));
+  const importantPending = state.pending.filter((event) => pilotIncludes(event) && event.priority >= MIN_IMPORTANT_PRIORITY && !researchOnlyPriceEvent(event));
   const actionablePending = importantPending.filter(canEnterIssuerEvidenceQueue);
   const legacyNonActionable = importantPending.filter((event) => !canEnterIssuerEvidenceQueue(event));
   const known = new Set([...state.seen, ...importantPending.map((event) => event.id)]);

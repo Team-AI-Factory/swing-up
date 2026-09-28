@@ -1,3 +1,5 @@
+import { runSimpleAlertProfileBuilder } from "@/lib/simple-alert-profile-builder";
+import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
 import { NextRequest, NextResponse } from "next/server";
 import { internalApiScopeAuthorized } from "@/lib/internal-api-auth";
 import {
@@ -15,6 +17,11 @@ export async function POST(request: NextRequest) {
   if (!authorized(request)) return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
   try {
     const body = await request.json().catch(() => ({})) as Record<string, unknown>;
+    if (body.mode === "profiles_only") {
+      const result = await runSimpleAlertProfileBuilder();
+      return NextResponse.json(result, { status: result.ok ? 200 : 503 });
+    }
+    if (isSimpleAlertPilot() && process.env.SWING_UP_SIMPLE_PILOT_ROLE === "profiles") return NextResponse.json({ ok: false, error: "profile_worker_cannot_scan" }, { status: 403 });
     const result = body.mode === "analysis_only"
       ? await runPr262AnalysisOnlyCycle()
       : await runPr262CronCycle();

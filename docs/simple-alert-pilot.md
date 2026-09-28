@@ -1,5 +1,7 @@
 # Simple Alerts pilot
 
+> 28 September update: live launch code is now prepared. See [the current launch record](simple-alert-pilot-launch.md) for deployment, authentication blockers, the 500-profile target and acceptance gates. The read-only baseline and earlier decisions below are historical; latest user authorization stops main scanning and replaces the prior no-scheduler-change restriction. No live launch is claimed.
+
 Branch: `pilot-simple-alerts`. Base / rollback code: `5129218b77250791dd8f813d11ad8fe242d5a767` (main, PR308). Do not merge this experiment into main.
 
 ## Decision and scope

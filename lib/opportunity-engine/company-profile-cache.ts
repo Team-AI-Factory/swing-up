@@ -8,7 +8,7 @@ type Json = Record<string, unknown>;
 const object = (v: unknown): Json => v && typeof v === "object" && !Array.isArray(v) ? v as Json : {};
 const text = (v: unknown) => typeof v === "string" ? v.trim() : "";
 type Filing = { url: string; form: string; filedAt: string; industry?: string; checkedAt?: string };
-type Entry = { ticker: string; company: string; cik: string; updatedAt: string; nextAttemptAt: string; profile: VerifiedCompanyProfile | null; filing?: Filing; error?: string; extractionFailure?: string; parserRevision?: number; cachedParserRevision?: number };
+type Entry = { ticker: string; company: string; cik: string; updatedAt: string; nextAttemptAt: string; profile: VerifiedCompanyProfile | null; firstVerifiedAt?: string; filing?: Filing; error?: string; extractionFailure?: string; parserRevision?: number; cachedParserRevision?: number };
 async function load() {
   const saved = await readVersionedTextFromR2(KEY);
   const body = saved.found && saved.text ? object(JSON.parse(saved.text)) : {};
@@ -113,7 +113,7 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
   if (cached && (cached.industry || (prior?.parserRevision === COMPANY_PROFILE_PARSER_REVISION && Date.parse(prior.nextAttemptAt) > now.getTime()))) return cached;
   if (retryDeferred(prior, now)) return null;
   const entry: Entry = { ...exact, cik: exact.cik, updatedAt: now.toISOString(), nextAttemptAt: new Date(now.getTime() + 60 * 60000).toISOString(), profile: cached,
-    filing: prior?.filing, cachedParserRevision: prior?.cachedParserRevision, parserRevision: COMPANY_PROFILE_PARSER_REVISION };
+    firstVerifiedAt: prior?.firstVerifiedAt, filing: prior?.filing, cachedParserRevision: prior?.cachedParserRevision, parserRevision: COMPANY_PROFILE_PARSER_REVISION };
   // Persist backoff before network; budget wrappers still make their own durable reservations.
   await store(entry);
   const request = async (url: string, complete?: (text: string) => boolean) => boundedText(await fetchImpl(url, { headers: { Accept: "text/html,application/json", "User-Agent": "SwingUp/1.0 support@swingup.app" }, cache: "no-store", redirect: "error", signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(12000)]) : AbortSignal.timeout(12000) }), complete);
@@ -172,6 +172,7 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
     if (!profile) throw new Error("company_profile_products_and_customers_not_extracted");
     if (filing.industry) profile = { ...profile, industry: filing.industry, industrySourceUrl: `https://data.sec.gov/submissions/CIK${exact.cik}.json` };
     entry.profile = profile;
+    if (!prior?.profile && !entry.firstVerifiedAt) entry.firstVerifiedAt = now.toISOString();
     entry.nextAttemptAt = new Date(now.getTime() + 30 * 86400000).toISOString();
     await store(entry);
     console.info(JSON.stringify({ kind: "pr262_company_profile_result", ticker: exact.ticker, status: "verified", sourceFiledAt: filing.filedAt }));

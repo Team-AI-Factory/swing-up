@@ -1,3 +1,83 @@
+# Simple Alerts launch and operating record
+
+## Current state — 28 September 2026
+
+The user authorizes stopping main scanning, launching `pilot-simple-alerts`, a fixed 25-company test followed by gated expansion to 50, two daily progress reports, and a concurrent target of 500 newly verified company profiles each Bangkok calendar day. The single $10 rolling-24-hour AI Committee allowance remains enabled. The separate infrastructure ceiling is $20/month. Do not merge this branch into main or reset/delete existing data.
+
+**NOT LIVE:** Railway's `commitStagedChangesTool` returned `awaiting_user_action`: two-factor verification must be completed in the Railway dashboard. Main's sensor, recovery and foundation were still configured to run in the subsequent read-back. Staged changes and successful builds are not proof of a stopped scanner or a launched pilot. Do not bypass this authentication requirement with another mutation endpoint, credentials, or a main-branch code change.
+
+Project `83d99341-d622-475f-8035-00ef3d0916d1`; environment `87afb8d7-c4fc-4f84-92b6-5d2820a689b6`. Source repository `Team-AI-Factory/swing-up`. Existing web domain: `https://swing-up-production.up.railway.app`.
+
+## Concrete launch configuration
+
+Reuse existing services. No new service, subscription, instance, or database is needed. Source branch for the four services below is `pilot-simple-alerts`, pinned to the tested branch head at deployment.
+
+| Existing service | ID | Pilot configuration file | Role / schedule (UTC) |
+| --- | --- | --- | --- |
+| swing-up | d02bf6e1-4140-418f-aa5c-b67dcc2d8d15 | railway.web.json | Existing web; role `web` |
+| pr262-sensor | f2ccbe38-c107-443f-b1da-74b92ae829a6 | railway.simple-pilot-sensor.json | role `sensor`; `*/15 * * * *` |
+| pr262-analysis-recovery | adc23c8d-3912-4b22-87d9-e258bc70a044 | railway.simple-pilot-profiles.json | role `profiles`; `7,22,37,52 * * * *` |
+| pr262-foundation-v2 | 0a79a28a-d264-4202-86a0-adb5f2fbffcf | railway.simple-pilot-paused.json | Inert, no cron and no broad foundation pass |
+
+For web, sensor and profiles set `SWING_UP_SIMPLE_PILOT_ENABLED=true`, `SWING_UP_SIMPLE_PILOT_ROLE` to the role above, `SWING_UP_PR262_STORAGE_PREFIX=branch-labs/simple-alerts/`, and `SWING_UP_R2_WRITE_PREFIX=branch-labs/simple-alerts/`. Runtime attests exact branch, project, environment and both prefixes. Ordinary PR previews remain inert. Keep other existing credential references unchanged. Sensor must keep both `AI_COMMITTEE_ENABLED` and `SWING_UP_PR262_EVENT_JOB_OPENAI_ENABLED` true with the existing bounded model policy. Profiles have both false; its launcher additionally removes OpenAI credentials. Both roles use the same provider allowance; the pilot reuses the existing AI spend/reservation ledger, not a fresh $10 allowance.
+
+`SWING_UP_PR262_PROJECTED_RAILWAY_MONTHLY_COST_USD` must contain an authentic current projection above zero and at most 20; the launcher refuses missing/out-of-range values. This is a check of the configured forecast, **not live Railway invoice metering or a guaranteed account spending cap**. Railway's available connector did not supply current billing. Never set a guessed low number to launch. Verify the dashboard projection before starting the additional profile workload, preserve account spending controls, and stop expansion if the forecast becomes unavailable or breaches the ceiling.
+
+The stored valuation foundation is read-only input. Pilot queues, company mapping/exposure caches, research, approvals, outboxes, delivery receipts and measurements are separate. Shared writes are restricted to the existing AI ledger, source request ledgers, refreshed official ticker universe, verified profiles and exact profile filing excerpts. Shared objects cannot be deleted by pilot exceptions. Main's queue, approvals, foundation calculations and results cannot be written through the pilot fence.
+
+Existing staged patch `e836fb56-379c-4b19-85ec-d2c7dbb45591` also contains older **service deletions** for `pr262-foundation` (`734b2d0d-14a3-4dad-b01a-aceaef7565df`) and `pr262-queue-reset-once` (`a90a72f1-dc27-4f84-bbcd-87a7e749bae0`). Do not blindly Apply all. Preserve their live inert configuration and cancel only those deletion flags before accepting a pilot launch. Postgres must remain unchanged. Nulling UI cron alone may be overridden by the repository configuration; use the explicit configuration files above and verify effective settings after deployment.
+
+Rollback: stop the pilot worker schedules, leave the website/database available, preserve all queues, profiles and accounting. Return the web to the prior main revision only if needed. **Do not restart main scanning as rollback** without a later user instruction. The pre-pilot source main revision was `5129218b77250791dd8f813d11ad8fe242d5a767`; schedules were sensor every 15 minutes, recovery minute 7 hourly, foundation 02:17 UTC, for historical reference only.
+
+## What the smaller test does
+
+- Keep exactly the original 25 identities in `config/simple-alert-pilot.json`. Filter both discovery admission and paid event selection; no out-of-cohort review. Public valuation cards also use the cohort.
+- Use SEC current filings, existing issuer announcement monitoring, cohort prices and trading halts. Broad government/macro/news aggregation and sector expansion are explicitly out of this pilot, not declared fixed or deleted. Re-enable a source family only after a separate measured test.
+- Keep identity, readable full source, financial/price support, all required Committee roles, final approval, and receipt-backed delivery. Do not weaken a gate to obtain output.
+- Publish approved pilot alerts to its existing authenticated web-feed path and record delivery receipts. External Telegram/webhook destinations remain disabled in the pilot launcher. No trades or new recipients. A model review or provisional card is not a Serious Alert.
+- Count partial source failures, and count each direct-issuer attempt using its actual attempt/failure counters. Store every completed pilot cycle, including quiet runs. Full-document failures, missing evidence and profile-extraction failures remain separate visible categories; do not hide them in the headline transport error percentage.
+
+## Profile production target
+
+The separate profile role uses the existing identity-checked annual-report extractor. It prioritizes missing pilot profiles, then least-recently-attempted issuers; keeps exact source excerpts and known retry dates; makes no AI calls. It streams company filings and reuses saved sources. Cadence is offset from the sensor.
+
+Each pass has a 175-second network budget and at most 100 selected issuers. A durable lease prevents overlapping profile passes; daily reservations cap attempts at 2,500. First-time successful verifications are date-stamped and counted against the 500/day target, using Bangkok dates. Cached profiles and failed attempts do not count as new completions. A process crash retains its reserved capacity until the daily accounting/lease allows safe continuation. Completed unused reservations are returned.
+
+Requests are paced at one per second; 403 or 429 opens a stop for the rest of that pass. Existing issuer cooldowns remain enforced. Pilot SEC submissions and annual-filing requests each have a shared 3,500 rolling-day network allowance; these replace the insufficient 190-submissions application cap for this explicitly approved profile workload. They do not modify a paid provider subscription. SEC's official published ceiling is 10 requests/second in aggregate: https://www.sec.gov/about/privacy-information. Keep other concurrent source use within that ceiling.
+
+**500 is a completion target, not proven throughput.** Prior extraction success was low; report attempts, verified, unverified, verification yield, source errors, cooldowns, daily shortfall and cost separately. Do not manufacture descriptions or infer revenue country from headquarters. Revenue-country facts remain optional and visibly unverified until sourced. The target must not override source throttles or the infrastructure budget.
+
+## Observation and expansion
+
+Start the clock only after the first successful live pilot cycle on the tested commit, a verified main pause, and an isolated approval-to-web-feed control with durable receipt. Label control/replay data as test-only and exclude it from live counts. The existing synthetic delivery tests are local controls, not live delivery proof.
+
+Earliest operational assessment: five completed US trading sessions. Usefulness assessment: 10–20 sessions, with at least 20 distinct real cases. Investment returns require the stated holding horizon; reliable delivery is not investment profitability.
+
+Expand to 50 only when two consecutive, **non-overlapping** 24-hour windows satisfy all of:
+
+1. At least five US sessions and 20 distinct real assessed cases overall, at least 100 source attempts per window, and no missed scheduled execution left unexplained.
+2. Source attempt failures **strictly below 5%** and processing operation failures **strictly below 5%**, with numerators/denominators and partial errors included. No stale critical price/universe source, unresolved access refusal blocking an assessed case, or hidden provider quota problem.
+3. Positive and negative isolated approval/delivery controls pass. At least one real approved alert has a durable delivery receipt. All approved live alerts are delivered; no duplicate, wrong-issuer, fabricated fact, unapproved publication, or unresolved critical incident.
+4. At least 95% of source-complete eligible cases reach a documented decision within 30 minutes; unresolved/expired cases stay visible, not deleted from statistics.
+5. Shared AI exposure stays below the $10 ceiling; source quotas and a current infrastructure projection remain within authorization. All 25 current company packets pass identity and clarity checks; the next 25 have verified profiles and required current evidence.
+
+Retain the original 25, append the next 25 to the same cohort file, test the cohort boundary and run normal validation, then deploy only this branch. Do not go beyond 50. Fewer cases or a quiet market means inconclusive; correct no-opportunity decisions are legitimate, and must not be forced into approvals. For the user's longer-term goal of consistent Serious Alerts, require at least three distinct real receipt-backed approvals across at least two US sessions plus continuing reliability; this observation still cannot guarantee future availability or profitable outcomes.
+
+Recommend adding back one feature/source family at a time only after a passed window. Prioritize the feature with a specific measured missed-opportunity benefit, not code volume or queue activity.
+
+## Automated oversight
+
+- Progress task `6ab38ed8ae788191af1e9dd9ff73e637` is updated for 08:00 and 20:00 Asia/Bangkok. Report good/bad results, Serious/provisional/rejected/no-signal/blocked cases, source reliability, processing reliability, profile output, card completeness, latency, spending, fixes, unresolved issues and next step.
+- Maintenance task `6ab38ef504848191b0cc0100811eda54` checks hourly for bounded reversible repairs and evidence-based expansion. It must not bypass dashboard authentication, restart main scanning, or repeatedly notify routine unchanged blockers. Report the verified incident or needed user action promptly when material.
+
+## Validation record
+
+Local tests passed for pilot runtime/storage/cohort/first-verification targeting, existing sensor and event retries, analysis orchestration, provider-budget durability, concurrent $10 accounting, profile extraction and invalidation/recovery, valuation card filtering, official universe fallback, R2 mutation/list boundaries, exposure completeness and authenticated delivery recovery. Type checking, lint and a production build passed. These establish code behavior with controlled inputs; live schedule, data yield, delivery and cost proof are still blocked on the Railway launch.
+
+## Preserved concurrent maintenance entry
+
+The following observation was committed independently as `5fe2630` while launch work was being prepared. It is retained as historical evidence; the configuration and implementation above are newer.
+
 # Simple Alerts pilot launch log
 
 ## Current authorization and launch gates

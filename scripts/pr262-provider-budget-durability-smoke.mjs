@@ -1,3 +1,4 @@
+import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
@@ -44,6 +45,7 @@ const r2 = {
 };
 const loaded = { exports: {} };
 new Function("require", "module", "exports", output)((name) => {
+  if (["@/lib/simple-alert-pilot-runtime", "@/lib/simple-alert-pilot-scope"].includes(name)) return loadTsModule(name);
   if (name === "@/lib/r2-warehouse") return r2;
   if (name === "@/lib/opportunity-engine/pr262-storage") return { pr262StorageKey: (relative) => `branch-labs/pr-262/${relative}` };
   throw new Error(`Unexpected provider-budget import: ${name}`);

@@ -1,3 +1,4 @@
+import { isSimpleAlertPilot, SIMPLE_PILOT_PREFIX, SIMPLE_PILOT_MAIN_PREFIX, pilotSharedReference } from "@/lib/simple-alert-pilot-runtime";
 import {
   isPr262ApprovedPremergeProductionRollout,
   PR262_ROLLOUT_RUNTIME,
@@ -34,6 +35,7 @@ function isProductionRuntime(environment: StorageEnvironment) {
 }
 
 export function resolvePr262StoragePrefix(environment: StorageEnvironment = process.env) {
+  if (isSimpleAlertPilot(environment)) return SIMPLE_PILOT_PREFIX;
   const configured = environment.SWING_UP_PR262_STORAGE_PREFIX?.trim()
     || "";
   const prefix = configured
@@ -61,7 +63,8 @@ export function pr262StorageKey(relativeKey: string, environment: StorageEnviron
     || relative.split("/").some((part) => part === "" || part === "." || part === "..")) {
     throw new Error("pr262_storage_key_invalid");
   }
-  return `${resolvePr262StoragePrefix(environment)}${relative}`;
+  const prefix = resolvePr262StoragePrefix(environment);
+  return `${isSimpleAlertPilot(environment) && pilotSharedReference(relative) ? SIMPLE_PILOT_MAIN_PREFIX : prefix}${relative}`;
 }
 
 export const PR262_STORAGE_PREFIXES = {

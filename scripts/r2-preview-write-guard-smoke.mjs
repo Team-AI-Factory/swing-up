@@ -1,3 +1,4 @@
+import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { readFile } from "node:fs/promises";
@@ -17,6 +18,7 @@ const nodeRequire = createRequire(import.meta.url);
 const loadedModule = { exports: {} };
 new Function("require", "module", "exports", transpiled.outputText)(
   (specifier) => {
+  if (["@/lib/simple-alert-pilot-runtime", "@/lib/simple-alert-pilot-scope"].includes(specifier)) return loadTsModule(specifier);
     if (specifier === "@/lib/db/client") return { prisma: {} };
     if (specifier === "@/lib/redact-secrets") return { redactSecrets: (value) => value };
     return nodeRequire(specifier);

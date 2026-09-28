@@ -1,3 +1,4 @@
+import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { readFile } from "node:fs/promises";
@@ -10,6 +11,7 @@ const output = ts.transpileModule(source, {
 const nodeRequire = createRequire(import.meta.url);
 const loaded = { exports: {} };
 new Function("require", "module", "exports", output)((specifier) => {
+  if (["@/lib/simple-alert-pilot-runtime", "@/lib/simple-alert-pilot-scope"].includes(specifier)) return loadTsModule(specifier);
   if (specifier === "@/lib/db/client") return { prisma: {} };
   if (specifier === "@/lib/redact-secrets") return { redactSecrets: (value) => value };
   return nodeRequire(specifier);

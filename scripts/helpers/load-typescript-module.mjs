@@ -6,6 +6,7 @@ const nativeRequire = createRequire(import.meta.url);
 export function loadTsModule(specifier, overrides = {}) {
   if (specifier in overrides) return overrides[specifier];
   if (!specifier.startsWith("@/")) return nativeRequire(specifier);
+  if (specifier.endsWith(".json")) return JSON.parse(readFileSync(new URL(`../../${specifier.slice(2)}`, import.meta.url), "utf8"));
   const path = new URL(`../../${specifier.slice(2)}.ts`, import.meta.url);
   const source = readFileSync(path, "utf8");
   const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;

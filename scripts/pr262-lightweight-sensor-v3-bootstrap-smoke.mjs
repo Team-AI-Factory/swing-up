@@ -229,6 +229,7 @@ const changeSensorOutput = ts.transpileModule(changeSensorSource, {
 }).outputText;
 const changeSensorLoaded = { exports: {} };
 new Function("require", "module", "exports", changeSensorOutput)((name) => {
+  if (["@/lib/simple-alert-pilot-runtime", "@/lib/simple-alert-pilot-scope"].includes(name)) return loadTsModule(name);
   if (name in stubs) return stubs[name];
   if (name === "@/lib/opportunity-engine/market-watch-selection") return loadTsModule(name);
   return nodeRequire(name);
@@ -238,6 +239,7 @@ stubs["@/lib/opportunity-engine/pr262-change-sensor"].partitionPr262PendingEvent
 
 const loaded = { exports: {} };
 new Function("require", "module", "exports", output)((name) => {
+  if (["@/lib/simple-alert-pilot-runtime", "@/lib/simple-alert-pilot-scope"].includes(name)) return loadTsModule(name);
   if (name in stubs) return stubs[name];
   if (name === "@/lib/opportunity-engine/market-watch-selection") return loadTsModule(name);
   return nodeRequire(name);
@@ -507,6 +509,32 @@ assert.equal(unavailableDiscoveryTelemetry.directAnnouncementMonitoring.discover
 assert.equal(unavailableDiscoveryTelemetry.directAnnouncementMonitoring.discoveryErrors, null);
 assert.equal(unavailableDiscoveryTelemetry.directAnnouncementMonitoring.attemptErrors, null);
 directMonitorError = null;
+
+// Exercise the actual sensor in the authorized pilot runtime: out-of-cohort
+// findings and broad providers cannot create pilot backlog.
+const priorPilotEnvironment = { ...process.env };
+Object.assign(process.env, {
+  SWING_UP_SIMPLE_PILOT_ENABLED: "true", RAILWAY_GIT_BRANCH: "pilot-simple-alerts",
+  RAILWAY_PROJECT_ID: "83d99341-d622-475f-8035-00ef3d0916d1",
+  RAILWAY_ENVIRONMENT_ID: "87afb8d7-c4fc-4f84-92b6-5d2820a689b6",
+  SWING_UP_PR262_STORAGE_PREFIX: "branch-labs/simple-alerts/", SWING_UP_R2_WRITE_PREFIX: "branch-labs/simple-alerts/",
+});
+try {
+  persistedSensorState = null; persistedSensorCadence = null; directMonitorOverride = null;
+  const pilot = await loaded.exports.runPr262LightweightSensorV3({
+    now: new Date("2026-08-20T17:00:00Z"),
+    fetchImpl: async (_request, init) => init?.method === "POST"
+      ? { ok: true, status: 200, json: async () => ({ data: [] }) }
+      : { ok: true, status: 200, text: async () => "<feed></feed>" },
+  });
+  assert.equal(pilot.sourceSummary.find(row => row.provider === "gdelt").status, "outside_pilot_scope");
+  assert.equal(pilot.sourceSummary.find(row => row.provider === "official_all").status, "outside_pilot_scope");
+  assert.equal(pilot.pendingEventCount, 0, "No out-of-cohort event may enter the pilot queue; empty scans need not write a new queue object.");
+  assert.equal(pilot.sectorFanoutEvents, 0);
+} finally {
+  for (const key of Object.keys(process.env)) if (!(key in priorPilotEnvironment)) delete process.env[key];
+  Object.assign(process.env, priorPilotEnvironment);
+}
 
 console.log(JSON.stringify({
   ok: true,

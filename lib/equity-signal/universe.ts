@@ -1,3 +1,4 @@
+import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
 import { getR2Config, readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 import { normalizeEquitySymbol } from "@/lib/branch-signal-lab-policy";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
@@ -46,7 +47,7 @@ export function resolveEquityUniverseCacheKey(
   if (normalizedBranch === PR_261_BRANCH) return "branch-labs/pr-261/equity-universe/v1.json";
   const productionWithoutBranchMetadata = !normalizedBranch
     && environment.RAILWAY_ENVIRONMENT_NAME?.trim().toLowerCase() === "production";
-  if (normalizedBranch === PR_262_BRANCH || normalizedBranch === "main" || productionWithoutBranchMetadata) {
+  if (isSimpleAlertPilot(environment) || normalizedBranch === PR_262_BRANCH || normalizedBranch === "main" || productionWithoutBranchMetadata) {
     return pr262StorageKey("equity-universe/v1.json", { ...environment, RAILWAY_GIT_BRANCH: normalizedBranch });
   }
   // Unknown and local branches must never borrow another branch's universe.

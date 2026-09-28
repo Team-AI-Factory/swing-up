@@ -1,3 +1,5 @@
+import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
+import { pilotIncludes, pilotCompanies } from "@/lib/simple-alert-pilot-scope";
 import {
   deliverSeriousSignalOutbox,
   processPendingSeriousSignalDeliveries,
@@ -47,7 +49,7 @@ type AiBudgetStatus = Awaited<ReturnType<typeof getPr262AiDailyBudgetStatus>> & 
 
 function analysisReady(event: Awaited<ReturnType<typeof readPr262ChangeSensorState>>["pending"][number], now: number) {
     const retryAt = event.queueNextAttemptAt ? Date.parse(event.queueNextAttemptAt) : Number.NaN;
-    return event.priority >= 80
+    return pilotIncludes(event) && event.priority >= 80
       && Boolean(event.ticker)
       && event.mappingStatus === "mapped"
       && (event.source !== "sec" || (
@@ -259,7 +261,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
     ...init,
     signal: composedSignal([profileSignal, init?.signal]),
   });
-  const companyProfiles = processingDeadlineAtMs - Date.now() >= 35_000 && !cycleSignal.aborted
+  const companyProfiles = !isSimpleAlertPilot() && processingDeadlineAtMs - Date.now() >= 35_000 && !cycleSignal.aborted
     ? await warmPr262CompanyProfiles(new Date(), profileFetch, profileSignal).catch(() => ({ attempted: 0, verified: 0, status: "temporarily_unavailable" }))
     : { attempted: 0, verified: 0, status: "cycle_deadline_reserve" };
   assertCycleActive();
@@ -282,7 +284,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
   let seriousWatchOuts = 0;
   let deadlineStoppedAdmissions = false;
   const queueMutations: Pr262PendingSensorEventMutation[] = [];
-  const excludedEventIds = new Set<string>(admissionPlan.excludedEventIds);
+  const excludedEventIds = new Set<string>([...admissionPlan.excludedEventIds, ...state.pending.filter(event => !pilotIncludes(event)).map(event => event.id)]);
   const committeePaused = process.env.AI_COMMITTEE_ENABLED === "false" || process.env.SWING_UP_PR262_EVENT_JOB_OPENAI_ENABLED === "false";
 
   for (let index = 0; index < capacity; index += 1) {
@@ -488,12 +490,12 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
   assertCycleActive();
   state = await readPr262ChangeSensorState();
   const sourceSummary = sensor?.sourceSummary ?? [];
-  const sourceAttempts = sourceSummary.filter((item) => item.attempted).length;
-  const sourceFailures = sourceSummary.filter((item) => item.attempted && !["connected", "partial", "not_due", "not_configured"].includes(item.status)).length;
+  const sourceAttempts = sourceSummary.reduce((total, item) => total + (item.attempted ? (item.attemptCount ?? 1) : 0), 0);
+  const sourceFailures = sourceSummary.reduce((total, item) => total + (item.attempted ? (item.failureCount ?? (["connected", "not_due", "not_configured"].includes(item.status) && !item.error ? 0 : 1)) : 0), 0);
   const eventsProcessed = eventResults.filter((item) => Number(item.eventsProcessed) > 0).length;
   const durationMs = Date.now() - startedAt;
   const directIssuer = sourceSummary.find((item) => item.provider === "direct_issuer_feeds");
-  const materialCostActivity = sourceFailures > 0
+  const materialCostActivity = isSimpleAlertPilot() || sourceFailures > 0
     || (sensor?.newEvents ?? 0) > 0
     || eventsProcessed > 0
     || eventFailures > 0
@@ -585,6 +587,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
       .map((result) => String(result.error ?? "unknown").split("; next_retry_at=")[0].slice(0, 180)))].slice(0, 12),
   };
   return {
+    ...(isSimpleAlertPilot() ? { pilot: { name: "Simple Alerts", branch: "pilot-simple-alerts", companies: pilotCompanies().length, sourceScope: "SEC, issuer announcements, prices, trading halts", sharesExistingAiLedger: true } } : {}),
     ok: operationalOk,
     mode: mode === "analysis_only" ? "pr262_railway_analysis_recovery" : "pr262_five_minute_cron_v3",
     checkedAt,

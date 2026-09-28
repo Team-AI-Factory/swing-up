@@ -49,6 +49,7 @@ let profileAvailable = true;
 const { verifiedCompanyProfile } = loadTsModule("@/lib/company-profile");
 const cjsModule = { exports: {} };
 new Function("require", "module", "exports", output)((name) => {
+  if (["@/lib/simple-alert-pilot-runtime", "@/lib/simple-alert-pilot-scope"].includes(name)) return loadTsModule(name);
   if (name === "@/lib/opportunity-engine/company-profile-cache") return {
     readCompanyProfileCoverage: async () => ({ totalCompanies: 1, verifiedProfiles: profileAvailable ? 1 : 0 }),
     readCompanyProfiles: async identities => new Map(identities.flatMap(identity => {

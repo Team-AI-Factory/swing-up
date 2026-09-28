@@ -1,13 +1,13 @@
 import crypto from "node:crypto";
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 import { readPr262ChangeSensorState, type Pr262SensorEvent } from "@/lib/opportunity-engine/pr262-change-sensor";
-import { pr262StorageKey, resolvePr262StoragePrefix } from "@/lib/opportunity-engine/pr262-storage";
+import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 
 const VALUE_STATE_KEY = pr262StorageKey("value-investing/resumable/state.json");
 const EQUITY_UNIVERSE_KEY = pr262StorageKey("equity-universe/v1.json");
 const DIRECTORY_KEY = pr262StorageKey("sensor/company-directory-v1.json");
 const SENSOR_STATE_KEY = pr262StorageKey("sensor/state-v1.json");
-const VALUE_BATCH_PREFIX = `${resolvePr262StoragePrefix()}value-investing/resumable/`;
+const VALUE_BATCH_PREFIX = `${pr262StorageKey("value-investing/resumable")}/`;
 const DIRECTORY_TTL_MS = 24 * 60 * 60 * 1000;
 const EQUITY_UNIVERSE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 

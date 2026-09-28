@@ -1,3 +1,4 @@
+import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
@@ -19,6 +20,7 @@ const output = ts.transpileModule(source, {
 }).outputText;
 const loaded = { exports: {} };
 new Function("require", "module", "exports", output)((specifier) => {
+  if (["@/lib/simple-alert-pilot-runtime", "@/lib/simple-alert-pilot-scope"].includes(specifier)) return loadTsModule(specifier);
   if (specifier === "@/lib/opportunity-engine/pr262-runtime") return runtimeLoaded.exports;
   return createRequire(import.meta.url)(specifier);
 }, loaded, loaded.exports);

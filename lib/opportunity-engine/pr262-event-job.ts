@@ -1,3 +1,4 @@
+import { pilotIncludes } from "@/lib/simple-alert-pilot-scope";
 import { completeCommitteeReview, committeeRequestsRejectedWithoutUsage } from "@/lib/ai-committee/review-policy";
 import { verifiedCompanyProfile } from "@/lib/company-profile";
 import { ensureCompanyProfile, warmFoundationCompanyProfiles } from "@/lib/opportunity-engine/company-profile-cache";
@@ -1792,6 +1793,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
   if (!event) {
     return { ok: true, mode: "pr262_targeted_event_job", status: "idle", checkedAt: now.toISOString(), eventsProcessed: 0, aiCalls: 0 };
   }
+  if (!pilotIncludes(event)) throw new Error("simple_pilot_event_outside_cohort");
   const claim = await claimEvent(event.id, now);
   if (claim.status === "already_completed") {
     await persistQueueMutation(

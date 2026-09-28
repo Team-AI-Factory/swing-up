@@ -1,10 +1,10 @@
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
-import { pr262StorageKey, resolvePr262StoragePrefix } from "@/lib/opportunity-engine/pr262-storage";
+import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 
 const VALUE_STATE_KEY = pr262StorageKey("value-investing/resumable/state.json");
 const EQUITY_UNIVERSE_KEY = pr262StorageKey("equity-universe/v1.json");
 const EXPOSURE_INDEX_KEY = pr262StorageKey("sensor/exposure-index-v1.json");
-const VALUE_BATCH_PREFIX = `${resolvePr262StoragePrefix()}value-investing/resumable/`;
+const VALUE_BATCH_PREFIX = `${pr262StorageKey("value-investing/resumable")}/`;
 const INDEX_TTL_MS = 24 * 60 * 60_000;
 
 type Json = Record<string, unknown>;

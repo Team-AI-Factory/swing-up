@@ -20,13 +20,15 @@ export type AiCommitteeTokenUsage = {
 };
 
 export type AiCommitteeProviderFailure = {
-  category: "authentication" | "permission" | "quota" | "rate_limit" | "rate_or_quota" | "invalid_request" | "unavailable" | "timeout" | "cancelled" | "transport" | "invalid_response";
+  category: "authentication" | "permission" | "quota" | "rate_limit" | "rate_or_quota" | "invalid_request" | "unavailable" | "timeout" | "cancelled" | "transport" | "invalid_response" | "input_limit";
   httpStatus?: number;
   code?: string;
   requestId?: string;
   retryAfterSeconds?: number;
-  // These errors apply to the shared provider/configuration, not the evidence
-  // assigned to an individual role. Do not repeat them thirteen more times.
+  promptBytes?: number;
+  maximumPromptBytes?: number;
+  // Stop remaining roles in this review. input_limit is local to its packet,
+  // not evidence of a shared provider outage.
   stopRemainingAgents: boolean;
 };
 
@@ -175,7 +177,8 @@ export async function runOpenAiCommitteeProvider(options: AiCommitteeRunOptions)
     const maximumPromptBytes = Math.max(1_000, Math.floor(Number(options.maximumPromptBytes)));
     const promptBytes = new TextEncoder().encode(JSON.stringify(options.messages)).byteLength;
     if (promptBytes > maximumPromptBytes) {
-      return { ok: false as const, status: "prompt_too_large" as const, modelTier: options.tier, providerStatus: status };
+      const failure: AiCommitteeProviderFailure = { category: "input_limit", stopRemainingAgents: true, promptBytes, maximumPromptBytes };
+      return { ok: false as const, status: "prompt_too_large" as const, failure, modelTier: options.tier, providerStatus: status };
     }
   }
 

@@ -108,6 +108,35 @@ try {
   assert.equal(recovered.entry.source, "actual_tokens");
   assert.equal((await recordPr262AiCommitteeCost(report("429"), later)).reason, "already_recorded");
 
+  const localRoles = [
+    { status: "failed", error: "prompt_too_large", usageReported: false, providerFailure: { category: "input_limit", stopRemainingAgents: true } },
+    { status: "blocked", providerFailure: { category: "input_limit", stopRemainingAgents: true } },
+  ];
+  reset();
+  await reserve("oversized");
+  const local = await recordPr262AiCommitteeCost(report("oversized", localRoles), now);
+  assert.equal(local.entry.costUsd, 0);
+  assert.equal(local.entry.source, "rejected_request");
+  assert.equal(local.pendingUsageUpperBoundUsd, 0);
+  assert.equal(local.providerCooldown, null, "A local prompt limit must not pause unrelated candidates.");
+  assert.equal((await reserve("oversized")).allowed, false, "The rejected candidate retains its retry hold.");
+  assert.equal((await reserve("unrelated")).allowed, true);
+
+  reset();
+  await reserve("inflight-local");
+  await reserve("inflight-quota");
+  await recordPr262AiCommitteeCost({ ...rejection, candidateFingerprint: "inflight-quota" }, now);
+  const heldUntil = state.payload.providerCooldown.until;
+  await recordPr262AiCommitteeCost(report("inflight-local", localRoles), now);
+  assert.equal(state.payload.providerCooldown.until, heldUntil, "Settling a local rejection cannot erase a concurrent provider stop.");
+  assert.equal((await reserve("blocked-by-real-quota")).reason, "provider_cooldown");
+
+  reset();
+  await reserve("partial-local");
+  const partialLocal = await recordPr262AiCommitteeCost(report("partial-local", [{ status: "completed", usageReported: true }, ...localRoles], 1), now);
+  assert.equal(partialLocal.entry.costUsd, 0.00105, "A later input limit preserves completed roles' token charges.");
+  assert.equal(partialLocal.providerCooldown, null);
+
   reset();
   await reserve("timeout");
   const uncertain = await recordPr262AiCommitteeCost(report("timeout", [{ status: "failed", usageReported: false, providerFailure: { category: "timeout" } }]), now);

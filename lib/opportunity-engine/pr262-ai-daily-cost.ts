@@ -402,7 +402,9 @@ export async function recordPr262AiCommitteeCost(reportValue: unknown, now = new
     || ["not_configured", "disabled", "confirmation_required", "model_not_configured", "model_not_allowed", "prompt_too_large"].includes(String(role.error));
   const uncertain = actual === null || (roles.length === 0 && !(Number(object(summary.actualOpenAiUsage).responsesWithUsage) > 0))
     || roles.some(role => role.status !== "blocked" && role.status !== "planned" && role.usageReported !== true && !rejected(role));
-  const failure = roles.map(role => object(role.providerFailure)).find(value => typeof value.category === "string");
+  // The provider was never called for an oversized packet. Keep that case's
+  // retry hold without opening a shared outage stop for unrelated companies.
+  const failure = roles.map(role => object(role.providerFailure)).find(value => typeof value.category === "string" && value.category !== "input_limit");
   const cooldownMs = failure ? Math.min(60 * 60_000, Math.max(5 * 60_000, Number(failure.retryAfterSeconds ?? 0) * 1000,
     ["quota", "authentication", "permission"].includes(String(failure.category)) ? 30 * 60_000 : 0)) : 0;
   const retryAt = new Date(now.getTime() + (cooldownMs || (uncertain ? WINDOW_MS : 5 * 60_000))).toISOString();
@@ -442,7 +444,7 @@ export async function recordPr262AiCommitteeCost(reportValue: unknown, now = new
       entries: [...loaded.state.entries.filter(item => item.id !== id || item.source === "actual_tokens" || item.source === "usage_pending"), entry],
       auditEntries: [...loaded.state.auditEntries, entry],
       reservations: loaded.state.reservations.filter((item) => item.id !== id),
-      providerCooldown: failure ? { until: retryAt, category: String(failure.category), ...(typeof failure.code === "string" ? { code: failure.code } : {}), ...(typeof failure.httpStatus === "number" ? { httpStatus: failure.httpStatus } : {}) } : undefined,
+      providerCooldown: failure ? { until: retryAt, category: String(failure.category), ...(typeof failure.code === "string" ? { code: failure.code } : {}), ...(typeof failure.httpStatus === "number" ? { httpStatus: failure.httpStatus } : {}) } : loaded.state.providerCooldown,
     };
     const written = await writeVersionedJsonToR2(
       STATE_KEY,

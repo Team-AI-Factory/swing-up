@@ -48,6 +48,23 @@ try {
   for (const key of keys.filter(key => /_MODEL$|MODEL_ALLOWLIST/.test(key) && key !== "OPENAI_MODEL")) delete process.env[key];
   console.info = () => {};
 
+  // A local input rejection must stop this review without claiming an outage.
+  let localRequests = 0;
+  globalThis.fetch = async () => { localRequests++; throw new Error("Oversized input reached the provider"); };
+  const oversized = await committee.runAiCommittee({ ...input, maximumPromptBytes: 60_000,
+    [committee.TRUSTED_IN_MEMORY_EVIDENCE]: { ...pack, whatHappened: "Synthetic source fact. ".repeat(4_000) },
+  });
+  assert.equal(localRequests, 0);
+  assert.equal(oversized.ok, false);
+  assert.equal(oversized.agentResults[0].error, "prompt_too_large");
+  assert.equal(oversized.agentResults[0].providerFailure?.category, "input_limit");
+  assert.ok(oversized.agentResults[0].providerFailure.promptBytes > 60_000);
+  assert.equal(oversized.agentResults[0].providerFailure.maximumPromptBytes, 60_000);
+  assert.equal(oversized.agentResults.filter(result => result.status === "blocked").length, 13);
+  assert.ok(oversized.agentResults.every(result => result.providerFailure?.category === "input_limit"));
+  assert.equal(oversized.committeeOutput.overallRecommendation, "needs_more_data");
+  assert.equal(oversized.committeeOutput.modelUsageSummary.actualOpenAiUsage.responsesWithUsage, 0);
+
   for (const [httpStatus, code, category] of [[401, "invalid_api_key", "authentication"], [403, "permission_denied", "permission"], [429, "insufficient_quota", "quota"], [429, "credit_balance_exhausted", "quota"], [429, "project_spend_limit_exceeded", "quota"], [429, "rate_limit_exceeded", "rate_limit"], [400, "unsupported_parameter", "invalid_request"], [503, "service_unavailable", "unavailable"]]) {
     let requests = 0;
     globalThis.fetch = async () => {

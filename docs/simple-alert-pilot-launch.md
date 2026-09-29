@@ -154,3 +154,45 @@ Coordinate with the existing operator's unfinished pilot isolation work; test it
 Scaling remains blocked. Maintenance remains active because reads, preparation and verification are still possible. No new critical incident, budget stop or receipt-backed live Serious Alert was established; the known authentication blocker is unchanged and should not be repeated hourly. Routine findings belong in the twice-daily report.
 
 Evidence: [Railway project](https://railway.com/project/83d99341-d622-475f-8035-00ef3d0916d1), deployment IDs and exact log timestamps above; [pilot source](https://github.com/Team-AI-Factory/swing-up/tree/c1634b2c3089b623845c2a0b539bb844cb2f7546).
+
+
+## 2026-09-29 maintenance observation, through 17:49 Bangkok
+
+### Deployment and authorization
+
+Read both pilot documents from GitHub before inspection. Fresh Git fetch and remote ref agree that published pilot head is `1827f3970177d0d8e531d3effea41349fe0611ba`. Verification used a new detached worktree; no existing operator worktree was changed.
+
+Railway still reports live sensor `4f4b32a1-12ce-4bb5-bcb0-d64846d94d71`, recovery `6344649c-f33a-4bba-938c-7cedd4ee2222`, foundation and web on main `5129218b77250791dd8f813d11ad8fe242d5a767`. Sensor configuration read-back confirms main and the 15-minute schedule; pilot branch/launcher/prefixes remain staged. Environment patch remains STAGED with 18 reported changes. Main cycles continued through 17:48:43 Bangkok. The pause is not effective; the pilot is not live. No authentication resolution is established. No infrastructure mutation, apply, redeploy, paid request, queue reset, resource increase or main restart was performed.
+
+### Fresh operational evidence (main only)
+
+Eight sensor coverage completions and one recovery completion were retrieved for 16:00–17:49 Bangkok. Latest sensor: 272 pending; 12 profile-ready; 246 profile-blocked across 204 companies; 15 scheduled retries; oldest reported profile-ready queue wait 2,596 minutes; zero fresh authoritative ready cases.
+
+At 16:47 Bangkok, NVDA completed four roles but was not approved: verification, freshness, primary/independent proof and evidence-score gates remained unmet. At 17:47, XLAB filing `sec:0001829126-26-010494` completed three roles but the final judge failed with `prompt_too_large`; filing `sec:0001829126-26-010462` failed before the analyst call for the same reason. Both were unapproved and had null outbox keys. Review-attempt counts must not be presented as successful Committee completions.
+
+Five complete parseable sensor cycle payloads in this interval each showed zero approvals, zero discovered outboxes and zero durable deliveries. Several other connector log messages were truncated mid-JSON, so no aggregate final-approval/delivery claim is made for their missing tails. All nine coverage summaries reported zero Serious Alerts.
+
+The last complete cost snapshot, cycle checked at 17:31:09 Bangkok, reports $0.332770 spent/exposed, $10 limit, healthy accounting and no active provider cooldown. Later partial payloads show an invalid-request cooldown following oversized prompts; they are insufficient to reconcile an exact latest total. No verified budget stop. Token receipts are not provider invoices; infrastructure projection remains unverified.
+
+At the 17:31 cycle, the legacy daily source counter reports 59/297 failures (19.87%). This is the legacy batch measure, not a complete request-level reliability measure or a pilot window. Commerce was rate limited and market-watch returned HTTP 429. Existing source pacing and retry controls were not changed. Zero event exceptions does not establish sub-5% end-to-end processing failure while cases remain deferred or technically incomplete.
+
+### Profile target
+
+For Bangkok 00:00–17:49, filtered coverage retrieval returned 72 sensor and 17 recovery entries (neither reached the 500-entry limit): 92 profile attempts and 11 reported verifications. These are not identity-level first-verification receipts. Even crediting all 11 as distinct new profiles leaves at least 489 outstanding against today's 500 target at this checkpoint. Exact newly verified count and final-day shortfall remain unverified. The separate pilot profile role is still not deployed.
+
+### Bounded verification and diagnosed next repair
+
+Five offline checks passed on published pilot `1827f39`:
+- `ai-committee-provider-guardrails-smoke.mjs`: oversized prompts refused before network calls, allowed model, timeout/cancellation and actual token usage.
+- `pr262-ai-daily-cost-fuse-smoke.mjs`: shared concurrent $10 ceiling, rejected-request zero charge, uncertainty handling and audit.
+- `simple-alert-live-smoke.mjs`: frozen 25, isolated results, shared accounting, main-write denial, first-verification counting, role boundaries and launcher refusal on main.
+- `simple-alert-pilot-smoke.mjs`: identity/freshness, missing coverage and no implied approvals.
+- `serious-signal-delivery-smoke.mjs`: final authority, stale-price rejection, duplicate protection and isolated test delivery.
+
+An initial command used a nonexistent runtime-test filename; it was corrected to the existing `simple-alert-live-smoke.mjs`, which passed. This was a test invocation error, not a product failure. All tests used local fixtures/mocks; no live delivery control or pilot launch is claimed.
+
+Source inspection confirms the prepared pilot shares the 60,000-byte per-role prompt guard. Each reviewer prompt includes the evidence packet plus prior reviewer results. The final-judge failure is consistent with accumulated input exceeding that bound; another case already exceeds it before the first reviewer. Logs do not expose the exact serialized prompt, so the precise contributing fields are not yet established. Do not raise the cost bound or cut required evidence to suppress the error. The next bounded repair should first reproduce with a sanitized packet and measure field sizes, then remove proven duplication or unnecessary formatting while preserving source facts, reviewer conclusions and approval gates. The local prompt rejection is also currently classified as an invalid-request shared stop; keep this separate from an external provider outage in reporting.
+
+No product-code change was justified without that packet reproduction in this check. This launch-log update is the only repository change. Expansion remains blocked: zero verified pilot sessions/windows, no live control receipts and no live pilot Serious Alert. Continue read-only oversight and preparation; the known authentication blocker is unchanged and should not trigger another hourly notification.
+
+Evidence: [Railway project](https://railway.com/project/83d99341-d622-475f-8035-00ef3d0916d1?environmentId=87afb8d7-c4fc-4f84-92b6-5d2820a689b6); [tested pilot source](https://github.com/Team-AI-Factory/swing-up/tree/1827f3970177d0d8e531d3effea41349fe0611ba).

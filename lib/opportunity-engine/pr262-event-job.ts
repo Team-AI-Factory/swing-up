@@ -1794,7 +1794,12 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
     return { ok: true, mode: "pr262_targeted_event_job", status: "idle", checkedAt: now.toISOString(), eventsProcessed: 0, aiCalls: 0 };
   }
   if (!pilotIncludes(event)) throw new Error("simple_pilot_event_outside_cohort");
-  const claim = await claimEvent(event.id, now);
+  const claim = await claimEvent(event.id, now).catch((error) => {
+    // Claim failures occur before the job's main error handler. Keep the
+    // selected identity visible without claiming the lease/write succeeded.
+    const message = error instanceof Error ? error.message.replace(/\s+/g, " ").slice(0, 120) : "pr262_event_claim_failed";
+    throw new Error(`${message}; stage=event_claim; event_id=${event.id}; ticker=${event.ticker ?? "unknown"}; cik=${event.cik ?? "unknown"}`);
+  });
   if (claim.status === "already_completed") {
     await persistQueueMutation(
       { action: "acknowledge", eventId: event.id },

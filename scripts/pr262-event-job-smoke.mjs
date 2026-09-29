@@ -178,6 +178,7 @@ const historicalRecords = Array.from({ length: 5 }, (_, index) => ({
 
 const objects = new Map();
 const writes = [];
+let failedWriteKey = null;
 let etagCounter = 0;
 const historyKey = "branch-labs/pr-262/serious-signal/equity-history-v1.json";
 objects.set(historyKey, { value: { version: 1, records: historicalRecords, updatedAt: "2026-08-11T00:00:00.000Z" }, etag: '"seed"' });
@@ -190,6 +191,7 @@ function readObject(key) {
 }
 
 async function writeObject(key, payload, options = {}) {
+  if (key === failedWriteKey) throw new Error("r2_state_write_http_500");
   const current = objects.get(key);
   if (options.createOnly && current) return { written: false, conflict: true, etag: null };
   if (options.expectedEtag && current?.etag !== options.expectedEtag) return { written: false, conflict: true, etag: null };
@@ -903,6 +905,22 @@ assert.equal(eventRetryAt({ ...sourceEvent, queueAttempts: 2, queueLastError: fo
   "2026-08-12T12:00:00.000Z", forbiddenReason), "2026-08-12T12:00:00.000Z",
   "The refusal policy must not override an explicit provider-budget retry boundary.");
 
+const objectsBeforeClaimFailure = structuredClone(objects);
+const writesBeforeClaimFailure = writes.length;
+failedWriteKey = PR262_EVENT_JOB_KEYS.LEASE_KEY;
+await assert.rejects(
+  () => runPr262EventJob({ now: new Date("2026-08-11T10:00:00.000Z"), allowOpenAi: true }),
+  (error) => {
+    assert.ok(error.message.startsWith("r2_state_write_http_500; stage=event_claim;"));
+    assert.ok(error.message.includes(`event_id=${event.id}; ticker=EXCT; cik=0001234567`));
+    return true;
+  },
+);
+assert.equal(runnerCalls, 0, "A failed claim must not start analysis or paid review.");
+assert.equal(acknowledgements, 0, "A failed claim must preserve queued evidence.");
+assert.equal(writes.length, writesBeforeClaimFailure, "A failed claim must not persist results or outboxes.");
+assert.deepEqual(objects, objectsBeforeClaimFailure, "Claim diagnostics must not mutate existing state.");
+failedWriteKey = null;
 const first = await runPr262EventJob({ now: new Date("2026-08-11T10:00:00.000Z"), allowOpenAi: true });
 assert.equal(first.ok, true);
 assert.deepEqual(lastSecDetailOptions?.priorityReceiptIds, [event.id], "The exact current SEC accession must be prioritized over process-wide filing backlog.");

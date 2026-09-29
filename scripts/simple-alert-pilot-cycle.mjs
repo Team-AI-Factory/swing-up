@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
+import { simpleAlertCycleSummary } from "./helpers/simple-alert-cycle-summary.mjs";
 
 const profileOnly = process.argv.includes("--profiles-only");
 const prefix = "branch-labs/simple-alerts/";
@@ -53,6 +54,7 @@ try {
     body: JSON.stringify({ mode: profileOnly ? "profiles_only" : "sensor_and_analysis" }), signal: AbortSignal.timeout(240_000),
   });
   const body = await response.text();
+  console.log(`[simple-alerts-summary] ${JSON.stringify(simpleAlertCycleSummary(body))}`);
   console.log(`[simple-alerts] role=${profileOnly ? "profiles" : "sensor"} http=${response.status} ${body.slice(0, 80000)}`);
   if (!response.ok) throw new Error(`simple_pilot_cycle_http_${response.status}`);
   code = 0;

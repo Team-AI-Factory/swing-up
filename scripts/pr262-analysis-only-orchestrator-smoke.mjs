@@ -341,6 +341,12 @@ const stubs = {
         assert.equal(admitted, true);
         return { ok: false, status: "event_job_error", eventsProcessed: 0, resultKey: null };
       }
+      if (eventMode === "storage_write_failure_after_reservation") {
+        eventMode = "idle";
+        const admitted = await input.beforeOpenAiCall({ candidateFingerprint: "storage-write-uncertain", ticker: "SAFE", direction: "upside" });
+        assert.equal(admitted, true);
+        throw new Error("r2_state_write_http_500");
+      }
       if (eventMode === "processed") {
         eventMode = "idle";
         input.queueMutationSink({ action: "acknowledge", eventId: state.pending[0].id });
@@ -609,6 +615,22 @@ const ambiguousCallState = await loaded.exports.runPr262AnalysisOnlyCycle({ maxC
 assert.equal(ambiguousCallState.ok, false);
 assert.equal(ambiguousCallState.processing.eventFailures, 1);
 assert.equal(releasedFingerprints.length, releasedBeforeAmbiguous, "Missing call evidence must preserve the reservation conservatively.");
+
+eventMode = "storage_write_failure_after_reservation";
+const pendingBeforeStorageFailure = structuredClone(state.pending);
+const releasesBeforeStorageFailure = releasedFingerprints.length;
+const costsBeforeStorageFailure = recordedCostKeys.length;
+const deliveriesBeforeStorageFailure = directDeliveryCalls;
+const storageFailure = await loaded.exports.runPr262AnalysisOnlyCycle({ maxCycleMs: 90_000 });
+assert.equal(storageFailure.ok, false, "A storage HTTP 500 must remain a failed cycle.");
+assert.equal(storageFailure.processing.eventFailures, 1);
+assert.equal(storageFailure.processing.eventsProcessed, 0);
+assert.equal(storageFailure.processing.eventDeferrals, 0, "A failed write is not a durable scheduled deferral.");
+assert.equal(storageFailure.processing.eventResults[0].error, "r2_state_write_http_500");
+assert.deepEqual(state.pending, pendingBeforeStorageFailure, "A failed event write must not acknowledge or remove queued evidence.");
+assert.equal(releasedFingerprints.length, releasesBeforeStorageFailure, "An uncertain write/call outcome must retain its budget reservation.");
+assert.equal(recordedCostKeys.length, costsBeforeStorageFailure, "Missing durable results must not manufacture a settled cost receipt.");
+assert.equal(directDeliveryCalls, deliveriesBeforeStorageFailure, "A failed event write must not trigger direct alert delivery.");
 
 eventMode = "processed";
 const batchCallsBefore = queueBatchCalls;

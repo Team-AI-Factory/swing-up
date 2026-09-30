@@ -100,9 +100,12 @@ const stubs = {
     },
   },
   "@/lib/opportunity-engine/pr262-ai-daily-cost": {
-    getPr262AiDailyBudgetStatus: async () => aiBudgetMode === "cycle_start_full"
+    getPr262AiDailyBudgetStatus: async () => {
+      if (aiBudgetMode === "read_timeout") throw new Error("The operation was aborted due to timeout");
+      return aiBudgetMode === "cycle_start_full"
       ? { allowed: false, spentUsd: 9.5, reservedUsd: 0.5, exposureUsd: 10, remainingUsd: 0, limitUsd: 10, warningUsd: 6, warning: true, hardFuseTripped: true, nextReviewReservationUsd: 0.75, nextBudgetAdmissionAt: cycleStartBudgetRetryAt, reservationCheckedBeforePaidCommittee: true, activeReservations: 1, reviewsRecorded: 13, unknownUsageReviews }
-      : { allowed: true, spentUsd: 0, reservedUsd: 0, exposureUsd: 0, remainingUsd: 10, limitUsd: 10, warningUsd: 6, warning: false, hardFuseTripped: false, nextReviewReservationUsd: 0.75, nextBudgetAdmissionAt: null, reservationCheckedBeforePaidCommittee: true, activeReservations: 0, reviewsRecorded: 0, unknownUsageReviews },
+      : { allowed: true, spentUsd: 0, reservedUsd: 0, exposureUsd: 0, remainingUsd: 10, limitUsd: 10, warningUsd: 6, warning: false, hardFuseTripped: false, nextReviewReservationUsd: 0.75, nextBudgetAdmissionAt: null, reservationCheckedBeforePaidCommittee: true, activeReservations: 0, reviewsRecorded: 0, unknownUsageReviews };
+    },
     reservePr262AiCommitteeBudget: async (reservation) => { paidReservationCalls++; return aiBudgetMode === "race_time_full"
       ? { allowed: false, reason: "daily_cost_fuse", nextRetryAt: raceTimeBudgetRetryAt, nextBudgetAdmissionAt: raceTimeBudgetRetryAt }
       : {
@@ -181,6 +184,10 @@ const stubs = {
       assert.ok(input.deadlineAtMs > Date.now());
       assert.equal(typeof input.beforeOpenAiCall, "function", "Railway must pass the durable dollar reservation hook before paid analysis.");
       assert.equal(typeof input.aiReservationRetryAt, "function", "The event job must be able to inherit the exact daily-cost retry boundary.");
+      if (aiBudgetMode === "read_timeout") {
+        assert.equal(input.allowOpenAi, false, "An unreadable shared ledger must stop paid reviews even if its fallback spend is zero.");
+        return { ok: true, status: "idle", eventsProcessed: 0, openAiCalled: false };
+      }
       if (eventMode === "consume_processing_window") {
         eventMode = "idle";
         advanceCycleClock(170_000);
@@ -632,6 +639,27 @@ assert.equal(releasedFingerprints.length, releasesBeforeStorageFailure, "An unce
 assert.equal(recordedCostKeys.length, costsBeforeStorageFailure, "Missing durable results must not manufacture a settled cost receipt.");
 assert.equal(directDeliveryCalls, deliveriesBeforeStorageFailure, "A failed event write must not trigger direct alert delivery.");
 
+aiBudgetMode = "read_timeout";
+eventMode = "idle";
+const queueBeforeAccountingTimeout = structuredClone(state.pending);
+const reservationsBeforeAccountingTimeout = paidReservationCalls;
+const releasesBeforeAccountingTimeout = releasedFingerprints.length;
+const costsBeforeAccountingTimeout = recordedCostKeys.length;
+const deliveriesBeforeAccountingTimeout = directDeliveryCalls;
+const eventsBeforeAccountingTimeout = eventCalls;
+const accountingTimeout = await loaded.exports.runPr262AnalysisOnlyCycle({ maxCycleMs: 90_000 });
+assert.equal(accountingTimeout.ok, false, "A ledger read timeout must remain a failed cycle.");
+assert.equal(accountingTimeout.aiCostControl.accountingHealthy, false);
+assert.equal(accountingTimeout.aiCostControl.accountingError, "The operation was aborted due to timeout");
+assert.equal(accountingTimeout.aiCostControl.allowed, false);
+assert.ok(eventCalls > eventsBeforeAccountingTimeout, "Exercise the event admission path with paid reviews blocked.");
+assert.equal(paidReservationCalls, reservationsBeforeAccountingTimeout);
+assert.equal(releasedFingerprints.length, releasesBeforeAccountingTimeout, "An unreadable ledger must not release uncertain reservations.");
+assert.equal(recordedCostKeys.length, costsBeforeAccountingTimeout, "A timeout must not fabricate a cost receipt.");
+assert.equal(directDeliveryCalls, deliveriesBeforeAccountingTimeout);
+assert.deepEqual(state.pending, queueBeforeAccountingTimeout, "Queued evidence must survive accounting unavailability.");
+aiBudgetMode = "available";
+
 eventMode = "processed";
 const batchCallsBefore = queueBatchCalls;
 const batchedQueueProgress = await loaded.exports.runPr262AnalysisOnlyCycle({ maxCycleMs: 90_000 });
@@ -704,5 +732,6 @@ console.log(JSON.stringify({
   exactAccountingExpiryReplacesPreliminaryRetry: true,
   reservationReleasedOnlyForExplicitNoCall: true,
   ambiguousCallStatePreservesReservation: true,
+  accountingReadTimeoutBlocksPaidWorkAndPreservesQueue: true,
   queueOutcomesPersistOncePerCycle: true,
 }, null, 2));

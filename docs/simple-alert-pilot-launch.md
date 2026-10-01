@@ -1165,3 +1165,28 @@ Eight coverage summaries report ten attempts and two verifications (20% summary 
 Completed bounded read-only verification of deployment identity, queue/evidence, source and quota failures, review/final approval, delivery, profile yield and shared accounting. No newly isolated failure justifies a speculative runtime edit or duplicate tests. This documentation-only append uses a freshly checked blob SHA and preserves concurrent work.
 
 Next: obtain exact source inputs/saved excerpts, reconcile retained reservations against immutable receipts, and establish distinct daily first-verification counts. After dashboard authentication is independently resolved, verify main stopped and tested pilot code deployed, then perform isolated positive/negative approval-to-delivery controls. No qualifying sessions, passing reliability windows, receipt or verified infrastructure headroom permits 25-to-50 expansion. Subsequent read-only checks remain useful; maintenance continues. No new critical incident, budget stop, verified live Serious Alert or authentication change requires another hourly notification.
+
+
+## 2026-10-01 maintenance verification, 13:35 Bangkok run
+
+Read both operating documents first. Pilot head was `b4a61f3dd85ff202ca0d33913fe0d305761a327a`. Fresh Railway configurations and deployment metadata still identify sensor `bbc17b0f-8244-4726-99f7-8e30f6181946` and recovery `2db0656c-dbef-44d4-922b-dbd5d90e1fca` as main `5129218b77250791dd8f813d11ad8fe242d5a767`, with old active commands/schedules. Eighteen changes remain STAGED. Authentication resolution is not independently verified; main remains active and the pilot is not live. No infrastructure mutation, paid test, restart, resource increase or authentication workaround was attempted.
+
+### Bounded verification through 13:34 Bangkok
+
+Retrieved 77 sensor and 27 recovery rows for 12:49–13:38 Bangkok, excluding the prior 12:48 completion and below both 500-row limits. Four completed HTTP-200 cycles report 25 admissions and 25 deferrals, zero terminal assessments, paid Committee reviews, Committee approvals, Serious Alerts or top-level event exceptions. Two sensor payloads parse fully; recovery and the latest sensor payload truncate at 50,000 JSON characters inside event results. Complete funnels and coverage summaries remain readable; their accounting/delivery tails remain unknown.
+
+Eighteen deferrals are daily review-count capacity holds, two unchanged-evidence holds, four full-source rolling-quota holds (TTWO/TRU/PEP/AB), and one MU HTTP 403. Review-count capacity is distinct from the dollar limit. TTWO and BDMD diagnostics additionally show unresolved direction, insufficient materiality/causal support, low evidence score and no market quote; neither reached Committee/final approval. These are main observations, not qualifying pilot cases.
+
+Both fully readable delivery-consumer executions found zero outboxes, jobs and deliveries without reported consumer errors. The other two delivery tails are unavailable. No authentic final approval, positive live control or durable Serious Alert receipt is established.
+
+Latest complete accounting, at 13:20, remains $0.360318 token-recorded rolling spend plus $0.156 in one retained reservation: $0.516318 exposure against the shared $10 ceiling, healthy accounting and no hard stop. Preserve the retained reservation until immutable receipts support reconciliation. Provider invoices and current infrastructure headroom remain unavailable.
+
+Latest queue: 524 pending, 29 profile-ready, 464 profile-blocked across 392 issuers, 37 scheduled retries, zero fresh authoritative ready cases and oldest reported profile-ready queue wait 2,520 minutes. Latest readable persisted legacy daily source counter is 29/194 = 14.95% at 13:04; later quiet cycles do not supply a new persisted denominator. This batch measure omits partial failures and cannot certify pilot request-level reliability. GDELT rate limiting and State Department access refusal within a partial official batch continue. Later successful halt reads do not establish sustained source repair.
+
+### Profiles, result and next step
+
+Four coverage summaries report four attempts and two verifications; identity logs identify RVTY and BDMD as verified and CMCT as customer-extraction/provider-budget deferred. They do not prove first-ever verifications. Adding the preceding documented Bangkok-day observations yields 72 attempts and ten summary verifications through 13:34 (13.9% summary yield). The observed summary count is 490 below 500; actual distinct newly verified daily production and shortfall remain unverified. The dedicated profile role is undeployed.
+
+Completed the next bounded read-only verification. No newly isolated cause justifies a speculative runtime edit or repeated tests. This documentation-only append uses a freshly rechecked blob SHA and preserves concurrent work.
+
+Next: obtain exact failed inputs/saved excerpts, reconcile retained reservations against immutable receipts and establish daily first-verification identities. Once dashboard authentication is independently resolved, verify main stopped and tested pilot code deployed, then isolated positive/negative approval-to-delivery controls. No qualifying sessions, passing reliability windows, receipt or verified infrastructure headroom permits expansion. Read-only checks remain useful and maintenance continues. No new critical incident, budget stop, authentication change or verified live Serious Alert warrants a repeated hourly notification.

@@ -1315,3 +1315,30 @@ The four completed summaries report four profile attempts and two verifications.
 Completed the bounded verification of subsequent executions, deployment identity, source/evidence failures, review/final approval, delivery, queue aging and accounting. No newly isolated code cause warrants a speculative patch or redundant tests. This documentation-only append uses the freshly checked file SHA and preserves existing work.
 
 Next: obtain platform termination details for the interrupted execution, exact failed Committee packets/source excerpts and immutable profile/accounting receipts. Once dashboard authentication is independently verified resolved, confirm main stopped and the tested pilot deployed, then isolated positive/negative approval-to-delivery controls before starting the observation clock. No qualifying pilot sessions, reliability windows, real receipt or verified infrastructure headroom permits expansion to 50. Read-only maintenance remains useful and continues. No new critical incident, budget stop, authentication change or verified live Serious Alert warrants repeating an hourly notification.
+
+
+## 2026-10-01 maintenance verification, 19:43 Bangkok run
+
+Read both operating documents first. Published pilot head was `24b14dc82a61965800c799c3c473bbbe49402862`. Fresh Railway status, sensor configuration and both worker deployment records still show main `5129218b77250791dd8f813d11ad8fe242d5a767`: sensor `c7925d46-23f8-4001-b125-bf07a213c546`, recovery `2db0656c-dbef-44d4-922b-dbd5d90e1fca`. Old schedules remain active; 18 changes remain STAGED. Main pause, pilot launch and dashboard authentication resolution are not verified. No infrastructure mutation, restart, paid test, accounting adjustment or authentication workaround was attempted. Existing operator work was preserved.
+
+### Bounded completed-cycle verification
+
+Retrieved 160 sensor and 26 recovery rows for 18:15–19:46 Bangkok, only rows actually returned as of this check; no future completion assumed. Both are below 500-row limits. Seven completed cycles through 19:35 report 32 admissions, 29 deferrals, three terminal outcomes, two paid Committee reviews, zero Committee approvals and zero Serious Alerts. Six payloads parse fully. The 18:48 payload truncates at 50,000 JSON characters; its complete processing object parses independently and its separate coverage summary supplies profile counts. Its accounting/delivery tail remains unknown.
+
+NNBR at 18:48 and BAM at 19:35 each completed all four selected roles including final judge, with no role failures; both needed more evidence and neither had an outbox. NNBR was recorded as a terminal needs-more-data outcome; BAM remains deferred. Other terminal results: HPQ unread-source rejection (issuer/event unconfirmed) and HUM no-qualified-signal (direction unresolved). These are not approved investment alerts. Completion of these two smaller packets does not establish repair of the previously observed oversized-input failures.
+
+Deferrals: 20 separate daily-review-count holds, five provider/cooldown holds, two unchanged-evidence holds, one full-source cadence hold and BAM incomplete evidence. The dollar ceiling was not exhausted. Source-readable cases still show missing current-price/direction evidence. No evidence, Committee, final-approval or prompt-size rule was relaxed.
+
+One readable delivery consumer found zero outboxes, jobs and deliveries without errors; five skipped for cycle deadline reserve; the truncated cycle's delivery tail remains unknown. No live positive/negative delivery control or authentic Serious Alert delivery receipt is established.
+
+Latest complete accounting at 19:35: $0.359188 token-recorded rolling spend + $0.156 retained reservation = $0.515188 exposure against the single $10 ceiling. Accounting reports healthy and no hard stop. Preserve the retained reservation pending immutable receipt reconciliation. Provider invoices and current infrastructure headroom remain unavailable.
+
+Latest queue: 589 pending, 44 profile-ready, 530 profile-blocked across 444 issuers, 16 scheduled retries, zero fresh authoritative ready cases and oldest reported profile-ready queue wait 2,402 minutes. Persisted legacy daily source count is 41/362 = 11.33%, above target and still unsuitable for certifying pilot request-level reliability because partial/batch failures are incompletely counted. GDELT rate limits, Marketaux timeout, State Department partial access denial and an ICSA macro timeout remain visible. Successful direct-issuer batches do not establish sustained source recovery. Zero top-level event exceptions does not prove a passing processing window.
+
+### Profile yield and next step
+
+Seven completed coverage summaries report eight profile attempts and zero verifications. Added to prior non-overlapping Bangkok-day observations: 102 attempts and 14 summary verifications through 19:35 (13.7% summary yield). Fourteen is 486 below the daily 500 target; distinct first-ever verified identities and exact production shortfall remain unverified. Dedicated pilot profile production remains undeployed.
+
+Completed bounded verification of execution, deployment identity, evidence, reviews/final approval, delivery, queue aging, source failures and shared accounting. No newly isolated code defect justifies a speculative runtime patch or repeated tests. This documentation-only append uses the freshly checked blob SHA; no main code changes or deployment.
+
+Next: obtain exact failed Committee packets/source excerpts, immutable profile/accounting receipts and prior interrupted-execution termination details. After independently verified dashboard authentication, confirm main stopped and tested pilot deployed, then isolated positive/negative approval-to-delivery controls before starting observation. No qualifying pilot sessions, reliability windows, delivery receipt or verified infrastructure headroom permits expansion to 50. Read-only checks remain useful; maintenance continues. No new critical incident, budget stop, authentication change or verified live Serious Alert warrants repeating an hourly notification.

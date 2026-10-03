@@ -7,6 +7,10 @@ const oversized = JSON.stringify({ processing: { eventResults: [{ evidence: "pri
   notifications: { durableRecoveryConsumer: { skipped: true, reason: "cycle_deadline_reserve" } } });
 assert.ok(oversized.length > 80000);
 const summary = simpleAlertCycleSummary(oversized);
+const measured = simpleAlertCycleSummary(JSON.stringify({ processing: { reliability: { processingAttempts: 1, processingFailures: 1, committeeTechnicalFailures: 1 } } }));
+assert.equal(measured.processingReliability.processingFailures, 1);
+assert.equal(measured.processingReliability.committeeTechnicalFailures, 1);
+assert.equal(summary.processingReliability.processingAttempts, null, "Legacy responses have no invented denominator");
 assert.equal(summary.accounting.reservedUsd, 0.156);
 assert.equal(summary.processing.eventFailures, 1);
 assert.equal(summary.funnel.committeeApproved, 0);

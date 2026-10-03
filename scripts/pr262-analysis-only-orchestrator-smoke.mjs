@@ -26,6 +26,8 @@ let mappingHealthy = true;
 let readinessUnavailable = false;
 let deliveryHealthy = true;
 let eventMode = "idle";
+let paidTechnicalFailure = false;
+const measuredCycles = [];
 let aiBudgetMode = "available";
 let allowSensorRun = false;
 let accessDiagnosticCalls = 0;
@@ -311,6 +313,9 @@ const stubs = {
           eventId: state.pending[0].id,
           openAiCalled: true,
           candidateFingerprint: "paid-incomplete",
+          analysisDiagnostics: { status: paidTechnicalFailure ? "committee_failed" : "candidate_needs_more_data",
+            committee: { status: paidTechnicalFailure ? "agent_failures" : "completed", agentsCompleted: 3, agentsFailed: paidTechnicalFailure ? 1 : 0,
+              roleDiagnostics: paidTechnicalFailure ? [{ agentId: "final_judge", status: "failed", error: "prompt_too_large" }] : [] } },
           resultKey: null,
           nonterminalAuditKey: "production/pr262/event-job/nonterminal-audits/paid-incomplete.json",
           outboxKey: "production/pr262/serious-signal/outbox/must-not-deliver.json",
@@ -378,12 +383,12 @@ const stubs = {
       return { promoted: false, outboxKey: null };
     },
   },
-  "@/lib/opportunity-engine/pr262-cost-effectiveness": { recordPr262CostEffectiveness: async () => ({ persisted: true }) },
+  "@/lib/opportunity-engine/pr262-cost-effectiveness": { recordPr262CostEffectiveness: async input => { measuredCycles.push(input); return { persisted: true }; } },
   "@/lib/opportunity-engine/pr262-runtime": { isPr262ApprovedPremergeProductionRollout: () => false },
 };
 const loaded = { exports: {} };
 new Function("require", "module", "exports", output)((name) => {
-  if (["@/lib/simple-alert-pilot-runtime", "@/lib/simple-alert-pilot-scope"].includes(name)) return loadTsModule(name);
+  if (["@/lib/opportunity-engine/pr262-processing-reliability", "@/lib/simple-alert-pilot-runtime", "@/lib/simple-alert-pilot-scope"].includes(name)) return loadTsModule(name);
   if (name in stubs) return stubs[name];
   throw new Error(`Unexpected analysis-only orchestrator import: ${name}`);
 }, loaded, loaded.exports);
@@ -603,6 +608,27 @@ assert.equal(paidRetry.processing.seriousBuys, 0, "A nonterminal result must nev
 assert.equal(paidRetry.processing.queuePersistence.retried, 1);
 assert.equal(state.pending[0].queueNextAttemptAt, accountingRetryAt, "The exact recorded-cost expiry must replace the preliminary retry bound in the single queue write.");
 
+assert.equal(paidRetry.processing.reliability.processingAttempts, 1, "Idle probes cannot dilute reliability");
+assert.equal(paidRetry.processing.reliability.committeeReviewAttempts, 1);
+assert.equal(paidRetry.processing.reliability.committeeTechnicalFailures, 0);
+assert.equal(paidRetry.processing.reliability.committeeOutcomeUnknown, 0);
+state.pending[0].queueNextAttemptAt = null;
+eventMode = "paid_nonterminal";
+paidTechnicalFailure = true;
+const failedJudge = await loaded.exports.runPr262AnalysisOnlyCycle({ maxCycleMs: 90_000 });
+paidTechnicalFailure = false;
+assert.equal(failedJudge.ok, false, "An audited technical review failure must not report a healthy cycle");
+assert.equal(failedJudge.processing.eventFailures, 1);
+assert.equal(failedJudge.processing.eventDeferrals, 1, "A failure can still be safely retained for retry");
+assert.equal(failedJudge.processing.reliability.processingAttempts, 1);
+assert.equal(failedJudge.processing.reliability.processingFailureRatePercent, 100);
+assert.equal(failedJudge.processing.reliability.committeeReviewAttempts, 1);
+assert.equal(failedJudge.processing.reliability.committeeTechnicalFailures, 1);
+assert.equal(measuredCycles.at(-1).processingReliability.committeeTechnicalFailures, 1);
+assert.equal(failedJudge.processing.seriousBuys, 0);
+assert.equal(recordedCostKeys.at(-1), "production/pr262/event-job/nonterminal-audits/paid-incomplete.json");
+assert.equal(releasedFingerprints.length, releasedBeforePaidRetry, "Failed required roles retain partial usage accounting");
+assert.equal(directDeliveryCalls, deliveriesBeforePaidRetry, "Technical failures remain unapproved and undelivered");
 state.pending[0].queueNextAttemptAt = null;
 eventMode = "proven_no_call";
 const recordedBeforeNoCall = recordedCostKeys.length;

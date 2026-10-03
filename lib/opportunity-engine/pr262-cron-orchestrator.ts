@@ -29,6 +29,7 @@ import { runPr262LightweightSensorV3 } from "@/lib/opportunity-engine/pr262-ligh
 import { createPr262SensorBudgetedFetch } from "@/lib/opportunity-engine/pr262-sensor-fetch-budget";
 import { promotePr262SeriousWatchOut } from "@/lib/opportunity-engine/pr262-serious-watch-out-authority";
 import { recordPr262CostEffectiveness } from "@/lib/opportunity-engine/pr262-cost-effectiveness";
+import { pr262ProcessingReliability } from "@/lib/opportunity-engine/pr262-processing-reliability";
 import { isPr262ApprovedPremergeProductionRollout } from "@/lib/opportunity-engine/pr262-runtime";
 
 const MAX_CYCLE_MS = 210_000;
@@ -276,7 +277,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
     : { status: "skipped", reason: "no_unknown_usage_reviews", readOnly: true, callsPaidModel: false, billingQuotaVerified: false };
   if (providerAccessDiagnostic.status !== "skipped") console.info(JSON.stringify({ kind: "pr262_openai_access_diagnostic", checkedAt, ...providerAccessDiagnostic }));
   const providerBlockedReason = paidProviderAccessBlocker(providerAccessDiagnostic);
-  let eventFailures = 0;
+  const processingOutcomes = new Map<number, Json>();
   let eventDeferrals = 0;
   let aiCalls = 0;
   let seriousBuys = 0;
@@ -348,11 +349,11 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
       });
       assertCycleActive();
       const result = asJson(raw);
+      processingOutcomes.set(index, result);
       eventResults.push(result);
       const status = String(result.status ?? "");
       if (status === "idle" || status === "busy") break;
       if (result.nonterminal === true || status === "event_job_deferred") eventDeferrals += 1;
-      if (result.ok === false) eventFailures += 1;
       if (result.openAiCalled === true) {
         aiCalls += 1;
         let recorded: Json;
@@ -442,7 +443,9 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
       const retryableEvidenceDeferral = isScheduledEventDeferral(rawMessage);
       const message = compactEventError(rawMessage);
       if (retryableEvidenceDeferral) eventDeferrals += 1;
-      else eventFailures += 1;
+      processingOutcomes.set(index, { ...processingOutcomes.get(index),
+        ok: retryableEvidenceDeferral,
+        status: retryableEvidenceDeferral ? "event_job_deferred" : "event_job_error" });
       eventResults.push({
         status: retryableEvidenceDeferral ? "event_job_deferred" : "event_job_error",
         error: message,
@@ -454,6 +457,8 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
     }
   }
 
+  const processingReliability = pr262ProcessingReliability([...processingOutcomes.values()]);
+  const eventFailures = processingReliability.processingFailures;
   let queuePersistence: Json = {
     written: false,
     writes: 0,
@@ -527,6 +532,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
         pendingEvents: state.pending.length,
         eventsProcessed,
         eventFailures,
+        processingReliability,
         aiCalls,
         seriousBuys,
         seriousSells,
@@ -615,6 +621,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
     },
     mapping: mappingScheduledDeferral ? { ...mapping, scheduledDeferral: true } : mapping,
     processing: {
+      reliability: processingReliability,
       readyAtStart,
       queueHealthAtStart,
       queueHealthAtEnd: queueHealthSnapshot(state, Date.now()),

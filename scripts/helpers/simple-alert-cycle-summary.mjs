@@ -17,6 +17,7 @@ export function simpleAlertCycleSummary(body) {
     summaryStatus: "parsed",
     cycle: pick(result, ["ok", "mode", "checkedAt", "durationMs", "error"]),
     processing: pick(result.processing, ["eventsProcessed", "eventFailures", "eventDeferrals", "aiCalls", "seriousBuys", "seriousSells", "seriousWatchOuts"]),
+    processingReliability: pick(result.processing?.reliability, ["processingAttempts", "processingFailures", "processingFailureRatePercent", "committeeReviewAttempts", "committeeTechnicalFailures", "committeeFailureRatePercent", "committeeOutcomeUnknown", "nontechnicalDeferrals"]),
     funnel: pick(result.processing?.funnel, ["admittedThisCycle", "decisionGradeEvidence", "sourceEvidenceRejectedUnread", "paidCommitteeReviews", "committeeApproved"]),
     queue: pick(result.processing?.readiness, ["profileReadyCount", "profileBlockedCount", "profileBlockedCompanyCount", "freshAuthoritativeReadyCount", "oldestProfileReadyQueueWaitMinutes"]),
     accounting: pick(result.aiCostControl, ["spentUsd", "reservedUsd", "exposureUsd", "limitUsd", "activeReservations", "accountingHealthy", "hardFuseTripped", "pendingUsageUpperBoundUsd"]),
@@ -24,6 +25,7 @@ export function simpleAlertCycleSummary(body) {
     recovery: pick(recovery, ["ok", "skipped", "reason", "dueJobs", "jobsAttempted", "delivered", "retryScheduled", "blockedNoChannel", "queuePageTruncated"]),
     discovery: pick(recovery?.discovery, ["outboxesFound", "jobsCreatedOrConfirmed", "truncated"]),
     sourceDaily: pick(result.cost?.daily, ["date", "sourceAttempts", "sourceFailures"]),
+    processingDaily: pick(result.cost?.daily, ["date", "processingAttempts", "processingFailures", "committeeReviewAttempts", "committeeTechnicalFailures", "committeeOutcomeUnknown", "processingMeasuredCycles", "processingMeasurementStartedAt"]),
     profiles: pick(result.companyProfiles, ["attempted", "verified", "status"]),
     profileProduction: pick(result, ["status", "target", "attempted", "newlyVerifiedThisRun", "newlyVerifiedToday", "remaining"]),
     // This is a diagnostic summary, never an approval or delivery receipt.

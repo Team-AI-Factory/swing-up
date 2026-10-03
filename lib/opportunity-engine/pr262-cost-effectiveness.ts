@@ -1,5 +1,6 @@
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
+import type { pr262ProcessingReliability } from "@/lib/opportunity-engine/pr262-processing-reliability";
 
 const PREFIX = pr262StorageKey("metrics/cost-effectiveness");
 
@@ -13,6 +14,7 @@ type CycleMetrics = {
   pendingEvents: number;
   eventsProcessed: number;
   eventFailures: number;
+  processingReliability?: ReturnType<typeof pr262ProcessingReliability>;
   aiCalls: number;
   seriousBuys: number;
   seriousSells: number;
@@ -33,6 +35,14 @@ type DailyMetrics = {
   maximumPendingEvents: number;
   eventsProcessed: number;
   eventFailures: number;
+  processingAttempts: number;
+  processingFailures: number;
+  committeeReviewAttempts: number;
+  committeeTechnicalFailures: number;
+  committeeOutcomeUnknown: number;
+  nontechnicalDeferrals: number;
+  processingMeasuredCycles: number;
+  processingMeasurementStartedAt: string | null;
   aiCalls: number;
   seriousBuys: number;
   seriousSells: number;
@@ -41,6 +51,8 @@ type DailyMetrics = {
   derived: {
     averageCycleDurationMs: number;
     sourceFailureRatePercent: number;
+    processingFailureRatePercent: number | null;
+    committeeFailureRatePercent: number | null;
     eventsProcessedPerAiCall: number | null;
     seriousSignalsPerAiCall: number | null;
     quietCycleSharePercent: number;
@@ -62,12 +74,14 @@ function empty(date: string): DailyMetrics {
     maximumPendingEvents: 0,
     eventsProcessed: 0,
     eventFailures: 0,
+    processingAttempts: 0, processingFailures: 0, committeeReviewAttempts: 0, committeeTechnicalFailures: 0,
+    committeeOutcomeUnknown: 0, nontechnicalDeferrals: 0, processingMeasuredCycles: 0, processingMeasurementStartedAt: null,
     aiCalls: 0,
     seriousBuys: 0,
     seriousSells: 0,
     seriousWatchOuts: 0,
     directIssuerFeedsPolled: 0,
-    derived: { averageCycleDurationMs: 0, sourceFailureRatePercent: 0, eventsProcessedPerAiCall: null, seriousSignalsPerAiCall: null, quietCycleSharePercent: 0 },
+    derived: { averageCycleDurationMs: 0, sourceFailureRatePercent: 0, processingFailureRatePercent: null, committeeFailureRatePercent: null, eventsProcessedPerAiCall: null, seriousSignalsPerAiCall: null, quietCycleSharePercent: 0 },
     quietCycles: 0,
   };
 }
@@ -77,6 +91,8 @@ function derive(value: DailyMetrics) {
   value.derived = {
     averageCycleDurationMs: value.cycles ? Math.round(value.totalDurationMs / value.cycles) : 0,
     sourceFailureRatePercent: value.sourceAttempts ? Math.round((value.sourceFailures / value.sourceAttempts) * 10_000) / 100 : 0,
+    processingFailureRatePercent: value.processingAttempts ? value.processingFailures / value.processingAttempts * 100 : null,
+    committeeFailureRatePercent: value.committeeReviewAttempts ? value.committeeTechnicalFailures / value.committeeReviewAttempts * 100 : null,
     eventsProcessedPerAiCall: value.aiCalls ? Math.round((value.eventsProcessed / value.aiCalls) * 100) / 100 : null,
     seriousSignalsPerAiCall: value.aiCalls ? Math.round((serious / value.aiCalls) * 100) / 100 : null,
     quietCycleSharePercent: value.cycles ? Math.round((value.quietCycles / value.cycles) * 10_000) / 100 : 0,
@@ -102,6 +118,13 @@ export async function recordPr262CostEffectiveness(input: CycleMetrics) {
     value.maximumPendingEvents = Math.max(value.maximumPendingEvents, input.pendingEvents);
     value.eventsProcessed += Math.max(0, input.eventsProcessed);
     value.eventFailures += Math.max(0, input.eventFailures);
+    if (input.processingReliability) {
+      for (const name of ["processingAttempts", "processingFailures", "committeeReviewAttempts", "committeeTechnicalFailures", "committeeOutcomeUnknown", "nontechnicalDeferrals"] as const) {
+        value[name] += input.processingReliability[name];
+      }
+      value.processingMeasuredCycles += 1;
+      value.processingMeasurementStartedAt ??= input.checkedAt;
+    }
     value.aiCalls += Math.max(0, input.aiCalls);
     value.seriousBuys += Math.max(0, input.seriousBuys);
     value.seriousSells += Math.max(0, input.seriousSells);
@@ -110,6 +133,7 @@ export async function recordPr262CostEffectiveness(input: CycleMetrics) {
     if (input.newEvents === 0 && input.eventsProcessed === 0 && input.aiCalls === 0) value.quietCycles += 1;
     derive(value);
     const written = await writeVersionedJsonToR2(key, value, current.etag ? { expectedEtag: current.etag } : { createOnly: true });
+    if (!written.conflict && !written.written) throw new Error("pr262_cost_metrics_write_failed");
     if (!written.conflict) {
       console.log(`[pr262-cost] ${JSON.stringify({ date, cycles: value.cycles, durationMs: input.durationMs, newEvents: input.newEvents, pendingEvents: input.pendingEvents, eventsProcessed: input.eventsProcessed, aiCalls: input.aiCalls, serious: input.seriousBuys + input.seriousSells + input.seriousWatchOuts, sourceFailureRatePercent: value.derived.sourceFailureRatePercent })}`);
       return { key, daily: value };

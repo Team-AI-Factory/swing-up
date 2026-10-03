@@ -198,11 +198,12 @@ for (const secret of ["DATABASE_URL", "OPENAI_API_KEY", "TELEGRAM_BOT_TOKEN", "S
 }
 assert.match(launcherSource, /MAX_BATCH_ROUNDS = 10/);
 assert.match(launcherSource, /\[pr262-foundation-candidates\]/, "The daily job must emit an unclipped compact candidate list.");
-assert.equal(railwayConfig.deploy.startCommand, "npm run pr262:production-foundation");
+assert.equal(railwayConfig.deploy.startCommand, "node scripts/simple-alert-paused.mjs", "The pilot must not restart main's broad foundation workload.");
+assert.equal(railwayConfig.deploy.restartPolicyType, "NEVER");
 assert.equal(oneShotRailwayConfig.deploy.startCommand, "npm run pr262:production-foundation");
 assert.equal(oneShotRailwayConfig.deploy.restartPolicyType, "NEVER");
 assert.equal("cronSchedule" in oneShotRailwayConfig.deploy, false, "The bootstrap config must run once immediately instead of waiting for cron.");
-assert.equal(railwayConfig.deploy.cronSchedule, "17 2 * * *");
+assert.equal(railwayConfig.deploy.cronSchedule, null, "The pilot foundation service remains inert.");
 
 console.log(JSON.stringify({
   ok: true,

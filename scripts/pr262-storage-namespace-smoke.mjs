@@ -20,7 +20,7 @@ const output = ts.transpileModule(source, {
 }).outputText;
 const loaded = { exports: {} };
 new Function("require", "module", "exports", output)((specifier) => {
-  if (["@/lib/simple-alert-pilot-runtime", "@/lib/simple-alert-pilot-scope"].includes(specifier)) return loadTsModule(specifier);
+  if (["@/lib/simple-alert-pilot-runtime", "@/lib/simple-alert-pilot-scope", "@/lib/simple-alert-pilot-cohort"].includes(specifier)) return loadTsModule(specifier);
   if (specifier === "@/lib/opportunity-engine/pr262-runtime") return runtimeLoaded.exports;
   return createRequire(import.meta.url)(specifier);
 }, loaded, loaded.exports);

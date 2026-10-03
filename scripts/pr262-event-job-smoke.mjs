@@ -1,3 +1,4 @@
+import { inSimpleAlertPilot } from "./helpers/simple-alert-pilot-fixture.mjs";
 import { companyProfileFixture } from "./helpers/company-profile-fixture.mjs";
 import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 import assert from "node:assert/strict";
@@ -39,7 +40,8 @@ const testableSource = source
   .replace("function eventRetryAt(", "export function eventRetryAt(")
   .replace("async function readCachedFullSource(", "export async function readCachedFullSource(")
   .replace("async function cacheFullSource(", "export async function cacheFullSource(")
-  .replace("function retryableReport(", "export function retryableReport(");
+  .replace("function retryableReport(", "export function retryableReport(")
+  .replace("function committeeApproved(", "export function committeeApproved(");
 const output = ts.transpileModule(testableSource, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
 }).outputText;
@@ -213,6 +215,8 @@ let committeeFingerprint = "fingerprint-1";
 let runnerResultMode = "serious";
 let targetedValueBudgetAllowed = true;
 let sharedValueBudgetError = null;
+let watchValuationReuse = null;
+let unitsBlocker = null;
 let resolutionAvailable = true;
 let lastStoredCompanyAnalysis = null;
 let expectEmptyStoredCompanyAnalysis = false;
@@ -231,6 +235,11 @@ const haltProvider = {
 };
 
 const stubs = {
+  "@/lib/opportunity-engine/pr262-pilot-watch-valuation": {
+    readPilotWatchValuation: async () => watchValuationReuse,
+    pilotValuationUnitsBlocker: () => unitsBlocker,
+    PILOT_WATCH_VALUATION_MAX_AGE_MS: 15 * 60_000,
+  },
   "node:crypto": crypto,
   "node:dns/promises": {
     lookup: async () => lookupAnswers,
@@ -1363,6 +1372,49 @@ for (const [index, reason] of ["minimum_interval", "rolling_24h_budget"].entries
   assert.equal(sharedFallback.status, "no_qualified_signal");
   assert.equal(sharedFallback.costControl.valuationContext.source, "daily_foundation_cache");
   assert.equal(sharedFallback.costControl.valuationContext.targetedRefreshBlockedByQuota, true);
+  assert.equal(sharedFallback.costControl.valuationContext.targetedRefreshNextRetryAt, "2026-08-11T10:25:00.000Z");
+  assert.equal(sharedFallback.costControl.valuationContext.targetedRefreshBlockReason, `pr262_sensor_budget_guard:tradingview:${reason}`);
   assert.equal(lastStoredCompanyAnalysis.observedAt, analysis.observedAt);
 }
 sharedValueBudgetError = null;
+
+await inSimpleAlertPilot(async () => {
+  const report = structuredClone(approvedFallbackPayload.report);
+  const identity = { ticker: "REKR", cik: "0001697851", company: "Rekor Systems, Inc." };
+  Object.assign(report.selectedCandidate, identity);
+  const checkedAt = new Date(report.checkedAt);
+  report.selectedCandidate.companyProfile = companyProfileFixture(identity, checkedAt);
+  assert.equal(cjsModule.exports.committeeApproved(report, identity, checkedAt), false,
+    "Even complete persisted Committee approval cannot create a quarantined Buy outbox");
+  report.alertType = "sell";
+  report.selectedCandidate.direction = "downside";
+  assert.equal(cjsModule.exports.committeeApproved(report, identity, checkedAt), true,
+    "Downside approvals still must pass all ordinary evidence, identity and Committee gates");
+});
+// Same-cycle watch valuation reuse needs no targeted reservation or network call.
+watchValuationReuse = { analysis: { ...analysis, observedAt: "2026-08-11T10:17:00.000Z" },
+  receivedAt: "2026-08-11T10:17:00.000Z", quoteObservedAt: null, liveQuoteVerified: false, fundamentalPeriodAsOf: null };
+targetedValueBudgetAllowed = false;
+const callsBeforeWatchReuse = valueRefreshCalls;
+setSecEventIdentity("000110", "2026-08-11T10:17:00.000Z");
+const watchReused = await runPr262EventJob({ now: new Date("2026-08-11T10:18:00.000Z"), allowOpenAi: false });
+assert.equal(watchReused.costControl.valuationContext.source, "cohort_watch_snapshot");
+assert.equal(watchReused.costControl.affectedCompanyValuationRefreshes, 0);
+assert.equal(watchReused.costControl.affectedCompanyValuationWatchReuses, 1);
+assert.equal(watchReused.costControl.valuationContext.targetedRefreshBlockedByQuota, false);
+assert.equal(watchReused.costControl.valuationContext.cohortWatchSnapshotReceivedAt, watchValuationReuse.receivedAt);
+assert.equal(watchReused.costControl.valuationContext.cohortWatchQuoteObservedAt, null);
+assert.equal(watchReused.costControl.valuationContext.cohortWatchLiveQuoteVerified, false);
+assert.equal(valueRefreshCalls, callsBeforeWatchReuse);
+assert.equal(lastStoredCompanyAnalysis.observedAt, watchValuationReuse.receivedAt);
+// Foreign currency/ADS ambiguity must block all numerical valuation paths,
+// including an available watch snapshot, targeted request, and old foundation.
+unitsBlocker = "pilot_valuation_currency_or_ads_basis_unverified";
+expectEmptyStoredCompanyAnalysis = true;
+setSecEventIdentity("000111", "2026-08-11T10:18:00.000Z");
+const unitsBlocked = await runPr262EventJob({ now: new Date("2026-08-11T10:19:00.000Z"), allowOpenAi: false });
+assert.equal(unitsBlocked.costControl.valuationContext.source, "unavailable_units_unverified");
+assert.equal(unitsBlocked.costControl.valuationContext.usableFoundationContext, false);
+assert.equal(lastStoredCompanyAnalysis, undefined);
+assert.equal(valueRefreshCalls, callsBeforeWatchReuse);
+console.log("watch valuation reuse and unverified-unit isolation: passed");

@@ -1,6 +1,7 @@
 import { AI_COMMITTEE_AGENTS, type AiCommitteeAgentDefinition } from "@/lib/ai-committee/agents";
 import { buildAiCommitteeEvidencePack, type AiCommitteeEvidencePack } from "@/lib/ai-committee/evidence-pack";
-import { getAiCommitteeProviderStatus, runOpenAiCommitteeProvider, type AiCommitteeTokenUsage, type AiCommitteeProviderFailure } from "@/lib/ai-committee/provider";
+import { getAiCommitteeProviderStatus, modelForTier, runOpenAiCommitteeProvider, type AiCommitteeTokenUsage, type AiCommitteeProviderFailure } from "@/lib/ai-committee/provider";
+import { committeeModelMaximumCost, committeeModelOutputLimit, reasoningCommitteeModel } from "@/lib/ai-committee/model-policy";
 import { persistAiCommitteeRun } from "@/lib/ai-committee/run-persistence";
 import { FOCUSED_REVIEW_POLICY, FOCUSED_CORE_ROLES } from "@/lib/ai-committee/review-policy";
 import { referenceRepeatedEvidenceText, SHARED_EVIDENCE_TEXT_INSTRUCTIONS } from "@/lib/ai-committee/evidence-text-references";
@@ -475,12 +476,14 @@ function synthesizeCommitteeOutput(evidencePack: AiCommitteeEvidencePack, agentR
   const consensus = committeeConsensusDecision(agentResults, { blockingMissingEvidence: policy.blockingMissingEvidence, nonApplicableAgentIds: policy.nonApplicableAgentIds, reviewPolicy });
   const overallRecommendation = consensus.overallRecommendation;
   const usageResults = agentResults.filter((result) => result.tokenUsage);
+  const cacheWritesKnown = usageResults.every(result => !reasoningCommitteeModel(result.model ?? "") || result.tokenUsage?.cacheWritePromptTokens !== undefined);
   const actualTokens = usageResults.reduce((total, result) => ({
     promptTokens: total.promptTokens + (result.tokenUsage?.promptTokens ?? 0),
     completionTokens: total.completionTokens + (result.tokenUsage?.completionTokens ?? 0),
     totalTokens: total.totalTokens + (result.tokenUsage?.totalTokens ?? 0),
     cachedPromptTokens: total.cachedPromptTokens + (result.tokenUsage?.cachedPromptTokens ?? 0),
-  }), { promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedPromptTokens: 0 });
+    reasoningTokens: total.reasoningTokens + (result.tokenUsage?.reasoningTokens ?? 0),
+  }), { promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedPromptTokens: 0, reasoningTokens: 0 });
   const usageByModel = usageResults.reduce<Record<string, AiCommitteeTokenUsage & { responses: number }>>((summary, result) => {
     const model = result.model ?? "unknown";
     const current = summary[model] ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedPromptTokens: 0, responses: 0 };
@@ -490,6 +493,13 @@ function synthesizeCommitteeOutput(evidencePack: AiCommitteeEvidencePack, agentR
       completionTokens: current.completionTokens + usage.completionTokens,
       totalTokens: current.totalTokens + usage.totalTokens,
       cachedPromptTokens: current.cachedPromptTokens + usage.cachedPromptTokens,
+      ...(reasoningCommitteeModel(model) || usage.pricingVerified !== undefined ? {
+        ...(usage.cacheWritePromptTokens !== undefined && (current.responses === 0 || current.cacheWritePromptTokens !== undefined)
+          ? { cacheWritePromptTokens: (current.cacheWritePromptTokens ?? 0) + usage.cacheWritePromptTokens } : {}),
+        reasoningTokens: (current.reasoningTokens ?? 0) + (usage.reasoningTokens ?? 0),
+        cacheReadUsageReported: (current.responses === 0 || current.cacheReadUsageReported === true) && usage.cacheReadUsageReported === true,
+        pricingVerified: (current.responses === 0 || current.pricingVerified === true) && usage.pricingVerified === true,
+      } : {}),
       responses: current.responses + 1,
     };
     return summary;
@@ -511,7 +521,8 @@ function synthesizeCommitteeOutput(evidencePack: AiCommitteeEvidencePack, agentR
     missingEvidence: [...new Set(policy.blockingMissingEvidence.concat(agentResults.flatMap((result) => result.missingData)))],
     modelUsageSummary: {
       ...(reviewPolicy ? { reviewPlan: { policy: reviewPolicy, agentIds: agentResults.map(result => result.agentId) } } : {}),
-      actualOpenAiUsage: { responsesWithUsage: usageResults.length, tokens: actualTokens, byModel: usageByModel },
+      actualOpenAiUsage: { responsesWithUsage: usageResults.length, tokens: { ...actualTokens,
+        ...(cacheWritesKnown ? { cacheWritePromptTokens: usageResults.reduce((sum, result) => sum + (result.tokenUsage?.cacheWritePromptTokens ?? 0), 0) } : {}) }, byModel: usageByModel },
       roleDiagnostics: agentResults.map((result) => ({
         agentId: result.agentId, status: result.status, error: result.error ?? null,
         providerFailure: result.providerFailure ?? null, finishReason: result.finishReason ?? null, usageReported: Boolean(result.tokenUsage),
@@ -576,8 +587,13 @@ export async function runAiCommittee(input: RunAiCommitteeInput) {
     inputRequirements: ["verified source evidence", "all selected reviewer results", "risk and uncertainty checks"],
     maxOutputTokens: 900,
   } : judgeDefinition;
-  const estimatedCost = input.reviewPolicy === FOCUSED_REVIEW_POLICY
-    ? (agents.length + 1) * (((Number(input.maximumPromptBytes ?? 60_000) + 1000) * 0.4 + 1000 * 1.6) / 1_000_000)
+  const plannedRoles = agents.concat(finalJudge ? [finalJudge] : []);
+  const modelBound = plannedRoles.reduce((total, agent) => {
+    const model = modelForTier(agent.modelTierPreference);
+    return total + (committeeModelMaximumCost(model, committeeModelOutputLimit(model, agent.maxOutputTokens), Number(input.maximumPromptBytes ?? 60_000)) ?? Infinity);
+  }, 0);
+  const estimatedCost = input.reviewPolicy === FOCUSED_REVIEW_POLICY || plannedRoles.some(agent => reasoningCommitteeModel(modelForTier(agent.modelTierPreference)))
+    ? modelBound
     : estimateAgentCost(agents.length + (finalJudge ? 1 : 0), mode);
   const maxCostUsd = input.maxCostUsd ?? Number(process.env.AI_COMMITTEE_MAX_COST_USD_PER_RUN ?? DEFAULT_MAX_COST_USD);
   if (!dryRun && estimatedCost > maxCostUsd) {

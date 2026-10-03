@@ -116,6 +116,13 @@ const mappingProbeProvider = async () => ({
   error: null,
 });
 const stubs = {
+  "@/lib/opportunity-engine/pr262-pilot-watch-valuation": {
+    pilotWatchExposure: () => [],
+    persistPilotWatchValuations: async () => ({ written: false, records: 0, reason: "separate_focused_test" }),
+  },
+  "@/lib/opportunity-engine/us-value-investing-engine": loadTsModule("@/lib/opportunity-engine/us-value-investing-engine", {
+    "@/lib/r2-warehouse": {}, "@/lib/opportunity-engine/pr262-storage": { pr262StorageKey: key => `production/pr262/${key}` },
+  }),
   "@/lib/opportunity-engine/pr262-trade-halt-snapshot": { fetchPr262TradeHalts: emptyProvider },
   "@/lib/equity-signal/event-sources": {
     fetchAlphaEarningsCalendar: emptyProvider,

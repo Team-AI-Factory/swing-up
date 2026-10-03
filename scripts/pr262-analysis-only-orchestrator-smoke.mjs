@@ -191,6 +191,17 @@ const stubs = {
         assert.equal(input.allowOpenAi, false, "An unreadable shared ledger must stop paid reviews even if its fallback spend is zero.");
         return { ok: true, status: "idle", eventsProcessed: 0, openAiCalled: false };
       }
+      if (eventMode === "pilot_time_budget_wait") {
+        eventMode = "idle";
+        advanceCycleClock(100_000);
+        const before = paidReservationCalls;
+        assert.equal(await input.beforeOpenAiCall({ candidateFingerprint: "time-budget-test", ticker: "TEST", direction: "upside" }), false);
+        assert.equal(input.aiReservationBlockedReason(), "cycle_time_budget");
+        assert.ok(Date.parse(input.aiReservationRetryAt()) > Date.now());
+        assert.equal(paidReservationCalls, before, "A review that cannot finish must not reserve or spend money");
+        return { ok: true, status: "event_job_deferred", nonterminal: true, eventsProcessed: 0, openAiCalled: false,
+          error: "pr262_event_report_retry:qualified_signal_openai_reservation_denied:blocker=review_capacity" };
+      }
       if (eventMode === "consume_processing_window") {
         eventMode = "idle";
         advanceCycleClock(170_000);
@@ -389,7 +400,7 @@ const stubs = {
 };
 const loaded = { exports: {} };
 new Function("require", "module", "exports", output)((name) => {
-  if (["@/lib/opportunity-engine/pr262-processing-reliability", "@/lib/simple-alert-pilot-runtime", "@/lib/simple-alert-pilot-scope"].includes(name)) return loadTsModule(name);
+  if (["@/lib/opportunity-engine/pr262-processing-reliability", "@/lib/simple-alert-pilot-runtime", "@/lib/simple-alert-pilot-scope", "@/lib/simple-alert-pilot-cohort"].includes(name)) return loadTsModule(name);
   if (name in stubs) return stubs[name];
   throw new Error(`Unexpected analysis-only orchestrator import: ${name}`);
 }, loaded, loaded.exports);
@@ -734,7 +745,8 @@ Object.assign(process.env, {
 });
 const beforePilotDeliveryCalls = deliveryRecoveryCalls;
 const beforePilotState = state.pending;
-state.pending = [{ ...pendingBeforeBacklog[0], ticker: "AAPL", cik: "0000320193", queueNextAttemptAt: null }];
+const currentPilotIdentity = JSON.parse(readFileSync(new URL("../config/simple-alert-pilot.json", import.meta.url), "utf8")).companies[0];
+state.pending = [{ ...pendingBeforeBacklog[0], ticker: currentPilotIdentity.ticker, cik: currentPilotIdentity.cik, queueNextAttemptAt: null }];
 processingOrder.length = 0;
 eventMode = "consume_processing_window";
 simulatedNow = realDateNow();
@@ -751,9 +763,26 @@ try {
   assert.equal(pilotBusy.processing.reportingReserveMs, 15000);
   eventMode = "idle";
   const pilotDefault = await loaded.exports.runPr262AnalysisOnlyCycle();
-  assert.equal(pilotDefault.processing.deadlineMs, 360000);
+  assert.equal(pilotDefault.processing.deadlineMs, 480000);
   const pilotClamped = await loaded.exports.runPr262AnalysisOnlyCycle({ maxCycleMs: 900000 });
-  assert.equal(pilotClamped.processing.deadlineMs, 360000, "Caller cannot exceed six-minute pilot bound");
+  assert.equal(pilotClamped.processing.deadlineMs, 480000, "Caller cannot exceed eight-minute pilot bound");
+  accessDiagnostic = { ...successfulDiagnostic, modelAvailable: { fast: false, deep: true, final: true } };
+  unknownUsageReviews = 1;
+  const optionalFastMissing = await loaded.exports.runPr262AnalysisOnlyCycle();
+  assert.equal(optionalFastMissing.aiCostControl.providerBlockedReason, null, "Optional fast tier cannot block focused deep/final reviews");
+  accessDiagnostic = { ...successfulDiagnostic, modelAvailable: { fast: false, deep: false, final: true } };
+  const requiredDeepMissing = await loaded.exports.runPr262AnalysisOnlyCycle();
+  assert.equal(requiredDeepMissing.aiCostControl.providerBlockedReason, "configured_model_unavailable", "A required deep tier must still block paid work");
+  accessDiagnostic = successfulDiagnostic;
+  unknownUsageReviews = 0;
+  eventMode = "pilot_time_budget_wait";
+  simulatedNow = realDateNow();
+  const timeWait = await loaded.exports.runPr262AnalysisOnlyCycle();
+  assert.equal(timeWait.ok, true, "Insufficient time is a scheduled capacity wait, not a technical failure");
+  assert.equal(timeWait.processing.eventFailures, 0);
+  assert.equal(timeWait.processing.eventDeferrals, 1);
+  assert.equal(timeWait.processing.paidTimeBudgetDeferrals, 1);
+  assert.equal(timeWait.processing.paidAdmissionMinimumMs, 335000);
 } finally {
   Date.now = realDateNow;
   state.pending = beforePilotState;

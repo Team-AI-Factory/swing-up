@@ -1,3 +1,4 @@
+import { inSimpleAlertPilot } from "./helpers/simple-alert-pilot-fixture.mjs";
 import { companyProfileFixture } from "./helpers/company-profile-fixture.mjs";
 import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 import assert from "node:assert/strict";
@@ -65,6 +66,7 @@ const haltProvider = { ...provider("nasdaq_trade_halts"), receipts: [], recordsR
 
 const agentResults = Array.from({ length: 13 }, (_, index) => ({ agentId: `agent_${index}`, status: "completed", verdict: "positive", confidence: 82, concerns: [], missingData: [], followUpChecks: [] })).concat({ agentId: "final_judge", status: "completed", verdict: "positive", confidence: 85, concerns: [], missingData: [], followUpChecks: [] });
 let committeeCalls = 0;
+let lastCommitteeEvidence = null;
 let committeeThrows = false;
 let committeeFails = false;
 let quoteActionable = true;
@@ -72,6 +74,7 @@ let candidateGatePassed = true;
 const stubs = {
   "@/lib/ai-committee/orchestrator": { TRUSTED_IN_MEMORY_EVIDENCE: trusted, runAiCommittee: async (input) => {
     committeeCalls += 1;
+    lastCommitteeEvidence = structuredClone(input[trusted]);
     if (committeeThrows) throw new Error("provider_response_parse_failed");
     if (committeeFails) return { ok: false, status: "agent_failures", agentResults: agentResults.map((result, index) => ({ ...result, status: index === 0 ? "failed" : "blocked", verdict: "mixed", confidence: 0, error: index === 0 ? "provider_error" : "provider_review_stopped", providerFailure: { category: "quota", httpStatus: 429, code: "insufficient_quota", stopRemainingAgents: true } })), plannedAgents: agentResults.map(result => result.agentId), committeeOutput: { overallRecommendation: "needs_more_data", missingEvidence: [] }, compatibility: { writesDatabase: false } };
     return { ok: true, status: "completed", agentResults, plannedAgents: agentResults.map((item) => item.agentId), committeeOutput: { overallRecommendation: "approve", evidenceConfidenceScore: 85, missingEvidence: [] }, compatibility: { writesDatabase: false }, receivedEvidence: input[trusted] };
@@ -132,6 +135,7 @@ const cjsModule = { exports: {} };
 const localRequire = (name) => {
   if (name === "node:crypto") return awaitImportCrypto;
   if (name in stubs) return stubs[name];
+  if (name === "@/lib/simple-alert-pilot-scope") return loadTsModule(name);
   if (["@/lib/alert-details", "@/lib/company-profile", "@/lib/signal-explanation", "@/lib/valuation-availability", "@/lib/equity-signal/valuation-candidate", "@/lib/equity-signal/review-evidence-revision"].includes(name)) return loadTsModule(name);
   if (["@/lib/ai-committee/review-policy", "@/lib/equity-signal/us-market-calendar"].includes(name)) return loadTsModule(name);
   if (name === "@/lib/opportunity-engine/pr262-ai-daily-cost") return loadTsModule(name, { "@/lib/r2-warehouse": {} });
@@ -390,4 +394,43 @@ committeeFails = false;
 candidate.fundamentals.items.at(-1).value = 1000000;
 assert.equal((await runEquitySignalLab(lossInput)).status, "candidate_alert_details_pending", "Missing values for a profitable issuer cannot activate the loss exception");
 restore();
+await inSimpleAlertPilot(async () => {
+  const identity = { ticker: "REKR", cik: "0001697851", company: "Rekor Systems, Inc." };
+  Object.assign(candidate, identity);
+  const callsBeforeQuarantine = committeeCalls;
+  let reservations = 0;
+  const quarantined = await runEquitySignalLab({ ...researchInput, beforeOpenAiCall: async () => { reservations++; return true; } });
+  assert.equal(quarantined.status, "candidate_pilot_upside_quarantined");
+  assert.equal(quarantined.selectedCandidate.alertReadiness, "watch_only");
+  assert.equal(quarantined.seriousSignalFound, false);
+  assert.equal(quarantined.actionableSignalFound, false);
+  assert.equal(quarantined.openAiCalled, false);
+  assert.equal(quarantined.alertType, null);
+  assert.match(quarantined.blockers[0], /financing\/compliance quarantine/);
+  assert.equal(committeeCalls, callsBeforeQuarantine);
+  assert.equal(reservations, 0, "Quarantined upside cannot reserve or spend Committee budget");
+  candidate.direction = "downside";
+  const risk = await runEquitySignalLab(researchInput);
+  assert.equal(risk.status, "serious_sell", "Sourced downside still uses the complete ordinary safety/Committee gates");
+  restore();
+  const ordinary = loadTsModule("@/lib/simple-alert-pilot-scope").pilotCompanies()[0];
+  Object.assign(candidate, ordinary);
+  assert.equal((await runEquitySignalLab(researchInput)).status, "serious_buy", "The 24 ordinary names are not preapproved or blanket-blocked");
+  restore();
+});
 console.log(JSON.stringify({ ok: true, eventQualifiedAtZeroPercentMove: true, cryptoDisabled: true, priorMoveNotRequired: true, strictCommitteeStillRequired: true, historyNeverBlocksCurrentEvidence: true, targetedCurrentEvidenceCanReachCommitteeWithoutHistory: true, paidCommitteeFailureRetainsCostReservation: true, staleQuoteCannotBecomeActionable: true, unknownHaltStateForcesWatch: true, historyStillStoredAndRefined: true, strongHistoryStillImprovesForecastContext: true, noWritesOrPublishing: true }, null, 2));
+
+// Capture the real runner's Committee-bound packet, not just event telemetry.
+const snapshotTiming = { source: "tradingview_cohort_watch", observedAtMeaning: "provider_snapshot_retrieval",
+  receivedAt: "2026-07-22T10:00:00.000Z", quoteObservedAt: null, fundamentalPeriodAsOf: null, liveQuoteVerified: false,
+  warning: "Retrieval time is not quote time or a reporting period; independently dated quote and filing gates still apply." };
+const snapshotProvenance = await runEquitySignalLab({ ...researchInput, targetedContext: { ...researchInput.targetedContext,
+  storedCompanyAnalysis: { ticker: "EXM", currency: "USD", industry: "Application software", observedAt: snapshotTiming.receivedAt,
+    sourceTiming: snapshotTiming, currentPrice: 100, fairValue: { conservativeValue: 80, baseValue: 120, optimisticValue: 140 } } } });
+assert.equal(snapshotProvenance.openAiCalled, true);
+const committeeStoredAnalysis = lastCommitteeEvidence.fundamentalsEvidence.items.find(item => item.source === "pr262_stored_company_analysis");
+assert.deepEqual(committeeStoredAnalysis.sourceTiming, snapshotTiming, "The Committee must see retrieval-only timing and unknown quote/financial-period provenance.");
+assert.equal(committeeStoredAnalysis.observedAt, snapshotTiming.receivedAt);
+assert.equal(lastCommitteeEvidence.priceVolumeEvidence.items[0].observedAt, candidate.quote.observedAt,
+  "The real quote's timestamp remains separate and unchanged.");
+console.log("Committee-bound scanner retrieval provenance: passed");

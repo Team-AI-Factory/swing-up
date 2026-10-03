@@ -1,4 +1,6 @@
 import type { AiCommitteeModelTier } from "@/lib/ai-committee/agents";
+import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
+import { AI_COMMITTEE_MODEL_POLICY_VERSION, AI_COMMITTEE_REVIEW_MAX_PROMPT_BYTES, AI_COMMITTEE_ROLE_MODELS, committeeModelOutputLimit, knownCommitteeModel, reasoningCommitteeModel } from "@/lib/ai-committee/model-policy";
 
 export type AiCommitteeProviderStatus = {
   provider: "openai";
@@ -17,6 +19,10 @@ export type AiCommitteeTokenUsage = {
   completionTokens: number;
   totalTokens: number;
   cachedPromptTokens: number;
+  cacheWritePromptTokens?: number;
+  cacheReadUsageReported?: boolean;
+  reasoningTokens?: number;
+  pricingVerified?: boolean;
 };
 
 export type AiCommitteeProviderFailure = {
@@ -86,9 +92,10 @@ function defaultModel() {
 }
 
 function configuredModel(tier: AiCommitteeModelTier) {
-  if (tier === "final") return process.env.AI_COMMITTEE_FINAL_MODEL?.trim() || defaultModel();
-  if (tier === "deep") return process.env.AI_COMMITTEE_DEEP_MODEL?.trim() || defaultModel();
-  return process.env.AI_COMMITTEE_FAST_MODEL?.trim() || defaultModel();
+  const fallback = isSimpleAlertPilot() ? AI_COMMITTEE_ROLE_MODELS[tier] : defaultModel();
+  if (tier === "final") return process.env.AI_COMMITTEE_FINAL_MODEL?.trim() || fallback;
+  if (tier === "deep") return process.env.AI_COMMITTEE_DEEP_MODEL?.trim() || fallback;
+  return process.env.AI_COMMITTEE_FAST_MODEL?.trim() || fallback;
 }
 
 function configuredModelAllowlist() {
@@ -99,6 +106,7 @@ function configuredModelAllowlist() {
 }
 
 function requestTimeoutMs() {
+  if (isSimpleAlertPilot()) return 60_000;
   const configured = Number(process.env.AI_COMMITTEE_REQUEST_TIMEOUT_MS ?? 20_000);
   return Number.isFinite(configured) ? Math.max(1_000, Math.min(60_000, Math.round(configured))) : 20_000;
 }
@@ -128,9 +136,25 @@ export function getAiCommitteeProviderStatus(): AiCommitteeProviderStatus {
   };
 }
 
-function modelForTier(tier: AiCommitteeModelTier) {
+export function modelForTier(tier: AiCommitteeModelTier) {
   return configuredModel(tier);
 }
+
+function modelDiagnostic(tier: AiCommitteeModelTier, model: string, allowed: boolean) {
+  const configured = configuredModelAllowlist();
+  return { policyVersion: AI_COMMITTEE_MODEL_POLICY_VERSION, tier,
+    model: knownCommitteeModel(model) ? model : "unrecognized_model",
+    expectedPilotModel: AI_COMMITTEE_ROLE_MODELS[tier], allowed,
+    allowlist: [...configured].filter(knownCommitteeModel),
+    unrecognizedAllowlistEntries: [...configured].filter(value => !knownCommitteeModel(value)).length,
+    reasoningEffort: reasoningCommitteeModel(model) ? "low" : null,
+    totalOutputCeiling: committeeModelOutputLimit(model, 1000), requestTimeoutMs: reasoningCommitteeModel(model) ? 60_000 : requestTimeoutMs(), serviceTier: "default" };
+}
+
+// One harmless, non-billable catalogue read per worker. Models Read permission
+// is separate from completion permission; 403 or a failed probe is diagnostic,
+// not proof that an otherwise authorized completion is unavailable.
+let compatibilityRead: Promise<unknown> | null = null;
 
 // This is an access check, not a completion: it generates no tokens and does
 // not verify billing quota. It can diagnose configuration while the paid fuse
@@ -168,20 +192,27 @@ export async function runOpenAiCommitteeProvider(options: AiCommitteeRunOptions)
   if (dryRun) return { ok: true as const, status: "dry_run" as const, modelTier: options.tier, modelConfigured: Boolean(model), providerStatus: status };
   if (!model) return { ok: false as const, status: "model_not_configured" as const, modelTier: options.tier, providerStatus: status };
   const modelAllowlist = configuredModelAllowlist();
-  if (modelAllowlist.size > 0 && !modelAllowlist.has(model)) {
+  const roleMismatch = reasoningCommitteeModel(model) && model !== AI_COMMITTEE_ROLE_MODELS[options.tier];
+  if (!knownCommitteeModel(model) || roleMismatch || (isSimpleAlertPilot() && model !== AI_COMMITTEE_ROLE_MODELS[options.tier])
+    || (modelAllowlist.size > 0 && !modelAllowlist.has(model))) {
+    console.info("AI Committee model policy", modelDiagnostic(options.tier, model, false));
     return { ok: false as const, status: "model_not_allowed" as const, modelTier: options.tier, providerStatus: status };
   }
   if (options.allowedModels?.length && !options.allowedModels.includes(model)) {
+    console.info("AI Committee model policy", modelDiagnostic(options.tier, model, false));
     return { ok: false as const, status: "model_not_allowed" as const, modelTier: options.tier, providerStatus: status };
   }
   const responseFormat = options.responseSchema
     ? { type: "json_schema", json_schema: { ...options.responseSchema, strict: true } }
     : { type: "json_object" };
-  if (Number.isFinite(options.maximumPromptBytes)) {
-    const maximumPromptBytes = Math.max(1_000, Math.floor(Number(options.maximumPromptBytes)));
+  const reasoning = reasoningCommitteeModel(model);
+  const messages = options.messages.map(message => reasoning && message.role === "system" ? { ...message, role: "developer" } : message);
+  const configuredPromptLimit = options.maximumPromptBytes ?? (reasoning ? AI_COMMITTEE_REVIEW_MAX_PROMPT_BYTES : undefined);
+  if (Number.isFinite(configuredPromptLimit)) {
+    const maximumPromptBytes = Math.max(1_000, Math.min(reasoning ? AI_COMMITTEE_REVIEW_MAX_PROMPT_BYTES : Infinity, Math.floor(Number(configuredPromptLimit))));
     // A schema is also model input. Keep it inside the existing reserved input
     // ceiling, rather than silently consuming the request-framing allowance.
-    const promptBytes = new TextEncoder().encode(JSON.stringify(options.messages)
+    const promptBytes = new TextEncoder().encode(JSON.stringify(messages)
       + (options.responseSchema ? JSON.stringify(responseFormat) : "")).byteLength;
     if (promptBytes > maximumPromptBytes) {
       const failure: AiCommitteeProviderFailure = { category: "input_limit", stopRemainingAgents: true, promptBytes, maximumPromptBytes };
@@ -189,20 +220,32 @@ export async function runOpenAiCommitteeProvider(options: AiCommitteeRunOptions)
     }
   }
 
+  const outputLimit = committeeModelOutputLimit(model, options.maxTokens ?? 700);
+  if (reasoning) {
+    compatibilityRead ??= probeOpenAiCommitteeProviderAccess(options.signal).then(result => {
+      console.info("AI Committee compatibility read", result);
+      return result;
+    });
+    await compatibilityRead;
+    console.info("AI Committee model policy", modelDiagnostic(options.tier, model, true));
+  }
   console.info("AI Committee OpenAI provider run", { modelTier: options.tier, model });
 
   let response: Response;
   let data: {
+    model?: string;
+    service_tier?: string;
     choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
     usage?: {
       prompt_tokens?: number;
       completion_tokens?: number;
       total_tokens?: number;
-      prompt_tokens_details?: { cached_tokens?: number };
+      prompt_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number };
+      completion_tokens_details?: { reasoning_tokens?: number };
     };
   };
   try {
-    const timeoutSignal = AbortSignal.timeout(status.requestTimeoutMs);
+    const timeoutSignal = AbortSignal.timeout(reasoning ? 60_000 : status.requestTimeoutMs);
     const signal = options.signal
       ? AbortSignal.any([options.signal, timeoutSignal])
       : timeoutSignal;
@@ -212,7 +255,9 @@ export async function runOpenAiCommitteeProvider(options: AiCommitteeRunOptions)
         Authorization: `Bearer ${process.env.OPENAI_API_KEY?.trim()}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ model, messages: options.messages, max_tokens: options.maxTokens ?? 700, temperature: 0.2, response_format: responseFormat }),
+      body: JSON.stringify({ model, messages, response_format: responseFormat, service_tier: "default", n: 1,
+        ...(reasoning ? { max_completion_tokens: outputLimit, reasoning_effort: "low", verbosity: "low" }
+          : { max_tokens: outputLimit, temperature: 0.2 }) }),
       signal,
     });
     if (!response.ok) {
@@ -235,14 +280,33 @@ export async function runOpenAiCommitteeProvider(options: AiCommitteeRunOptions)
 
   const count = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
   const validUsage = data?.usage && [data.usage.prompt_tokens, data.usage.completion_tokens, data.usage.total_tokens]
-    .every(value => typeof value === "number" && Number.isFinite(value) && value >= 0)
+    .every(value => typeof value === "number" && Number.isInteger(value) && value >= 0)
     && Number(data.usage.total_tokens) >= Number(data.usage.prompt_tokens) + Number(data.usage.completion_tokens);
   const tokenUsage: AiCommitteeTokenUsage | undefined = validUsage && data.usage ? {
     promptTokens: count(data.usage.prompt_tokens),
     completionTokens: count(data.usage.completion_tokens),
     totalTokens: count(data.usage.total_tokens),
     cachedPromptTokens: count(data.usage.prompt_tokens_details?.cached_tokens),
+    ...(reasoning ? {
+      ...(typeof data.usage.prompt_tokens_details?.cached_tokens === "number" && typeof data.usage.prompt_tokens_details?.cache_write_tokens === "number"
+        ? { cacheWritePromptTokens: data.usage.prompt_tokens_details.cache_write_tokens } : {}),
+      cacheReadUsageReported: data.usage.prompt_tokens_details?.cached_tokens !== undefined,
+      ...(typeof data.usage.completion_tokens_details?.reasoning_tokens === "number" ? { reasoningTokens: data.usage.completion_tokens_details.reasoning_tokens } : {}),
+      pricingVerified: data.model === model && data.service_tier === "default"
+        && (data.usage.prompt_tokens_details?.cached_tokens === undefined
+          || (Number.isInteger(data.usage.prompt_tokens_details.cached_tokens) && data.usage.prompt_tokens_details.cached_tokens >= 0))
+        && (data.usage.prompt_tokens_details?.cache_write_tokens === undefined
+          || (Number.isInteger(data.usage.prompt_tokens_details.cache_write_tokens)
+            && data.usage.prompt_tokens_details.cache_write_tokens >= 0))
+        && Number(data.usage.prompt_tokens_details?.cached_tokens ?? 0) + Number(data.usage.prompt_tokens_details?.cache_write_tokens ?? 0) <= Number(data.usage.prompt_tokens),
+    } : {}),
   } : undefined;
+  if (reasoning && tokenUsage?.pricingVerified !== true) {
+    const failure: AiCommitteeProviderFailure = { category: "invalid_response", stopRemainingAgents: true };
+    console.info("AI Committee unverified pricing receipt", { policyVersion: AI_COMMITTEE_MODEL_POLICY_VERSION,
+      model, modelMatches: data?.model === model, standardTierConfirmed: data?.service_tier === "default", usageReported: Boolean(tokenUsage) });
+    return { ok: false as const, status: "provider_error" as const, modelTier: options.tier, model, tokenUsage, failure, providerStatus: status };
+  }
   if (!data || typeof data !== "object" || !Array.isArray(data.choices)) {
     const failure: AiCommitteeProviderFailure = { category: "invalid_response", stopRemainingAgents: false };
     return { ok: false as const, status: "provider_error" as const, modelTier: options.tier, model, tokenUsage, failure, providerStatus: status };

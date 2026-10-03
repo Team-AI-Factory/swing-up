@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { applySimpleAlertModelPolicy } from "./helpers/simple-alert-model-policy.mjs";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
@@ -36,6 +37,8 @@ if (profileOnly) {
   env.SWING_UP_PR262_EVENT_JOB_OPENAI_ENABLED = "false";
 } else if (env.AI_COMMITTEE_ENABLED !== "true" || env.SWING_UP_PR262_EVENT_JOB_OPENAI_ENABLED !== "true") {
   throw new Error("simple_pilot_committee_must_be_enabled");
+} else {
+  Object.assign(env, applySimpleAlertModelPolicy(env));
 }
 // These credentials exist only inside this loopback-bound worker process.
 // Tests have a stable commit-scoped identity and are excluded from live feeds.
@@ -55,7 +58,7 @@ const watchdog = setTimeout(() => {
   console.error("simple_pilot_worker_deadline_exceeded");
   try { process.kill(-app.pid, "SIGKILL"); } catch {}
   process.exit(1);
-}, profileOnly ? 300_000 : 540_000);
+}, profileOnly ? 300_000 : 660_000);
 watchdog.unref();
 let code = 1;
 try {
@@ -81,7 +84,7 @@ try {
   }
   const response = await fetch(`${base}/api/internal/combined-opportunity-engine/cron-v3`, {
     method: "POST", headers: { "content-type": "application/json", "x-swing-up-pr262-cron-token": token },
-    body: JSON.stringify({ mode: profileOnly ? "profiles_only" : "sensor_and_analysis" }), signal: AbortSignal.timeout(profileOnly ? 240_000 : 400_000),
+    body: JSON.stringify({ mode: profileOnly ? "profiles_only" : "sensor_and_analysis" }), signal: AbortSignal.timeout(profileOnly ? 240_000 : 520_000),
   });
   const body = await response.text();
   console.log(`[simple-alerts-summary] ${JSON.stringify(simpleAlertCycleSummary(body))}`);

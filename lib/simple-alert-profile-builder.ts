@@ -70,7 +70,7 @@ export function profileBatchPlan(listings: Row[], entries: Row[], now: Date, lim
     if (validIssuers.has(identity.cik)) return [];
     const previous = stored.get(identity.cik) ?? [];
     const deferred = previous.some(row => {
-      const parserRepair = row.error === "company_profile_products_and_customers_not_extracted"
+      const parserRepair = ["company_profile_products_and_customers_not_extracted", "company_profile_annual_filing_unavailable"].includes(String(row.error))
         && row.parserRevision !== COMPANY_PROFILE_PARSER_REVISION;
       return !parserRepair && Date.parse(String(row.nextAttemptAt ?? "")) > now.getTime();
     });

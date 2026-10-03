@@ -1,3 +1,4 @@
+import { pilotUpsideBlocker } from "@/lib/simple-alert-pilot-scope";
 import { completeCommitteeReview } from "@/lib/ai-committee/review-policy";
 import { PR262_REVIEW_MAX_PROMPT_BYTES, PR262_REVIEW_MAX_COST_USD } from "@/lib/opportunity-engine/pr262-ai-daily-cost";
 import { verifiedCompanyProfile, type CompanyIdentity, type VerifiedCompanyProfile } from "@/lib/company-profile";
@@ -173,6 +174,7 @@ function withPriceForecast(candidate: ImpactCandidate, now: Date): ImpactCandida
 
 function seriousActionEligible(candidate: ImpactCandidate) {
   return candidate.direction !== "unknown" && candidate.gatePassed
+    && !(candidate.direction === "upside" && pilotUpsideBlocker(candidate))
     && Boolean(candidate.quote)
     && candidate.quote?.actionableForSeriousSignal === true
     && candidate.quote?.marketSession !== "halted"
@@ -243,6 +245,7 @@ function evidencePack(candidate: ImpactCandidate, providers: ProviderResult[], m
     sector: storedCompanyAnalysis.sector,
     industry: storedCompanyAnalysis.industry,
     observedAt: storedCompanyAnalysis.observedAt,
+    ...(storedCompanyAnalysis.sourceTiming ? { sourceTiming: storedCompanyAnalysis.sourceTiming } : {}),
     currentPriceAtAnalysis: storedCompanyAnalysis.currentPrice,
     fairValue: storedCompanyAnalysis.fairValue,
     scores: storedCompanyAnalysis.scores,
@@ -651,6 +654,10 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       priceForecast: best.priceForecast,
       alertReadiness: seriousActionEligible(best) ? "actionable_candidate" : "watch_only",
     };
+    const pilotUpsideHold = best.direction === "upside" ? pilotUpsideBlocker(best) : null;
+    if (pilotUpsideHold) return { ...common, status: "candidate_pilot_upside_quarantined", seriousSignalFound: false,
+      actionableSignalFound: false, alertType: null, openAiCalled: false, candidateFingerprint: fingerprint,
+      selectedCandidate, qualityScore: best.score, blockers: [pilotUpsideHold], technicalFailureFingerprint: null };
     if (!companyProfile) return { ...common, status: "candidate_company_profile_pending", seriousSignalFound: false, actionableSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, blockers: ["A source-backed company profile describing its products or services and customers is required before publication."], technicalFailureFingerprint: null };
     const details = alertDetails(selectedCandidate, undefined, now);
     if (!details.complete) return { ...common, status: "candidate_alert_details_pending", seriousSignalFound: false, actionableSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, blockers: details.missing, technicalFailureFingerprint: null };
@@ -738,7 +745,7 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       signal: input.signal,
       // The temporary exposure bound uses this model and bounded inputs; only
       // provider-reported usage is recorded as spending.
-      allowedModels: ["gpt-4.1-mini", "gpt-4.1-mini-2025-04-14"],
+      allowedModels: ["gpt-4.1-mini", "gpt-4.1-mini-2025-04-14", "gpt-6.1-sol", "gpt-6-astra", "gpt-6-luna"],
       maximumPromptBytes: PR262_REVIEW_MAX_PROMPT_BYTES,
     });
     const results = Array.isArray(committee.agentResults) ? committee.agentResults : [];

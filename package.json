@@ -34,6 +34,7 @@
     "smoke:branch-worker-process": "node scripts/branch-worker-process-smoke.mjs",
     "smoke:pr262-runtime-pause": "node scripts/pr262-runtime-pause-smoke.mjs",
     "smoke:pr262-committee-authority": "node scripts/pr262-committee-authority-smoke.mjs",
+    "smoke:pr262-pilot-watch-valuation": "node scripts/pr262-pilot-watch-valuation-smoke.mjs",
     "smoke:pr262-event-job": "node scripts/pr262-event-job-smoke.mjs",
     "smoke:pr262-trade-halt-snapshot": "node scripts/pr262-trade-halt-snapshot-smoke.mjs",
     "smoke:pr262-storage-namespace": "node scripts/pr262-storage-namespace-smoke.mjs",

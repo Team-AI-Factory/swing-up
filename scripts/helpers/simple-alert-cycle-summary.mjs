@@ -15,8 +15,9 @@ export function simpleAlertCycleSummary(body) {
   const recovery = result.notifications?.durableRecoveryConsumer;
   return {
     summaryStatus: "parsed",
+    pilot: pick(result.pilot, ["name", "branch", "cohortId", "companies"]),
     cycle: pick(result, ["ok", "mode", "checkedAt", "durationMs", "error"]),
-    processing: pick(result.processing, ["eventsProcessed", "eventFailures", "eventDeferrals", "aiCalls", "seriousBuys", "seriousSells", "seriousWatchOuts"]),
+    processing: pick(result.processing, ["eventsProcessed", "eventFailures", "eventDeferrals", "aiCalls", "seriousBuys", "seriousSells", "seriousWatchOuts", "deadlineMs", "deliveryReserveMs", "reportingReserveMs", "paidAdmissionMinimumMs", "paidTimeBudgetDeferrals"]),
     processingReliability: pick(result.processing?.reliability, ["processingAttempts", "processingFailures", "processingFailureRatePercent", "committeeReviewAttempts", "committeeTechnicalFailures", "committeeFailureRatePercent", "committeeOutcomeUnknown", "nontechnicalDeferrals"]),
     funnel: pick(result.processing?.funnel, ["admittedThisCycle", "decisionGradeEvidence", "sourceEvidenceRejectedUnread", "paidCommitteeReviews", "committeeApproved"]),
     queue: pick(result.processing?.readiness, ["profileReadyCount", "profileBlockedCount", "profileBlockedCompanyCount", "freshAuthoritativeReadyCount", "oldestProfileReadyQueueWaitMinutes"]),

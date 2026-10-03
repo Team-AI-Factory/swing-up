@@ -1,0 +1,163 @@
+{
+  "source": "https://www.sec.gov/files/company_tickers_exchange.json",
+  "capturedOn": "2026-10-03",
+  "fullSnapshotSha256": "809b0a0bda79a1e9831ec1d1e312fbdbb494387d24a72ba45d5255146d2c69bd",
+  "fields": [
+    "cik",
+    "name",
+    "ticker",
+    "exchange"
+  ],
+  "data": [
+    [
+      1861737,
+      "Hesai Group",
+      "HSAI",
+      "Nasdaq"
+    ],
+    [
+      790526,
+      "RadNet, Inc.",
+      "RDNT",
+      "Nasdaq"
+    ],
+    [
+      1691421,
+      "Lemonade, Inc.",
+      "LMND",
+      "NYSE"
+    ],
+    [
+      1280263,
+      "AMBARELLA INC",
+      "AMBA",
+      "Nasdaq"
+    ],
+    [
+      1816581,
+      "Ouster, Inc.",
+      "OUST",
+      "Nasdaq"
+    ],
+    [
+      1840856,
+      "SOUNDHOUND AI, INC.",
+      "SOUN",
+      "Nasdaq"
+    ],
+    [
+      903651,
+      "INNODATA INC",
+      "INOD",
+      "Nasdaq"
+    ],
+    [
+      1490978,
+      "Schrodinger, Inc.",
+      "SDGR",
+      "Nasdaq"
+    ],
+    [
+      1647639,
+      "Upstart Holdings, Inc.",
+      "UPST",
+      "Nasdaq"
+    ],
+    [
+      1601830,
+      "RECURSION PHARMACEUTICALS, INC.",
+      "RXRX",
+      "Nasdaq"
+    ],
+    [
+      1577526,
+      "C3.ai, Inc.",
+      "AI",
+      "NYSE"
+    ],
+    [
+      1500412,
+      "Ambiq Micro, Inc.",
+      "AMBQ",
+      "NYSE"
+    ],
+    [
+      1883085,
+      "Pagaya Technologies Ltd.",
+      "PGY",
+      "Nasdaq"
+    ],
+    [
+      1836981,
+      "BigBear.ai Holdings, Inc.",
+      "BBAI",
+      "NYSE"
+    ],
+    [
+      1667011,
+      "Arteris, Inc.",
+      "AIP",
+      "Nasdaq"
+    ],
+    [
+      1173489,
+      "CEVA INC",
+      "CEVA",
+      "Nasdaq"
+    ],
+    [
+      1753539,
+      "BlackSky Technology Inc.",
+      "BKSY",
+      "NYSE"
+    ],
+    [
+      1832483,
+      "Serve Robotics Inc. /DE/",
+      "SERV",
+      "Nasdaq"
+    ],
+    [
+      1774170,
+      "Powerfleet, Inc.",
+      "AIOT",
+      "Nasdaq"
+    ],
+    [
+      1768267,
+      "Cerence Inc.",
+      "CRNC",
+      "Nasdaq"
+    ],
+    [
+      1114925,
+      "LANTRONIX INC",
+      "LTRX",
+      "Nasdaq"
+    ],
+    [
+      1320760,
+      "TSS, Inc.",
+      "TSSI",
+      "Nasdaq"
+    ],
+    [
+      1826681,
+      "Palladyne AI Corp.",
+      "PDYN",
+      "Nasdaq"
+    ],
+    [
+      1842566,
+      "Airship AI Holdings, Inc.",
+      "AISP",
+      "Nasdaq"
+    ],
+    [
+      1697851,
+      "Rekor Systems, Inc.",
+      "REKR",
+      "Nasdaq"
+    ]
+  ]
+}

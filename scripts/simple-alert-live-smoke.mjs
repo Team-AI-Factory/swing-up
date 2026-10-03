@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { applySimpleAlertModelPolicy, simpleAlertModelEnvironment } from "./helpers/simple-alert-model-policy.mjs";
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { loadTsModule } from "./helpers/load-typescript-module.mjs";
@@ -15,11 +16,12 @@ Object.assign(process.env, environment);
 try {
   const runtime = loadTsModule("@/lib/simple-alert-pilot-runtime");
   const storage = loadTsModule("@/lib/opportunity-engine/pr262-storage");
+  const cohortNamespace = loadTsModule("@/lib/simple-alert-pilot-cohort").pilotCohortStoragePrefix("branch-labs/simple-alerts/");
   assert.equal(runtime.isSimpleAlertPilot(), true);
   for (const key of Object.keys(environment)) assert.equal(runtime.isSimpleAlertPilot({ ...environment, [key]: "wrong" }), false);
-  assert.equal(storage.pr262StorageKey("sensor/state-v1.json"), "branch-labs/simple-alerts/sensor/state-v1.json");
+  assert.equal(storage.pr262StorageKey("sensor/state-v1.json"), `${cohortNamespace}sensor/state-v1.json`);
   assert.equal(storage.pr262StorageKey("serious-signal/ai-cost-v1.json"), "production/pr262/serious-signal/ai-cost-v1.json");
-  assert.equal(storage.pr262StorageKey("serious-signal/outbox/event-job"), "branch-labs/simple-alerts/serious-signal/outbox/event-job");
+  assert.equal(storage.pr262StorageKey("serious-signal/outbox/event-job"), `${cohortNamespace}serious-signal/outbox/event-job`);
   assert.equal(storage.pr262StorageKey("value-investing/resumable/state.json"), "production/pr262/value-investing/resumable/state.json");
   const r2 = loadTsModule("@/lib/r2-warehouse", { "@/lib/db/client": { prisma: {} } });
   assert.doesNotThrow(() => r2.assertR2MutationKeyAllowed("PUT", "production/pr262/serious-signal/ai-cost-v1.json"));
@@ -30,8 +32,9 @@ try {
   assert.throws(() => storage.pr262StorageKey("../production/pr262/sensor/state-v1.json"), /invalid/);
   const scope = loadTsModule("@/lib/simple-alert-pilot-scope");
   assert.equal(scope.pilotCompanies().length, 25);
-  assert.equal(scope.pilotIncludes({ ticker: "AAPL", cik: "320193" }), true);
-  assert.equal(scope.pilotIncludes({ ticker: "AAPL", cik: "1" }), false);
+  const currentIdentity = scope.pilotCompanies()[0];
+  assert.equal(scope.pilotIncludes({ ticker: currentIdentity.ticker, cik: String(Number(currentIdentity.cik)) }), true);
+  assert.equal(scope.pilotIncludes({ ticker: currentIdentity.ticker, cik: "1" }), false);
   assert.equal(scope.pilotIncludes({ ticker: "OUTSIDE" }), false);
   assert.equal(scope.pilotIncludes({ ticker: null }), false);
   assert.equal(scope.pilotSourceEnabled("sec_broad"), true);
@@ -62,8 +65,17 @@ try {
   });
   assert.notEqual(launch.status, 0);
   assert.match(launch.stderr, /runtime_mismatch:RAILWAY_GIT_BRANCH/);
+  const priorRouting = { OPENAI_MODEL: "gpt-4.1-mini", AI_COMMITTEE_FAST_MODEL: "stale", AI_COMMITTEE_DEEP_MODEL: "gpt-6-astra", AI_COMMITTEE_FINAL_MODEL: "gpt-4.1-mini", AI_COMMITTEE_MODEL_ALLOWLIST: "gpt-4.1-mini", AI_COMMITTEE_ENABLED: "true", OTHER: "retained" };
+  const pinnedRouting = applySimpleAlertModelPolicy(priorRouting);
+  const reviewedRouting = loadTsModule("@/lib/ai-committee/model-policy").AI_COMMITTEE_ROLE_MODELS;
+  for (const tier of ["fast", "deep", "final"]) assert.equal(pinnedRouting[`AI_COMMITTEE_${tier.toUpperCase()}_MODEL`], reviewedRouting[tier]);
+  assert.deepEqual(new Set(pinnedRouting.AI_COMMITTEE_MODEL_ALLOWLIST.split(",")), new Set(Object.values(reviewedRouting)));
+  assert.equal(pinnedRouting.OTHER, "retained");
+  assert.equal(priorRouting.AI_COMMITTEE_DEEP_MODEL, "gpt-6-astra", "The helper must not mutate stored or inherited configuration");
+  assert.deepEqual(applySimpleAlertModelPolicy(simpleAlertModelEnvironment), simpleAlertModelEnvironment);
   const source = readFileSync("scripts/simple-alert-pilot-cycle.mjs", "utf8");
   assert.match(source, /delete env\.OPENAI_API_KEY/);
+  assert.match(source, /simple_pilot_committee_must_be_enabled[\s\S]*else \{\s*Object.assign\(env, applySimpleAlertModelPolicy\(env\)\)/);
   assert.match(source, /projected > 20/);
   console.log("Simple Alerts: 25-name isolation, shared $10 ledger, main mutation denial, first-verification target, pacing/role boundary and main launcher refusal passed.");
 } finally {

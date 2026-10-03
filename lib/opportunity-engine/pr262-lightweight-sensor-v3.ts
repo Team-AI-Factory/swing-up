@@ -1,3 +1,5 @@
+import { persistPilotWatchValuations, pilotWatchExposure } from "@/lib/opportunity-engine/pr262-pilot-watch-valuation";
+import { US_VALUE_SCANNER_COLUMNS } from "@/lib/opportunity-engine/us-value-investing-engine";
 import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
 import { pilotIncludes, pilotSourceEnabled } from "@/lib/simple-alert-pilot-scope";
 import crypto from "node:crypto";
@@ -108,6 +110,8 @@ type LiveWatchlistPrice = {
   changePercent: number;
   relativeVolume: number;
   threshold: string | null;
+  quoteObservedAt?: null;
+  liveQuoteVerified?: false;
 };
 
 type LiveWatchlistPriceSnapshot = {
@@ -456,22 +460,27 @@ async function marketWatch(fetchImpl: typeof fetch, exposure: Pr262ExposureEntry
   const selection = selectMarketWatch(exposure, offset, activeTickers);
   const watch = selection.entries;
   if (!watch.length) return { events: [] as Pr262SensorEvent[], prices: [] as LiveWatchlistPrice[], nextOffset: 0 };
-  const response = await fetchImpl(TRADINGVIEW_SCAN, { method: "POST", headers: { "content-type": "application/json", Accept: "application/json" }, body: JSON.stringify({ symbols: { tickers: watch.map((item) => item.tradingViewSymbol), query: { types: [] } }, columns: ["name", "description", "close", "change", "volume", "relative_volume_10d_calc"] }), cache: "no-store", signal: AbortSignal.timeout(25_000) });
+  const columns = isSimpleAlertPilot() ? [...US_VALUE_SCANNER_COLUMNS] : ["name", "description", "close", "change", "volume", "relative_volume_10d_calc"];
+  const response = await fetchImpl(TRADINGVIEW_SCAN, { method: "POST", headers: { "content-type": "application/json", Accept: "application/json" }, body: JSON.stringify({ symbols: { tickers: watch.map((item) => item.tradingViewSymbol), query: { types: [] } }, columns }), cache: "no-store", signal: AbortSignal.timeout(25_000) });
   if (!response.ok) throw new Error(`pr262_v3_market_http_${response.status}`);
   const body = await response.json() as { data?: Array<{ s?: string; d?: unknown[] }> };
+  const valuationPersistence = isSimpleAlertPilot()
+    ? await persistPilotWatchValuations(Array.isArray(body.data) ? body.data : [], watch, now) : null;
   const byTicker = new Map(watch.map((item) => [item.ticker, item]));
   const events: Pr262SensorEvent[] = [];
   const prices: LiveWatchlistPrice[] = [];
   for (const row of Array.isArray(body.data) ? body.data : []) {
     const data = Array.isArray(row.d) ? row.d : [];
     const ticker = String(data[0] ?? "").toUpperCase();
-    const price = finite(data[2]);
-    const change = finite(data[3]) ?? 0;
-    const relativeVolume = finite(data[5]) ?? 0;
+    const price = finite(data[columns.indexOf("close")]);
+    const change = finite(data[columns.indexOf("change")]) ?? 0;
+    const relativeVolume = finite(data[columns.indexOf("relative_volume_10d_calc")]) ?? 0;
     const item = byTicker.get(ticker);
-    if (!item || price === null || price <= 0 || !item.tradingViewSymbol) continue;
+    if (!item || price === null || price <= 0 || !item.tradingViewSymbol
+      || (isSimpleAlertPilot() && row.s !== item.tradingViewSymbol)) continue;
     const threshold = item.strongBuyBelowPrice !== null && price <= item.strongBuyBelowPrice ? "strong_buy_price_crossed" : item.buyBelowPrice !== null && price <= item.buyBelowPrice ? "buy_price_crossed" : item.trimAbovePrice !== null && price >= item.trimAbovePrice ? "trim_price_crossed" : null;
-    prices.push({ ticker, checkedAt: now.toISOString(), tradingViewSymbol: item.tradingViewSymbol, price, changePercent: change, relativeVolume, threshold });
+    prices.push({ ticker, checkedAt: now.toISOString(), tradingViewSymbol: item.tradingViewSymbol, price, changePercent: change, relativeVolume, threshold,
+      ...(isSimpleAlertPilot() ? { quoteObservedAt: null, liveQuoteVerified: false as const } : {}) });
     if (!threshold && Math.abs(change) < 5 && relativeVolume < 3) continue;
     const kind = threshold ?? "unusual_price_or_volume";
     // The event job always refreshes the quote before deciding, so one durable
@@ -480,7 +489,7 @@ async function marketWatch(fetchImpl: typeof fetch, exposure: Pr262ExposureEntry
     // could bury genuinely new filings or news beneath repeated price work.
     events.push({ id: `${threshold ? "valuation" : "v3-market"}:${hash(`${ticker}|${kind}|${now.toISOString().slice(0, 10)}`)}`, source: "market_price", sourceProvider: threshold ? "valuation_foundation_review" : "tradingview_quality_watchlist_v3", sourceHealthStatus: "connected", observedAt: now.toISOString(), title: `${ticker} ${kind} at ${price}`, url: `https://www.tradingview.com/symbols/${encodeURIComponent(row.s ?? ticker)}/`, sourceUrl: TRADINGVIEW_SCAN, ticker, company: item.company, kind: threshold ? "valuation_review" : kind, priority: 80, reason: threshold ? "A stored fair-value threshold was crossed. Review this company’s dated financial evidence and valuation assumptions through the Committee. No new headline is required." : `A large market change was detected (${change.toFixed(1)}%, ${relativeVolume.toFixed(1)}x relative volume) and is retained as provisional price research only.`, cik: item.cik, form: null, accession: null, canonicalSecIndexUrl: null, identityMethod: "not_applicable", mappingStatus: "mapped", mappingMethod: "stored_watchlist_ticker", mappingReason: "The ticker comes from the stored PR262 company exposure index.", tradingViewSymbol: item.tradingViewSymbol, queueAttempts: 0, queueNextAttemptAt: null, queueLastAttemptAt: null, queueLastError: null });
   }
-  return { events, prices, nextOffset: selection.nextOffset };
+  return { events, prices, nextOffset: selection.nextOffset, valuationPersistence };
 }
 
 export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl?: typeof fetch } = {}) {
@@ -505,12 +514,15 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
   });
   const universe = await loadEquityUniverse(fetchImpl, now);
   const resolver = buildStructuredTickerResolver(universe.snapshot.entries);
-  exposure.entries = exposure.entries.filter(pilotIncludes);
+  // Pilot identities do not depend on an old cohort's valuation/exposure cache.
+  // Fresh official universe identity is still mandatory; valuation stays absent.
+  exposure.entries = isSimpleAlertPilot() ? pilotWatchExposure(universe.snapshot, now) : exposure.entries.filter(pilotIncludes);
   const loaded = await loadState();
   const state = loaded.state;
   const summaries: SourceSummary[] = [];
   const events: Pr262SensorEvent[] = [];
   let liveWatchlistPriceSnapshot: LiveWatchlistPriceSnapshot | null = null;
+  let cohortWatchValuationPersistence: { written: boolean; records: number; reason: string | null } | null = null;
 
   if (exposureError) {
     summaries.push({
@@ -624,6 +636,7 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
         })]),
     run("market_watch", FIVE_MINUTES_MS, [TRADINGVIEW_SCAN], async () => {
       const market = await marketWatch(fetchImpl, exposure.entries, now, state.cursors.marketWatchOffset ?? 0, state.pending.flatMap(event => event.ticker ? [event.ticker] : []));
+      cohortWatchValuationPersistence = market.valuationPersistence ?? null;
       if (market.prices.length) {
         state.cursors.marketWatchOffset = market.nextOffset;
         liveWatchlistPriceSnapshot = { version: 1, checkedAt: now.toISOString(), source: "tradingview_market_watch", prices: market.prices };
@@ -907,6 +920,7 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
       queueWriteReason: queuePersistence.reason,
       cadenceKey: SENSOR_CADENCE_KEY,
       cadenceWritten: true,
+      cohortWatchValuation: cohortWatchValuationPersistence,
       liveWatchlistPriceKey: LIVE_WATCHLIST_PRICE_KEY,
       liveWatchlistPriceWritten: liveWatchlistPricePersistence.written,
       liveWatchlistPriceWriteReason: liveWatchlistPricePersistence.reason,

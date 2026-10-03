@@ -1,4 +1,4 @@
-import { pilotIncludes } from "@/lib/simple-alert-pilot-scope";
+import { pilotIncludes, pilotUpsideBlocker } from "@/lib/simple-alert-pilot-scope";
 import type { VerifiedCompanyProfile } from "@/lib/company-profile";
 import { completePriceOutlook, industryLabel } from "@/lib/alert-details";
 import { readCompanyProfiles, readCompanyProfileCoverage } from "@/lib/opportunity-engine/company-profile-cache";
@@ -73,8 +73,10 @@ function sanitizeCandidate(item: UsValueCompanyAnalysis, action: WatchlistAction
   if (!ticker || !companyProfile) return null;
   const modelAge = Date.now() - Date.parse(item.observedAt);
   if (!Number.isFinite(modelAge) || modelAge < -300000 || modelAge > 30 * 3600000) return null;
+  const upsideHold = action === "buy_research" ? pilotUpsideBlocker(item) : null;
+  if (upsideHold) action = "price_watch";
   const reasons = sanitizeReasons(item.decision?.reasons);
-  const blockers = sanitizeReasons(item.decision?.blockers);
+  const blockers = [...(upsideHold ? [upsideHold] : []), ...sanitizeReasons(item.decision?.blockers)];
   const specialistModelApplied = reasons.some((reason) => /specialist model/i.test(reason));
   const secUrl = `https://www.sec.gov/edgar/search/#/q=${encodeURIComponent(ticker)}`;
   const tradingViewUrl = safeTradingViewUrl(item.tradingViewSymbol);
@@ -87,7 +89,7 @@ function sanitizeCandidate(item: UsValueCompanyAnalysis, action: WatchlistAction
     ? Math.round(((baseValue - currentPrice) / currentPrice) * 10_000) / 100
     : finite(item.fairValue?.upsideToBasePercent);
   const priceObservedAt = livePrice?.checkedAt ?? item.observedAt;
-  const approvedForThisSnapshot = review?.committeeApproved === true && review.currentPrice === currentPrice && review.priceObservedAt === priceObservedAt;
+  const approvedForThisSnapshot = !upsideHold && review?.committeeApproved === true && review.currentPrice === currentPrice && review.priceObservedAt === priceObservedAt;
   const directionStillSupported = currentPrice === null || baseValue === null
     || (action === "buy_research" ? currentPrice < baseValue : action === "sell_research" ? currentPrice > baseValue : true);
   return {
@@ -137,7 +139,9 @@ function sanitizeCandidate(item: UsValueCompanyAnalysis, action: WatchlistAction
     publicationStatus: approvedForThisSnapshot ? "committee_approved_alert" as const : "provisional_alert" as const,
     userAlertEligible: action !== "price_watch" && directionStillSupported && !["rejected", "not_eligible"].includes(String(review?.committeeStatus)),
     committeeApproved: approvedForThisSnapshot,
-    committeeStatus: approvedForThisSnapshot ? "approved" : review?.committeeApproved === true ? "awaiting_review" : String(review?.committeeStatus ?? "awaiting_review"),
+    monitoringOnly: Boolean(upsideHold),
+    upsideBlockedReason: upsideHold,
+    committeeStatus: upsideHold ? "not_eligible" : approvedForThisSnapshot ? "approved" : review?.committeeApproved === true ? "awaiting_review" : String(review?.committeeStatus ?? "awaiting_review"),
     explanation: explainSignal({ company: String(item.company ?? ticker), sector: item.sector, industry: item.industry, ticker, cik: companyProfile.cik, companyProfile, description: companyProfile.description, kind: "valuation", action, price: currentPrice, fairValue: baseValue, fundamentals: item.fundamentals, gaps: plainEvidenceGaps(blockers) }),
     links: [
       { label: "Company business and customers — annual filing", url: companyProfile.sourceUrl },

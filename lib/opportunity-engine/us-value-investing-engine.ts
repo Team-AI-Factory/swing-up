@@ -30,6 +30,15 @@ export type UsValueCompanyAnalysis = {
   industry: string | null;
   currency: string | null;
   observedAt: string;
+  sourceTiming?: {
+    source: "tradingview_cohort_watch";
+    observedAtMeaning: "provider_snapshot_retrieval";
+    receivedAt: string;
+    quoteObservedAt: null;
+    fundamentalPeriodAsOf: null;
+    liveQuoteVerified: false;
+    warning: string;
+  };
   currentPrice: number;
   marketCap: number | null;
   estimatedAverageDollarVolume10d: number | null;
@@ -206,7 +215,7 @@ const SHARD_SIZE = 500;
 const REFRESH_MS = 15 * 60 * 1000;
 const PERSIST_MS = 6 * 60 * 60 * 1000;
 const US_EXCHANGES = new Set(["NASDAQ", "NYSE", "AMEX", "NYSEAMERICAN"]);
-const COLUMNS = [
+export const US_VALUE_SCANNER_COLUMNS = [
   "name",
   "description",
   "exchange",
@@ -246,6 +255,7 @@ const COLUMNS = [
   "beta_1_year",
   "Volatility.D",
 ] as const;
+const COLUMNS = US_VALUE_SCANNER_COLUMNS;
 
 const state = globalThis as typeof globalThis & {
   __swingUpValueCycle?: { expiresAt: number; result: UsValueInvestingCycle };
@@ -844,6 +854,22 @@ export async function refreshUsValueCompany(input: {
   const now = input.now ?? new Date();
   const row = await fetchTargetedCompany(input.fetchImpl ?? fetch, input.tradingViewSymbol, input.ticker);
   return analyzeRow(row, now.toISOString());
+}
+
+/** Analyze an already-paid-for scanner row, with the targeted path's listing
+ * filters. The supplied time is retrieval time, not a provider quote timestamp. */
+export function analyzeUsValueScannerRow(input: {
+  row: unknown;
+  ticker: string;
+  tradingViewSymbol: string;
+  receivedAt: string;
+}): UsValueCompanyAnalysis | null {
+  const row = parseRow(input.row);
+  const data = array(object(input.row).d);
+  if (!row || row.ticker !== input.ticker || row.tradingViewSymbol !== input.tradingViewSymbol
+    || text(data[0]) !== input.ticker || row.exchange !== input.tradingViewSymbol.split(":")[0]
+    || !Number.isFinite(Date.parse(input.receivedAt))) return null;
+  return analyzeRow(row, input.receivedAt);
 }
 
 export function analyzeValueCompanyForTest(input: Partial<RawRow> & Pick<RawRow, "ticker" | "tradingViewSymbol" | "company" | "exchange" | "currentPrice">, observedAt = "2026-07-29T08:00:00.000Z") {

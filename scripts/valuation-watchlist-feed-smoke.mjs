@@ -1,3 +1,4 @@
+import { inSimpleAlertPilot } from "./helpers/simple-alert-pilot-fixture.mjs";
 import { companyProfileFixture } from "./helpers/company-profile-fixture.mjs";
 import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 import assert from "node:assert/strict";
@@ -53,7 +54,7 @@ new Function("require", "module", "exports", output)((name) => {
   if (name === "@/lib/opportunity-engine/company-profile-cache") return {
     readCompanyProfileCoverage: async () => ({ totalCompanies: 1, verifiedProfiles: profileAvailable ? 1 : 0 }),
     readCompanyProfiles: async identities => new Map(identities.flatMap(identity => {
-      const exact = { ...identity, cik: "0000000001" };
+      const exact = { ...identity, cik: identity.cik ?? "0000000001" };
       const profile = verifiedCompanyProfile(companyProfileFixture(exact), exact);
       return profileAvailable && profile ? [[identity.ticker, profile]] : [];
     })),
@@ -113,3 +114,21 @@ console.log(JSON.stringify({
   livePriceOverlayIsVisible: true,
   stableWebAndResearchLinks: true,
 }, null, 2));
+
+await inSimpleAlertPilot(async () => {
+  profileAvailable = true;
+  Object.assign(candidate, { ticker: "REKR", cik: "0001697851", company: "Rekor Systems, Inc." });
+  const quarantined = await cjsModule.exports.getValuationWatchlistStatus({ limit: 20 });
+  assert.equal(quarantined.candidates.length, 1, "Keep the sourced monitor row");
+  assert.equal(quarantined.candidates[0].action, "price_watch");
+  assert.equal(quarantined.candidates[0].userAlertEligible, false);
+  assert.equal(quarantined.candidates[0].committeeApproved, false);
+  assert.equal(quarantined.candidates[0].committeeStatus, "not_eligible");
+  assert.match(quarantined.candidates[0].upsideBlockedReason, /financing\/compliance/);
+  assert.equal(quarantined.summary.buyResearch, 0);
+  summary.seriousAlerts.buy = [];
+  summary.seriousAlerts.watchOut = [candidate];
+  const risk = await cjsModule.exports.getValuationWatchlistStatus({ limit: 20 });
+  assert.equal(risk.candidates[0].action, "watch_out_research");
+  assert.equal(risk.candidates[0].userAlertEligible, true, "Source-backed risk review keeps its existing gates");
+});

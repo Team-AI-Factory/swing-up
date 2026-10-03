@@ -1,3 +1,4 @@
+import { inSimpleAlertPilot } from "./helpers/simple-alert-pilot-fixture.mjs";
 import { companyProfileFixture } from "./helpers/company-profile-fixture.mjs";
 import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 import assert from "node:assert/strict";
@@ -47,6 +48,7 @@ const loaded = { exports: {} };
 new Function("require", "module", "exports", output)((specifier) => {
   if (specifier === "@/lib/opportunity-engine/company-profile-cache") return { readCompanyProfiles: async () => new Map() };
   if (specifier === "node:crypto") return crypto;
+  if (specifier === "@/lib/simple-alert-pilot-scope") return loadTsModule(specifier);
   if (specifier === "@/lib/r2-warehouse") {
     return {
       listR2ObjectKeys: list,
@@ -475,6 +477,25 @@ try {
   const completeRankedFeed = await getSeriousSignalStatus({ now: wallNow, hours: 48 });
   assert.deepEqual(completeRankedFeed.alerts.filter(alert => ["GAIN50", "DROP80", "LOSS"].includes(alert.ticker)).map(alert => alert.ticker),
     ["DROP80", "GAIN50", "LOSS"], "The negative-earnings exception remains visible after supported percentages");
+  await inSimpleAlertPilot(async () => {
+    process.env.SWING_UP_PR262_APPROVED_DELIVERY_TEST = "true";
+    const control = await deliverSeriousSignalOutbox(deliveryTestKey, { now: wallNow });
+    assert.equal(control.deliveryStatus, "delivered", "The approved isolated delivery control remains valid in the pilot");
+    const key = `${prefix}serious-signal/outbox/event-job/buy/REKR/quarantine.json`;
+    const rekr = validOutbox("REKR", wallNow.toISOString());
+    rekr.cik = rekr.candidate.cik = "0001697851";
+    rekr.candidate.companyProfile = companyProfileFixture(rekr.candidate);
+    rekr.candidate.quote.observedAt = observedAt;
+    await write(key, rekr, { createOnly: true });
+    await assert.rejects(() => deliverSeriousSignalOutbox(key, { now: wallNow }), /pilot_upside_quarantined/,
+      "Even a previously approved durable outbox cannot publish a quarantined Buy");
+    const riskKey = `${prefix}serious-signal/outbox/event-job/sell/REKR/quarantine-risk.json`;
+    rekr.alertType = "sell";
+    rekr.candidate.direction = "downside";
+    await write(riskKey, rekr, { createOnly: true });
+    assert.equal((await deliverSeriousSignalOutbox(riskKey, { now: wallNow })).ok, true,
+      "Quarantine preserves fully sourced and approved downside/risk delivery");
+  });
 } finally {
   globalThis.fetch = originalFetch;
   for (const key of Object.keys(process.env)) if (!(key in originalEnvironment)) delete process.env[key];

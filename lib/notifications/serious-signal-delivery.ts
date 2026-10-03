@@ -1,3 +1,4 @@
+import { pilotUpsideBlocker } from "@/lib/simple-alert-pilot-scope";
 import { NEGATIVE_EARNINGS_NOTICE } from "@/lib/valuation-availability";
 import { readCompanyProfiles } from "@/lib/opportunity-engine/company-profile-cache";
 import { verifiedCompanyProfile } from "@/lib/company-profile";
@@ -237,6 +238,9 @@ function validatedOutbox(raw: unknown, outboxKey: string) {
     || text(outbox.candidateFingerprint) === null
     || candidate.evidenceFingerprint !== outbox.candidateFingerprint) {
     throw new Error("serious_signal_delivery_issuer_or_evidence_mismatch");
+  }
+  if (!testOnly && alertType === "buy" && pilotUpsideBlocker(candidate)) {
+    throw new Error("serious_signal_delivery_pilot_upside_quarantined");
   }
   if (!testOnly && !verifiedCompanyProfile(candidate.companyProfile, candidate)) throw new Error("serious_signal_delivery_company_profile_unverified");
   if (!testOnly && !alertDetails(candidate).complete) throw new Error("serious_signal_delivery_alert_details_incomplete");

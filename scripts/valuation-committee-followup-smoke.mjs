@@ -1,3 +1,4 @@
+import { inSimpleAlertPilot } from "./helpers/simple-alert-pilot-fixture.mjs";
 import { companyProfileFixture } from "./helpers/company-profile-fixture.mjs";
 import assert from "node:assert/strict";
 import { loadTsModule } from "./helpers/load-typescript-module.mjs";
@@ -10,7 +11,7 @@ const provider = name => ({ provider: name, status: "connected", checkedAt: now.
 let roleCalls = 0, quoteReady = true, livePrice = 50, denyBudget = false, missingFacts = false, reservations = 0;
 const overrides = {
   "@/lib/ai-committee/provider": {
-    getAiCommitteeProviderStatus: () => ({ configured: true, enabled: true, dryRunDefault: false }),
+    modelForTier: () => "gpt-4.1-mini", getAiCommitteeProviderStatus: () => ({ configured: true, enabled: true, dryRunDefault: false }),
     runOpenAiCommitteeProvider: async input => {
       roleCalls++;
       assert.match(input.messages[0].content, /company-first valuation review/);
@@ -24,7 +25,7 @@ const overrides = {
       if (data.agent.id !== "final_judge") assert.doesNotMatch(input.messages[0].content, /As Final Judge/);
       assert.match(data.decisionRules.discoveryProviderGap, /not required for valuation/);
       assert.equal(data.evidencePack.evidenceSections.fundamentals.items[0].source, "pr262_stored_company_analysis", "The valuation must reach the prompt instead of being sliced away behind three balance-sheet fields");
-      return { ok: true, model: "gpt-4.1-mini", content: JSON.stringify({ agentId: data.agent.id, verdict: "positive", confidence: 95, keyFindings: data.agent.id === "analyst_agent" ? ["Company: Test Software sells business software.", "What happened: Its price is below the model estimate.", "Why it matters: The estimate may be worth more than the market price.", "Possible outcome: The gap could close if the assumptions hold.", "Risks: Earnings could disappoint."] : [], supportingEvidence: [], concerns: [], missingData: [], followUpChecks: [], suggestedActionLabel: "Review valuation", riskNotes: [] }) };
+      return { ok: true, model: "gpt-4.1-mini", finishReason: "stop", content: JSON.stringify({ agentId: data.agent.id, verdict: "positive", confidence: 95, keyFindings: data.agent.id === "analyst_agent" ? ["Company: Test Software sells business software.", "What happened: Its price is below the model estimate.", "Why it matters: The estimate may be worth more than the market price.", "Possible outcome: The gap could close if the assumptions hold.", "Risks: Earnings could disappoint."] : [], supportingEvidence: [], concerns: [], missingData: [], followUpChecks: [], suggestedActionLabel: "Review valuation", riskNotes: [] }) };
     },
   },
   "@/lib/ai-committee/evidence-pack": { buildAiCommitteeEvidencePack: async () => { throw new Error("Unexpected DB read"); } },
@@ -170,3 +171,28 @@ const trapped = await runner.runEquitySignalLab({ ...input, targetedContext: { .
 assert.equal(trapped.status, "candidate_valuation_risk_rejected");
 assert.equal(trapped.openAiCalled, false);
 assert.equal(roleCalls, riskBeforeCalls, "A known failing value-trap screen must not spend Committee budget");
+
+await inSimpleAlertPilot(async () => {
+  const identity = { ticker: "REKR", cik: "0001697851", company: "Rekor Systems, Inc." };
+  const quarantinedEvent = { ...event, ...identity, id: "valuation:REKR:quarantined" };
+  const quarantinedCandidate = { ...approved.selectedCandidate, ...identity, companyProfile: companyProfileFixture(identity, now) };
+  const quarantinedReport = { ...approved, selectedCandidate: quarantinedCandidate };
+  const quarantinedAnalysis = { ...analysis, ...identity };
+  await evidence.recordResearchEvidence({ event: quarantinedEvent, report: quarantinedReport,
+    approvedResultKey: "test/previously-approved-rekr.json", companyAnalysis: quarantinedAnalysis,
+    sourceDecisionGrade: true, sourceFailureReason: null, now });
+  let rows = await evidence.readResearchAlerts();
+  let rekr = rows.find(row => row.eventId === quarantinedEvent.id);
+  assert.equal(rekr.action, "price_watch");
+  assert.equal(rekr.userAlertEligible, false);
+  assert.equal(rekr.committeeApproved, false, "A supplied result pointer cannot override the cohort quarantine");
+  assert.ok(rekr.sources.length > 0, "Monitoring retains the original source evidence");
+  const stored = objects.get(evidence.RESEARCH_ALERT_INDEX_KEY).value.alerts.find(row => row.eventId === quarantinedEvent.id);
+  assert.equal(stored.committeeApproved, false, "The persisted card is also held, not just its read projection");
+  await evidence.recordResearchEvidence({ event: quarantinedEvent, report: { ...quarantinedReport, seriousSignalFound: false, openAiCalled: false },
+    companyAnalysis: quarantinedAnalysis, sourceDecisionGrade: true, sourceFailureReason: null, now });
+  rows = await evidence.readResearchAlerts();
+  rekr = rows.find(row => row.eventId === quarantinedEvent.id);
+  assert.equal(rekr.userAlertEligible, false, "An unpaid same-evidence refresh cannot restore eligibility");
+  assert.equal(rekr.committeeApproved, false);
+});

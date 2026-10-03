@@ -1,4 +1,5 @@
-import { pilotIncludes } from "@/lib/simple-alert-pilot-scope";
+import { pilotIncludes, pilotUpsideBlocker } from "@/lib/simple-alert-pilot-scope";
+import { readPilotWatchValuation, pilotValuationUnitsBlocker, PILOT_WATCH_VALUATION_MAX_AGE_MS } from "@/lib/opportunity-engine/pr262-pilot-watch-valuation";
 import { completeCommitteeReview, committeeRequestsRejectedWithoutUsage } from "@/lib/ai-committee/review-policy";
 import { verifiedCompanyProfile } from "@/lib/company-profile";
 import { ensureCompanyProfile, warmFoundationCompanyProfiles } from "@/lib/opportunity-engine/company-profile-cache";
@@ -1523,6 +1524,7 @@ function committeeApproved(report: Json, pointer: Json, now = new Date()) {
     && Boolean(verifiedCompanyProfile(candidate.companyProfile, candidate, now))
     && report.actionableSignalFound === true
     && (report.alertType === "buy" || report.alertType === "sell")
+    && !(report.alertType === "buy" && pilotUpsideBlocker(candidate))
     && candidateTicker !== null
     && candidateTicker === pointerTicker
     && candidateCik !== null
@@ -2028,8 +2030,17 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
     let companyRefresh: Awaited<ReturnType<typeof refreshAffectedCompany>> | null = null;
     let foundationAnalysisFallback: UsValueCompanyAnalysis | null = null;
     let targetedValueRefreshBlockedByQuota = false;
+    let targetedValueRefreshNextRetryAt: string | null = null;
+    let targetedValueRefreshBlockReason: string | null = null;
+    const valuationUnitsBlocker = pilotValuationUnitsBlocker(resolved.directoryEntry);
     const valuationReview = resolved.event.source === "market_price" && resolved.event.kind === "valuation_review";
-    if ((source.decisionGrade || researchSourceUsable || valuationReview) && !sourceExpiredWithoutEvidence) {
+    const valuationUseful = (source.decisionGrade || researchSourceUsable || valuationReview) && !sourceExpiredWithoutEvidence;
+    // Reuse the exact company row from the already-budgeted pilot watch scan.
+    // This is valuation context only: provider/session-dated quotes must still
+    // independently pass the unchanged runner's actionability gates.
+    const cohortWatchValuation = valuationUseful && !valuationUnitsBlocker
+      ? await readPilotWatchValuation(resolved.directoryEntry, now).catch(() => null) : null;
+    if (valuationUseful && !valuationUnitsBlocker && !cohortWatchValuation) {
       try {
         companyRefresh = await refreshAffectedCompany({
           event: resolved.event,
@@ -2054,6 +2065,10 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       } catch (error) {
         if (!targetedValueBudgetDenied(error)) throw error;
         targetedValueRefreshBlockedByQuota = true;
+        targetedValueRefreshBlockReason = error instanceof Error ? error.message.split(";")[0] : null;
+        const retryAt = error instanceof ProviderBudgetError ? error.nextRetryAt
+          : error instanceof Error ? /(?:^|;)next_retry_at=([^;]+)/.exec(error.message)?.[1] : null;
+        targetedValueRefreshNextRetryAt = retryAt && Number.isFinite(Date.parse(retryAt)) ? retryAt : null;
         const fallback = validatedFoundationValueAnalysis(
           resolved.valueAnalysis,
           resolved.directoryEntry.ticker,
@@ -2068,7 +2083,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
         if (fallback) foundationAnalysisFallback = fallback;
       }
     }
-    const valuationAnalysis = companyRefresh?.analysis ?? foundationAnalysisFallback
+    const valuationAnalysis = valuationUnitsBlocker ? null : cohortWatchValuation?.analysis ?? companyRefresh?.analysis ?? foundationAnalysisFallback
       ?? validatedFoundationValueAnalysis(resolved.valueAnalysis, resolved.directoryEntry.ticker, now, !valuationReview);
     if (valuationReview && valuationAnalysis) {
       source.receipts[0] = { ...baseReceipt, rawEventType: "valuation_review", primarySource: false, official: false,
@@ -2077,7 +2092,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
     }
     const priorFollowup = await readEvidenceFollowup(event.id).catch(() => ({} as Json));
     const valuationContext = {
-      source: companyRefresh
+      source: valuationUnitsBlocker ? "unavailable_units_unverified" : cohortWatchValuation ? "cohort_watch_snapshot" : companyRefresh
         ? "event_targeted_refresh"
         : foundationAnalysisFallback
           ? "daily_foundation_cache"
@@ -2085,6 +2100,16 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       observedAt: text(valuationAnalysis?.observedAt),
       quotaFallback: Boolean(foundationAnalysisFallback),
       targetedRefreshBlockedByQuota: targetedValueRefreshBlockedByQuota,
+      targetedRefreshNextRetryAt: targetedValueRefreshNextRetryAt,
+      targetedRefreshBlockReason: targetedValueRefreshBlockReason,
+      valuationUnavailableReason: valuationUnitsBlocker,
+      cohortWatchSnapshotReceivedAt: cohortWatchValuation?.receivedAt ?? null,
+      // The scanner does not provide a session-dated quote or financial period.
+      // Retrieval time must never manufacture a live/weekend quote timestamp.
+      cohortWatchQuoteObservedAt: cohortWatchValuation?.quoteObservedAt ?? null,
+      cohortWatchLiveQuoteVerified: false,
+      cohortWatchFundamentalPeriodAsOf: cohortWatchValuation?.fundamentalPeriodAsOf ?? null,
+      maximumCohortWatchCacheAgeMinutes: PILOT_WATCH_VALUATION_MAX_AGE_MS / 60_000,
       usableFoundationContext: Boolean(valuationAnalysis),
       maximumFoundationAgeHours: FOUNDATION_ANALYSIS_MAX_AGE_MS / (60 * 60_000),
     };
@@ -2182,6 +2207,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       fullCompanyWarehouseRebuilds: 0,
       broadEventFeedPolls: 0,
       affectedCompanyValuationRefreshes: companyRefresh ? 1 : 0,
+      affectedCompanyValuationWatchReuses: cohortWatchValuation ? 1 : 0,
       affectedCompanyValuationCacheFallbacks: foundationAnalysisFallback ? 1 : 0,
       valuationContext,
       fullSourceCacheHit: Boolean(cachedFullSource),

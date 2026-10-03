@@ -1,3 +1,4 @@
+import { pilotCohortId } from "@/lib/simple-alert-pilot-cohort";
 import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
 import { pilotIncludes, pilotCompanies } from "@/lib/simple-alert-pilot-scope";
 import {
@@ -33,7 +34,10 @@ import { pr262ProcessingReliability } from "@/lib/opportunity-engine/pr262-proce
 import { isPr262ApprovedPremergeProductionRollout } from "@/lib/opportunity-engine/pr262-runtime";
 
 const MAX_CYCLE_MS = 210_000;
-const PILOT_MAX_CYCLE_MS = 360_000;
+const PILOT_MAX_CYCLE_MS = 480_000;
+// Focused policy has at most five sequential roles: 5 * 60s, plus a 5s
+// compatibility read and 30s for reservation/reconciliation persistence.
+const PILOT_MIN_PAID_REVIEW_BUDGET_MS = 335_000;
 const PILOT_DELIVERY_RESERVE_MS = 45_000;
 const REPORTING_RESERVE_MS = 15_000;
 const MIN_EVENT_START_BUDGET_MS = 45_000;
@@ -139,7 +143,11 @@ function paidProviderAccessBlocker(diagnostic: Json) {
   // Models Read and Model Capabilities Request are separate OpenAI scopes.
   // A models-list 403 does not establish that chat completions are forbidden.
   if (diagnostic.status === "failed" && category === "authentication") return category;
-  if (diagnostic.status === "completed" && Object.values(asJson(diagnostic.modelAvailable)).some(available => available === false)) return "configured_model_unavailable";
+  // The focused pilot plan uses deep analysis and final judgment only. An
+  // unavailable optional fast tier must not prevent those admitted reviews.
+  const requiredTiers = isSimpleAlertPilot() ? ["deep", "final"] : ["fast", "deep", "final"];
+  const modelAvailable = asJson(diagnostic.modelAvailable);
+  if (diagnostic.status === "completed" && requiredTiers.some(tier => modelAvailable[tier] === false)) return "configured_model_unavailable";
   return null;
 }
 
@@ -302,6 +310,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
   let seriousSells = 0;
   let seriousWatchOuts = 0;
   let deadlineStoppedAdmissions = false;
+  let paidTimeBudgetDeferrals = 0;
   const queueMutations: Pr262PendingSensorEventMutation[] = [];
   const excludedEventIds = new Set<string>([...admissionPlan.excludedEventIds, ...state.pending.filter(event => !pilotIncludes(event)).map(event => event.id)]);
   const committeePaused = process.env.AI_COMMITTEE_ENABLED === "false" || process.env.SWING_UP_PR262_EVENT_JOB_OPENAI_ENABLED === "false";
@@ -335,6 +344,15 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
           excludedEventIds.add(mutation.eventId);
         },
         beforeOpenAiCall: async (reservation) => {
+          if (isSimpleAlertPilot() && processingDeadlineAtMs - Date.now() < PILOT_MIN_PAID_REVIEW_BUDGET_MS) {
+            aiReservationBlockedReason = "cycle_time_budget";
+            aiReservationRetryAt = new Date((Math.floor(Date.now() / (15 * 60_000)) + 1) * 15 * 60_000).toISOString();
+            paidTimeBudgetDeferrals += 1;
+            aiCostResults.push({ allowed: false, reason: aiReservationBlockedReason,
+              remainingMs: Math.max(0, processingDeadlineAtMs - Date.now()),
+              minimumRequiredMs: PILOT_MIN_PAID_REVIEW_BUDGET_MS, nextRetryAt: aiReservationRetryAt });
+            return false;
+          }
           if (committeePaused) { aiReservationBlockedReason = "committee_disabled"; return false; }
           if (providerBlockedReason) { aiReservationBlockedReason = "provider_access"; return false; }
           try {
@@ -611,7 +629,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
       .map((result) => String(result.error ?? "unknown").split("; next_retry_at=")[0].slice(0, 180)))].slice(0, 12),
   };
   return {
-    ...(isSimpleAlertPilot() ? { pilot: { name: "Simple Alerts", branch: "pilot-simple-alerts", companies: pilotCompanies().length, sourceScope: "SEC, issuer announcements, prices, trading halts", sharesExistingAiLedger: true } } : {}),
+    ...(isSimpleAlertPilot() ? { pilot: { cohortId: pilotCohortId(), name: "Simple Alerts", branch: "pilot-simple-alerts", companies: pilotCompanies().length, sourceScope: "SEC, issuer announcements, prices, trading halts", sharesExistingAiLedger: true } } : {}),
     ok: operationalOk,
     mode: mode === "analysis_only" ? "pr262_railway_analysis_recovery" : "pr262_five_minute_cron_v3",
     checkedAt,
@@ -670,6 +688,8 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
       deadlineMs: deadlineAtMs - startedAt,
       deliveryReserveMs: isSimpleAlertPilot() ? PILOT_DELIVERY_RESERVE_MS : 0,
       reportingReserveMs: REPORTING_RESERVE_MS,
+      paidAdmissionMinimumMs: isSimpleAlertPilot() ? PILOT_MIN_PAID_REVIEW_BUDGET_MS : 0,
+      paidTimeBudgetDeferrals,
       deadlineStoppedAdmissions,
       eventResults: eventResults.slice(0, capacity),
     },

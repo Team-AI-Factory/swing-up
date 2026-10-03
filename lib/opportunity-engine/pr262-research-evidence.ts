@@ -1,3 +1,4 @@
+import { applyPilotResearchAlertPolicy } from "@/lib/simple-alert-pilot-scope";
 import { completeCommitteeReview, committeeRequestsRejectedWithoutUsage } from "@/lib/ai-committee/review-policy";
 import { readCompanyProfiles } from "@/lib/opportunity-engine/company-profile-cache";
 import { verifiedCompanyProfile, profileCik } from "@/lib/company-profile";
@@ -78,8 +79,8 @@ export async function readResearchAlerts(): Promise<Json[]> {
   const profiles = await readCompanyProfiles(rows).catch(() => new Map());
   return rows.map(row => {
     const profile = profiles.get(String(row.ticker));
-    return profile && profile.company === row.company && profileCik(row.cik) === profile.cik
-      ? { ...row, cik: profile.cik, companyProfile: profile, industry: industryLabel(row.industry, profile.industry) } : row;
+    return applyPilotResearchAlertPolicy(profile && profile.company === row.company && profileCik(row.cik) === profile.cik
+      ? { ...row, cik: profile.cik, companyProfile: profile, industry: industryLabel(row.industry, profile.industry) } : row);
   });
 }
 
@@ -322,7 +323,7 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
           alert.userAlertEligible = false;
         }
       }
-      const alerts = [alert, ...rows.filter(x => x.id !== alert.id)].slice(0, 100);
+      const alerts = [applyPilotResearchAlertPolicy(alert), ...rows.filter(x => x.id !== alert.id)].slice(0, 100);
       const written = await writeVersionedJsonToR2(RESEARCH_ALERT_INDEX_KEY, { version: 1, updatedAt: now.toISOString(), alerts }, current.etag ? { expectedEtag: current.etag } : { createOnly: true });
       if (!written.conflict) { if (!written.written) throw new Error("research_alert_index_write_failed"); break; }
       if (i === 3) throw new Error("research_alert_index_conflict");

@@ -28,7 +28,7 @@ export function pr262ReservationBlocker(reason: string | null | undefined): Pr26
   if (reason === "committee_disabled") return "committee_disabled";
   if (["candidate_already_recorded", "candidate_already_reserved", "same_evidence", "paid_evidence_cooldown"].includes(reason ?? "")) return "same_evidence";
   if (reason === "daily_cost_fuse") return "ai_budget";
-  if (reason === "daily_review_limit") return "review_capacity";
+  if (reason === "daily_review_limit" || reason === "cycle_time_budget") return "review_capacity";
   if (reason === "provider_cooldown" || reason === "provider_access") return "ai_provider";
   if (reason === "accounting_unavailable") return "accounting_unavailable";
   return "reservation_unclassified";

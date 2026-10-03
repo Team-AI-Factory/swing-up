@@ -1,3 +1,4 @@
+import { pilotCohortStoragePrefix } from "@/lib/simple-alert-pilot-cohort";
 import { isSimpleAlertPilot, SIMPLE_PILOT_PREFIX, SIMPLE_PILOT_MAIN_PREFIX, pilotSharedReference } from "@/lib/simple-alert-pilot-runtime";
 import {
   isPr262ApprovedPremergeProductionRollout,
@@ -64,7 +65,16 @@ export function pr262StorageKey(relativeKey: string, environment: StorageEnviron
     throw new Error("pr262_storage_key_invalid");
   }
   const prefix = resolvePr262StoragePrefix(environment);
-  return `${isSimpleAlertPilot(environment) && pilotSharedReference(relative) ? SIMPLE_PILOT_MAIN_PREFIX : prefix}${relative}`;
+  if (isSimpleAlertPilot(environment)) {
+    if (pilotSharedReference(relative)) return `${SIMPLE_PILOT_MAIN_PREFIX}${relative}`;
+    // Profile preparation and paid-review count/cooldown have one allowance
+    // across cohorts, in addition to the unchanged global dollar ledger.
+    // Private queues/audits/metrics are versioned; old records stay untouched.
+    const sharedProfileDay = /^pilot\/profile-builder\/\d{4}-\d{2}-\d{2}\.json$/.test(relative);
+    const sharedReviewAllowance = relative === "event-job/runtime/committee-budgets-v1.json";
+    return `${sharedProfileDay || sharedReviewAllowance ? prefix : pilotCohortStoragePrefix(prefix)}${relative}`;
+  }
+  return `${prefix}${relative}`;
 }
 
 export const PR262_STORAGE_PREFIXES = {

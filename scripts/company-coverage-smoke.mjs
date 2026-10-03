@@ -103,7 +103,7 @@ objects.set("equity-universe/v1.json", { version: 1, scope: "active_us_exchange_
 objects.set(key, { entries: identities.map(row => {
   const f = companyProfileFixture(row, now);
   const filing = { url: f.sourceUrl, filedAt: f.sourceFiledAt, form: "10-K", industry: "Networking Equipment" };
-  objects.set(`research-evidence/company-profile-sources/${row.cik}/${filing.url.split("/").slice(-2).join("-")}.json`, { url: filing.url, filedAt: filing.filedAt, businessText: section });
+  objects.set(`research-evidence/company-profile-sources/${row.cik}/${filing.url.split("/").slice(-2).join("-")}.json`, { layoutRevision: 1, url: filing.url, filedAt: filing.filedAt, businessText: section });
   return { ...row, profile: null, filing, parserRevision: 3, error: "company_profile_products_and_customers_not_extracted", updatedAt: "2026-09-21T00:00:00Z", nextAttemptAt: "2026-09-23T00:00:00Z" };
 }) });
 const cache = loadTsModule("@/lib/opportunity-engine/company-profile-cache", {

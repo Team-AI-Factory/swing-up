@@ -1,13 +1,17 @@
+import { isAnnualInformationFormDocument, resolve40FAnnualInformationForm, secAnnualFilingIndexUrl } from "@/lib/company-profile-annual-source";
 import { setTimeout as pause } from "node:timers/promises";
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 import { COMPANY_PROFILE_PARSER_REVISION, annualBusinessText, extractCompanyProfile, inspectCompanyProfileExtraction, profileCik, sameCompanyName, verifiedCompanyProfile, type CompanyIdentity, type VerifiedCompanyProfile } from "@/lib/company-profile";
 const KEY = pr262StorageKey("research-evidence/company-profiles-v1.json");
 const UNIVERSE = pr262StorageKey("equity-universe/v1.json");
+// Older excerpts could originate after an in-text cross-reference in Risk
+// Factors. Grammar revisions may reuse only an excerpt cut by the safe layout.
+const SOURCE_LAYOUT_REVISION = 1;
 type Json = Record<string, unknown>;
 const object = (v: unknown): Json => v && typeof v === "object" && !Array.isArray(v) ? v as Json : {};
 const text = (v: unknown) => typeof v === "string" ? v.trim() : "";
-type Filing = { url: string; form: string; filedAt: string; industry?: string; checkedAt?: string };
+type Filing = { url: string; form: string; filedAt: string; industry?: string; checkedAt?: string; annualFilingUrl?: string; annualFilingIndexUrl?: string };
 type Entry = { ticker: string; company: string; cik: string; updatedAt: string; nextAttemptAt: string; profile: VerifiedCompanyProfile | null; firstVerifiedAt?: string; filing?: Filing; error?: string; extractionFailure?: string; parserRevision?: number; cachedParserRevision?: number };
 async function load() {
   const saved = await readVersionedTextFromR2(KEY);
@@ -20,8 +24,8 @@ function same(entry: CompanyIdentity, identity: CompanyIdentity) {
 function retryDeferred(entry: Entry | undefined, now: Date) {
   // Revisit parsing failures once after a parser repair, using the saved exact
   // source first. Network and provider-budget failures retain their backoff.
-  if (entry?.error === "company_profile_products_and_customers_not_extracted"
-    && entry.parserRevision !== COMPANY_PROFILE_PARSER_REVISION) return false;
+  if (["company_profile_products_and_customers_not_extracted", "company_profile_annual_filing_unavailable"].includes(entry?.error ?? "")
+    && entry?.parserRevision !== COMPANY_PROFILE_PARSER_REVISION) return false;
   // A successful profile's refresh date must not defer replacement after current verification rejects it.
   // Pending and failed attempts persist a null profile and still retain their retrieval backoff.
   return !entry?.profile && Date.parse(entry?.nextAttemptAt ?? "") > now.getTime();
@@ -97,7 +101,7 @@ function annualFiling(body: Json, identity: CompanyIdentity, now: Date): Filing 
   const recent = object(object(body.filings).recent);
   const forms = Array.isArray(recent.form) ? recent.form : [];
   for (let i = 0; i < forms.length; i++) {
-    if (!["10-K", "20-F"].includes(String(forms[i]))) continue;
+    if (!["10-K", "20-F", "40-F"].includes(String(forms[i]))) continue;
     const filedAt = text((recent.filingDate as unknown[])?.[i]);
     const accession = text((recent.accessionNumber as unknown[])?.[i]);
     const document = text((recent.primaryDocument as unknown[])?.[i]);
@@ -110,7 +114,8 @@ function annualFiling(body: Json, identity: CompanyIdentity, now: Date): Filing 
   return null;
 }
 
-/** Exact issuer metadata, at most two named historical indexes, and one annual filing. */
+/** Exact issuer metadata, at most two historical indexes, and an annual filing.
+ * A 40-F additionally requires its same-accession index and declared AIF exhibit. */
 export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl: typeof fetch, now = new Date(), options: { signal?: AbortSignal; onResponseBodyFailure?: () => void } = {}) {
   const exact = { ticker: text(identity.ticker).toUpperCase(), company: text(identity.company), cik: profileCik(identity.cik) };
   if (!exact.cik || !exact.company || !/^[A-Z0-9.-]{1,12}$/.test(exact.ticker)) return null;
@@ -151,12 +156,27 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
     }
     if (!filing) throw new Error("company_profile_annual_filing_unavailable");
     if (!new RegExp(`^https://www\\.sec\\.gov/Archives/edgar/data/${Number(exact.cik)}/\\d{18}/[A-Za-z0-9._-]+\\.html?$`).test(filing.url)) throw new Error("company_profile_filing_identity_mismatch");
+    if (filing.form === "40-F" && !filing.annualFilingUrl) {
+      phase = "annual_40f_source_resolution";
+      const indexUrl = secAnnualFilingIndexUrl(filing.url, exact.cik);
+      if (!indexUrl) throw new Error("company_profile_40f_identity_invalid");
+      const annualHtml = await request(filing.url);
+      const indexHtml = await request(indexUrl);
+      const resolved = resolve40FAnnualInformationForm({ cik: exact.cik, filing, annualHtml, indexHtml });
+      if (!resolved) throw new Error("company_profile_40f_aif_unverified");
+      filing = { ...filing, ...resolved };
+    }
+    if (filing.form === "40-F" && (!filing.annualFilingUrl || filing.url === filing.annualFilingUrl
+      || secAnnualFilingIndexUrl(filing.url, exact.cik) !== filing.annualFilingIndexUrl
+      || secAnnualFilingIndexUrl(filing.annualFilingUrl, exact.cik) !== filing.annualFilingIndexUrl)) {
+      throw new Error("company_profile_40f_identity_invalid");
+    }
     if (filing.url !== prior?.filing?.url) entry.cachedParserRevision = undefined;
     entry.filing = filing;
     phase = "annual_filing";
     await store(entry);
     const extract = (html: string) => {
-      const result = inspectCompanyProfileExtraction({ identity: exact, html, form: filing.form, sourceUrl: filing.url, filedAt: filing.filedAt, now });
+      const result = inspectCompanyProfileExtraction({ identity: exact, html, form: filing.form, sourceUrl: filing.url, filedAt: filing.filedAt, now, annualFilingUrl: filing.annualFilingUrl, annualFilingIndexUrl: filing.annualFilingIndexUrl });
       entry.extractionFailure = result.reason ?? undefined;
       return result.profile;
     };
@@ -165,15 +185,16 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
     const sourceKey = pr262StorageKey(`research-evidence/company-profile-sources/${exact.cik}/${filing.url.split("/").slice(-2).join("-")}.json`);
     const sourceSaved = await readVersionedTextFromR2(sourceKey);
     const source = sourceSaved.found && sourceSaved.text ? object(JSON.parse(sourceSaved.text)) : {};
-    const cachedSection = source.url === filing.url && source.filedAt === filing.filedAt ? text(source.businessText) : "";
-    const sectionHeading = filing.form === "20-F" ? "Item 4. Information on the Company" : "Item 1. Business";
+    const cachedSection = source.layoutRevision === SOURCE_LAYOUT_REVISION && source.url === filing.url && source.filedAt === filing.filedAt ? text(source.businessText) : "";
+    const sectionHeading = filing.form === "40-F" ? "DESCRIPTION OF THE BUSINESS" : filing.form === "20-F" ? "Item 4. Information on the Company" : "Item 1. Business";
     let profile = cached?.sourceUrl === filing.url ? cached : cachedSection ? extract(`${sectionHeading}\n${String(source.businessText)}`) : null;
     // Earlier parsers could stop the stream at an incomplete list introduction.
     // If that old excerpt no longer verifies, permit one longer source read.
     if (!profile && (!cachedSection || source.parserRevision !== COMPANY_PROFILE_PARSER_REVISION)) {
-      const html = await request(filing.url, body => Boolean(extract(body)));
+      const html = await request(filing.url, body => (filing.form !== "40-F" || isAnnualInformationFormDocument(body)) && Boolean(extract(body)));
+      if (filing.form === "40-F" && !isAnnualInformationFormDocument(html)) throw new Error("company_profile_aif_document_unverified");
       const businessText = annualBusinessText(html, filing.form);
-      if (businessText) await writeVersionedJsonToR2(sourceKey, { version: 1, parserRevision: COMPANY_PROFILE_PARSER_REVISION, url: filing.url, filedAt: filing.filedAt, businessText, collectedAt: now.toISOString() }, sourceSaved.etag ? { expectedEtag: sourceSaved.etag } : { createOnly: true });
+      if (businessText) await writeVersionedJsonToR2(sourceKey, { version: 1, layoutRevision: SOURCE_LAYOUT_REVISION, parserRevision: COMPANY_PROFILE_PARSER_REVISION, url: filing.url, filedAt: filing.filedAt, businessText, collectedAt: now.toISOString() }, sourceSaved.etag ? { expectedEtag: sourceSaved.etag } : { createOnly: true });
       profile = extract(html);
     }
     if (!profile) throw new Error("company_profile_products_and_customers_not_extracted");
@@ -185,7 +206,11 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
     console.info(JSON.stringify({ kind: "pr262_company_profile_result", ticker: exact.ticker, status: "verified", sourceFiledAt: filing.filedAt }));
     return profile;
   } catch (error) {
-    entry.error = error instanceof Error ? error.message.slice(0, 200) : "company_profile_fetch_failed";
+    entry.error = options.signal?.aborted ? "company_profile_time_budget_deferred"
+      : error instanceof Error ? error.message.slice(0, 200) : "company_profile_fetch_failed";
+    // The role's shared deadline is not a provider outage. Retry in the next
+    // scheduled pass; the durable source guard still enforces its own cadence.
+    if (entry.error === "company_profile_time_budget_deferred") entry.nextAttemptAt = new Date(now.getTime() + 5 * 60000).toISOString();
     if (entry.error !== "company_profile_products_and_customers_not_extracted") delete entry.extractionFailure;
     if (/products_and_customers_not_extracted|annual_filing_unavailable/.test(entry.error)) entry.nextAttemptAt = new Date(now.getTime() + 86400000).toISOString();
     const reason = entry.extractionFailure ?? entry.error.match(/^company_profile_[a-z0-9_]+/i)?.[0]
@@ -215,10 +240,10 @@ async function recoverCachedProfiles(entries: Entry[], listings: Json[], now: Da
       const saved = await readVersionedTextFromR2(key);
       const source = saved.found && saved.text ? object(JSON.parse(saved.text)) : {};
       checked.push({ ...entry, cachedParserRevision: COMPANY_PROFILE_PARSER_REVISION });
-      if (source.url !== filing.url || source.filedAt !== filing.filedAt || !text(source.businessText)) return;
-      const heading = filing.form === "20-F" ? "Item 4. Information on the Company" : "Item 1. Business";
+      if (source.layoutRevision !== SOURCE_LAYOUT_REVISION || source.url !== filing.url || source.filedAt !== filing.filedAt || !text(source.businessText)) return;
+      const heading = filing.form === "40-F" ? "DESCRIPTION OF THE BUSINESS" : filing.form === "20-F" ? "Item 4. Information on the Company" : "Item 1. Business";
       const profile = extractCompanyProfile({ identity: entry, html: `${heading}\n${String(source.businessText)}`,
-        form: filing.form, sourceUrl: filing.url, filedAt: filing.filedAt, now });
+        form: filing.form, sourceUrl: filing.url, filedAt: filing.filedAt, now, annualFilingUrl: filing.annualFilingUrl, annualFilingIndexUrl: filing.annualFilingIndexUrl });
       if (!profile) return;
       if (filing.industry) Object.assign(profile, { industry: filing.industry, industrySourceUrl: `https://data.sec.gov/submissions/CIK${entry.cik}.json` });
       recovered.push({ ...entry, profile, error: undefined, parserRevision: COMPANY_PROFILE_PARSER_REVISION,

@@ -1,5 +1,11 @@
 import { spawnSync } from "node:child_process";
 const checks = [
+  "ai-committee-model-policy", "company-profile-layout-cache",
+  "pr262-pilot-watch-valuation", "company-profile-service-recipients",
+  "pr262-pilot-directory-bootstrap",
+  "simple-alert-small-ai-cohort", "company-profile-customer-types",
+  "simple-alert-cohort-namespace", "exact-evidence-followup",
+  "company-profile-source-layout", "company-profile-annual-source", "company-profile-40f-cache",
   "simple-alert-delivery-controls",
   "ai-committee-analyst-output",
   "simple-alert-profile-throughput", "simple-alert-profile-transport",

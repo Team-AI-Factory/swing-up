@@ -35,6 +35,7 @@ new Function("require", "module", "exports", output)((specifier) => {
     };
   }
   if (specifier === "@/lib/ai-committee/billing-audit") return loadTsModule(specifier, { "@/lib/r2-warehouse": {} });
+  if (specifier === "@/lib/ai-committee/model-policy") return loadTsModule(specifier);
   throw new Error(`Unexpected AI fuse import: ${specifier}`);
 }, loaded, loaded.exports);
 
@@ -53,14 +54,34 @@ const charge = (id, costUsd, recordedAt = now.toISOString()) => ({ id, costUsd, 
 const report = (id, roles = [], responses = 0) => ({
   openAiCalled: true, checkedAt: now.toISOString(), candidateFingerprint: id, selectedCandidate: { ticker: "TEST" },
   committee: { output: { modelUsageSummary: { roleDiagnostics: roles, actualOpenAiUsage: {
-    responsesWithUsage: responses, tokens: { promptTokens: 1000, completionTokens: 500, cachedPromptTokens: 500 }, byModel: { "gpt-4.1-mini": {} },
+    responsesWithUsage: responses, tokens: { promptTokens: 1000, completionTokens: 500, cachedPromptTokens: 500 },
+    byModel: { "gpt-4.1-mini": { promptTokens: 1000, completionTokens: 500, cachedPromptTokens: 500, responses } },
   } } } },
 });
 const reserve = (id, at = now) => reservePr262AiCommitteeBudget({ candidateFingerprint: id, ticker: "TEST", direction: "upside" }, at);
+const mixedRows = {
+  "gpt-6.1-sol": { promptTokens: 5000, cachedPromptTokens: 2000, cacheWritePromptTokens: 1000, completionTokens: 600, reasoningTokens: 450, totalTokens: 5600, responses: 3, pricingVerified: true },
+  "gpt-6-astra": { promptTokens: 6000, cachedPromptTokens: 1000, cacheWritePromptTokens: 3000, completionTokens: 400, reasoningTokens: 300, totalTokens: 6400, responses: 1, pricingVerified: true },
+  "gpt-6-luna": { promptTokens: 2000, cachedPromptTokens: 500, cacheWritePromptTokens: 500, completionTokens: 250, reasoningTokens: 0, totalTokens: 2250, responses: 1, pricingVerified: true },
+  "gpt-4.1-mini-2025-04-14": { promptTokens: 1000, cachedPromptTokens: 500, completionTokens: 500, totalTokens: 1500, responses: 1 },
+};
+const mixedReport = (id) => {
+  const byModel = structuredClone(mixedRows);
+  const totals = Object.values(byModel).reduce((sum, row) => ({
+    promptTokens: sum.promptTokens + row.promptTokens,
+    cachedPromptTokens: sum.cachedPromptTokens + row.cachedPromptTokens,
+    cacheWritePromptTokens: sum.cacheWritePromptTokens + (row.cacheWritePromptTokens ?? 0),
+    completionTokens: sum.completionTokens + row.completionTokens,
+  }), { promptTokens: 0, cachedPromptTokens: 0, cacheWritePromptTokens: 0, completionTokens: 0 });
+  const responses = Object.values(byModel).reduce((sum, row) => sum + row.responses, 0);
+  const value = report(id, Array.from({ length: responses }, () => ({ status: "completed", usageReported: true })), responses);
+  Object.assign(value.committee.output.modelUsageSummary.actualOpenAiUsage, { tokens: totals, byModel });
+  return value;
+};
 try {
   process.env.SWING_UP_PR262_AI_DAILY_LIMIT_USD = "10";
   process.env.SWING_UP_PR262_AI_REVIEW_RESERVATION_USD = "0.75";
-  assert.ok(bound < 0.20 && bound > 0, "Exposure must derive from enforceable model/input/output limits.");
+  assert.ok(Math.abs(bound - 1.9346) < 1e-12, "Six-call exposure must cover five Sol roles, one Astra judge, 61K input and 4096 total output tokens each at cache-write rates.");
   reset([charge("prior", 9.9)]);
   assert.equal((await getPr262AiDailyBudgetStatus(now)).allowed, false);
   assert.equal((await getPr262AiDailyBudgetStatus(now)).nextReviewReservationUsd, bound, "Obsolete 75-cent environment overrides cannot return.");
@@ -72,15 +93,104 @@ try {
   assert.equal((await getPr262AiDailyBudgetStatus(now)).nextBudgetAdmissionAt, null);
   process.env.SWING_UP_PR262_AI_DAILY_LIMIT_USD = "10";
 
-  reset([charge("prior", 9.8)]);
+  const priorCharge = 10 - bound * 1.5;
+  reset([charge("prior", priorCharge)]);
   const concurrent = await Promise.all([reserve("a"), reserve("b")]);
   assert.equal(concurrent.filter(row => row.allowed).length, 1, "Concurrent reservations must not exceed the hard cap.");
-  assert.equal((await getPr262AiDailyBudgetStatus(now)).spentUsd, 9.8, "A hold is not a charge.");
+  assert.equal((await getPr262AiDailyBudgetStatus(now)).spentUsd, Math.round(priorCharge * 1e6) / 1e6, "A hold is not a charge.");
   await releasePr262AiCommitteeBudgetReservation(state.payload.reservations[0].id, now);
 
-  reset([charge("current", 9.84), charge("first-release", 0.05, "2026-09-20T11:00:00Z")]);
+  reset([charge("current", 10 - bound - 0.01), charge("first-release", 0.05, "2026-09-20T11:00:00Z")]);
   state.payload.reservations = [{ id: "hold", amountUsd: 0.05, reservedAt: "2026-09-21T09:00:00Z", expiresAt: "2026-09-21T12:00:00Z", ticker: "TEST", direction: "upside" }];
   assert.equal((await getPr262AiDailyBudgetStatus(now)).nextBudgetAdmissionAt, "2026-09-21T12:00:00.000Z");
+
+  reset([{ ...charge("old-uncertain", 0.02), source: "usage_pending", pendingUpperBoundUsd: 0.136, retryAt: "2026-09-22T10:00:00Z" }, charge("old-mini", 0.027)]);
+  const oldHold = { id: "old-mini-hold", amountUsd: 0.156, reservedAt: now.toISOString(), expiresAt: "2026-09-22T10:00:00Z", ticker: "OLD", direction: "upside" };
+  state.payload.reservations = [structuredClone(oldHold)];
+  const oldFingerprint = await reserve("old-mini-hold");
+  assert.equal(oldFingerprint.reason, "candidate_already_reserved", "An old smaller hold cannot authorize new model calls.");
+  assert.deepEqual(state.payload.reservations[0], oldHold);
+  assert.equal((await reserve("new-model-hold")).reservation.amountUsd, bound);
+  assert.deepEqual(state.payload.reservations.find(row => row.id === oldHold.id), oldHold, "Migration must not rewrite or refund old reservations.");
+  assert.equal(state.payload.entries.find(row => row.id === "old-mini").costUsd, 0.027, "Historical mini charges remain immutable.");
+  assert.equal(state.payload.entries.find(row => row.id === "old-uncertain").pendingUpperBoundUsd, 0.136, "Prior unknown exposure is retained independently of the new price policy.");
+
+  reset();
+  await reserve("mixed-models");
+  const mixed = await recordPr262AiCommitteeCost(mixedReport("mixed-models"), now);
+  assert.equal(mixed.entry.costUsd, 0.092543, "Sum each model's disjoint ordinary/cache-read/cache-write tokens and completion cost; never apply one rate to mixed tokens.");
+  assert.equal(mixed.entry.source, "actual_tokens");
+  assert.equal(mixed.pendingUsageUpperBoundUsd, 0);
+  assert.equal(mixed.reservedUsd, 0);
+  const noReasoningBreakdown = mixedReport("without-reasoning-detail");
+  for (const row of Object.values(noReasoningBreakdown.committee.output.modelUsageSummary.actualOpenAiUsage.byModel)) delete row.reasoningTokens;
+  reset();
+  await reserve("without-reasoning-detail");
+  assert.equal((await recordPr262AiCommitteeCost(noReasoningBreakdown, now)).entry.costUsd, mixed.entry.costUsd, "Reasoning is already in completion tokens and cannot be billed twice.");
+  reset();
+  const tiny = report("tiny-cache-read", [{ status: "completed", usageReported: true }], 1);
+  const tinyUsage = { promptTokens: 1, completionTokens: 0, cachedPromptTokens: 1, cacheWritePromptTokens: 0 };
+  Object.assign(tiny.committee.output.modelUsageSummary.actualOpenAiUsage, {
+    tokens: tinyUsage, byModel: { "gpt-6-luna": { ...tinyUsage, responses: 1, pricingVerified: true } },
+  });
+  await reserve("tiny-cache-read");
+  assert.equal((await recordPr262AiCommitteeCost(tiny, now)).entry.costUsd, 0.000001, "Round new receipts upward at ledger precision rather than erase a small known charge.");
+
+  const missingWriteReport = (id) => {
+    const value = mixedReport(id);
+    const usage = value.committee.output.modelUsageSummary.actualOpenAiUsage;
+    delete usage.byModel["gpt-6.1-sol"].cacheWritePromptTokens;
+    delete usage.tokens.cacheWritePromptTokens;
+    return value;
+  };
+  reset();
+  await reserve("optional-write-breakdown");
+  const boundedInput = await recordPr262AiCommitteeCost(missingWriteReport("optional-write-breakdown"), now);
+  assert.equal(boundedInput.entry.source, "usage_pending", "Missing optional breakdown is labelled uncertain, never silently treated as zero.");
+  assert.equal(boundedInput.entry.costUsd, 0.086043, "Known output and cache reads, plus fully classified models, remain metered.");
+  assert.equal(boundedInput.pendingUsageUpperBoundUsd, 0.0075, "Unclassified Sol input uses cache-write rates to bound only its actual 3000 tokens, not the whole review.");
+  assert.ok(boundedInput.pendingUsageUpperBoundUsd < bound / 100);
+  assert.equal(boundedInput.allowed, true, "A normal optional receipt omission must not unnecessarily freeze the whole allowance.");
+  reset();
+  await reserve("write-breakdown-and-timeout");
+  const missingWithTimeout = missingWriteReport("write-breakdown-and-timeout");
+  missingWithTimeout.committee.output.modelUsageSummary.roleDiagnostics.push({ status: "failed", usageReported: false, providerFailure: { category: "timeout" } });
+  const timeoutBound = await recordPr262AiCommitteeCost(missingWithTimeout, now);
+  assert.equal(timeoutBound.entry.costUsd, boundedInput.entry.costUsd);
+  assert.ok(timeoutBound.pendingUsageUpperBoundUsd + timeoutBound.entry.costUsd >= bound, "An additional unobserved call prevents narrowing the full remaining reservation.");
+  reset();
+  await reserve("contradictory-role-receipts");
+  const extraClaimedReceipt = missingWriteReport("contradictory-role-receipts");
+  extraClaimedReceipt.committee.output.modelUsageSummary.roleDiagnostics.push({ status: "completed", usageReported: true });
+  const contradictoryRoles = await recordPr262AiCommitteeCost(extraClaimedReceipt, now);
+  assert.equal(contradictoryRoles.entry.costUsd, 0);
+  assert.ok(contradictoryRoles.pendingUsageUpperBoundUsd >= bound, "Role receipt counts must match actual reported calls before narrowing uncertainty.");
+
+  const invalidReceipts = [
+    ["unknown-model", usage => { usage.byModel["unverified-model"] = usage.byModel["gpt-6-astra"]; delete usage.byModel["gpt-6-astra"]; }],
+    ["unverified-tier", usage => { usage.byModel["gpt-6-astra"].pricingVerified = false; }],
+    ["missing-pricing-proof", usage => { delete usage.byModel["gpt-6-astra"].pricingVerified; }],
+    ["missing-cache-writes", usage => { delete usage.byModel["gpt-6.1-sol"].cacheWritePromptTokens; }],
+    ["overlapping-cache-counts", usage => { usage.byModel["gpt-6-astra"].cacheWritePromptTokens = 6000; }],
+    ["aggregate-mismatch", usage => { usage.tokens.promptTokens += 1; }],
+    ["missing-model-receipts", usage => { usage.byModel = {}; }],
+    ["response-count-mismatch", usage => { usage.byModel["gpt-6-astra"].responses = 2; }],
+    ["zero-response-contradiction", usage => { usage.responsesWithUsage = 0; }],
+    ["negative-response-count", usage => { usage.responsesWithUsage = -1; }],
+    ["negative-output", usage => { usage.byModel["gpt-6-astra"].completionTokens = -1; }],
+    ["fractional-token-count", usage => { usage.byModel["gpt-6-astra"].promptTokens = 6000.5; }],
+    ["explicitly-unverified-mini", usage => { usage.byModel["gpt-4.1-mini-2025-04-14"].pricingVerified = false; }],
+  ];
+  for (const [id, invalidate] of invalidReceipts) {
+    reset();
+    await reserve(id);
+    const value = mixedReport(id);
+    invalidate(value.committee.output.modelUsageSummary.actualOpenAiUsage);
+    const result = await recordPr262AiCommitteeCost(value, now);
+    assert.equal(result.entry.source, "usage_pending", `${id}: an unpriced or invalid receipt must retain its hold.`);
+    assert.equal(result.entry.costUsd, 0, `${id}: do not invent a token charge.`);
+    assert.equal(result.pendingUsageUpperBoundUsd, Math.round(bound * 1e6) / 1e6, `${id}: uncertainty must not silently reopen the daily fuse.`);
+  }
 
   reset(Array.from({ length: 13 }, (_, i) => ({ ...charge(`legacy-${i}`, 0.75), source: "fallback_missing_usage" })));
   const migrated = await getPr262AiDailyBudgetStatus(now, true);

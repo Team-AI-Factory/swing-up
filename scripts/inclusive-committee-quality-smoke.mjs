@@ -10,7 +10,7 @@ function load(path, dependencies = {}) {
   new Function("require", "module", "exports", output)((name) => {
     if (name === "node:crypto") return crypto;
     if (name in dependencies) return dependencies[name];
-    if (["@/lib/ai-committee/evidence-text-references", "@/lib/ai-committee/review-policy"].includes(name)) return loadTsModule(name);
+    if (["@/lib/ai-committee/model-policy", "@/lib/ai-committee/evidence-text-references", "@/lib/ai-committee/review-policy"].includes(name)) return loadTsModule(name);
     throw new Error(`Unexpected dependency: ${name}`);
   }, m, m.exports);
   return m.exports;
@@ -76,7 +76,7 @@ const committee = load("lib/ai-committee/orchestrator.ts", {
   "@/lib/ai-committee/evidence-pack": { buildAiCommitteeEvidencePack: async () => { throw new Error("Unexpected database read"); } },
   "@/lib/ai-committee/run-persistence": { persistAiCommitteeRun: async () => { throw new Error("Unexpected database write"); } },
   "@/lib/ai-committee/provider": {
-    getAiCommitteeProviderStatus: () => ({ configured: true, enabled: true, dryRunDefault: false }),
+    modelForTier: () => "gpt-4.1-mini", getAiCommitteeProviderStatus: () => ({ configured: true, enabled: true, dryRunDefault: false }),
     runOpenAiCommitteeProvider: async (input) => {
       calls++;
       assert.match(input.messages[0].content, /research review with explicitly incomplete evidence/);

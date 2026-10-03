@@ -15,6 +15,9 @@ const object = (v: unknown): Record<string, unknown> => v && typeof v === "objec
 const text = (v: unknown) => typeof v === "string" ? v.replace(/\s+/g, " ").trim() : "";
 export function sameCompanyName(left: unknown, right: unknown) {
   const normalize = (value: unknown) => text(value).toLowerCase()
+    // SEC issuer display names may append this legal-jurisdiction marker.
+    // Preserve the complete legal name; never strip arbitrary slash aliases.
+    .replace(/(\b(?:incorporated|inc|corporation|corp|limited|ltd|plc|llc)\.?)\s+\/de\/$/, "$1")
     .replace(/\s+(?:[-–]\s*)?class\s+[a-z]\b.*$/, "")
     .replace(/[.,]/g, "").replace(/\s+(?:incorporated|inc|corporation|corp|limited|ltd|plc|llc)$/, "")
     .replace(/\s+/g, " ").trim();

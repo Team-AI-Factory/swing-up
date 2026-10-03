@@ -70,6 +70,26 @@ const UNSAFE_WORDS = ["guaranteed", "risk-free", "can't lose", "cannot lose", "s
 const DEFAULT_MAX_AGENTS = 13;
 const DEFAULT_MAX_COST_USD = 2;
 
+// The focused analyst writes five reader-facing findings, unlike the shorter
+// specialist votes. Enforce the existing compact shape at generation time.
+// Keep the 1,000-token ceiling already covered by the shared cost reservation.
+const shortItems = { type: "array", items: { type: "string" }, maxItems: 2 };
+const FOCUSED_ANALYST_RESPONSE_SCHEMA = {
+  name: "focused_analyst_review",
+  schema: {
+    type: "object", additionalProperties: false,
+    properties: {
+      agentId: { type: "string", enum: ["analyst_agent"] },
+      verdict: { type: "string", enum: ["positive", "negative", "mixed", "needs_more_data"] },
+      confidence: { type: "integer", minimum: 0, maximum: 100 },
+      keyFindings: { type: "array", items: { type: "string" }, minItems: 5, maxItems: 5 },
+      supportingEvidence: shortItems, concerns: shortItems, missingData: shortItems,
+      suggestedActionLabel: { type: "string" }, riskNotes: shortItems, followUpChecks: shortItems,
+    },
+    required: ["agentId", "verdict", "confidence", "keyFindings", "supportingEvidence", "concerns", "missingData", "suggestedActionLabel", "riskNotes", "followUpChecks"],
+  },
+};
+
 function clampScore(value: unknown, fallback = 0) {
   return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.min(100, Math.round(value))) : fallback;
 }
@@ -129,7 +149,7 @@ function selectAgents(input: RunAiCommitteeInput, pack: AiCommitteeEvidencePack)
   if (input.reviewPolicy === FOCUSED_REVIEW_POLICY) {
     const analyst: AiCommitteeAgentDefinition = {
       ...AI_COMMITTEE_AGENTS.find(agent => agent.id === "filing_agent")!,
-      id: "analyst_agent", displayName: "Evidence Analyst", maxOutputTokens: 900,
+      id: "analyst_agent", displayName: "Evidence Analyst", maxOutputTokens: 1_000,
       inputRequirements: ["verified issuer profile", "dated event or valuation evidence", "relevant financial facts", "price and uncertainty context"],
       purpose: "Verify the exact issuer, event, dated primary sources, products and customers, material financial facts, causal direction, valuation assumptions, price reaction and whether the event is already priced in. Explain what happened and why it matters in everyday language. Never invent targets or missing facts.",
     };
@@ -375,7 +395,7 @@ function buildAgentPrompt(agent: AiCommitteeAgentDefinition, evidencePack: AiCom
     : policy.assetClass === "public_equity"
     ? "Confirm the proposed direction against verified event truth, exact issuer mapping, materiality, causal transmission, explicit contradictions, and priced-in risk. A market quote is an entry/outcome anchor, not a prerequisite price move or proof of correctness."
     : "Confirm the proposed direction against whatHappened, aligned catalyst receipts, price/volume confirmation, and explicit contradictions. Never infer proof from an empty list.";
-  const outputLimits = `The entire response must fit ${agent.maxOutputTokens} output tokens. Use compact JSON with the expected keys only, no markdown, no copied evidence or prior-agent reports. ${["explainer_agent", "analyst_agent"].includes(agent.id) ? "Use exactly five keyFindings, at most 16 words each." : "Use at most two keyFindings, at most 16 words each."} Each other array must contain at most two short items of at most 12 words each; use short receipt identifiers in supportingEvidence. Use empty arrays where appropriate. Do not omit a material blocker to fit: state it concisely. Keep suggestedActionLabel to at most five words.`;
+  const outputLimits = `The entire response must fit ${agent.maxOutputTokens} output tokens. Use compact JSON with the expected keys only, no markdown, no copied evidence or prior-agent reports. ${["explainer_agent", "analyst_agent"].includes(agent.id) ? "Use exactly five keyFindings, at most 16 words each." : "Use at most two keyFindings, at most 16 words each."} Each other array must contain at most two short items of at most 12 words each; use short receipt identifiers in supportingEvidence. Use empty arrays where appropriate. Do not omit a material blocker to fit: state it concisely. Keep suggestedActionLabel to at most five words.${agent.id === "analyst_agent" ? " Aim for 450 tokens including JSON keys; the remaining allowance is safety headroom, not a length target. Do not repeat the same fact in several arrays. Keep every material blocker explicit. In supportingEvidence, use supplied short receipt IDs or references such as sourceLinks[0] instead of copying long URLs; the original links remain in the evidence pack." : ""}`;
   return {
     system: `${["explainer_agent", "analyst_agent"].includes(agent.id) ? "Explain this to a reader who knows nothing about the company, using everyday words and short sentences. Name what changed and who did it. Say sell new shares instead of equity issuance, signed instead of entered into, and profit instead of net income where the meaning stays exact. Keep confirmed amounts, dates and conditions; do not turn a plan into a completed event. Return five keyFindings starting exactly with Company:, What happened:, Why it matters:, Possible outcome:, and Risks:. State what the company sells or does only if supported by supplied evidence; otherwise say what is not yet known. Explain the business meaning; leave filing names, form numbers, legal boilerplate, exhibit references and source URLs out of these five findings. Source links belong in supportingEvidence. Distinguish confirmed facts, estimates and missing information. Explain the link to possible upside or downside without promising returns. " : ""}${evidencePack.researchReview?.enabled ? "This is a research review with explicitly incomplete evidence. Assess the supplied facts, distinguish confirmed facts from hypotheses, and list the exact missing facts and source types needed next. Unknown direction is not upside or downside: examine both possibilities. A dated closing price can support research but is not a current executable price. Do not invent evidence, target prices, or probabilities. Partial source text is not a verified complete filing. Research admission is not permission to approve publication. " : ""}You are ${agent.displayName} for Swing Up's internal AI Committee. Use only supplied evidence. No investment advice, no publishing, no hype, no fake proof. ${assetInstructions} ${discoveryProviderInstructions} ${finalJudgeInstructions} Put only evidence that is truly required to validate or reject this candidate in missingData. Put optional, nice-to-have, N/A, or future confirmation work in followUpChecks; those items must not cause needs_more_data. A negative verdict must be based on an actual adverse or contradictory finding in the supplied evidence, never on an irrelevant section being absent. Return strict JSON only. ${outputLimits}${promptEvidence.references ? ` ${SHARED_EVIDENCE_TEXT_INSTRUCTIONS}` : ""}`,
     user: JSON.stringify({ mode, agent: { id: agent.id, purpose: agent.purpose, requiredInputs: agent.inputRequirements, applicability: policy.nonApplicableAgentIds.has(agent.id) ? "n/a_unless_event_specific" : "applicable" }, decisionRules: { directionAndCatalyst: directionRule, discoveryProviderGap: evidencePack.analysisKind === "valuation" ? "Use the dated financial sources and valuation assumptions. A news publisher quorum is not required for valuation research." : policy.assetClass === "public_equity" ? "A verified primary source may establish event truth. Without one, require two independent origin publishers; never count syndicated copies or provider connectivity as evidence." : "Exactly one unavailable optional discovery provider is non-blocking only when the supplied evidence itself proves at least two discovery channels and three unique publishers.", missingData: "Only truly blocking evidence absent from the current candidate. Use [] for N/A or optional evidence.", followUpChecks: "Non-blocking checks that may improve confidence later.", needsMoreData: "Use only when missingData contains at least one genuinely blocking item.", negative: "Use only for an actual adverse or contradictory finding supported by supplied evidence." }, expectedSchema: { agentId: agent.id, verdict: "positive|negative|mixed|needs_more_data", confidence: "0-100", keyFindings: [], supportingEvidence: [], concerns: [], missingData: [], suggestedActionLabel: "safe plain-English label", riskNotes: [], followUpChecks: [] }, evidencePack: promptEvidence.evidencePack, ...(promptEvidence.references ? { sharedEvidenceTexts: promptEvidence.sharedEvidenceTexts } : {}), previousResults }),
@@ -573,17 +593,19 @@ export async function runAiCommittee(input: RunAiCommitteeInput) {
       return;
     }
     const prompt = buildAgentPrompt(agent, evidence.evidencePack!, agentResults, mode);
-    const response = await runOpenAiCommitteeProvider({ tier: agent.modelTierPreference, confirmRun: input.confirmRun, dryRun: false, maxTokens: agent.maxOutputTokens, messages: [{ role: "system", content: prompt.system }, { role: "user", content: prompt.user }], signal: input.signal, allowedModels: input.allowedModels, maximumPromptBytes: input.maximumPromptBytes });
+    const responseSchema = agent.id === "analyst_agent" ? FOCUSED_ANALYST_RESPONSE_SCHEMA : undefined;
+    const response = await runOpenAiCommitteeProvider({ tier: agent.modelTierPreference, confirmRun: input.confirmRun, dryRun: false, maxTokens: agent.maxOutputTokens, messages: [{ role: "system", content: prompt.system }, { role: "user", content: prompt.user }], signal: input.signal, allowedModels: input.allowedModels, maximumPromptBytes: input.maximumPromptBytes, responseSchema });
     if (!response.ok) {
       agentResults.push({ ...plannedResult(agent, evidence.evidencePack!, mode), status: "failed", error: response.status, providerFailure: response.failure, model: response.model, tokenUsage: response.tokenUsage });
       if (response.failure?.stopRemainingAgents) sharedFailure = response.failure;
       else if (["not_configured", "disabled", "confirmation_required", "model_not_configured", "model_not_allowed", "prompt_too_large"].includes(response.status)) sharedFailure = { category: "invalid_request", stopRemainingAgents: true };
       return;
     }
-    const parsed = response.finishReason === "length" ? null : parseJsonObject(response.content ?? "");
+    const incomplete = response.finishReason === "length" || (responseSchema && response.finishReason !== "stop");
+    const parsed = incomplete ? null : parseJsonObject(response.content ?? "");
     agentResults.push(parsed
       ? { ...normalizeAgentResult(agent, parsed, evidence.evidencePack!), model: response.model, tokenUsage: response.tokenUsage, finishReason: response.finishReason }
-      : { ...plannedResult(agent, evidence.evidencePack!, mode), status: "failed", model: response.model, tokenUsage: response.tokenUsage, finishReason: response.finishReason, error: response.finishReason === "length" ? "truncated_json_response" : "invalid_json_response" });
+      : { ...plannedResult(agent, evidence.evidencePack!, mode), status: "failed", model: response.model, tokenUsage: response.tokenUsage, finishReason: response.finishReason, error: response.finishReason === "length" ? "truncated_json_response" : incomplete ? "incomplete_json_response" : "invalid_json_response" });
   };
   if (dryRun) {
     agentResults.push(...agents.map((agent) => plannedResult(agent, evidence.evidencePack!, mode)));

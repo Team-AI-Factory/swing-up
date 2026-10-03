@@ -72,6 +72,7 @@ export type AiCommitteeRunOptions = {
   signal?: AbortSignal;
   allowedModels?: readonly string[];
   maximumPromptBytes?: number;
+  responseSchema?: { name: string; schema: Record<string, unknown> };
 };
 
 function envFlag(name: string, defaultValue = false) {
@@ -173,9 +174,15 @@ export async function runOpenAiCommitteeProvider(options: AiCommitteeRunOptions)
   if (options.allowedModels?.length && !options.allowedModels.includes(model)) {
     return { ok: false as const, status: "model_not_allowed" as const, modelTier: options.tier, providerStatus: status };
   }
+  const responseFormat = options.responseSchema
+    ? { type: "json_schema", json_schema: { ...options.responseSchema, strict: true } }
+    : { type: "json_object" };
   if (Number.isFinite(options.maximumPromptBytes)) {
     const maximumPromptBytes = Math.max(1_000, Math.floor(Number(options.maximumPromptBytes)));
-    const promptBytes = new TextEncoder().encode(JSON.stringify(options.messages)).byteLength;
+    // A schema is also model input. Keep it inside the existing reserved input
+    // ceiling, rather than silently consuming the request-framing allowance.
+    const promptBytes = new TextEncoder().encode(JSON.stringify(options.messages)
+      + (options.responseSchema ? JSON.stringify(responseFormat) : "")).byteLength;
     if (promptBytes > maximumPromptBytes) {
       const failure: AiCommitteeProviderFailure = { category: "input_limit", stopRemainingAgents: true, promptBytes, maximumPromptBytes };
       return { ok: false as const, status: "prompt_too_large" as const, failure, modelTier: options.tier, providerStatus: status };
@@ -205,7 +212,7 @@ export async function runOpenAiCommitteeProvider(options: AiCommitteeRunOptions)
         Authorization: `Bearer ${process.env.OPENAI_API_KEY?.trim()}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ model, messages: options.messages, max_tokens: options.maxTokens ?? 700, temperature: 0.2, response_format: { type: "json_object" } }),
+      body: JSON.stringify({ model, messages: options.messages, max_tokens: options.maxTokens ?? 700, temperature: 0.2, response_format: responseFormat }),
       signal,
     });
     if (!response.ok) {

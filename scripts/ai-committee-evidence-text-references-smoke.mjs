@@ -72,14 +72,14 @@ try {
     assert.ok(bytes(request.messages) <= 60_000);
     calls++;
     return Response.json({ choices: [{ message: { content: JSON.stringify({ verdict: "needs_more_data", confidence: 75,
-      keyFindings: ["Synthetic finding: conditions remain unresolved."], supportingEvidence: ["Synthetic source"],
+      keyFindings: ["Company: Synthetic issuer makes labelled test products for this regression only.", "What happened: Synthetic terms remain unresolved and cannot establish a completed transaction.", "Why it matters: Synthetic uncertainty affects the proposed direction of this test case.", "Possible outcome: Synthetic consequences depend on terms that have not been confirmed.", "Risks: Synthetic missing final terms block an approval despite complete mock-provider responses."], supportingEvidence: ["Synthetic source"],
       concerns: ["Synthetic timing limitation."], missingData: ["Synthetic required final terms."], riskNotes: ["Synthetic downside risk."],
       followUpChecks: ["Synthetic updated filing."], suggestedActionLabel: "Research only" }) }, finish_reason: "stop" }],
       usage: { prompt_tokens: 100, completion_tokens: 100, total_tokens: 200 } });
   };
   // Representative current runner topology: identical SEC summary in two
   // differently shaped receipt wrappers. This is not a historical live replay.
-  const summary = "Synthetic unverified example for regression only. ".repeat(1000).slice(0, 26_100);
+  const summary = "Synthetic unverified example for regression only. ".repeat(1000).slice(0, 25_900);
   const evidence = { ...pack,
     filingEvidence: { ...section, items: [{ title: "Synthetic earnings guidance", summary, url: "https://example.invalid/test", form: "8-K" }] },
     newsEvidence: { ...section, items: [{ title: "Synthetic earnings guidance", summary, url: "https://example.invalid/test", primarySource: true, official: true, channel: "sec_current_filings" }] },

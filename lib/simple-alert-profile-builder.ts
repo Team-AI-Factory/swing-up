@@ -24,9 +24,27 @@ const dayOf = (date: Date) => new Date(date.getTime() + 7 * 3600_000).toISOStrin
 /** Coverage is checked against the current cohort, not broad daily production. */
 export function pilotProfileCoverage(entries: Row[], now: Date) {
   const companies = pilotCompanies();
-  const verifiedTickers = companies.filter(company => entries.some(row => verifiedCompanyProfile(row.profile, company, now))).map(company => company.ticker);
+  const matching = (company: typeof companies[number]) => entries.filter(row => row.ticker === company.ticker && profileCik(row.cik) === company.cik);
+  const verifiedTickers = companies.filter(company => matching(company).some(row => verifiedCompanyProfile(row.profile, company, now))).map(company => company.ticker);
+  const date = (value: unknown) => typeof value === "string" && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null;
+  const missing = companies.filter(company => !verifiedTickers.includes(company.ticker)).map(company => {
+    const row = matching(company).sort((left, right) => Date.parse(String(right.updatedAt ?? "")) - Date.parse(String(left.updatedAt ?? "")))[0];
+    const filing = object(row?.filing);
+    const extraction = typeof row?.extractionFailure === "string" && /^company_profile_[a-z0-9_]{1,100}$/.test(row.extractionFailure) ? row.extractionFailure : null;
+    const error = typeof row?.error === "string" ? row.error : "";
+    const reason = !row ? "cache_entry_missing" : extraction
+      ?? (/budget|quota|cadence/.test(error) ? "provider_budget_deferred" : error.match(/^company_profile_[a-z0-9_]{1,100}/)?.[0])
+      ?? (error ? "source_request_failed" : "cached_profile_fails_current_verification");
+    const url = typeof filing.url === "string" && new RegExp(`^https://www\\.sec\\.gov/Archives/edgar/data/${Number(company.cik)}/[0-9]{18}/[A-Za-z0-9._-]+\\.html?$`).test(filing.url) ? filing.url : null;
+    return { ticker: company.ticker, cik: company.cik, reason, cacheEntryFound: Boolean(row),
+      parserRevision: Number.isInteger(row?.parserRevision) ? row.parserRevision : null,
+      currentParserRevision: COMPANY_PROFILE_PARSER_REVISION, updatedAt: date(row?.updatedAt), nextAttemptAt: date(row?.nextAttemptAt),
+      sourceUrl: url, sourceKey: url ? pr262StorageKey(`research-evidence/company-profile-sources/${company.cik}/${url.split("/").slice(-2).join("-")}.json`) : null,
+      filingForm: typeof filing.form === "string" && /^[A-Z0-9/-]{1,16}$/.test(filing.form) ? filing.form : null,
+      filingDate: date(filing.filedAt) };
+  });
   return { configuredCompanies: companies.length, verifiedCompanies: verifiedTickers.length, verifiedTickers,
-    missingTickers: companies.filter(company => !verifiedTickers.includes(company.ticker)).map(company => company.ticker) };
+    currentVerificationApplied: true, missingTickers: missing.map(row => row.ticker), missing };
 }
 
 /** One source-verified company (CIK), never a second share class or refresh. */

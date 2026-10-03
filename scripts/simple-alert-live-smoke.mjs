@@ -51,6 +51,17 @@ try {
   assert.deepEqual(cohortCoverage.verifiedTickers, [currentIdentity.ticker]);
   assert.equal(cohortCoverage.missingTickers.length, 24);
   assert.equal(builder.pilotProfileCoverage([{ ...currentIdentity, profile: null }], now).verifiedCompanies, 0);
+  const sourceUrl = `https://www.sec.gov/Archives/edgar/data/${Number(currentIdentity.cik)}/000000000126000001/annual.htm`;
+  const missingProfile = builder.pilotProfileCoverage([{ ...currentIdentity, profile: null, parserRevision: 8, extractionFailure: "company_profile_customers_not_extracted", error: "secret-looking-error-must-not-be-logged", filing: { url: sourceUrl, form: "10-K", filedAt: "2026-01-01" }, nextAttemptAt: "2026-09-29T00:00:00Z" }], now).missing.find(row => row.ticker === currentIdentity.ticker);
+  assert.equal(missingProfile.reason, "company_profile_customers_not_extracted");
+  assert.equal(missingProfile.sourceUrl, sourceUrl);
+  assert.match(missingProfile.sourceKey, /^production\/pr262\/research-evidence\/company-profile-sources\//);
+  assert.equal(missingProfile.parserRevision, 8);
+  assert.equal(JSON.stringify(missingProfile).includes("secret-looking-error"), false);
+  const unsafeSource = builder.pilotProfileCoverage([{ ...currentIdentity, profile: null, filing: { url: "https://example.com/?token=private", form: "private" }, error: "Authorization private" }], now).missing.find(row => row.ticker === currentIdentity.ticker);
+  assert.equal(unsafeSource.sourceUrl, null); assert.equal(unsafeSource.sourceKey, null);
+  assert.equal(unsafeSource.reason, "source_request_failed");
+
   const listing = { ...identity, name: identity.company, exchange: "Nasdaq", securityType: "common_stock", sourceNames: ["SEC company_tickers_exchange"] };
   const completed = { ...identity, profile: fixture, firstVerifiedAt: now.toISOString() };
   assert.equal(builder.profileBatchPlan([listing], [completed], now, 100).newlyVerifiedToday, 1);

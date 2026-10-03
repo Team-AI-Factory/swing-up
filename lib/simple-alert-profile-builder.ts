@@ -47,6 +47,19 @@ export function pilotProfileCoverage(entries: Row[], now: Date) {
     currentVerificationApplied: true, missingTickers: missing.map(row => row.ticker), missing };
 }
 
+/** A repair or ticker alias cannot create another first-time company. */
+export function firstVerifiedCompaniesThisRun(before: Row[], after: Row[], now: Date, startedAt = now.getTime()) {
+  const knownRows = before.filter(row => {
+    const firstAt = row.firstVerifiedAt ?? object(row.profile).verifiedAt;
+    return Number.isFinite(Date.parse(String(firstAt ?? "")));
+  });
+  const priorIssuers = new Set(knownRows.map(row => profileCik(row.cik)));
+  return new Set(after.filter(row => typeof row.firstVerifiedAt === "string" && Number.isFinite(Date.parse(row.firstVerifiedAt))
+    && Date.parse(row.firstVerifiedAt) >= startedAt && Date.parse(row.firstVerifiedAt) <= now.getTime()
+    && !priorIssuers.has(profileCik(row.cik)) && verifiedCompanyProfile(row.profile, row, now))
+    .map(row => profileCik(row.cik))).size;
+}
+
 /** One source-verified company (CIK), never a second share class or refresh. */
 export function profileBatchPlan(listings: Row[], entries: Row[], now: Date, limit: number) {
   const day = dayOf(now);
@@ -98,7 +111,11 @@ export function profileBatchPlan(listings: Row[], entries: Row[], now: Date, lim
     const deferred = previous.some(row => {
       const parserRepair = ["company_profile_products_and_customers_not_extracted", "company_profile_annual_filing_unavailable"].includes(String(row.error))
         && row.parserRevision !== COMPANY_PROFILE_PARSER_REVISION;
-      return !parserRepair && Date.parse(String(row.nextAttemptAt ?? "")) > now.getTime();
+      // A formerly verified profile can become invalid under current quality
+      // checks. Its old refresh date must not prevent one normal guarded retry.
+      // ensureCompanyProfile persists a null-profile backoff before source I/O.
+      const invalidCachedProfile = Boolean(row.profile) && !row.error && !verifiedCompanyProfile(row.profile, row, now);
+      return !parserRepair && !invalidCachedProfile && Date.parse(String(row.nextAttemptAt ?? "")) > now.getTime();
     });
     if (deferred) return [];
     return [{ ...identity, lastAttempt: Math.max(0, ...previous.map(row => Date.parse(String(row.updatedAt ?? "")) || 0)) }];
@@ -155,7 +172,7 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
       return response;
     } catch (error) { requestFailures++; throw error; }
   };
-  let attempted = 0, verified = 0, before = 0, after = 0, status = "completed", failure: string | null = null;
+  let attempted = 0, verified = 0, before = 0, after = 0, firstVerifiedThisRun = 0, status = "completed", failure: string | null = null;
   let eligibility: Row = {}, retryAttempts = 0;
   let cohortProfiles: ReturnType<typeof pilotProfileCoverage> | null = null;
   const pendingReasons: Record<string, number> = {};
@@ -195,6 +212,7 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
     const freshEntries = Array.isArray(fresh.value.entries) ? fresh.value.entries.map(object) : [];
     after = profileBatchPlan(universe.snapshot.entries, freshEntries, new Date(), 0).newlyVerifiedToday;
     cohortProfiles = pilotProfileCoverage(freshEntries, new Date());
+    firstVerifiedThisRun = firstVerifiedCompaniesThisRun(entries, freshEntries, new Date(), startedAt);
     for (const row of freshEntries) {
       const cik = profileCik(row.cik);
       if (!cik || !attemptedIssuers.has(cik) || Date.parse(String(row.updatedAt ?? "")) < startedAt
@@ -213,7 +231,7 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
     status = "failed"; failure = error instanceof Error ? error.message.slice(0, 250) : "profile_builder_failed";
   }
   const summary = { ok: status !== "failed", checkedAt: new Date().toISOString(), status, target: PROFILE_DAILY_TARGET,
-    attempted, unverifiedThisRun: attempted - verified, verificationYieldPercent: attempted ? verified / attempted * 100 : null, verifiedThisRun: verified, newlyVerifiedThisRun: Math.max(0, after - before), newlyVerifiedToday: after || before, remaining: Math.max(0, PROFILE_DAILY_TARGET - (after || before)),
+    attempted, unverifiedThisRun: attempted - verified, verificationYieldPercent: attempted ? verified / attempted * 100 : null, verifiedThisRun: verified, newlyVerifiedThisRun: firstVerifiedThisRun, newlyVerifiedToday: after || before, remaining: Math.max(0, PROFILE_DAILY_TARGET - (after || before)),
     requests, requestFailures, responseBodyFailures, failureRatePercent: requests ? requestFailures / requests * 100 : null,
     ...eligibility, cohortProfiles, retryAttempts, pendingReasons, durationMs: Date.now() - startedAt, concurrency: 2,
     modelCalls: 0, failure, guarantees500: false };

@@ -1,0 +1,211 @@
+[
+  {
+    "identity": {
+      "ticker": "AIOT",
+      "company": "Powerfleet, Inc.",
+      "cik": "0001774170"
+    },
+    "form": "10-K",
+    "sourceUrl": "https://www.sec.gov/Archives/edgar/data/1774170/000162828026043187/aiot-20260331.htm",
+    "filedAt": "2026-06-15",
+    "business": "We develop and deploy AI-enabled analytics and automation within our AIoT platform.",
+    "customers": "Our customers operate in diverse markets, such as manufacturing, automotive manufacturing, wholesale and retail, food and grocery distribution, pharmaceutical and medical distribution, construction, mining, utilities, aerospace, vehicle rental, as well as logistics, shipping, transportation, energy and field services.",
+    "customerParagraphs": [
+      "Our customers operate in diverse markets, such as manufacturing, automotive manufacturing, wholesale and retail, food and grocery distribution, pharmaceutical and medical distribution, construction, mining, utilities, aerospace, vehicle rental, as well as logistics, shipping, transportation, energy and field services."
+    ],
+    "sourceSha256": "276d95264d8795bce014a98eceabc7a09abcffd7dacac43fff9a75852327a08a"
+  },
+  {
+    "identity": {
+      "ticker": "UPST",
+      "company": "Upstart Holdings, Inc.",
+      "cik": "0001647639"
+    },
+    "form": "10-K",
+    "sourceUrl": "https://www.sec.gov/Archives/edgar/data/1647639/000164763926000027/upst-20251231.htm",
+    "filedAt": "2026-02-10",
+    "business": "Our platform applies AI to more accurately quantify the true risk of a loan, a capability we refer to as \u201crisk separation.\u201d This differentiated approach to underwriting has generally led to higher approvals and lower interest rates relative to traditional lending practices, with more predictable returns to our capital partners including banks and credit unions (collectively our \u201clending partners\u201d) and institutional investors.",
+    "customers": "Our revenue consists primarily of fees paid by lending partners and institutional investors.",
+    "customerParagraphs": [
+      "Our revenue consists primarily of fees paid by lending partners and institutional investors."
+    ],
+    "sourceSha256": "a370794c71c10aab5edad585806cce218c1036fa322f2b696601e7cfdab9f527"
+  },
+  {
+    "identity": {
+      "ticker": "AISP",
+      "company": "Airship AI Holdings, Inc.",
+      "cik": "0001842566"
+    },
+    "form": "10-K",
+    "sourceUrl": "https://www.sec.gov/Archives/edgar/data/1842566/000165495426001280/airsp_10k.htm",
+    "filedAt": "2026-02-17",
+    "business": "Our primary product offering is our software operating system, Airship Acropolis, supported by our edge (Airship Outpost AI) and end point visualization (Airship Command) offerings.",
+    "customers": "We built this platform based on the success of our commercial offering and we have grown our customer base to include agencies across the law enforcement, defense, and intelligence sectors, with dozens of custom sensor integrations and unique workflows allowing agencies to break down data sharing silos when operating standalone or in joint interagency environments.",
+    "customerParagraphs": [
+      "We built this platform based on the success of our commercial offering and we have grown our customer base to include agencies across the law enforcement, defense, and intelligence sectors, with dozens of custom sensor integrations and unique workflows allowing agencies to break down data sharing silos when operating standalone or in joint interagency environments."
+    ],
+    "sourceSha256": "a9b67822e7ddef75cda7248c86fe375322e7b0868fae4db3d58bebfe18c4dd71"
+  },
+  {
+    "identity": {
+      "ticker": "BBAI",
+      "company": "BigBear.ai Holdings, Inc.",
+      "cik": "0001836981"
+    },
+    "form": "10-K",
+    "sourceUrl": "https://www.sec.gov/Archives/edgar/data/1836981/000183698126000018/bbai-20251231.htm",
+    "filedAt": "2026-03-02",
+    "business": "We offer software assets leveraging advanced vision AI technologies that are the cornerstone of our commitment to innovation in identity verification and security.",
+    "customers": "The majority of our employees are security-cleared and many operate alongside their customers daily, we have deep trusting relationships with unique and discerning customers in the U.S. government, and with select commercial partners, putting us in the ideal position to deliver custom-designed AI solutions for the pressing, complex problems of today.",
+    "customerParagraphs": [
+      "The majority of our employees are security-cleared and many operate alongside their customers daily, we have deep trusting relationships with unique and discerning customers in the U.S. government, and with select commercial partners, putting us in the ideal position to deliver custom-designed AI solutions for the pressing, complex problems of today."
+    ],
+    "sourceSha256": "2c8e4a75e03c68f42ded8f07f22b08902ad2a5db56bfe6783734d40cf14f7cab"
+  },
+  {
+    "identity": {
+      "ticker": "AMBQ",
+      "company": "Ambiq Micro, Inc.",
+      "cik": "0001500412"
+    },
+    "form": "10-K",
+    "sourceUrl": "https://www.sec.gov/Archives/edgar/data/1500412/000119312526094004/ambq-20251231.htm",
+    "filedAt": "2026-03-05",
+    "business": "We operate a fabless business model and use third-party foundries, packaging, and testing contractors to manufacture, assemble, and test our semiconductor products.",
+    "customers": "We typically fulfill the needs of our leading brand, OEM, and ODM customers through direct relationships and select distributors.",
+    "customerParagraphs": [
+      "We typically fulfill the needs of our leading brand, OEM, and ODM customers through direct relationships and select distributors."
+    ],
+    "sourceSha256": "797600f09e420cf7e75e2ed66418b9706d38774bc595e6863f82186b136bc52f"
+  },
+  {
+    "identity": {
+      "ticker": "BKSY",
+      "company": "BlackSky Technology Inc.",
+      "cik": "0001753539"
+    },
+    "form": "10-K",
+    "sourceUrl": "https://www.sec.gov/Archives/edgar/data/1753539/000175353926000032/bksy-20251231.htm",
+    "filedAt": "2026-03-17",
+    "business": "We design, develop and operate a constellation of proprietary high-resolution, high-revisit small satellites and sells custom built satellites.",
+    "customers": "Our current customer base is weighted towards U.S. defense and intelligence customers and international governments and organizations, as we have a long history of serving these agencies as a trusted mission partner.",
+    "customerParagraphs": [
+      "Our current customer base is weighted towards U.S. defense and intelligence customers and international governments and organizations, as we have a long history of serving these agencies as a trusted mission partner."
+    ],
+    "sourceSha256": "f8c405bde32759c3f28646274e1c6416772cfc5ffbcc1a5a921f83874f3ec58e"
+  },
+  {
+    "identity": {
+      "ticker": "CEVA",
+      "company": "CEVA INC",
+      "cik": "0001173489"
+    },
+    "form": "10-K",
+    "sourceUrl": "https://www.sec.gov/Archives/edgar/data/1173489/000143774926006091/ceva20251231_10k.htm",
+    "filedAt": "2026-02-27",
+    "business": "Our business model centers on licensing our IP platforms, processors, software, and related technologies to semiconductor and original equipment manufacturer (\u201cOEM\u201d) customers.",
+    "customers": "Our business model centers on licensing our IP platforms, processors, software, and related technologies to semiconductor and original equipment manufacturer (\u201cOEM\u201d) customers.",
+    "customerParagraphs": [
+      "Our business model centers on licensing our IP platforms, processors, software, and related technologies to semiconductor and original equipment manufacturer (\u201cOEM\u201d) customers."
+    ],
+    "sourceSha256": "460919587a1f8b1276781fa9ed237ea328bfdb88d0eb7f7ffec4aa8b9bfe690f"
+  },
+  {
+    "identity": {
+      "ticker": "PDYN",
+      "company": "Palladyne AI Corp.",
+      "cik": "0001826681"
+    },
+    "form": "10-K",
+    "sourceUrl": "https://www.sec.gov/Archives/edgar/data/1826681/000119312526092443/pdyn-20251231.htm",
+    "filedAt": "2026-03-05",
+    "business": "We are a U.S.-based technology company developing and offering embodied artificial intelligence (\"AI\") software and collaborative autonomy solutions, advanced avionics, unmanned aerial vehicles (\"UAVs\"), advanced UAV engineering services and precision-manufactured components for defense and commercial/industrial markets.",
+    "customers": "Our current customers include U.S. defense prime contractors, commercial businesses and the U.S. government.",
+    "customerParagraphs": [
+      "Our current customers include U.S. defense prime contractors, commercial businesses and the U.S. government."
+    ],
+    "sourceSha256": "8f15401a8b50b1b46520444285d8b9955e8c39c3ea7312b6256a72a1741187fe"
+  },
+  {
+    "identity": {
+      "ticker": "RDNT",
+      "company": "RadNet, Inc.",
+      "cik": "0000790526"
+    },
+    "form": "10-K",
+    "sourceUrl": "https://www.sec.gov/Archives/edgar/data/790526/000162828026013337/rdnt-20251231.htm",
+    "filedAt": "2026-03-02",
+    "business": "We offer a comprehensive set of imaging services including MRI, CT, PET, nuclear medicine, X-ray, ultrasound, mammography, fluoroscopy and other related procedures.",
+    "customers": "Our revenue is derived from a diverse mix of payors, including commercial insurance payors, managed care capitated payors, and government payors such as Medicare and Medicaid, mitigating our exposure to unfavorable reimbursement trends within any one payor class.",
+    "customerParagraphs": [
+      "Our revenue is derived from a diverse mix of payors, including commercial insurance payors, managed care capitated payors, and government payors such as Medicare and Medicaid, mitigating our exposure to unfavorable reimbursement trends within any one payor class."
+    ],
+    "sourceSha256": "5c87e4a43e1abc8537a37dda715ba40e72b50c81ddd329402e1a181eb7773397"
+  },
+  {
+    "identity": {
+      "ticker": "SDGR",
+      "company": "Schrodinger, Inc.",
+      "cik": "0001490978"
+    },
+    "form": "10-K",
+    "sourceUrl": "https://www.sec.gov/Archives/edgar/data/1490978/000149097826000010/sdgr-20251231.htm",
+    "filedAt": "2026-02-25",
+    "business": "We offer our customers a variety of software solutions that accelerate all stages of molecule discovery, design, and optimization.",
+    "customers": "Our software platform is licensed by biopharmaceutical and industrial companies, academic institutions, and government laboratories around the world.",
+    "customerParagraphs": [
+      "Our software platform is licensed by biopharmaceutical and industrial companies, academic institutions, and government laboratories around the world."
+    ],
+    "sourceSha256": "5dba1e95bb54be80d0b0c506471e44534c770693139a67c48876f0f719192ef9"
+  },
+  {
+    "identity": {
+      "ticker": "RXRX",
+      "company": "Recursion Pharmaceuticals, Inc.",
+      "cik": "0001601830"
+    },
+    "form": "10-K",
+    "sourceUrl": "https://www.sec.gov/Archives/edgar/data/1601830/000160183026000039/rxrx-20251231.htm",
+    "filedAt": "2026-02-25",
+    "business": "We are developing REC-4881, a highly potent and selective, potential best-in-class MEK1/2 inhibitor, for familial adenomatous polyposis (FAP).",
+    "customers": "Through our partnerships with leading pharmaceutical companies including Roche and Genentech, Sanofi, Bayer, and Merck KGaA (Darmstadt, Germany), we have secured more than $500 million in upfront and progress-based milestone payments to date, with the potential for over $20 billion in additional milestones before royalties.",
+    "customerParagraphs": [
+      "Through our partnerships with leading pharmaceutical companies including Roche and Genentech, Sanofi, Bayer, and Merck KGaA (Darmstadt, Germany), we have secured more than $500 million in upfront and progress-based milestone payments to date, with the potential for over $20 billion in additional milestones before royalties."
+    ],
+    "sourceSha256": "9ebe86b50f56ea0164ecc341571fe40914366c4f9509c90f18c944ba2d9a02a3"
+  },
+  {
+    "identity": {
+      "ticker": "SERV",
+      "company": "Serve Robotics Inc.",
+      "cik": "0001832483"
+    },
+    "form": "10-K",
+    "sourceUrl": "https://www.sec.gov/Archives/edgar/data/1832483/000183248326000010/patr-20251231.htm",
+    "filedAt": "2026-03-12",
+    "business": "Our activities include the design, engineering, deployment, and operation of low-emission robotic systems built on our proprietary AI-enabled mobility platform.",
+    "customers": "Our robots start each day at a central depot located near their operating area. The fleet is monitored through mobile connectivity and video streaming by remote human supervisors who can assist robots when necessary, such as at intersection crossings or when robots are unable to navigate certain conditions. On less frequent occasions, if a robot requires physical assistance, such as when a robot is too low on battery to return home or if it has been damaged, a nearby team member is dispatched to repair or return the robot. Throughout the day, each robot receives a series of delivery orders from partnered merchants and delivery platforms.",
+    "customerParagraphs": [
+      "Our robots start each day at a central depot located near their operating area. The fleet is monitored through mobile connectivity and video streaming by remote human supervisors who can assist robots when necessary, such as at intersection crossings or when robots are unable to navigate certain conditions. On less frequent occasions, if a robot requires physical assistance, such as when a robot is too low on battery to return home or if it has been damaged, a nearby team member is dispatched to repair or return the robot.",
+      "Throughout the day, each robot receives a series of delivery orders from partnered merchants and delivery platforms."
+    ],
+    "sourceSha256": "154f02df61f9ffde0358e121d5e358eda94db9ed36565abf2f29ad3bb8c7f4cf"
+  },
+  {
+    "identity": {
+      "ticker": "REKR",
+      "company": "Rekor Systems, Inc.",
+      "cik": "0001697851"
+    },
+    "form": "10-K",
+    "sourceUrl": "https://www.sec.gov/Archives/edgar/data/1697851/000143774926010647/rekr20251231_10k.htm",
+    "filedAt": "2026-03-31",
+    "business": "We offer extensive traffic data collection and engineering services using both traditional and AI-based approaches.",
+    "customers": "Our diverse customer base includes cities, states, municipalities, law enforcement agencies, and commercial customers.",
+    "customerParagraphs": [
+      "Our diverse customer base includes cities, states, municipalities, law enforcement agencies, and commercial customers."
+    ],
+    "sourceSha256": "2da57651d7439d2061b836fd60b224174848c83304625d175ca99499462f48ca"
+  }
+]

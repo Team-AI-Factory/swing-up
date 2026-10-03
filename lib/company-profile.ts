@@ -1,7 +1,7 @@
 import { annualInformationFormBusinessText, secAnnualFilingIndexUrl } from "@/lib/company-profile-annual-source";
 import { extractRevenueGeography, revenueGeographyFromQuote, type RevenueGeography } from "@/lib/company-revenue-geography";
 /** Company descriptions must be extracts from a dated, identity-verified source. */
-export const COMPANY_PROFILE_PARSER_REVISION = 9;
+export const COMPANY_PROFILE_PARSER_REVISION = 10;
 export type CompanyIdentity = { ticker?: unknown; company?: unknown; cik?: unknown };
 export type VerifiedCompanyProfile = {
   version: 1; status: "verified"; ticker: string; company: string; cik: string;
@@ -23,11 +23,13 @@ export function sameCompanyName(left: unknown, right: unknown) {
 export const profileCik = (v: unknown) => /^\d{1,10}$/.test(String(v ?? "")) && Number(v) > 0 ? String(v).padStart(10, "0") : null;
 const placeholder = /not yet been verified|still being collected|is the listed company|is classified in|company profile.*(?:missing|unavailable)/i;
 const customerSubjects = "(?:customers?|clients?|consumers?|patients?|subscribers?|end.users?|end.markets?|markets?|customer base|client base|customer segments?|market segments?)";
-const customerPredicate = new RegExp(`^(?:(?:our|the company['’]s|a|an|the)\\s+)?(?:(?:primary|principal|main|largest|target|core|professional|DIY)\\s+)?[\"“]?${customerSubjects}[\"”]?\\s+(?:(?:we serve|primarily|mainly|principally|largely|generally|predominantly)\\s+)*(?:include[sd]?|comprise[sd]?|consists? of|range[sd]? from|are|is(?: defined as)?)\\s+(.+)`, "i");
+const customerPredicate = new RegExp(`^(?:(?:our|the company['’]s|a|an|the)\\s+)?(?:(?:primary|principal|main|largest|target|core|professional|DIY|current|diverse)\\s+)?[\"“]?${customerSubjects}[\"”]?\\s+(?:(?:we serve|primarily|mainly|principally|largely|generally|predominantly)\\s+)*(?:include[sd]?|comprise[sd]?|consists? of|range[sd]? from|are|is(?: defined as)?)\\s+(.+)`, "i");
 const airCarrierService = /^(?:Together with our [^.]{1,300}, )?our primary business activity is the operation of (?:a|an) [^.!?]{1,100}air carrier, providing scheduled air transportation for passengers(?: and cargo)?\b/i;
 const commercialPartnerPopulation = /^We have (?:extensive )?experience partnering with (.+?)\. Our partnership agreements(?: to date)? have (?:commonly )?included: .+near-term payments for access, research, and intellectual property rights.+royalties on net sales of drugs[.!]?$/i;
 const customerCaveat = /\b(?:no (?:single )?customer|\d+(?:\.\d+)?%|percent|concentration|accounts? receivable|credit risk|loss of|contracts? with customers|none of our business|mainland China|legal (?:entity|structure))\b/i;
-const buyerGroups = /\b(?:persons?|people|individuals?|households?|homeowners?|consumers?|patients?|subscribers?|business(?:es)?|enterprises?|companies|corporations?|dealers?|firms?|organizations?|nonprofits?|governments?|municipalit(?:y|ies)|utilities|institutions?|schools?|universit(?:y|ies)|hospitals?|clinics?|garages?|service stations?|(?:auto(?:mobile)? )?dealerships?|laborator(?:y|ies)|pharmacies|providers?|operators?|manufacturers?|retail(?:ers?| stores?)|wholesalers?|distributors?|merchants?|developers?|contractors?|resellers?|oems?|banks?|insurers?|agencies|authorities|charterers?|shippers?|carriers?|(?:consumer|industrial|commercial|education|enterprise|government|healthcare|automotive|energy|aerospace) (?:markets?|sectors?|industries))\b/i;
+const buyerGroups = /\b(?:persons?|people|individuals?|households?|homeowners?|consumers?|patients?|subscribers?|business(?:es)?|enterprises?|companies|corporations?|dealers?|firms?|organizations?|nonprofits?|governments?|municipalit(?:y|ies)|utilities|institutions?|schools?|universit(?:y|ies)|hospitals?|clinics?|garages?|service stations?|(?:auto(?:mobile)? )?dealerships?|laborator(?:y|ies)|pharmacies|providers?|operators?|manufacturers?|retail(?:ers?| stores?)|wholesalers?|distributors?|merchants?|developers?|contractors?|resellers?|oems?|odms?|banks?|insurers?|agencies|authorities|charterers?|shippers?|carriers?|(?:consumer|industrial|commercial|education|enterprise|government|healthcare|automotive|energy|aerospace) (?:markets?|sectors?|industries))\b/i;
+const purposeInfinitive = /^(?:(?:better|fully|more accurately|more effectively|successfully|effectively|efficiently|rapidly|quickly)\s+)*(?:study|assess|analy[sz]e|identify|address|meet|support|help|enable|ensure|improve|enhance|facilitate|create|build|develop|provide|deliver|generate|increase|reduce|achieve|fulfil+l?|perform|determine|offer|benefit|manage|alert|prevent|protect|optimi[sz]e|maintain|expand|promote|understand|evaluate|implement|integrate|connect|drive|detect|track|monitor|process|collect|transform|leverage|empower|automate|streamline|forecast|quantify)\b/i;
+const unresolvedRobotContext = /\b(?:competitor|third[- ]party|their robots|another company|other companies|supplier|customer[- ]owned)\b/i;
 const filingBoilerplate = /\b(?:registration statement|investment company act|(?:initial|proposed|public) offering|ordinary shares|common stock|incorporat(?:ed|ion)|commenced operations|began operations|securities and exchange|securities act|form (?:f|s|8|10)-\d|taking delivery of (?:our|the|its) first)\b/i;
 const unresolvedEntity = /&(?:#\d+|#x[\da-f]+|[a-z]+);/i;
 function decodeSourceEntities(value: string) {
@@ -59,6 +61,16 @@ function operatingBusiness(sentence: string, identity: CompanyIdentity) {
     || /\b(?:the following|as follows|listed below|described below)\s*[.:]?$/i.test(sentence)) return false;
   if (/\b(?:to|for)\s+(?:our|its|the company['’]s)\s+(?:employees|staff|team members)(?:\s+and\s+their\s+families)?\b/i.test(sentence)) return false;
   if (airCarrierService.test(sentence)) return true;
+  if (/^We are (?:a|an) (?:(?:U[.]S[.]-based|[A-Za-z-]+)\s+){0,8}technology company (?:developing(?: and offering)?|offering) .{0,160}\b(?:software|semiconductors?|robotic systems|artificial intelligence)\b/i.test(sentence)) return true;
+  if (/^(?:We|The Company) (?:design|designs|sell|sells|provide|provides|operate|operates) (?:our|the|its) (?:products|systems|solutions)\s+(?:to|with|through)\b/i.test(sentence)) return false;
+  if (/^Our activities include .{0,100}\b(?:deployment|operation) of .{0,80}\b(?:robotic systems|medical devices|semiconductor systems)\b/i.test(sentence)) return true;
+  if (/^We are (?:(?:currently|also) )?developing .{5,180}\b(?:inhibitors?|drugs?|medicines?|therapeutics?|vaccines)\b/i.test(sentence)) return true;
+  if (/^(?:We|The Company) develop(?:s)? our .{0,70}business through a combination of organic growth and acquisitions[.!]?$/i.test(sentence)) return false;
+  if (/^Our business model centers on licensing our (?:IP|software|technology)\b.{10,180}\bto\b/i.test(sentence)) return true;
+  if (/^Our primary product offering is (?:our|a|the)\s+.{0,100}\b(?:software|operating system|platform|semiconductor|devices?)\b/i.test(sentence)) return true;
+  if (/^Our (?:software |AI |technology )?platform (?:applies|uses) (?:AI|artificial intelligence) to .{10,160}\b(?:loans?|credit|data|drug|molecules?)\b/i.test(sentence)) return true;
+  if (/^We are (?:a|an) [^.!?]{0,80}technology company that (?:deploys|develops|provides) [^.!?]{0,160}\b(?:data science|software|semiconductors?|artificial intelligence|AI-powered technology)\b/i.test(sentence)) return true;
+  if (/^We are engaged in developing technologies intended to enable [^.!?]{0,120}\b(?:robotic solutions|semiconductor systems|medical devices)\b/i.test(sentence)) return true;
   if (/^We are using our platform to develop a pipeline of (?:assets|drug candidates)\b.{0,300}\b(?:GPCRs|ion channels|T-cell engagers|antibody medicines)\b/i.test(sentence)) return true;
   // Match dated context without deleting any words from the retained source.
   const statement = sentence.replace(/^(?:As of (?:January|February|March|April|May|June|July|August|September|October|November|December) \d{1,2}, \d{4},|With a history dating back to \d{4},|Within our reportable segments,|In aggregate,|In addition,)\s+/i, "");
@@ -72,6 +84,7 @@ function operatingBusiness(sentence: string, identity: CompanyIdentity) {
   // its main predicate to describe operations, not incorporation or financing.
   const subject = `${issuerSubject(identity)}(?:\\s*\\([^)]{0,180}\\))?(?:,\\s*(?:a|an|the)\\s+(?:[^(),]|\\([^)]{0,180}\\)){1,180},)?\\s+`;
   if (new RegExp(`^${subject}(?:is|are)\\s+(?:a|an)\\s+(?:(?:clinical|preclinical|development|commercial)[- ]stage\\s+)?(?:biopharmaceutical|biotechnology|pharmaceutical|medical device)\\s+compan(?:y|ies)\\b.{0,160}\\b(?:developing|development|discovery|discovering|treatments|therapies|therapeutics|vaccines|medicines)\\b`, "i").test(statement)) return true;
+  if (new RegExp(`^${subject}(?:sell|sells)\\s+to\\b`, "i").test(statement)) return false;
   const action = "(?:(?:also|primarily|principally|mainly|currently)\\s+)?(?:manufactures?|designs?|develops?|produces?|provides?|operates?|operated|distributes?|sells?|offers?|delivers?|supplies)\\b";
   const operator = "(?:is|are)\\s+(?:a\\s+|an\\s+|the\\s+)?[^.!?]{0,120}\\b(?:manufacturer|developer|producer|provider|operator|distributor|retailer|supplier|bank|utility|utilities|insurer|underwriter|roaster)\\b";
   if (new RegExp(`^${subject}(?:${action}|${operator})`, "i").test(statement)) return true;
@@ -99,22 +112,58 @@ function customerDescriptionRank(sentence: string, identity: CompanyIdentity) {
   // A generic collaboration or a supplier payment cannot satisfy this path.
   const commercialPartners = sentence.match(commercialPartnerPopulation)?.[1];
   if (commercialPartners && buyerGroups.test(commercialPartners) && !/\b(?:we pay|payments by us|we owe|donat|grant|supplier|investor)/i.test(sentence)) return 1;
+  const paidPharmaPartners = sentence.match(/^Through our partnerships with (?:leading )?(pharmaceutical companies .{1,250}), we have (?:secured|received) (?:more than |over )?\$[\d,.]+ (?:million|billion) in (?:upfront and (?:progress-based )?milestone|upfront) payments to date(?:,|\.)/i);
+  if (paidPharmaPartners && !/\b(?:we pay|payments by us|we owe|equity financing|debt financing|grants?|suppliers?|hypothetical|conditional|not received|non-binding)\b/i.test(sentence)) return 2;
+  const robotOrders = sentence.match(/^Our robots start each day .{1,850}[.] Throughout the day, each robot receives a series of delivery orders from (.+)[.]$/i)?.[1];
+  if (robotOrders && !unresolvedRobotContext.test(sentence) && /^(?:partnered )?merchants and delivery platforms$/i.test(robotOrders)) return 2;
+  const grownCustomers = sentence.match(/^(?:We (?:have )?built this platform .{1,150} and )?we have (?:grown|expanded) our customer base to include (.+)/i)?.[1];
+  if (grownCustomers && buyerGroups.test(grownCustomers) && !/\b(?:potential|prospective|target|hypothetical|projections?|forecast|planned|future)\b/i.test(grownCustomers)) return 2;
+  const explicitRelationships = sentence.match(/^(?:The majority of our employees are [\w-]+ and many operate alongside their customers daily, )?we have (?:deep trusting|long-standing|established) relationships with (?:unique and discerning )?customers in (.+)/i)?.[1];
+  if (explicitRelationships && /\b(?:governments?|government agencies|hospitals?|banks?|manufacturing companies)\b/i.test(explicitRelationships)) return 2;
   const explicit = sentence.match(customerPredicate);
-  const direct = new RegExp(`^${issuerSubject(identity)}\\s+(?:(?:primarily|mainly|principally)\\s+)?(?:serves?\\s+|(?:sells?|provides?|offers?|suppl(?:y|ies)|delivers?)\\s+.{1,220}?\\s+to\\s+)(.+)`, "i");
+  const currentMarket = sentence.match(/^Our customers operate in (?:diverse |various )?markets, (?:such as|including) (.+)/i)?.[1];
+  if (currentMarket && /^(?:manufacturing|automotive(?: manufacturing)?|wholesale(?: and retail)?|retail|food(?: and grocery distribution)?|pharmaceutical(?: and medical distribution)?|medical|construction|mining|utilities|aerospace|vehicle rental|logistics|shipping|transportation|energy|field services)(?=,| and |[.]?$)/i.test(currentMarket)) return 2;
+  // These statements explicitly identify a commercial population, rather than
+  // inferring one from product usage, partnership names or financing alone.
+  const licensedPopulation = sentence.match(/^Our business model centers on licensing our (?:IP|software|technology)\b.{1,220}?\s+to\s+(.+)/i)?.[1]
+    ?? sentence.match(/^Our (?:software(?: platform)?|IP(?: platforms?)?|technolog(?:y|ies)) (?:is|are) licensed by (.+)/i)?.[1]
+    ?? sentence.match(/^We have licensed our (?:IP|software|technology) to (.+)/i)?.[1];
+  const servedCustomerTypes = sentence.match(/^We (?:typically )?fulfill the needs of our (.+?) customers through (?:direct relationships|select distributors)/i)?.[1];
+  const feePayers = sentence.match(/^Our revenue consists (?:primarily |mainly )?of fees paid by (.+)/i)?.[1];
+  const insurancePayors = sentence.match(/^Our revenue is derived from a (?:diverse )?mix of payors, including (.+)/i)?.[1];
+  if (insurancePayors && /\b(?:commercial insurance|managed care|government) payors\b/i.test(insurancePayors)) return 2;
+  if (feePayers && /^(?:lending partners|institutional investors)(?= and |,|[.]?$)/i.test(feePayers)
+    && !/\b(?:equity securities|stockholders|shareholders|financing|capital contributions|potential|prospective)\b/i.test(feePayers)) return 2;
+  const receivingIssuer = /\b(?:to us|for our (?:own )?internal use|for (?:our )?internal administrative use|for our own use|without receiving any license fees|free of charge)\b/i;
+  const licensedBuyerStart = /^(?:(?:hundreds|thousands) of )?(?:(?:semiconductor|original equipment|biopharmaceutical|pharmaceutical|industrial|academic|government|medical|research|commercial|technology|software|hardware|and)\s+){0,8}(?:companies|manufacturers?|OEMs?|ODMs?|customers?|institutions?|laboratories|universities|banks?|hospitals?|retailers?)\b/i;
+  if (licensedPopulation && licensedBuyerStart.test(licensedPopulation) && !receivingIssuer.test(licensedPopulation)
+    && !/\b(?:potential|prospective|target|hypothetical)\b/i.test(licensedPopulation)) return 2;
+  const explicitCommercialPopulation = servedCustomerTypes ?? feePayers;
+  if (explicitCommercialPopulation && buyerGroups.test(explicitCommercialPopulation)
+    && !/\b(?:to us|for our (?:own )?internal use|for (?:our )?internal administrative use|for our own use|without receiving any license fees|free of charge)\b/i.test(explicitCommercialPopulation)
+    && !purposeInfinitive.test(explicitCommercialPopulation) && !/\b(?:potential|prospective|target)\b/i.test(explicitCommercialPopulation)
+    && !/^(?:no|none|not|neither|without|our|their|able|using|located|based|customers?|clients?)\b/i.test(explicitCommercialPopulation)) return 2;
+  const direct = new RegExp(`^${issuerSubject(identity)}\\s+(?:(?:primarily|mainly|principally)\\s+)?(?:serves?\\s+|(?:sells?|provides?|offers?|suppl(?:y|ies)|delivers?)\\s+(?:.{1,220}?\\s+)?to\\s+)(.+)`, "i");
   const relationship = /^We have (?:well-established |established |long-standing )?relationships with (.+?), which we serve\b/i;
   const passiveProducts = /^Our (?:[\w-]+\s+){0,5}(?:products(?: and services)?|services(?: and products)?)\s+are\s+(?:also\s+)?(?:sold|offered|distributed|marketed|supplied)\s+(?:primarily\s+)?(?:through|to)\s+(.+)/i;
   const providerMarkets = new RegExp(`^${issuerSubject(identity)}\\s+(?:is|are)\\s+.{0,100}\\b(?:provider|supplier|manufacturer|distributor)\\b.{0,150}\\bto\\s+customers\\s+in\\s+(.+)`, "i");
   // "For" can explicitly name the commercial service recipient. Require an
   // already-valid issuer operating statement and a concrete population at the
   // start, not a later usage/benefit/geography mention containing a buyer word.
-  const forValue = operatingBusiness(sentence, identity)
-    ? sentence.match(/^[^.!?]{0,160}\b(?:provides?|offers?|supplies)\s+.{1,220}?\s+for\s+(.+)/i)?.[1] : undefined;
+  const forMatch = operatingBusiness(sentence, identity)
+    ? sentence.match(/^[^.!?]{0,160}\b(?:provides?|offers?|supplies)\s+.{1,220}?\s+for\s+(.+)/i) : null;
+  const forPrefix = forMatch ? forMatch[0].slice(0, forMatch[0].length - forMatch[1].length) : "";
+  const earlierPurpose = forPrefix.match(/\bto\s+(.+)/i)?.[1];
+  const forValue = earlierPurpose && purposeInfinitive.test(earlierPurpose) ? undefined : forMatch?.[1];
   const forGroup = forValue?.replace(/^our\s+(?=dealers?\b)/i, "");
-  const explicitForPopulation = forGroup && /^(?:(?:small|medium|mid-sized|large|commercial|industrial|retail|corporate|financial|asset|wealth|management|automotive|healthcare|education|government|energy|technology|non-profit|and|or)\s+){0,8}(?:dealers?|firms?|businesses|enterprises?|companies|corporations?|institutions?|schools?|universities|hospitals?|clinics?|providers?|operators?|manufacturers?|retailers?|wholesalers?|distributors?|developers?|contractors?|banks?|insurers?|agencies)\b/i.test(forGroup) ? forGroup : undefined;
+  const explicitForPopulation = forGroup && /^(?:(?:small|medium|mid-sized|large|commercial|industrial|retail|corporate|financial|asset|wealth|management|automotive|healthcare|education|government|energy|technology|non-profit|and|or)\s+){0,8}(?:organizations?|dealers?|firms?|businesses|enterprises?|companies|corporations?|institutions?|schools?|universities|hospitals?|clinics?|providers?|operators?|manufacturers?|retailers?|wholesalers?|distributors?|developers?|contractors?|banks?|insurers?|agencies)\b/i.test(forGroup) ? forGroup : undefined;
   const contextual = sentence.replace(/^Within our reportable segments,\s*/i, "");
   const directMatch = contextual.match(direct);
   const directPrefix = directMatch ? directMatch[0].slice(0, directMatch[0].length - directMatch[1].length) : "";
-  const directPopulation = directMatch && !/\b(?:access|exposure|proximity|introductions?)\s+to\s*$/i.test(directPrefix) ? directMatch[1] : undefined;
+  // A purpose infinitive ("to study ... a business solution") does not
+  // name a buyer, even when its later words contain a population noun.
+  const directPopulation = directMatch && !/\b(?:access|exposure|proximity|introductions?)\s+to\s*$/i.test(directPrefix)
+    && !purposeInfinitive.test(directMatch[1]) ? directMatch[1] : undefined;
   const recipient = explicit?.[1] ?? explicitForPopulation ?? directPopulation ?? sentence.match(relationship)?.[1]
     ?? sentence.match(passiveProducts)?.[1] ?? sentence.match(providerMarkets)?.[1];
   if (!recipient) return 0;
@@ -223,14 +272,21 @@ export function inspectCompanyProfileExtraction(input: ProfileExtractionInput) {
     const quote = `${paragraph} ${paymentSentence}`;
     return commercialPartnerPopulation.test(quote) ? [quote] : [];
   });
+  const robotOrderQuotes = paragraphs.flatMap((paragraph, index) => {
+    if (!/^Our robots start each day /.test(paragraph) || unresolvedRobotContext.test(paragraph)) return [];
+    const next = paragraphs[index + 1] ?? "";
+    const order = next.match(/^Throughout the day, each robot receives a series of delivery orders from [^.]+[.]/)?.[0];
+    return order ? [`${paragraph} ${order}`] : [];
+  });
   const sentences = [...sourceParagraphs.flatMap(paragraph => paragraph
     .replace(/\b(?:Inc|Corp|Co|Ltd|L\.P|L\.L\.C|U\.S|U\.K)\./gi, abbreviation => abbreviation.replace(/\./g, "\uE000"))
     .split(/(?<=[.!?])\s+(?=[A-Z“"])/).map(sentence => sentence.replace(/\uE000/g, ".")))
-    .map(text), ...commercialPartnerQuotes].filter(sentence => sentence.length >= 25 && sentence.length <= 1100);
+    .map(text), ...commercialPartnerQuotes, ...robotOrderQuotes].filter(sentence => sentence.length >= 25 && sentence.length <= 1100);
   const reject = /forward.looking|risk factors|may not|no assurance|could adversely|table of contents|incorporated by reference|annual report|securities and exchange|we expect|we believe|we intend/i;
   const useful = sentences.filter(sentence => !reject.test(sentence));
   const business = useful.filter(sentence => sentence.length >= 60 && operatingBusiness(sentence, input.identity))
-    .map(sentence => ({ sentence, rank: /^Our product portfolio/i.test(sentence) ? 3
+    .map(sentence => ({ sentence, rank: /^Our (?:product portfolio|primary product offering|business model|activities include)/i.test(sentence) ? 3
+      : /^We also offer\b/i.test(sentence) ? 0
       : /\b(?:sell|sells|design|designs|develop|develops|manufacture|manufactures|offer|offers)\b/i.test(sentence) ? 2 : 1 }))
     .sort((a, b) => b.rank - a.rank)[0]?.sentence;
   const customers = useful.map(sentence => ({ sentence, rank: customerDescriptionRank(sentence, input.identity) }))

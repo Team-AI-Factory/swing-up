@@ -8,7 +8,8 @@ const identity = (ticker, cik, extra = {}) => ({ ticker, cik: String(cik).padSta
 const listing = row => ({ ...row, name: row.company, exchange: "Nasdaq", securityType: "common_stock", sourceNames: ["SEC company_tickers_exchange"] });
 const entry = (row, at = now) => ({ ...row, profile: companyProfileFixture(row, now), updatedAt: at.toISOString(), firstVerifiedAt: at.toISOString() });
 const noIo = { readVersionedTextFromR2: async () => { throw new Error("unexpected_io"); }, writeVersionedJsonToR2: async () => { throw new Error("unexpected_io"); } };
-const plan = loadTsModule("@/lib/simple-alert-profile-builder", { "@/lib/r2-warehouse": noIo }).profileBatchPlan;
+const profileBuilder = loadTsModule("@/lib/simple-alert-profile-builder", { "@/lib/r2-warehouse": noIo });
+const plan = profileBuilder.profileBatchPlan;
 const base = identity("AAC", 1), unit = identity("AAC-UN", 1), warrant = identity("AAC-WT", 1);
 assert.equal(plan([base, unit, warrant].map(listing), [], now, 100).due.length, 1, "Three same-CIK securities are one company attempt");
 assert.equal(plan([base, unit, warrant].map(listing), [], now, 100).duplicateIssuerListings, 2);
@@ -32,6 +33,24 @@ const retry = identity("RETRY", 100), retryEntry = { ...retry, profile: null, up
 assert.equal(plan([...fresh, listing(retry)], [retryEntry], now, 100).due[3].ticker, "RETRY", "Due retry receives an early reserved slot among fresh issuers");
 assert.equal(plan([...fresh, listing(retry)], [{ ...retryEntry, nextAttemptAt: new Date(now.getTime() + 3600000).toISOString() }], now, 100).due.some(row => row.ticker === "RETRY"), false, "Fairness cannot bypass source cooldown");
 assert.equal(plan([listing(retry)], [{ ...retryEntry, nextAttemptAt: new Date(now.getTime() + 3600000).toISOString(), error: "company_profile_products_and_customers_not_extracted", parserRevision: -1 }], now, 100).due.length, 1, "A repaired parser can revisit exact saved sources immediately");
+const invalidLegacy = { ...entry(base, yesterday), parserRevision: 6, nextAttemptAt: new Date(now.getTime() + 30 * 86400000).toISOString(),
+  profile: { ...entry(base, yesterday).profile, business: "We sell our products to customers around the world through many different distribution channels.", description: "invalid legacy generic product description" } };
+assert.equal(plan([listing(base)], [invalidLegacy], now, 100).due.length, 1, "A rejected cached profile's old30-day refresh date cannot freeze repair");
+assert.equal(plan([listing(base)], [invalidLegacy], now, 100).newlyVerifiedToday, 0, "An invalid old profile is not newly verified");
+for (const error of ["pr262_sensor_budget_guard:sec_edgar:minimum_interval;next_retry_at=" + invalidLegacy.nextAttemptAt, "company_profile_http_429", "source_request_failed"]) {
+  assert.equal(plan([listing(base)], [{ ...invalidLegacy, error }], now, 100).due.length, 0, "An active same-row source error still controls its future retry boundary");
+}
+
+const repairPending = { ...invalidLegacy, profile: null, updatedAt: now.toISOString(), nextAttemptAt: new Date(now.getTime() + 3600000).toISOString(), parserRevision: 9 };
+assert.equal(plan([listing(base)], [repairPending], now, 100).due.length, 0, "The first ordinary attempt's persisted backoff prevents a retry loop");
+assert.equal(plan([listing(base)], [invalidLegacy, { ...unit, profile: null, error: "provider_budget_deferred", nextAttemptAt: repairPending.nextAttemptAt }], now, 100).due.length, 0, "An active same-issuer source cooldown still wins");
+const repairedLegacy = { ...entry(base), firstVerifiedAt: yesterday.toISOString() };
+assert.equal(plan([listing(base)], [repairedLegacy], now, 100).newlyVerifiedToday, 0, "Repair cannot reset a company's earliest verification date");
+assert.equal(profileBuilder.firstVerifiedCompaniesThisRun([invalidLegacy], [repairedLegacy], now), 0, "Restoring an old invalid cache is not a first-time company");
+assert.equal(profileBuilder.firstVerifiedCompaniesThisRun([entry(unit)], [entry(base)], now), 0, "Earlier verification under another ticker prevents a new-company claim");
+assert.equal(profileBuilder.firstVerifiedCompaniesThisRun([], [entry(base, yesterday)], now), 0, "Imported prior-day verification cannot be claimed as new this run");
+assert.equal(profileBuilder.firstVerifiedCompaniesThisRun([], [entry(base), entry(unit)], now), 1, "New aliases count once by CIK");
+assert.equal(profileBuilder.firstVerifiedCompaniesThisRun([], [invalidLegacy], now), 0, "Invalid profiles cannot count as first-time verification");
 const atLimit = Array.from({ length: 500 }, (_, i) => entry(identity(`T${i}`, i + 500)));
 assert.equal(plan([listing(base)], atLimit, now, 100).due.length, 0);
 assert.equal(plan([listing(base)], atLimit.slice(0, 499), now, 100).due.length, 1);

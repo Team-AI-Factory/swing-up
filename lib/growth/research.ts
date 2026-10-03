@@ -96,7 +96,11 @@ export function makeSnapshot(candidate: Candidate, now = new Date()): ResearchSn
     confidence: candidate.scores.fairValueConfidence!, riskScore: candidate.scores.risk, evidenceScore: candidate.scores.evidence,
     priceObservedAt: candidate.priceObservedAt, observedAt: candidate.observedAt, capturedAt: now.toISOString(),
     eventKind: "valuation_screen", eventAt: null, horizon: null,
-    sources: [...candidate.links, { label: "Company profile: annual filing", url: companyProfile.sourceUrl }], methods: candidate.valuationMethods.map((method) => `${method.method}: ${method.assumption}`),
+    sources: [...candidate.links, { label: "Company profile: annual filing", url: companyProfile.sourceUrl },
+      ...(companyProfile.customerEvidence ? [{
+        label: `Customer types: ${companyProfile.customerEvidence.section === "financial_notes_accounts_receivable" ? "accounts receivable" : "revenue contracts"} note (period ended ${companyProfile.customerEvidence.reportPeriod})`,
+        url: companyProfile.customerEvidence.sourceUrl,
+      }] : [])], methods: candidate.valuationMethods.map((method) => `${method.method}: ${method.assumption}`),
     publicationStatus: candidate.publicationStatus ?? "provisional_alert", userAlertEligible: candidate.userAlertEligible === true, committeeApproved: candidate.committeeApproved === true,
     cik: companyProfile.cik, companyProfile, companyDoes: companyProfile.description,
     whatHappened: candidate.explanation?.whatHappened, committeeStatus: candidate.committeeStatus,

@@ -175,8 +175,8 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
     entry.filing = filing;
     phase = "annual_filing";
     await store(entry);
-    const extract = (html: string) => {
-      const result = inspectCompanyProfileExtraction({ identity: exact, html, form: filing.form, sourceUrl: filing.url, filedAt: filing.filedAt, now, annualFilingUrl: filing.annualFilingUrl, annualFilingIndexUrl: filing.annualFilingIndexUrl });
+    const extract = (html: string, customerEvidence?: unknown) => {
+      const result = inspectCompanyProfileExtraction({ identity: exact, html, form: filing.form, sourceUrl: filing.url, filedAt: filing.filedAt, now, customerEvidence, annualFilingUrl: filing.annualFilingUrl, annualFilingIndexUrl: filing.annualFilingIndexUrl });
       entry.extractionFailure = result.reason ?? undefined;
       return result.profile;
     };
@@ -187,15 +187,22 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
     const source = sourceSaved.found && sourceSaved.text ? object(JSON.parse(sourceSaved.text)) : {};
     const cachedSection = source.layoutRevision === SOURCE_LAYOUT_REVISION && source.url === filing.url && source.filedAt === filing.filedAt ? text(source.businessText) : "";
     const sectionHeading = filing.form === "40-F" ? "DESCRIPTION OF THE BUSINESS" : filing.form === "20-F" ? "Item 4. Information on the Company" : "Item 1. Business";
-    let profile = cached?.sourceUrl === filing.url ? cached : cachedSection ? extract(`${sectionHeading}\n${String(source.businessText)}`) : null;
+    let profile = cached?.sourceUrl === filing.url ? cached : cachedSection ? extract(`${sectionHeading}\n${String(source.businessText)}`, source.financialCustomerEvidence) : null;
     // Earlier parsers could stop the stream at an incomplete list introduction.
     // If that old excerpt no longer verifies, permit one longer source read.
     if (!profile && (!cachedSection || source.parserRevision !== COMPANY_PROFILE_PARSER_REVISION)) {
-      const html = await request(filing.url, body => (filing.form !== "40-F" || isAnnualInformationFormDocument(body)) && Boolean(extract(body)));
+      const html = await request(filing.url, body => {
+        if (filing.form === "40-F" && !isAnnualInformationFormDocument(body)) return false;
+        const candidate = extract(body);
+        // Financial-note proof requires EOF, not merely a closing HTML tag in
+        // an early chunk. A later body failure must still fail this request.
+        return Boolean(candidate && !candidate.customerEvidence);
+      });
       if (filing.form === "40-F" && !isAnnualInformationFormDocument(html)) throw new Error("company_profile_aif_document_unverified");
+      const extracted = extract(html);
       const businessText = annualBusinessText(html, filing.form);
-      if (businessText) await writeVersionedJsonToR2(sourceKey, { version: 1, layoutRevision: SOURCE_LAYOUT_REVISION, parserRevision: COMPANY_PROFILE_PARSER_REVISION, url: filing.url, filedAt: filing.filedAt, businessText, collectedAt: now.toISOString() }, sourceSaved.etag ? { expectedEtag: sourceSaved.etag } : { createOnly: true });
-      profile = extract(html);
+      if (businessText) await writeVersionedJsonToR2(sourceKey, { version: 1, layoutRevision: SOURCE_LAYOUT_REVISION, parserRevision: COMPANY_PROFILE_PARSER_REVISION, url: filing.url, filedAt: filing.filedAt, businessText, financialCustomerEvidence: extracted?.customerEvidence, collectedAt: now.toISOString() }, sourceSaved.etag ? { expectedEtag: sourceSaved.etag } : { createOnly: true });
+      profile = extracted;
     }
     if (!profile) throw new Error("company_profile_products_and_customers_not_extracted");
     if (filing.industry) profile = { ...profile, industry: filing.industry, industrySourceUrl: `https://data.sec.gov/submissions/CIK${exact.cik}.json` };
@@ -243,7 +250,7 @@ async function recoverCachedProfiles(entries: Entry[], listings: Json[], now: Da
       if (source.layoutRevision !== SOURCE_LAYOUT_REVISION || source.url !== filing.url || source.filedAt !== filing.filedAt || !text(source.businessText)) return;
       const heading = filing.form === "40-F" ? "DESCRIPTION OF THE BUSINESS" : filing.form === "20-F" ? "Item 4. Information on the Company" : "Item 1. Business";
       const profile = extractCompanyProfile({ identity: entry, html: `${heading}\n${String(source.businessText)}`,
-        form: filing.form, sourceUrl: filing.url, filedAt: filing.filedAt, now, annualFilingUrl: filing.annualFilingUrl, annualFilingIndexUrl: filing.annualFilingIndexUrl });
+        form: filing.form, sourceUrl: filing.url, filedAt: filing.filedAt, now, customerEvidence: source.financialCustomerEvidence, annualFilingUrl: filing.annualFilingUrl, annualFilingIndexUrl: filing.annualFilingIndexUrl });
       if (!profile) return;
       if (filing.industry) Object.assign(profile, { industry: filing.industry, industrySourceUrl: `https://data.sec.gov/submissions/CIK${entry.cik}.json` });
       recovered.push({ ...entry, profile, error: undefined, parserRevision: COMPANY_PROFILE_PARSER_REVISION,

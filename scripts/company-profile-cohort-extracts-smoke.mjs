@@ -86,12 +86,22 @@ if (process.env.COMPANY_PROFILE_COHORT_REPLAY) {
     const bytes = readFileSync(row.path), expected = cases.find(c => c.identity.ticker === row.identity.ticker);
     if (expected) assert.equal(createHash("sha256").update(bytes).digest("hex"), expected.sourceSha256);
     const html = bytes.toString(), result = parser.inspectCompanyProfileExtraction({ ...row, sourceUrl: row.sourceUrl ?? row.url, html, now });
-    if (!expected) { assert.equal(result.profile, null); continue; }
+    if (!expected) {
+      const type = row.identity.ticker === "HSAI" ? "accounts_receivable_customer_pools"
+        : row.identity.ticker === "PGY" ? "revenue_contract_counterparties" : null;
+      if (!type) { assert.equal(result.profile, null); continue; }
+      assert.ok(result.profile); verified++;
+      assert.equal(result.profile.customerType, type);
+      assert.equal(result.profile.customerEvidence.quote, result.profile.customers);
+      assert.equal(result.profile.customerEvidence.reportPeriod, "2025-12-31");
+      assert.equal(result.profile.customerEvidence.sourceUrl, row.sourceUrl ?? row.url);
+      continue;
+    }
     assert.ok(result.profile); verified++;
     assert.equal(result.profile.business, expected.business); assert.equal(result.profile.customers, expected.customers);
     const section = parser.annualBusinessText(html, row.form).replace(/\s+/g, " ");
     assert.ok(section.includes(result.profile.business)); assert.ok(section.includes(result.profile.customers));
   }
-  assert.equal(verified, 13); console.log("Pinned complete SEC replay:13/15, PGY/HSAI stay gated; every retained quote is a contiguous exact Business excerpt.");
+  assert.equal(verified, 15); console.log("Pinned complete SEC replay:15/15;13 use exact Business excerpts and2 retain separately proven, period-labeled financial-note customer quotes.");
 }
 console.log(`Cohort extraction: ${cases.length} exact dated source positives, ${negatives.length} extraction/cache negatives, product-specific business and adjacent owned-robot checks passed.`);

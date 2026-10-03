@@ -434,3 +434,29 @@ assert.equal(committeeStoredAnalysis.observedAt, snapshotTiming.receivedAt);
 assert.equal(lastCommitteeEvidence.priceVolumeEvidence.items[0].observedAt, candidate.quote.observedAt,
   "The real quote's timestamp remains separate and unchanged.");
 console.log("Committee-bound scanner retrieval provenance: passed");
+
+// Capture both authentic-note fixture types through the real profile validator
+// and the actual Committee packet boundary. No provider or delivery is called.
+const noteExtractor = loadTsModule("@/lib/company-profile-financial-customer-source").extractFinancialNoteCustomerEvidence;
+for (const fixturePath of ["./helpers/company-profile-financial-note-fixture.mjs", "./helpers/company-profile-revenue-note-fixture.mjs"]) {
+  const fixture = await import(fixturePath);
+  restore(); Object.assign(candidate, fixture.ref.identity);
+  const note = noteExtractor({ ...fixture.ref, now: researchInput.now, html: fixture.html });
+  assert.ok(note);
+  const noteType = note.section === "financial_notes_accounts_receivable" ? "accounts_receivable_customer_pools" : "revenue_contract_counterparties";
+  const profile = companyProfileFixture(fixture.ref.identity, researchInput.now);
+  Object.assign(profile, { customers: note.quote, customerType: noteType, customerEvidence: note,
+    sourceUrl: fixture.ref.sourceUrl, sourceFiledAt: fixture.ref.filedAt, sourceForm: fixture.ref.form });
+  profile.description = `${profile.business} ${profile.customers}`;
+  const result = await runEquitySignalLab({ ...researchInput, resolveCompanyProfile: async () => profile });
+  assert.equal(result.openAiCalled, true, "The source-qualified fixture must reach the mocked Committee");
+  const actual = lastCommitteeEvidence.fundamentalsEvidence.items.find(item => item.source === "verified_company_profile");
+  assert.equal(actual.customerType, noteType);
+  assert.deepEqual(actual.customerEvidence, note, "Section, period, taxonomy, exact quote and source identity must reach every Committee role");
+  assert.equal(actual.customerEvidence.reportPeriod, "2025-12-31");
+  assert.equal(actual.customers, note.quote);
+  assert.match(actual.customerEvidenceScope, /Period-specific.*Do not treat.*current main-customer rankings.*geographic revenue shares/);
+  assert.ok(lastCommitteeEvidence.sourceNames.includes("SEC annual business disclosures and period-specific financial-note customer evidence"));
+}
+restore();
+console.log("Committee-bound financial-note type, period, exact quote and limitations: passed");

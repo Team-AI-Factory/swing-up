@@ -327,7 +327,7 @@ function messageFor(input: ReturnType<typeof validatedOutbox>) {
     ]),
     "",
     `What it does and sells: ${explanation.companyFacts.business}`,
-    `Main customers: ${explanation.companyFacts.customers}`,
+    `${explanation.companyFacts.customerLabel ?? "Main customers"}: ${explanation.companyFacts.customers}${explanation.companyFacts.customerPeriod ? ` (Report period ended ${explanation.companyFacts.customerPeriod}.)` : ""}`,
     `Country providing most revenue: ${explanation.companyFacts.revenueCountry}`,
     event.slice(0, 240),
     "",

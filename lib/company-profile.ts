@@ -1,11 +1,13 @@
+import { extractFinancialNoteCustomerEvidence, verifiedFinancialNoteCustomerEvidence, type FinancialNoteCustomerEvidence } from "@/lib/company-profile-financial-customer-source";
 import { annualInformationFormBusinessText, secAnnualFilingIndexUrl } from "@/lib/company-profile-annual-source";
 import { extractRevenueGeography, revenueGeographyFromQuote, type RevenueGeography } from "@/lib/company-revenue-geography";
 /** Company descriptions must be extracts from a dated, identity-verified source. */
-export const COMPANY_PROFILE_PARSER_REVISION = 10;
+export const COMPANY_PROFILE_PARSER_REVISION = 11;
 export type CompanyIdentity = { ticker?: unknown; company?: unknown; cik?: unknown };
 export type VerifiedCompanyProfile = {
   version: 1; status: "verified"; ticker: string; company: string; cik: string;
   business: string; customers: string; description: string;
+  customerType?: "accounts_receivable_customer_pools" | "revenue_contract_counterparties"; customerEvidence?: FinancialNoteCustomerEvidence;
   revenueGeography?: RevenueGeography;
   industry?: string; industrySourceUrl?: string;
   sourceForm?: "10-K" | "20-F" | "40-F"; annualFilingUrl?: string; annualFilingIndexUrl?: string;
@@ -191,11 +193,15 @@ export function verifiedCompanyProfile(value: unknown, identity: CompanyIdentity
   // Decode old cached source extracts before comparing the complete description.
   // Identity, age, provenance and factual predicates still all revalidate below.
   const business = text(decodeSourceEntities(text(p.business))), customers = text(decodeSourceEntities(text(p.customers))), description = text(decodeSourceEntities(text(p.description)));
+  const customerEvidence = verifiedFinancialNoteCustomerEvidence(p.customerEvidence, { identity: { cik, ticker, company: text(identity.company) },
+    form: text(p.sourceForm), sourceUrl: text(p.sourceUrl), filedAt: text(p.sourceFiledAt), now });
+  const evidenceType = customerEvidence?.section === "financial_notes_accounts_receivable" ? "accounts_receivable_customer_pools" : "revenue_contract_counterparties";
+  if ((p.customerEvidence != null || p.customerType != null) && (!customerEvidence || p.customerType !== evidenceType || customerEvidence.quote !== customers)) return null;
   const verified = Date.parse(text(p.verifiedAt)), filed = Date.parse(text(p.sourceFiledAt));
   if (!Number.isFinite(verified) || !Number.isFinite(filed) || verified > now.getTime() || filed > verified
     || now.getTime() - verified > 30 * 86400000 || now.getTime() - filed > 550 * 86400000
     || business.length < 60 || customers.length < 25 || description.length > 2400
-    || !operatingBusiness(business, { ...identity, company: p.company }) || !customerDescriptionRank(customers, { ...identity, company: p.company })
+    || !operatingBusiness(business, { ...identity, company: p.company }) || (!customerDescriptionRank(customers, { ...identity, company: p.company }) && !customerEvidence)
     || description !== (business === customers ? business : `${business} ${customers}`)
     || placeholder.test(description)) return null;
   try {
@@ -212,6 +218,8 @@ export function verifiedCompanyProfile(value: unknown, identity: CompanyIdentity
   const industry = p.industrySourceUrl === industryUrl && text(p.industry).length >= 3 && text(p.industry).length <= 160
     ? text(p.industry) : undefined;
   const normalized = { ...p, business, customers, description } as VerifiedCompanyProfile;
+  if (customerEvidence) { normalized.customerEvidence = customerEvidence; normalized.customerType = evidenceType; }
+  else { delete normalized.customerEvidence; delete normalized.customerType; }
   if (industry) { normalized.industry = industry; normalized.industrySourceUrl = industryUrl; }
   else { delete normalized.industry; delete normalized.industrySourceUrl; }
   const geography = revenueGeographyFromQuote(object(p.revenueGeography).quote, text(p.sourceFiledAt));
@@ -249,7 +257,7 @@ export function annualBusinessText(html: string, form: string) {
 }
 
 /** Select whole source sentences. No generated product or customer claims. */
-type ProfileExtractionInput = { identity: CompanyIdentity; html: string; form: string; sourceUrl: string; filedAt: string; now: Date; annualFilingUrl?: string; annualFilingIndexUrl?: string };
+type ProfileExtractionInput = { identity: CompanyIdentity; html: string; form: string; sourceUrl: string; filedAt: string; now: Date; annualFilingUrl?: string; annualFilingIndexUrl?: string; customerEvidence?: unknown };
 export function inspectCompanyProfileExtraction(input: ProfileExtractionInput) {
   const section = annualBusinessText(input.html, input.form);
   if (!section) return { profile: null, reason: "company_profile_business_section_missing" };
@@ -292,12 +300,19 @@ export function inspectCompanyProfileExtraction(input: ProfileExtractionInput) {
       : /^We also offer\b/i.test(sentence) ? 0
       : /\b(?:sell|sells|design|designs|develop|develops|manufacture|manufactures|offer|offers)\b/i.test(sentence) ? 2 : 1 }))
     .sort((a, b) => b.rank - a.rank)[0]?.sentence;
-  const customers = useful.map(sentence => ({ sentence, rank: customerDescriptionRank(sentence, input.identity) }))
+  const businessCustomers = useful.map(sentence => ({ sentence, rank: customerDescriptionRank(sentence, input.identity) }))
     .filter(candidate => candidate.rank > 0).sort((a, b) => b.rank - a.rank)[0]?.sentence;
+  // A separately proven financial-note quote must retain its real section and
+  // report period. It is never promoted by the Business-section predicates.
+  const financialInput = { ...input, identity: { cik: profileCik(input.identity.cik) ?? "", ticker: text(input.identity.ticker), company: text(input.identity.company) } };
+  const customerEvidence = business && !businessCustomers
+    ? verifiedFinancialNoteCustomerEvidence(input.customerEvidence, financialInput) ?? extractFinancialNoteCustomerEvidence(financialInput) : null;
+  const customers = businessCustomers ?? customerEvidence?.quote;
   if (!business || !customers) return { profile: null, reason: !business && !customers ? "company_profile_business_and_customers_not_extracted"
     : !business ? "company_profile_business_not_extracted" : "company_profile_customers_not_extracted" };
   const profile = verifiedCompanyProfile({ version: 1, status: "verified", ticker: text(input.identity.ticker).toUpperCase(), company: text(input.identity.company),
-    cik: profileCik(input.identity.cik), business, customers, revenueGeography: extractRevenueGeography(input.html, input.filedAt), description: business === customers ? business : `${business} ${customers}`,
+    cik: profileCik(input.identity.cik), business, customers,
+    ...(customerEvidence ? { customerEvidence, customerType: customerEvidence.section === "financial_notes_accounts_receivable" ? "accounts_receivable_customer_pools" : "revenue_contract_counterparties" } : {}), revenueGeography: extractRevenueGeography(input.html, input.filedAt), description: business === customers ? business : `${business} ${customers}`,
     sourceType: "sec_annual_filing", sourceForm: input.form, annualFilingUrl: input.annualFilingUrl, annualFilingIndexUrl: input.annualFilingIndexUrl, sourceUrl: input.sourceUrl, sourceFiledAt: input.filedAt, verifiedAt: input.now.toISOString() }, input.identity, input.now);
   return { profile, reason: profile ? null : "company_profile_identity_or_freshness_invalid" };
 }

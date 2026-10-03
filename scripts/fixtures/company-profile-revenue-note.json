@@ -1,0 +1,17 @@
+{
+  "identity": {
+    "cik": "0001883085",
+    "ticker": "PGY",
+    "company": "Pagaya Technologies Ltd."
+  },
+  "form": "10-K",
+  "sourceUrl": "https://www.sec.gov/Archives/edgar/data/1883085/000188308526000018/pgy-20251231.htm",
+  "filingDate": "2026-03-02",
+  "sourceSha256": "7620d8572fc1980e681d47ae869f0cb34f1a2f34d612bbac1b96943be55a2389",
+  "quotes": {
+    "customerAgreementAndPrincipal": "Revenue from fees is comprised of Network AI fees and Contract fees. Network AI fees can be further broken down into two fee streams: AI integration fees and capital markets execution fees. AI integration fees are earned for the creation and delivery of assets that comprise Network Volume. The Company utilizes multiple funding channels to enable the purchase of network assets from Partners, such as asset backed securitizations (\u201cABS\u201d), and forward flow arrangements. Capital markets execution fees are earned from the market pricing of ABS transactions, as well as upon the execution of forward flow transactions, while contract fees are management, performance and similar fees. These fees are the result of agreements with customers and are recognized in accordance with FASB Accounting Standards Codification 606, \u201cRevenue from Contracts with Customers\u201d (\u201cASC 606\u201d).",
+    "serviceResponsibility": "Revenue is recognized in accordance with ASC 606 with revenue recorded on a gross basis when the Company is a principal in the transaction with customers, and recorded on a net basis when the Company is acting as an agent on behalf of another. The Company generally recognizes revenue on a gross basis because the Company is primarily responsible for integrating the various services fulfilled by Partners and is ultimately responsible to the Financing Vehicles for the fulfillment of the related services. To the extent the Company does not meet the criteria for recognizing revenue on a gross basis, the Company records revenue on a net basis.",
+    "contractTerms": "Contract fees include administration and management fees, performances fees, and servicing fees. Contract fees totaled $130.0 million, $88.5 million and $76.8 million for the year ended December 31, 2025, 2024 and 2023, respectively. All of these fees are recognized over the service period for the Financing Vehicles managed or administered by the Company and the payment term is monthly as a fixed percentage of the entity\u2019s assets, except for the portion of management fees that are recognized at the point in time based on contract terms. The Company includes variable consideration in the transaction price only to the extent that it is probable that a significant reversal in the amount of cumulative revenue recognized will not occur; to date, adjustments to these estimates have not resulted in a significant reversal of previously recognized revenue.",
+    "directPayment": "Servicing fees for the Financing Vehicles, which primarily involve collecting payments and providing reporting on the loans within the securitization vehicles, are recognized over the service period and the payment is received monthly from the Financing Vehicles. These duties have been considered to be agent responsibilities and does not include acting as a loan servicer. Accordingly, servicing fees are recorded on a net basis."
+  }
+}

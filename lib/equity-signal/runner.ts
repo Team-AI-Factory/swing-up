@@ -585,11 +585,16 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
     }
     const companyProfile = verifiedCompanyProfile(
       await input.resolveCompanyProfile?.(best) ?? targeted?.storedCompanyAnalysis?.companyProfile, best, now);
+    const customerEvidenceDetails = companyProfile?.customerEvidence ? {
+      customerType: companyProfile.customerType,
+      customerEvidence: companyProfile.customerEvidence,
+      customerEvidenceScope: "Period-specific financial-note evidence. Do not treat these pools or counterparties as current main-customer rankings, the entire customer base, or geographic revenue shares.",
+    } : {};
     // Stable evidence revisions allow another review when missing facts arrive.
     // Fetch timestamps and small quote ticks cannot manufacture new evidence.
     const evidenceRevision = reviewEvidenceRevision({
       source: best.receipts.filter(r => r.channel !== "nasdaq_trade_halts").map(r => ({ id: r.id, summary: r.summary, rawEventType: r.rawEventType })),
-      companyProfile: companyProfile ? { business: companyProfile.business, customers: companyProfile.customers, sourceUrl: companyProfile.sourceUrl, sourceFiledAt: companyProfile.sourceFiledAt } : null,
+      companyProfile: companyProfile ? { business: companyProfile.business, customers: companyProfile.customers, sourceUrl: companyProfile.sourceUrl, sourceFiledAt: companyProfile.sourceFiledAt, ...customerEvidenceDetails } : null,
       industry: industryLabel(targeted?.storedCompanyAnalysis?.industry, companyProfile?.industry),
       outlookRange: (() => {
         const fair = targeted?.storedCompanyAnalysis?.fairValue as UsValueCompanyAnalysis["fairValue"] | undefined;
@@ -704,10 +709,11 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
     // role must see the same verified company and customer evidence as the alert.
     pack.fundamentalsEvidence.items.splice(targeted?.storedCompanyAnalysis ? 1 : 0, 0, {
       source: "verified_company_profile", business: companyProfile.business, customers: companyProfile.customers,
-      sourceUrl: companyProfile.sourceUrl, sourceFiledAt: companyProfile.sourceFiledAt, verifiedAt: companyProfile.verifiedAt,
+      sourceUrl: companyProfile.sourceUrl, sourceFiledAt: companyProfile.sourceFiledAt, verifiedAt: companyProfile.verifiedAt, ...customerEvidenceDetails,
     });
     pack.sourceLinks = [...new Set([...pack.sourceLinks, companyProfile.sourceUrl])];
-    pack.sourceNames = [...new Set([...pack.sourceNames, "SEC annual business and customer disclosures"])];
+    pack.sourceNames = [...new Set([...pack.sourceNames, companyProfile.customerEvidence
+      ? "SEC annual business disclosures and period-specific financial-note customer evidence" : "SEC annual business and customer disclosures"])];
     if (details.valuationException) {
       pack.fundamentalsEvidence.items.push({ source: "valuation_availability", ...details.outlook.fairValueUnavailable,
         explanation: NEGATIVE_EARNINGS_NOTICE,

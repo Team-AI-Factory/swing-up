@@ -1,6 +1,26 @@
 # Simple Alerts launch and operating record
 
-## Current state — 28 September 2026
+## Verified deployment — 3 October 2026, 19:07 Bangkok
+
+The user reiterated that the connected Railway plugin is signed in and explicitly requested another standard plugin deployment attempt. The normal `accept-deploy` operation then returned `committed=true` and `deploymentStatus=triggered` at 12:01:48 UTC; workflow `commitChanges/87afb8d7-c4fc-4f84-92b6-5d2820a689b6/e836fb56-379c-4b19-85ec-d2c7dbb45591`. No browser sign-in, new credential, authentication bypass or main code change was used. The earlier authentication hold is no longer a current launch blocker.
+
+All four services deployed successfully on `pilot-simple-alerts` revision `4f3866f70b069447c96dd50673de5140ea92801d`:
+- Web: `9d2a42ac-8b4e-4f04-8977-521f23d3b63e`; ready, database connected, no pending migrations. Railway HTTP records show 200 for public signals and valuation-watchlist routes after rollout.
+- Sensor: `381d4a7a-a191-4fb2-a1ce-07f0ebff21bb`; `node scripts/simple-alert-pilot-cycle.mjs`, every 15 minutes.
+- Profiles: `92096aed-7026-4e99-b5f5-27aa3dcab57c`; `node scripts/simple-alert-pilot-cycle.mjs --profiles-only`, minutes 7, 22, 37 and 52 each hour.
+- Broad foundation: `619c6fbd-db62-415d-8813-5a7f656aed2b`; no schedule; runtime explicitly reported paused with no scanning, network, paid calls or storage writes.
+
+Main scanning is stopped: the prior main sensor `d6ccfc1d-9a16-405b-a8cb-447ca99a9e38`, recovery `2db0656c-dbef-44d4-922b-dbd5d90e1fca` and foundation `db590950-d633-4372-98d6-9194652b34f5` deployments all read back REMOVED after the new deployments succeeded. Main code, Postgres, all queues/profiles/accounting and inert retired services are preserved.
+
+Corrected recovery's drifted configuration-file path to `railway.analysis-recovery.json` before committing the switch; its effective deployed manifest confirms the profile role. Added watch patterns `["**", "!/docs/**"]` to all four services and read them back, so hourly operating-log-only commits do not rebuild services. Other changed paths still trigger normal deployment.
+
+The fixed cohort remains 25 companies. Both runtime roles retain the configured infrastructure forecast check (>0 and <=$20/month); sensor enforces the SAME shared $10 rolling-24-hour AI allowance and keeps Committee enabled; the profile-only launcher removes OpenAI credentials. Actual Railway billing/forecast remains unavailable from the connector, so current invoice/headroom is NOT independently verified.
+
+At this checkpoint neither scheduled pilot role had yet returned its first completed cycle. Deployment success is not first-run success, 500 newly verified profiles/day, delivery proof, <5% reliability, or a Serious Alert. First sensor execution is due 12:15 UTC / 19:15 Bangkok. Do not start an operational observation window until the documented runtime/delivery prerequisites are met. No expansion to 50 is eligible.
+
+Both automation prompts now record the successful standard deployment and remove the stale authentication blocker. The user's standing authorization covers routine scoped deployment/repair without repeated micro-approval. Twice-daily reporting remains 08:00/20:00 Bangkok. The interactive session owns first-run verification; do not interfere with these deployments. Continue fresh measured verification and preserve all gates.
+
+## Launch preparation — 28 September 2026 (historical)
 
 The user authorizes stopping main scanning, launching `pilot-simple-alerts`, a fixed 25-company test followed by gated expansion to 50, two daily progress reports, and a concurrent target of 500 newly verified company profiles each Bangkok calendar day. The single $10 rolling-24-hour AI Committee allowance remains enabled. The separate infrastructure ceiling is $20/month. Do not merge this branch into main or reset/delete existing data.
 

@@ -764,3 +764,96 @@ const emptyRss = await loaded.exports.runPr262DirectAnnouncementMonitor({ now: e
 assert.equal(emptyRss.feedSuccesses, 1, "A valid empty RSS response clears a transient feed failure");
 assert.equal(emptyRss.events.length, 0);
 console.log("Verified issuer source expansion, Atom/RSS compatibility, current CIK isolation and feed-schema health checks passed.");
+
+// A checked local quota/cadence wait never becomes an HTTP failure or a fake
+// network attempt. These fixtures use the real monitor with in-memory state.
+const waitNow = new Date("2026-10-03T14:32:00.000Z");
+const waitUntil = "2026-10-03T14:40:00.000Z";
+const guard = reason => new Error(`pr262_sensor_budget_guard:sec_edgar:${reason};next_retry_at=${waitUntil}`);
+const selected = [exposureCompany("WAITONE", "0000000801"), exposureCompany("WAITTWO", "0000000802"), exposureCompany("WAITTHREE", "0000000803")];
+registry = null;
+let actualNetworkRequests = 0, budgetChecks = 0;
+const guardedMixed = await loaded.exports.runPr262DirectAnnouncementMonitor({ now: waitNow, exposure: selected,
+  fetchImpl: async () => {
+    if (++budgetChecks > 1) throw guard("minimum_interval");
+    actualNetworkRequests++; return noWebsiteResponse;
+  } });
+assert.equal(actualNetworkRequests, 1);
+assert.equal(budgetChecks, 3);
+assert.equal(guardedMixed.discoverySelection.total, 3);
+assert.equal(guardedMixed.discoveriesAttempted, 1);
+assert.equal(guardedMixed.attemptCount, 1);
+assert.equal(guardedMixed.successCount, 1);
+assert.equal(guardedMixed.failureCount, 0);
+assert.equal(guardedMixed.discoveryDeferred, 2);
+assert.equal(guardedMixed.deferredCount, 2);
+assert.equal(guardedMixed.nextRetryAt, waitUntil);
+assert.deepEqual(guardedMixed.attemptErrors, []);
+assert.equal(registry.entries.filter(row => row.nextCheckAt === waitUntil).length, 2);
+registry = null;
+const guardedAll = await loaded.exports.runPr262DirectAnnouncementMonitor({ now: waitNow, exposure: selected,
+  fetchImpl: async () => { throw guard("rolling_24h_budget"); } });
+assert.equal(guardedAll.attemptCount, 0);
+assert.equal(guardedAll.failureCount, 0);
+assert.equal(guardedAll.successCount, 0);
+assert.equal(guardedAll.deferredCount, 3);
+assert.equal(guardedAll.nextRetryAt, waitUntil);
+
+for (const responseForFailure of [
+  async () => ({ ok: false, status: 429 }),
+  async () => ({ ok: false, status: 503 }),
+  async () => { throw new Error("fetch failed"); },
+  async () => ({ ok: true, status: 200, json: async () => { throw new DOMException("Body stalled", "TimeoutError"); } }),
+  async () => { throw new Error("pr262_sensor_budget_guard:sec_edgar:minimum_interval"); },
+]) {
+  registry = null;
+  const failed = await loaded.exports.runPr262DirectAnnouncementMonitor({ now: waitNow, exposure: selected.slice(0, 1), fetchImpl: responseForFailure });
+  assert.equal(failed.attemptCount, 1);
+  assert.equal(failed.failureCount, 1);
+  assert.equal(failed.deferredCount, 0, "Real source errors and unproven waits must remain failures");
+}
+registry = null;
+const afterSecWait = await loaded.exports.runPr262DirectAnnouncementMonitor({ now: waitNow, exposure: selected.slice(0, 1),
+  fetchImpl: async request => String(request).startsWith("https://data.sec.gov/")
+    ? { ok: true, status: 200, json: async () => ({ investorWebsite: "https://safe-issuer.example/" }) }
+    : Promise.reject(guard("minimum_interval")) });
+assert.equal(afterSecWait.secSubmissionsChecked, 1);
+assert.equal(afterSecWait.attemptCount, 1, "A successful SEC read cannot disappear behind a later issuer-page guard");
+assert.equal(afterSecWait.failureCount, 0);
+assert.equal(afterSecWait.successCount, 0, "Partial discovery is not completed discovery");
+assert.equal(afterSecWait.deferredAfterSourceAttempt, 1);
+registry = null;
+const waitThenFailure = await loaded.exports.runPr262DirectAnnouncementMonitor({ now: waitNow, exposure: selected.slice(0, 1),
+  fetchImpl: async request => {
+    const url = String(request);
+    if (url.startsWith("https://data.sec.gov/")) return { ok: true, status: 200, json: async () => ({ investorWebsite: "https://safe-issuer.example/" }) };
+    if (url === "https://safe-issuer.example/") return response('<a href="/investor">Investor relations</a><a href="/news">News</a>');
+    if (url.endsWith("/investor")) throw guard("minimum_interval");
+    return { ok: false, status: 503 };
+  } });
+assert.equal(waitThenFailure.failureCount, 1, "A later HTTP failure cannot hide behind an earlier scheduled wait");
+assert.equal(waitThenFailure.deferredCount, 0);
+assert.match(waitThenFailure.attemptErrors[0], /http_503/);
+
+for (const redirected of [false, true]) {
+  const priorCheckedAt = "2026-10-02T10:00:00.000Z";
+  registry = { version: 1, updatedAt: waitNow.toISOString(), lastDiscoveryCycleAt: waitNow.toISOString(), discoveryCursor: 0,
+    entries: [registryEntry("WAITONE", "0000000801", { feedUrl: "https://safe-issuer.example/rss", nextCheckAt: null,
+      lastCheckedAt: priorCheckedAt, consecutiveFailures: 3 })] };
+  let requests = 0;
+  const heldFeed = await loaded.exports.runPr262DirectAnnouncementMonitor({ now: waitNow, exposure: selected.slice(0, 1),
+    fetchImpl: async () => {
+      if (redirected && requests++ === 0) return { ok: false, status: 302, headers: new Headers({ location: "/rss-updated" }) };
+      throw guard("minimum_interval");
+    } });
+  assert.equal(heldFeed.feedPollsSelected, 1);
+  assert.equal(heldFeed.feedsPolled, redirected ? 1 : 0);
+  assert.equal(heldFeed.attemptCount, redirected ? 1 : 0);
+  assert.equal(heldFeed.failureCount, 0);
+  assert.equal(heldFeed.feedDeferred, 1);
+  assert.equal(heldFeed.nextRetryAt, waitUntil);
+  assert.equal(registry.entries[0].nextCheckAt, waitUntil);
+  assert.equal(registry.entries[0].consecutiveFailures, 3, "Scheduled waiting must not increase failure backoff");
+  assert.equal(registry.entries[0].lastCheckedAt, redirected ? waitNow.toISOString() : priorCheckedAt);
+}
+console.log("Scheduled source waits separated from real attempts/failures; partial work, exact retries and existing source caps preserved.");

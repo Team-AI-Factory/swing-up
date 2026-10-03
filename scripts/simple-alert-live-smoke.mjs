@@ -45,6 +45,12 @@ try {
   const fixture = companyProfileFixture(identity, now);
   const io = { readVersionedTextFromR2: async () => { throw new Error("unexpected_io"); }, writeVersionedJsonToR2: async () => { throw new Error("unexpected_io"); } };
   const builder = loadTsModule("@/lib/simple-alert-profile-builder", { "@/lib/r2-warehouse": io });
+  const cohortProfile = companyProfileFixture(currentIdentity, now);
+  const cohortCoverage = builder.pilotProfileCoverage([{ ...currentIdentity, profile: cohortProfile }], now);
+  assert.equal(cohortCoverage.configuredCompanies, 25);
+  assert.deepEqual(cohortCoverage.verifiedTickers, [currentIdentity.ticker]);
+  assert.equal(cohortCoverage.missingTickers.length, 24);
+  assert.equal(builder.pilotProfileCoverage([{ ...currentIdentity, profile: null }], now).verifiedCompanies, 0);
   const listing = { ...identity, name: identity.company, exchange: "Nasdaq", securityType: "common_stock", sourceNames: ["SEC company_tickers_exchange"] };
   const completed = { ...identity, profile: fixture, firstVerifiedAt: now.toISOString() };
   assert.equal(builder.profileBatchPlan([listing], [completed], now, 100).newlyVerifiedToday, 1);

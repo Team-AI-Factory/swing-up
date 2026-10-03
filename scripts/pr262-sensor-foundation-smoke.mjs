@@ -244,6 +244,7 @@ assert.equal(fifteenMinuteCadence.persistedState.cursors.secUrgentFormIndex, 2);
 assert.equal(fifteenMinuteCadence.persistedState.cursors.officialFeedIndex, 2);
 
 const directory = loadTypeScript("../lib/opportunity-engine/pr262-company-directory.ts", {
+  "@/lib/equity-signal/security-classification": loadTypeScript("../lib/equity-signal/security-classification.ts", {}),
   "@/lib/simple-alert-pilot-runtime": { isSimpleAlertPilot: () => false },
   "@/lib/simple-alert-pilot-scope": { pilotCompanies: () => [] },
   "@/lib/r2-warehouse": r2,

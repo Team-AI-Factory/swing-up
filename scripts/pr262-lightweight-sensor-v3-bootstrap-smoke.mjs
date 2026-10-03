@@ -562,3 +562,32 @@ console.log(JSON.stringify({
   directAttemptOutcomesReportedExactly: true,
   unavailableDiscoveryTelemetryFailsUnknown: true,
 }, null, 2));
+
+// Scheduled guard waits remain visible without inventing attempted requests or
+// HTTP failures. Partial source work still retains its real attempt.
+for (const scenario of [
+  { attempts: 0, successes: 0, deferred: 3, status: "budget_deferred" },
+  { attempts: 1, successes: 1, deferred: 2, status: "partial" },
+  { attempts: 1, successes: 0, deferred: 1, status: "budget_deferred" },
+]) {
+  directMonitorError = null;
+  const nextRetryAt = "2026-10-03T16:00:00.000Z";
+  directMonitorOverride = directMonitorResult({ discoveriesAttempted: scenario.attempts,
+    discoverySuccesses: scenario.successes, discoveryFailures: 0, attemptCount: scenario.attempts,
+    successCount: scenario.successes, failureCount: 0, deferredCount: scenario.deferred,
+    discoveryDeferred: scenario.deferred, feedDeferred: 0, deferredAfterSourceAttempt: scenario.attempts && !scenario.successes ? 1 : 0,
+    deferredReasons: [`pr262_sensor_budget_guard:sec_edgar:minimum_interval;next_retry_at=${nextRetryAt}`],
+    nextRetryAt, eligibleCompanies: 3, secSubmissionsChecked: scenario.attempts });
+  const result = await loaded.exports.runPr262LightweightSensorV3({ now: new Date("2026-10-03T15:00:00.000Z"), fetchImpl: sensorFetch });
+  const source = result.sourceSummary.find(row => row.provider === "direct_issuer_feeds");
+  assert.equal(source.status, scenario.status);
+  assert.equal(source.attempted, scenario.attempts > 0);
+  assert.equal(source.attemptCount, scenario.attempts);
+  assert.equal(source.failureCount, 0);
+  assert.equal(source.deferredCount, scenario.deferred);
+  assert.equal(source.nextRetryAt, nextRetryAt);
+  assert.equal(source.error, null);
+  assert.equal(result.directAnnouncementMonitoring.deferredCount, scenario.deferred);
+  assert.equal(result.directAnnouncementMonitoring.nextRetryAt, nextRetryAt);
+}
+console.log("Production source summaries preserve scheduled deferrals, truthful attempt denominators and exact retry times.");

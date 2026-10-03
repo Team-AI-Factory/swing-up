@@ -96,6 +96,26 @@ function embeddedProviderRetryAt(error: string | null) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function scheduledSourceDeferral(error: unknown, now: Date) {
+  const message = typeof error === "string" ? error : error instanceof Error ? error.message : "";
+  const match = /^pr262_sensor_budget_guard:([a-z0-9_]+):(minimum_interval|rolling_24h_budget);next_retry_at=([^;\s]+)$/.exec(message);
+  const retryAt = match ? Date.parse(match[3]) : NaN;
+  return match && Number.isFinite(retryAt) && retryAt > now.getTime()
+    ? { reason: message, nextRetryAt: new Date(retryAt).toISOString() } : null;
+}
+
+// A local budget rejection is not a network attempt. If an earlier request in
+// the same discovery/redirect chain did run, retain that source-operation
+// attempt even though a later step is deferred. Real transport errors count.
+function observedSourceFetch(fetchImpl: typeof fetch, now: Date) {
+  let attempted = false;
+  const observed: typeof fetch = async (request, init) => {
+    try { const response = await fetchImpl(request, init); attempted = true; return response; }
+    catch (error) { if (!scheduledSourceDeferral(error, now)) attempted = true; throw error; }
+  };
+  return { fetchImpl: observed, attempted: () => attempted };
+}
+
 function discoveryRetryAt(error: string | null, now: Date) {
   const providerRetryAt = embeddedProviderRetryAt(error);
   if (providerRetryAt !== null && providerRetryAt > now.getTime()) return new Date(providerRetryAt).toISOString();
@@ -537,7 +557,9 @@ async function discoverOne(
             feedUrl = (await safePublicHttps(discovered)).toString();
             break;
           } catch (cause) {
-            if (!error) error = discoveryFailureMessage(cause);
+            const message = discoveryFailureMessage(cause);
+            // A later genuine failure cannot be hidden behind an earlier wait.
+            if (!error || (scheduledSourceDeferral(error, now) && !scheduledSourceDeferral(message, now))) error = message;
           }
         }
       }
@@ -641,6 +663,10 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
   let secFilingsFound = 0;
   let discoverySuccesses = 0;
   let discoveryFailures = 0;
+  let discoveryDeferred = 0;
+  let feedDeferred = 0;
+  let deferredAfterSourceAttempt = 0;
+  const deferrals: Array<{ reason: string; nextRetryAt: string }> = [];
   const attemptErrors: string[] = [];
   const discoverySelection = {
     total: 0,
@@ -681,13 +707,19 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
       discoverySelection.otherRecheck = discoveryTargets.filter((target) => target.workClass === "other_recheck").length;
       for (let start = 0; start < discoveryTargets.length; start += DISCOVERY_CONCURRENCY) {
         await Promise.all(discoveryTargets.slice(start, start + DISCOVERY_CONCURRENCY).map(async ({ company, existing }) => {
+          const observed = observedSourceFetch(fetchImpl, now);
           try {
-            const result = await discoverOne(fetchImpl, company, now, existing);
+            const result = await discoverOne(observed.fetchImpl, company, now, existing);
             byTicker.set(company.ticker, result.entry);
             events.push(...result.secEvents);
             secSubmissionsChecked += 1;
             secFilingsFound += result.secEvents.length;
-            if (!result.entry.error || confirmedNoFeedError(result.entry.error)) {
+            const deferral = scheduledSourceDeferral(result.entry.error, now);
+            if (deferral) {
+              discoveryDeferred += 1;
+              deferredAfterSourceAttempt += 1;
+              deferrals.push(deferral);
+            } else if (!result.entry.error || confirmedNoFeedError(result.entry.error)) {
               discoverySuccesses += 1;
             } else {
               discoveryFailures += 1;
@@ -695,6 +727,7 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
             }
           } catch (error) {
             const message = discoveryFailureMessage(error);
+            const deferral = scheduledSourceDeferral(error, now);
             byTicker.set(company.ticker, {
               ticker: company.ticker,
               company: company.company,
@@ -710,10 +743,16 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
               consecutiveConfirmedNoFeedDiscoveries: existing?.consecutiveConfirmedNoFeedDiscoveries ?? 0,
               consecutiveFailures: existing?.consecutiveFailures ?? 0,
             });
-            discoveryFailures += 1;
-            attemptErrors.push(message);
+            if (deferral) {
+              discoveryDeferred += 1;
+              if (observed.attempted()) deferredAfterSourceAttempt += 1;
+              deferrals.push(deferral);
+            } else {
+              discoveryFailures += 1;
+              attemptErrors.push(message);
+            }
           }
-          discovered += 1;
+          if (observed.attempted()) discovered += 1;
         }));
       }
       registry.lastDiscoveryCycleAt = now.toISOString();
@@ -734,9 +773,11 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
 
   let feedSuccesses = 0;
   let feedFailures = 0;
+  let feedsPolled = 0;
   for (const entry of due) {
+    const observed = observedSourceFetch(fetchImpl, now);
     try {
-      const feed = await fetchBounded(fetchImpl, entry.feedUrl!, "application/rss+xml,application/atom+xml,text/xml", 8_000);
+      const feed = await fetchBounded(observed.fetchImpl, entry.feedUrl!, "application/rss+xml,application/atom+xml,text/xml", 8_000);
       events.push(...parseFeed(feed.body, entry, now));
       entry.lastCheckedAt = now.toISOString();
       entry.lastSuccessAt = now.toISOString();
@@ -745,15 +786,25 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
       entry.consecutiveFailures = 0;
       feedSuccesses += 1;
     } catch (error) {
-      const retry = failedFeedRetry(entry, now);
       const message = discoveryFailureMessage(error);
-      entry.lastCheckedAt = now.toISOString();
-      entry.nextCheckAt = retry.nextCheckAt;
       entry.error = message === "direct_feed_discovery_failed" ? "direct_feed_poll_failed" : message;
-      entry.consecutiveFailures = retry.consecutiveFailures;
-      feedFailures += 1;
-      attemptErrors.push(entry.error);
+      const deferral = scheduledSourceDeferral(error, now);
+      if (deferral) {
+        entry.nextCheckAt = deferral.nextRetryAt;
+        if (observed.attempted()) { entry.lastCheckedAt = now.toISOString(); deferredAfterSourceAttempt += 1; }
+        feedDeferred += 1;
+        deferrals.push(deferral);
+      } else {
+        const retry = failedFeedRetry(entry, now);
+        entry.lastCheckedAt = now.toISOString();
+        entry.nextCheckAt = retry.nextCheckAt;
+        entry.consecutiveFailures = retry.consecutiveFailures;
+        feedFailures += 1;
+        attemptErrors.push(entry.error);
+      }
     }
+    // DNS/URL/read failures still represent a real attempted source operation.
+    if (observed.attempted() || !scheduledSourceDeferral(entry.error, now)) feedsPolled += 1;
   }
 
   registry.updatedAt = now.toISOString();
@@ -778,13 +829,20 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
     rssIsOptionalEnrichment: true as const,
     seriousSignalCoverageDependsOnRss: false as const,
     registeredFeeds: persistedRegistry.entries.filter((entry) => entry.feedUrl).length,
-    feedsPolled: due.length,
+    feedsPolled,
+    feedPollsSelected: due.length,
     feedSuccesses,
     feedFailures,
     discoveriesAttempted: discovered,
     discoverySuccesses,
     discoveryFailures,
-    attemptCount: due.length + discovered,
+    discoveryDeferred,
+    feedDeferred,
+    deferredCount: discoveryDeferred + feedDeferred,
+    deferredAfterSourceAttempt,
+    deferredReasons: [...new Set(deferrals.map(row => row.reason))].slice(0, 8),
+    nextRetryAt: deferrals.length ? deferrals.map(row => row.nextRetryAt).sort()[0] : null,
+    attemptCount: feedsPolled + discovered,
     successCount: feedSuccesses + discoverySuccesses,
     failureCount: feedFailures + discoveryFailures,
     attemptErrors: [...new Set(attemptErrors)].slice(0, 8),

@@ -1,5 +1,7 @@
 import { spawnSync } from "node:child_process";
 const checks = [
+  "pr262-direct-issuer-feed", "pr262-lightweight-sensor-v3-bootstrap",
+  "equity-universe-fallback", "pr262-sensor-foundation",
   "ai-committee-model-policy", "company-profile-layout-cache",
   "pr262-pilot-watch-valuation", "company-profile-service-recipients",
   "pr262-pilot-directory-bootstrap",

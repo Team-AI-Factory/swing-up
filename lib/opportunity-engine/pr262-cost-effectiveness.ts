@@ -30,6 +30,11 @@ type DailyMetrics = {
   totalDurationMs: number;
   sourceAttempts: number;
   sourceFailures: number;
+  sourceAccountingVersion: 2;
+  sourceAccountingStartedAt: string | null;
+  sourceMeasuredCycles: number;
+  sourceMeasuredAttempts: number;
+  sourceMeasuredFailures: number;
   newEvents: number;
   sectorFanoutEvents: number;
   maximumPendingEvents: number;
@@ -51,6 +56,7 @@ type DailyMetrics = {
   derived: {
     averageCycleDurationMs: number;
     sourceFailureRatePercent: number;
+    sourceMeasuredFailureRatePercent: number | null;
     processingFailureRatePercent: number | null;
     committeeFailureRatePercent: number | null;
     eventsProcessedPerAiCall: number | null;
@@ -69,6 +75,8 @@ function empty(date: string): DailyMetrics {
     totalDurationMs: 0,
     sourceAttempts: 0,
     sourceFailures: 0,
+    sourceAccountingVersion: 2, sourceAccountingStartedAt: null,
+    sourceMeasuredCycles: 0, sourceMeasuredAttempts: 0, sourceMeasuredFailures: 0,
     newEvents: 0,
     sectorFanoutEvents: 0,
     maximumPendingEvents: 0,
@@ -81,7 +89,7 @@ function empty(date: string): DailyMetrics {
     seriousSells: 0,
     seriousWatchOuts: 0,
     directIssuerFeedsPolled: 0,
-    derived: { averageCycleDurationMs: 0, sourceFailureRatePercent: 0, processingFailureRatePercent: null, committeeFailureRatePercent: null, eventsProcessedPerAiCall: null, seriousSignalsPerAiCall: null, quietCycleSharePercent: 0 },
+    derived: { averageCycleDurationMs: 0, sourceFailureRatePercent: 0, sourceMeasuredFailureRatePercent: null, processingFailureRatePercent: null, committeeFailureRatePercent: null, eventsProcessedPerAiCall: null, seriousSignalsPerAiCall: null, quietCycleSharePercent: 0 },
     quietCycles: 0,
   };
 }
@@ -91,6 +99,7 @@ function derive(value: DailyMetrics) {
   value.derived = {
     averageCycleDurationMs: value.cycles ? Math.round(value.totalDurationMs / value.cycles) : 0,
     sourceFailureRatePercent: value.sourceAttempts ? Math.round((value.sourceFailures / value.sourceAttempts) * 10_000) / 100 : 0,
+    sourceMeasuredFailureRatePercent: value.sourceMeasuredAttempts ? value.sourceMeasuredFailures / value.sourceMeasuredAttempts * 100 : null,
     processingFailureRatePercent: value.processingAttempts ? value.processingFailures / value.processingAttempts * 100 : null,
     committeeFailureRatePercent: value.committeeReviewAttempts ? value.committeeTechnicalFailures / value.committeeReviewAttempts * 100 : null,
     eventsProcessedPerAiCall: value.aiCalls ? Math.round((value.eventsProcessed / value.aiCalls) * 100) / 100 : null,
@@ -113,6 +122,12 @@ export async function recordPr262CostEffectiveness(input: CycleMetrics) {
     value.totalDurationMs += Math.max(0, input.durationMs);
     value.sourceAttempts += Math.max(0, input.sourceAttempts);
     value.sourceFailures += Math.max(0, input.sourceFailures);
+    // Preserve cumulative historical counters exactly. Version-two windows
+    // start only here; old scheduled waits are not silently reclassified.
+    value.sourceAccountingStartedAt ??= input.checkedAt;
+    value.sourceMeasuredCycles += 1;
+    value.sourceMeasuredAttempts += Math.max(0, input.sourceAttempts);
+    value.sourceMeasuredFailures += Math.max(0, input.sourceFailures);
     value.newEvents += Math.max(0, input.newEvents);
     value.sectorFanoutEvents += Math.max(0, input.sectorFanoutEvents);
     value.maximumPendingEvents = Math.max(value.maximumPendingEvents, input.pendingEvents);

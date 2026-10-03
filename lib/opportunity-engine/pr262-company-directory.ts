@@ -1,3 +1,4 @@
+import { sanitizeAuthoritativeEquityEntries } from "@/lib/equity-signal/security-classification";
 import crypto from "node:crypto";
 import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
 import { pilotCompanies } from "@/lib/simple-alert-pilot-scope";
@@ -199,7 +200,7 @@ function freshAuthoritativeUniverse(value: unknown) {
 async function buildPilotDirectory(): Promise<Directory> {
   const loaded = await readJson(EQUITY_UNIVERSE_KEY);
   const { universe, universeRefreshedAt } = freshAuthoritativeUniverse(loaded.value);
-  const universeRows = (universe.entries as unknown[]).map(object);
+  const universeRows = sanitizeAuthoritativeEquityEntries((universe.entries as unknown[]).map(object));
   const officialRows = universeRows.filter(row => Array.isArray(row.sourceNames)
     && row.sourceNames.includes("SEC company_tickers_exchange"));
   const entries = pilotCompanies().flatMap((company): Pr262CompanyDirectoryEntry[] => {
@@ -606,6 +607,11 @@ export async function enrichPr262SensorCompanyMappings() {
     failClosed,
     changed,
     directoryCompanies: directory.entries.length,
+    ...(isSimpleAlertPilot() ? { cohortIdentityCoverage: {
+      configuredCompanies: pilotCompanies().length,
+      mappedTickers: directory.entries.map(entry => entry.ticker),
+      missingTickers: pilotCompanies().filter(company => !directory.entries.some(entry => entry.ticker === company.ticker)).map(company => company.ticker),
+    } } : {}),
     directoryCompaniesWithCik: directory.entriesWithCik,
     directoryRecordsRead: directory.recordsRead,
     directoryUpdatedAt: directory.updatedAt,

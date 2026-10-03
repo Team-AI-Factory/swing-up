@@ -100,6 +100,7 @@ type SourceSummary = {
   attemptCount?: number | null;
   successCount?: number | null;
   failureCount?: number | null;
+  deferredCount?: number | null;
 };
 
 type LiveWatchlistPrice = {
@@ -689,6 +690,12 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
     discoveriesAttempted: null as number | null,
     discoverySuccesses: null as number | null,
     discoveryFailures: null as number | null,
+    discoveryDeferred: null as number | null,
+    feedDeferred: null as number | null,
+    deferredCount: null as number | null,
+    deferredAfterSourceAttempt: null as number | null,
+    deferredReasons: null as string[] | null,
+    nextRetryAt: null as string | null,
     attemptCount: null as number | null,
     successCount: null as number | null,
     failureCount: null as number | null,
@@ -739,6 +746,12 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
       discoveriesAttempted: direct.discoveriesAttempted,
       discoverySuccesses: direct.discoverySuccesses,
       discoveryFailures: direct.discoveryFailures,
+      discoveryDeferred: direct.discoveryDeferred ?? 0,
+      feedDeferred: direct.feedDeferred ?? 0,
+      deferredCount: direct.deferredCount ?? 0,
+      deferredAfterSourceAttempt: direct.deferredAfterSourceAttempt ?? 0,
+      deferredReasons: direct.deferredReasons ?? [],
+      nextRetryAt: direct.nextRetryAt ?? null,
       attemptCount: direct.attemptCount,
       successCount: direct.successCount,
       failureCount: direct.failureCount,
@@ -769,11 +782,12 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
     events.push(...direct.events);
     const directStatus = direct.attemptCount > 0
       ? direct.successCount === 0
-        ? "temporarily_unavailable"
-        : direct.failureCount > 0
+        ? direct.failureCount > 0 ? "temporarily_unavailable" : "budget_deferred"
+        : direct.failureCount > 0 || direct.deferredCount > 0
           ? "partial"
           : "connected"
-      : direct.eligibleCompanies > 0 || direct.registeredFeeds > 0
+      : direct.deferredCount > 0 ? "budget_deferred"
+        : direct.eligibleCompanies > 0 || direct.registeredFeeds > 0
         ? "not_due"
         : "not_ready";
     summaries.push({
@@ -787,10 +801,11 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
         : directStatus === "not_ready"
           ? "no_direct_issuer_evidence_available"
           : null,
-      nextRetryAt: null,
+      nextRetryAt: direct.nextRetryAt ?? null,
       attemptCount: direct.attemptCount,
       successCount: direct.successCount,
       failureCount: direct.failureCount,
+      deferredCount: direct.deferredCount ?? 0,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message.slice(0, 200) : "direct_issuer_feeds_failed";

@@ -21,6 +21,14 @@ async function read(key: string) {
 }
 const dayOf = (date: Date) => new Date(date.getTime() + 7 * 3600_000).toISOString().slice(0, 10);
 
+/** Coverage is checked against the current cohort, not broad daily production. */
+export function pilotProfileCoverage(entries: Row[], now: Date) {
+  const companies = pilotCompanies();
+  const verifiedTickers = companies.filter(company => entries.some(row => verifiedCompanyProfile(row.profile, company, now))).map(company => company.ticker);
+  return { configuredCompanies: companies.length, verifiedCompanies: verifiedTickers.length, verifiedTickers,
+    missingTickers: companies.filter(company => !verifiedTickers.includes(company.ticker)).map(company => company.ticker) };
+}
+
 /** One source-verified company (CIK), never a second share class or refresh. */
 export function profileBatchPlan(listings: Row[], entries: Row[], now: Date, limit: number) {
   const day = dayOf(now);
@@ -131,6 +139,7 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
   };
   let attempted = 0, verified = 0, before = 0, after = 0, status = "completed", failure: string | null = null;
   let eligibility: Row = {}, retryAttempts = 0;
+  let cohortProfiles: ReturnType<typeof pilotProfileCoverage> | null = null;
   const pendingReasons: Record<string, number> = {};
   const attemptedIssuers = new Set<string>();
   try {
@@ -167,6 +176,7 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
     const fresh = await read(profilesKey());
     const freshEntries = Array.isArray(fresh.value.entries) ? fresh.value.entries.map(object) : [];
     after = profileBatchPlan(universe.snapshot.entries, freshEntries, new Date(), 0).newlyVerifiedToday;
+    cohortProfiles = pilotProfileCoverage(freshEntries, new Date());
     for (const row of freshEntries) {
       const cik = profileCik(row.cik);
       if (!cik || !attemptedIssuers.has(cik) || Date.parse(String(row.updatedAt ?? "")) < startedAt
@@ -187,7 +197,7 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
   const summary = { ok: status !== "failed", checkedAt: new Date().toISOString(), status, target: PROFILE_DAILY_TARGET,
     attempted, unverifiedThisRun: attempted - verified, verificationYieldPercent: attempted ? verified / attempted * 100 : null, verifiedThisRun: verified, newlyVerifiedThisRun: Math.max(0, after - before), newlyVerifiedToday: after || before, remaining: Math.max(0, PROFILE_DAILY_TARGET - (after || before)),
     requests, requestFailures, responseBodyFailures, failureRatePercent: requests ? requestFailures / requests * 100 : null,
-    ...eligibility, retryAttempts, pendingReasons, durationMs: Date.now() - startedAt, concurrency: 2,
+    ...eligibility, cohortProfiles, retryAttempts, pendingReasons, durationMs: Date.now() - startedAt, concurrency: 2,
     modelCalls: 0, failure, guarantees500: false };
   const current = await read(key);
   if (current.value.owner !== owner) throw new Error("simple_profile_lease_lost");

@@ -1,3 +1,4 @@
+import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
@@ -61,6 +62,7 @@ const pilotScope = load("../lib/simple-alert-pilot-scope.ts", {
 });
 const directory = load("../lib/opportunity-engine/pr262-company-directory.ts", {
   "@/lib/simple-alert-pilot-runtime": { isSimpleAlertPilot: () => pilot },
+  "@/lib/equity-signal/security-classification": loadTsModule("@/lib/equity-signal/security-classification"),
   "@/lib/simple-alert-pilot-scope": pilotScope,
   "@/lib/opportunity-engine/pr262-storage": { pr262StorageKey: storageKey },
   "@/lib/opportunity-engine/pr262-change-sensor": { readPr262ChangeSensorState: async () => ({ pending }) },
@@ -102,6 +104,8 @@ function stored() { return JSON.parse(objects.get(directoryKey).text); }
 reset();
 const first = await mapping();
 assert.equal(first.directoryCompanies, 25);
+assert.equal(first.cohortIdentityCoverage.mappedTickers.length, 25);
+assert.deepEqual(first.cohortIdentityCoverage.missingTickers, []);
 assert.equal(first.mapped, 25);
 assert.equal(first.failClosed, 0);
 const saved = stored();
@@ -134,6 +138,31 @@ assert.equal(hsai.securityIdentitySource, "pilot_reviewed_sec_ads_filing");
 assert.equal(hsai.securityIdentitySourceUrl, cohort.companies.find(row => row.ticker === "HSAI").adsRatioSourceUrl);
 assert.ok(saved.entries.find(row => row.ticker === "REKR"), "Quarantined issuer remains watchable without upside authority.");
 assert.equal(writes.filter(key => key === directoryKey).length, 1, "Identical revalidated identity cache is reused.");
+
+// Actual Nasdaq/SEC sibling descriptions captured on 2026-10-03. The old
+// plural classifier and SEC-only suffix gap produced exactly22/25 live coverage.
+const withDerivativeSiblings = clone(universe);
+for (const [ticker, sibling, description, secOnly] of [
+  ["PGY", "PGYWW", "Pagaya Technologies Ltd. - Warrants", false],
+  ["AISP", "AISPW", "Airship AI Holdings, Inc - Warrants", false],
+  ["BBAI", "BBAI-WT", "BigBear.ai Holdings, Inc.", true],
+]) {
+  const primary = withDerivativeSiblings.entries.find(row => row.ticker === ticker);
+  primary.sourceNames = ["Nasdaq Trader nasdaqlisted", sourceName];
+  primary.aliases = [`${primary.name} - Common Stock`];
+  withDerivativeSiblings.entries.push({ ...primary, ticker: sibling, aliases: [description], sourceNames: secOnly ? [sourceName] : primary.sourceNames });
+}
+reset(withDerivativeSiblings);
+assert.equal((await mapping()).directoryCompanies, 25, "Proven derivative siblings cannot shadow the independently described common shares");
+assert.equal(stored().entries.some(row => ["PGYWW", "AISPW", "BBAI-WT"].includes(row.ticker)), false);
+const trueCommonSibling = clone(withDerivativeSiblings);
+trueCommonSibling.entries.find(row => row.ticker === "BBAI-WT").aliases = ["Example Class WT Common Stock"];
+reset(trueCommonSibling);
+assert.equal((await mapping()).directoryCompanies, 24, "Explicit common-share evidence overrides a derivative-looking ticker suffix");
+const noClassEvidence = clone(withDerivativeSiblings);
+noClassEvidence.entries.find(row => row.ticker === "BBAI").aliases = ["BigBear.ai Holdings, Inc."];
+reset(noClassEvidence);
+assert.equal((await mapping()).directoryCompanies, 24, "An unclassified sibling remains ambiguous without primary common-share evidence");
 
 // Cached state cannot trump a newly changed official identity, even if the
 // universe refresh timestamp is unchanged. Remaining cohort members still work.

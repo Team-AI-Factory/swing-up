@@ -1,3 +1,4 @@
+import { sanitizeAuthoritativeEquityEntries } from "@/lib/equity-signal/security-classification";
 import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
 import { getR2Config, readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 import { normalizeEquitySymbol } from "@/lib/branch-signal-lab-policy";
@@ -80,7 +81,7 @@ function securityClassification(name: string, etf: string, testIssue: string) {
   const lower = name.toLowerCase();
   if (testIssue.toUpperCase() === "Y") return { eligible: false as const, reason: "test_issue" };
   if (etf.toUpperCase() === "Y") return { eligible: false as const, reason: "etf" };
-  if (/\b(?:warrant|right|unit|preferred|preference|depositary preferred|note|notes|bond|debenture|contingent value right|beneficial interest|closed.end fund|income fund|trust units?)\b/i.test(lower)) {
+  if (/\b(?:warrants?|right|unit|preferred|preference|depositary preferred|note|notes|bond|debenture|contingent value right|beneficial interest|closed.end fund|income fund|trust units?)\b/i.test(lower)) {
     return { eligible: false as const, reason: "non_common_equity" };
   }
   if (/\b(?:etf|exchange traded fund|index fund|portfolio|fund shares?)\b/i.test(lower)) return { eligible: false as const, reason: "fund" };
@@ -88,18 +89,9 @@ function securityClassification(name: string, etf: string, testIssue: string) {
   return { eligible: true as const, securityType: adr ? "adr" as const : "common_stock" as const };
 }
 
-function removeProbableSecDerivativeSiblings(entries: EquityUniverseEntry[]) {
-  return entries.filter((candidate) => {
-    if (!candidate.cik || candidate.sourceNames.some((source) => source.startsWith("Nasdaq Trader"))) return true;
-    return !entries.some((other) =>
-      other.cik === candidate.cik
-      && other.ticker !== candidate.ticker
-      && ["W", "WS", "WT", "R", "U"].some((suffix) => candidate.ticker === `${other.ticker}${suffix}`));
-  });
-}
 
 function sanitizeCachedSnapshot(snapshot: EquityUniverseSnapshot) {
-  const entries = removeProbableSecDerivativeSiblings(snapshot.entries);
+  const entries = sanitizeAuthoritativeEquityEntries(snapshot.entries);
   if (entries.length === snapshot.entries.length) return snapshot;
   const removed = snapshot.entries.length - entries.length;
   const cikMapped = entries.filter((entry) => entry.cik).length;
@@ -237,7 +229,7 @@ function mergeEntries(nasdaq: ParsedDirectory, other: ParsedDirectory, secRows: 
       sourceNames: ["SEC company_tickers_exchange"],
     });
   }
-  return removeProbableSecDerivativeSiblings([...merged.values()]).sort((left, right) => left.ticker.localeCompare(right.ticker));
+  return sanitizeAuthoritativeEquityEntries([...merged.values()]).sort((left, right) => left.ticker.localeCompare(right.ticker));
 }
 
 function emptyDirectory(): ParsedDirectory {

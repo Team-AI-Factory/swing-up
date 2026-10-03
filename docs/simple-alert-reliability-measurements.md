@@ -29,6 +29,14 @@ A successful HTTP response header does not establish a readable annual filing. P
 
 HTTP errors and connection failures remain counted by the paced fetch wrapper and are not doubled. Missing business/customer prose, provider-budget deferrals before a network attempt, and deliberate cancellation after successful early extraction are not body transport failures. Evidence remains unverified when retrieval or extraction fails; no description is invented and no AI call is added. The regression exercises all of these cases using the actual cache and profile-builder code with in-memory storage and synthetic streams.
 
+## Direct-source scheduled waits
+
+Direct issuer monitoring separates recognized local quota/cadence waits from source failures. A guard must have the exact internal guard format and a valid future retry time; an unproven or malformed wait remains a failure. A discovery or feed poll denied before any source request is excluded from the attempted-source denominator and reported in `discoveryDeferred`, `feedDeferred` and `deferredCount`. If an earlier request in that same source operation already ran, its one operation-level attempt remains visible through `deferredAfterSourceAttempt`; the unfinished discovery is not a completed success. A later genuine HTTP/transport failure cannot hide behind an earlier scheduled wait.
+
+The sensor exposes partial or `budget_deferred` coverage and the provider's retry time without calling a budget wait an HTTP failure. RSS waits retain prior failure counts instead of escalating failure backoff. Actual DNS, HTTP, response-body, transport and feed-format failures retain their existing behavior. All provider caps, discovery/poll cadences, source security checks and approval gates remain unchanged. Historical daily counters are preserved rather than rewritten; assess observation windows using the release-specific definition and retained raw evidence.
+
+Daily state and bounded summaries add `sourceAccountingVersion: 2`, the first `sourceAccountingStartedAt`, and separate `sourceMeasuredCycles`, `sourceMeasuredAttempts` and `sourceMeasuredFailures`. These counters begin only when the corrected code executes. Existing `sourceAttempts` and `sourceFailures` retain their full historical totals, including the first new-cohort 2/7 classification issue; that record is not proof of two transport failures. A zero-attempt version-two window has a null measured failure rate and cannot satisfy a coverage or minimum-sample gate.
+
 ## Focused analyst output limit
 
 The 3 October 2026 12:49 UTC AZZ review failed because the analyst reached its 900-token response limit (`finish_reason: length`). Its three other roles completed; all four responses remained cost-accounted, and the attempt was audited without approval or delivery. Exact response text was not retained in accessible logs, so the regression is representative rather than an exact replay.

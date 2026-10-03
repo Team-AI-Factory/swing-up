@@ -25,7 +25,7 @@ export function simpleAlertCycleSummary(body) {
     notifications: pick(result.notifications, ["healthy", "directFailures"]),
     recovery: pick(recovery, ["ok", "skipped", "reason", "dueJobs", "jobsAttempted", "delivered", "retryScheduled", "blockedNoChannel", "queuePageTruncated"]),
     discovery: pick(recovery?.discovery, ["outboxesFound", "jobsCreatedOrConfirmed", "truncated"]),
-    sourceDaily: pick(result.cost?.daily, ["date", "sourceAttempts", "sourceFailures"]),
+    sourceDaily: pick(result.cost?.daily, ["date", "sourceAttempts", "sourceFailures", "sourceAccountingVersion", "sourceAccountingStartedAt", "sourceMeasuredCycles", "sourceMeasuredAttempts", "sourceMeasuredFailures"]),
     processingDaily: pick(result.cost?.daily, ["date", "processingAttempts", "processingFailures", "committeeReviewAttempts", "committeeTechnicalFailures", "committeeOutcomeUnknown", "processingMeasuredCycles", "processingMeasurementStartedAt"]),
     profiles: pick(result.companyProfiles, ["attempted", "verified", "status"]),
     profileProduction: pick(result, ["status", "target", "attempted", "newlyVerifiedThisRun", "newlyVerifiedToday", "remaining", "requests", "requestFailures", "responseBodyFailures", "failureRatePercent"]),

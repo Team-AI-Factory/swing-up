@@ -23,7 +23,7 @@ assert.equal(measure([{ ok: false, status: "event_job_error" }]).processingFailu
 assert.equal(measure([{ ok: true, openAiCalled: true }]).committeeOutcomeUnknown, 1, "Missing diagnostics cannot certify review success");
 assert.equal(measure([{ ok: true, analysisDiagnostics: { status: "technical_failure" } }]).processingFailures, 1);
 
-let saved = { version: 1, date: "2026-10-03", cycles: 7, eventFailures: 0 };
+let saved = { version: 1, date: "2026-10-03", cycles: 7, eventFailures: 0, sourceAttempts: 7, sourceFailures: 2 };
 let rejectWrite = false;
 let conflicts = 0;
 const { recordPr262CostEffectiveness: record } = loadTsModule("@/lib/opportunity-engine/pr262-cost-effectiveness", {
@@ -43,13 +43,23 @@ const cycle = { checkedAt: "2026-10-03T11:00:00.000Z", durationMs: 1, sourceAtte
 conflicts = 1;
 const first = await record(cycle);
 assert.equal(first.daily.cycles, 8);
+assert.equal(first.daily.sourceAttempts, 9, "Historical source attempts must remain intact");
+assert.equal(first.daily.sourceFailures, 2, "Historical guard misclassifications remain visible, never erased");
+assert.equal(first.daily.sourceAccountingVersion, 2);
+assert.equal(first.daily.sourceAccountingStartedAt, cycle.checkedAt);
+assert.equal(first.daily.sourceMeasuredCycles, 1);
+assert.equal(first.daily.sourceMeasuredAttempts, 2);
+assert.equal(first.daily.sourceMeasuredFailures, 0);
 assert.equal(first.daily.processingMeasuredCycles, 1, "Legacy cycles must not acquire invented processing measurements");
 assert.equal(first.daily.processingMeasurementStartedAt, cycle.checkedAt);
 assert.equal(first.daily.processingAttempts, 4);
 assert.equal(first.daily.processingFailures, 1);
 assert.equal(first.daily.derived.processingFailureRatePercent, 25);
 assert.equal(first.daily.derived.committeeFailureRatePercent, 50);
-const quiet = await record({ ...cycle, checkedAt: "2026-10-03T11:15:00.000Z", eventFailures: 0, aiCalls: 0, processingReliability: measure([]) });
+const quiet = await record({ ...cycle, checkedAt: "2026-10-03T11:15:00.000Z", sourceAttempts: 0, sourceFailures: 0, eventFailures: 0, aiCalls: 0, processingReliability: measure([]) });
+assert.equal(quiet.daily.sourceMeasuredAttempts, 2, "An all-deferred source pass must not dilute the new denominator");
+assert.equal(quiet.daily.sourceFailures, 2);
+assert.equal(quiet.daily.sourceAccountingStartedAt, cycle.checkedAt);
 assert.equal(quiet.daily.processingMeasuredCycles, 2);
 assert.equal(quiet.daily.processingAttempts, 4, "Quiet runs must not dilute the denominator");
 assert.equal(quiet.daily.derived.committeeFailureRatePercent, 50);

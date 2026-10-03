@@ -17,6 +17,12 @@ assert.equal(summary.funnel.committeeApproved, 0);
 assert.equal(summary.recovery.skipped, true);
 assert.equal(summary.recovery.delivered, null);
 assert.equal(summary.receiptVerifiedBySummary, false);
+assert.equal(summary.sourceDaily.sourceAccountingStartedAt, null, "Historical responses must not acquire a fabricated source measurement start");
+const sourceAccounting = simpleAlertCycleSummary(JSON.stringify({ cost: { daily: { sourceAccountingVersion: 2,
+  sourceAccountingStartedAt: "2026-10-03T14:45:00Z", sourceAttempts: 12, sourceFailures: 2, sourceMeasuredCycles: 1, sourceMeasuredAttempts: 5, sourceMeasuredFailures: 0 } } }));
+assert.equal(sourceAccounting.sourceDaily.sourceFailures, 2);
+assert.equal(sourceAccounting.sourceDaily.sourceMeasuredFailures, 0);
+assert.equal(sourceAccounting.sourceDaily.sourceAccountingVersion, 2);
 assert.ok(JSON.stringify(summary).length < 8000);
 assert.ok(!JSON.stringify(summary).includes("private-evidence"));
 assert.equal(simpleAlertCycleSummary('{"ok":false}').accounting.accountingHealthy, null);

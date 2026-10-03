@@ -10,7 +10,7 @@ function load(path, dependencies = {}) {
   new Function("require", "module", "exports", output)((name) => {
     if (name === "node:crypto") return crypto;
     if (name in dependencies) return dependencies[name];
-    if (name === "@/lib/ai-committee/review-policy") return loadTsModule(name);
+    if (["@/lib/ai-committee/evidence-text-references", "@/lib/ai-committee/review-policy"].includes(name)) return loadTsModule(name);
     throw new Error(`Unexpected dependency: ${name}`);
   }, m, m.exports);
   return m.exports;

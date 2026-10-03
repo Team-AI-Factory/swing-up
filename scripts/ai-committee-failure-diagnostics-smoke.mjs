@@ -9,7 +9,7 @@ function load(path, dependencies = {}) {
   const loadedModule = { exports: {} };
   new Function("require", "module", "exports", output)((name) => {
     if (name in dependencies) return dependencies[name];
-    if (["@/lib/ai-committee/review-policy", "@/lib/equity-signal/us-market-calendar"].includes(name)) return loadTsModule(name);
+    if (["@/lib/ai-committee/evidence-text-references", "@/lib/ai-committee/review-policy", "@/lib/equity-signal/us-market-calendar"].includes(name)) return loadTsModule(name);
     throw new Error(`Unexpected import: ${name}`);
   }, loadedModule, loadedModule.exports);
   return loadedModule.exports;

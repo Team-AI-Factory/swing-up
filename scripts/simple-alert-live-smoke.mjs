@@ -42,7 +42,7 @@ try {
   const fixture = companyProfileFixture(identity, now);
   const io = { readVersionedTextFromR2: async () => { throw new Error("unexpected_io"); }, writeVersionedJsonToR2: async () => { throw new Error("unexpected_io"); } };
   const builder = loadTsModule("@/lib/simple-alert-profile-builder", { "@/lib/r2-warehouse": io });
-  const listing = { ...identity, name: identity.company, sourceNames: ["SEC company_tickers_exchange"] };
+  const listing = { ...identity, name: identity.company, exchange: "Nasdaq", securityType: "common_stock", sourceNames: ["SEC company_tickers_exchange"] };
   const completed = { ...identity, profile: fixture, firstVerifiedAt: now.toISOString() };
   assert.equal(builder.profileBatchPlan([listing], [completed], now, 100).newlyVerifiedToday, 1);
   assert.equal(builder.profileBatchPlan([listing], [completed], now, 100).due.length, 0);

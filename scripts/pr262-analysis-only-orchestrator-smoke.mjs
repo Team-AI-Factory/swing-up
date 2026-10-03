@@ -98,6 +98,7 @@ const stubs = {
     },
     processPendingSeriousSignalDeliveries: async () => {
       deliveryRecoveryCalls += 1;
+      if (process.env.SWING_UP_SIMPLE_PILOT_ENABLED === "true") processingOrder.push("delivery");
       return { ok: deliveryHealthy, jobsAttempted: 0, ...(deliveryHealthy ? {} : { error: "delivery_queue_unhealthy" }) };
     },
   },
@@ -721,6 +722,45 @@ try {
   state.pending = pendingBeforeBacklog;
   advanceCycleClock = () => {};
   eventMode = "idle";
+}
+
+// Pilot deliveries get one bounded turn before an analysis backlog can consume
+// the cycle. No second pass, deadline extension or paid reservation is added.
+const savedPilotEnvironment = { ...process.env };
+Object.assign(process.env, {
+  SWING_UP_SIMPLE_PILOT_ENABLED: "true", RAILWAY_GIT_BRANCH: "pilot-simple-alerts",
+  RAILWAY_PROJECT_ID: "83d99341-d622-475f-8035-00ef3d0916d1", RAILWAY_ENVIRONMENT_ID: "87afb8d7-c4fc-4f84-92b6-5d2820a689b6",
+  SWING_UP_PR262_STORAGE_PREFIX: "branch-labs/simple-alerts/", SWING_UP_R2_WRITE_PREFIX: "branch-labs/simple-alerts/",
+});
+const beforePilotDeliveryCalls = deliveryRecoveryCalls;
+const beforePilotState = state.pending;
+state.pending = [{ ...pendingBeforeBacklog[0], ticker: "AAPL", cik: "0000320193", queueNextAttemptAt: null }];
+processingOrder.length = 0;
+eventMode = "consume_processing_window";
+simulatedNow = realDateNow();
+advanceCycleClock = milliseconds => { simulatedNow += milliseconds; };
+Date.now = () => simulatedNow;
+try {
+  const pilotBusy = await loaded.exports.runPr262AnalysisOnlyCycle({ maxCycleMs: 210_000 });
+  assert.deepEqual(processingOrder, ["delivery", "event"]);
+  assert.equal(deliveryRecoveryCalls, beforePilotDeliveryCalls + 1);
+  assert.equal(pilotBusy.notifications.durableRecoveryConsumer.ok, true);
+  assert.notEqual(pilotBusy.notifications.durableRecoveryConsumer.skipped, true);
+  assert.equal(pilotBusy.processing.deadlineMs, 210000);
+  assert.equal(pilotBusy.processing.deliveryReserveMs, 45000);
+  assert.equal(pilotBusy.processing.reportingReserveMs, 15000);
+  eventMode = "idle";
+  const pilotDefault = await loaded.exports.runPr262AnalysisOnlyCycle();
+  assert.equal(pilotDefault.processing.deadlineMs, 360000);
+  const pilotClamped = await loaded.exports.runPr262AnalysisOnlyCycle({ maxCycleMs: 900000 });
+  assert.equal(pilotClamped.processing.deadlineMs, 360000, "Caller cannot exceed six-minute pilot bound");
+} finally {
+  Date.now = realDateNow;
+  state.pending = beforePilotState;
+  advanceCycleClock = () => {};
+  eventMode = "idle";
+  for (const key of Object.keys(process.env)) if (!(key in savedPilotEnvironment)) delete process.env[key];
+  Object.assign(process.env, savedPilotEnvironment);
 }
 
 readinessUnavailable = true;

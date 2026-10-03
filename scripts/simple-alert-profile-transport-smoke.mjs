@@ -18,7 +18,7 @@ const overrides = {
   "@/lib/opportunity-engine/pr262-storage": { pr262StorageKey: key => key },
   "node:timers/promises": { setTimeout: async () => {} },
   "@/lib/equity-signal/universe": { loadEquityUniverse: async () => ({ snapshot: { refreshedAt: now.toISOString(), entries: [
-    { ...identity, name: identity.company, sourceNames: ["SEC company_tickers_exchange"] },
+    { ...identity, name: identity.company, exchange: "Nasdaq", securityType: "common_stock", sourceNames: ["SEC company_tickers_exchange"] },
   ] } }) },
   "@/lib/opportunity-engine/pr262-sensor-fetch-budget": { createPr262SensorBudgetedFetch: async input => ({
     fetchImpl: async (...args) => {

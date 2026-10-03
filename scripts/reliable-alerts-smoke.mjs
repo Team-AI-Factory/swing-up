@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 const checks = [
-  "simple-alert-profile-transport",
+  "simple-alert-delivery-controls",
+  "simple-alert-profile-throughput", "simple-alert-profile-transport",
   "ai-committee-evidence-text-references", "ai-committee-crypto-policy",
   "pr262-processing-reliability", "simple-alert-cycle-summary",
   "pr262-backlog-readiness",

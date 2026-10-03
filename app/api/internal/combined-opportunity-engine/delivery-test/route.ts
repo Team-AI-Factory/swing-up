@@ -4,7 +4,10 @@ import { internalApiScopeAuthorized } from "@/lib/internal-api-auth";
 import { deliverSeriousSignalOutbox } from "@/lib/notifications/serious-signal-delivery";
 import { isPr262ApprovedPremergeProductionRollout } from "@/lib/opportunity-engine/pr262-runtime";
 import { pr262StorageKey, resolvePr262StoragePrefix } from "@/lib/opportunity-engine/pr262-storage";
-import { writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
+import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
+
+import { usQuoteFreshness } from "@/lib/equity-signal/us-market-calendar";
+import { isSimpleAlertPilot, SIMPLE_PILOT_PREFIX } from "@/lib/simple-alert-pilot-runtime";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -25,6 +28,13 @@ function configuredRunId() {
 }
 
 function testOutbox(createdAt: string, runId: string) {
+  // Synthetic controls use a calendar-valid timestamp without pretending that
+  // a weekend quote is live. No real market fact or gate is changed.
+  let quoteObservedAt = createdAt;
+  for (let hour = 0; hour <= 240; hour += 1) {
+    const candidate = new Date(Date.parse(createdAt) - hour * 3_600_000).toISOString();
+    if (usQuoteFreshness(candidate, new Date(createdAt)).usable) { quoteObservedAt = candidate; break; }
+  }
   const fingerprint = crypto.createHash("sha256").update(`pr262-delivery-test:${runId}`).digest("hex");
   return {
     version: 1,
@@ -53,7 +63,7 @@ function testOutbox(createdAt: string, runId: string) {
       whatHappened: "Synthetic payload used only to verify the configured delivery path.",
       quote: {
         price: 1,
-        observedAt: createdAt,
+        observedAt: quoteObservedAt,
         actionableForSeriousSignal: true,
         marketSession: "regular",
       },
@@ -82,10 +92,15 @@ function testOutbox(createdAt: string, runId: string) {
 export async function POST(request: NextRequest) {
   if (!internalApiScopeAuthorized(request.headers, "delivery_test_runtime")) return hidden();
   const runId = configuredRunId();
+  const pilot = isSimpleAlertPilot() && process.env.SWING_UP_SIMPLE_PILOT_ROLE === "sensor";
+  const allowedRuntime = pilot
+    ? resolvePr262StoragePrefix() === SIMPLE_PILOT_PREFIX
+      && process.env.SWING_UP_PR262_DELIVERY_TEST_EXTERNAL_ENABLED === "false"
+      && process.env.SWING_UP_PR262_EXTERNAL_NOTIFICATIONS_ENABLED === "false"
+    : isPr262ApprovedPremergeProductionRollout() && resolvePr262StoragePrefix() === "production/pr262/";
   if (process.env.SWING_UP_PR262_APPROVED_DELIVERY_TEST?.trim().toLowerCase() !== "true"
     || !runId
-    || !isPr262ApprovedPremergeProductionRollout()
-    || resolvePr262StoragePrefix() !== "production/pr262/") return hidden();
+    || !allowedRuntime) return hidden();
 
   let body: { confirmDeliveryTest?: unknown };
   try { body = await request.json() as { confirmDeliveryTest?: unknown }; }
@@ -120,7 +135,32 @@ export async function POST(request: NextRequest) {
       && second.attempts === first.attempts
       && second.channels.every((channel) => !channel.sent);
     const firstInvocationProvedWebFeed = created.written ? firstWebFeedSent : true;
-    const passed = deliveryReachedPrimary && duplicateSuppressed && firstInvocationProvedWebFeed;
+    // Read durable storage, rather than inferring receipt persistence from HTTP.
+    const digest = (key: string) => crypto.createHash("sha256").update(key).digest("hex").slice(0, 32);
+    const receiptKey = pr262StorageKey(`serious-signal/delivery-test/receipts/web_feed/${digest(outboxKey)}.json`);
+    const receipt = await readVersionedTextFromR2(receiptKey);
+    const receiptPayload = receipt.found && receipt.text ? JSON.parse(receipt.text) : null;
+    const receiptVerified = receiptPayload?.status === "sent" && receiptPayload?.outboxKey === outboxKey
+      && receiptPayload?.channel === "web_feed" && receiptPayload?.destination === "authenticated_test_feed";
+    let negativeControlPassed: boolean | null = null;
+    if (pilot) {
+      const negativeKey = pr262StorageKey(`serious-signal/delivery-test/outbox/${runId}-unapproved.json`);
+      const negative = testOutbox(createdAt, `${runId}-unapproved`);
+      negative.committee.finalJudge.verdict = "negative";
+      negative.committee.output.overallRecommendation = "reject";
+      await writeVersionedJsonToR2(negativeKey, negative, { createOnly: true });
+      let rejected = false;
+      try { await deliverSeriousSignalOutbox(negativeKey, { now: new Date(), ownerId: `delivery-test-${runId}-negative` }); }
+      catch (error) { rejected = error instanceof Error && error.message === "serious_signal_delivery_committee_not_approved"; }
+      const negativeReceipt = await readVersionedTextFromR2(pr262StorageKey(`serious-signal/delivery-test/receipts/web_feed/${digest(negativeKey)}.json`));
+      const negativeJob = await readVersionedTextFromR2(pr262StorageKey(`serious-signal/delivery-test/jobs/${digest(negativeKey)}.json`));
+      negativeControlPassed = rejected && !negativeReceipt.found && !negativeJob.found;
+    }
+    const liveIndex = await readVersionedTextFromR2(pr262StorageKey("serious-signal/delivery-v2/feed-index-v1.json"));
+    const livePointers: Array<{ outboxKey?: string }> = liveIndex.found && liveIndex.text ? (JSON.parse(liveIndex.text).pointers ?? []) : [];
+    const seriousSignalFeedExcluded = !livePointers.some((pointer) => pointer.outboxKey?.includes(`/delivery-test/outbox/${runId}`));
+    const passed = deliveryReachedPrimary && duplicateSuppressed && firstInvocationProvedWebFeed
+      && receiptVerified && seriousSignalFeedExcluded && (!pilot || negativeControlPassed === true);
     const channelDiagnostics = first.channels.map((channel) => ({
       channel: channel.channel,
       configured: channel.configured,
@@ -143,7 +183,10 @@ export async function POST(request: NextRequest) {
       duplicateStatus: second.deliveryStatus,
       duplicateSuppressed,
       channelDiagnostics,
-      seriousSignalFeedExcluded: true,
+      seriousSignalFeedExcluded,
+      receiptVerified,
+      negativeControlPassed,
+      receiptKey,
       liveWebhookDisabled: true,
       destination: "authenticated_delivery_test_feed",
       deployedCommit: process.env.RAILWAY_GIT_COMMIT_SHA?.trim() || null,
@@ -158,6 +201,10 @@ export async function POST(request: NextRequest) {
       duplicateStatus: second.deliveryStatus,
       duplicateSuppressed,
       channelDiagnostics,
+      receiptVerified,
+      negativeControlPassed,
+      seriousSignalFeedExcluded,
+      receiptKey,
     })}`);
     if (!passed) {
       return NextResponse.json({
@@ -170,6 +217,9 @@ export async function POST(request: NextRequest) {
         duplicateStatus: second.deliveryStatus,
         duplicateSuppressed,
         channelDiagnostics,
+        receiptVerified,
+        negativeControlPassed,
+        seriousSignalFeedExcluded,
       }, { status: 503 });
     }
 
@@ -183,7 +233,10 @@ export async function POST(request: NextRequest) {
       firstInvocationTelegramSent: firstTelegramSent,
       deliveryStatus: first.deliveryStatus,
       duplicateSuppressed,
-      seriousSignalFeedExcluded: true,
+      seriousSignalFeedExcluded,
+      receiptVerified,
+      negativeControlPassed,
+      receiptKey,
       liveWebhookDisabled: true,
       exactCommit: process.env.RAILWAY_GIT_COMMIT_SHA?.trim() || null,
     });

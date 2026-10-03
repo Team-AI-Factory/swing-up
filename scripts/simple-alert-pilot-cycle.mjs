@@ -37,8 +37,26 @@ if (profileOnly) {
 } else if (env.AI_COMMITTEE_ENABLED !== "true" || env.SWING_UP_PR262_EVENT_JOB_OPENAI_ENABLED !== "true") {
   throw new Error("simple_pilot_committee_must_be_enabled");
 }
+// These credentials exist only inside this loopback-bound worker process.
+// Tests have a stable commit-scoped identity and are excluded from live feeds.
+const deliveryTestToken = crypto.randomBytes(32).toString("hex");
+if (!profileOnly) {
+  const commit = process.env.RAILWAY_GIT_COMMIT_SHA ?? "";
+  if (!/^[a-f0-9]{40}$/i.test(commit)) throw new Error("simple_pilot_delivery_control_commit_missing");
+  env.SWING_UP_PR262_APPROVED_DELIVERY_TEST = "true";
+  env.SWING_UP_PR262_DELIVERY_TEST_RUNTIME_TOKEN = deliveryTestToken;
+  env.SWING_UP_PR262_DELIVERY_TEST_RUN_ID = `pilot-${commit.toLowerCase()}`;
+}
 const app = spawn("npm", ["run", "start", "--", "--hostname", "127.0.0.1", "--port", port], { env, stdio: "inherit", detached: true });
 const base = `http://127.0.0.1:${port}`;
+// Hard-stop the entire worker well before its next 15-minute schedule. This
+// bounds exceptional cleanup hangs without changing source or paid-AI limits.
+const watchdog = setTimeout(() => {
+  console.error("simple_pilot_worker_deadline_exceeded");
+  try { process.kill(-app.pid, "SIGKILL"); } catch {}
+  process.exit(1);
+}, profileOnly ? 300_000 : 540_000);
+watchdog.unref();
 let code = 1;
 try {
   let ready = false;
@@ -49,9 +67,21 @@ try {
     await delay(500);
   }
   if (!ready) throw new Error("simple_pilot_health_timeout");
+  if (!profileOnly) {
+    const control = await fetch(`${base}/api/internal/combined-opportunity-engine/delivery-test`, {
+      method: "POST", headers: { "content-type": "application/json", "x-swing-up-pr262-delivery-test-token": deliveryTestToken },
+      body: JSON.stringify({ confirmDeliveryTest: true }), signal: AbortSignal.timeout(60_000),
+    });
+    const result = await control.json();
+    console.log(`[simple-alerts-delivery-controls] ${JSON.stringify(result)}`);
+    if (!control.ok || result.ok !== true || result.testOnly !== true || result.receiptVerified !== true
+      || result.negativeControlPassed !== true || result.duplicateSuppressed !== true || result.seriousSignalFeedExcluded !== true) {
+      throw new Error("simple_pilot_delivery_controls_failed");
+    }
+  }
   const response = await fetch(`${base}/api/internal/combined-opportunity-engine/cron-v3`, {
     method: "POST", headers: { "content-type": "application/json", "x-swing-up-pr262-cron-token": token },
-    body: JSON.stringify({ mode: profileOnly ? "profiles_only" : "sensor_and_analysis" }), signal: AbortSignal.timeout(240_000),
+    body: JSON.stringify({ mode: profileOnly ? "profiles_only" : "sensor_and_analysis" }), signal: AbortSignal.timeout(profileOnly ? 240_000 : 400_000),
   });
   const body = await response.text();
   console.log(`[simple-alerts-summary] ${JSON.stringify(simpleAlertCycleSummary(body))}`);
@@ -60,6 +90,7 @@ try {
   code = 0;
 } catch (error) { console.error(error instanceof Error ? error.message : "simple_pilot_failed"); }
 finally {
+  clearTimeout(watchdog);
   try { process.kill(-app.pid, "SIGTERM"); } catch {}
   await Promise.race([once(app, "exit"), delay(3000)]).catch(() => null);
   try { process.kill(-app.pid, "SIGKILL"); } catch {}

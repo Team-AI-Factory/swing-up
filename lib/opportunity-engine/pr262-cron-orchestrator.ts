@@ -33,6 +33,8 @@ import { pr262ProcessingReliability } from "@/lib/opportunity-engine/pr262-proce
 import { isPr262ApprovedPremergeProductionRollout } from "@/lib/opportunity-engine/pr262-runtime";
 
 const MAX_CYCLE_MS = 210_000;
+const PILOT_MAX_CYCLE_MS = 360_000;
+const PILOT_DELIVERY_RESERVE_MS = 45_000;
 const REPORTING_RESERVE_MS = 15_000;
 const MIN_EVENT_START_BUDGET_MS = 45_000;
 
@@ -202,13 +204,29 @@ async function safeAiBudgetStatus(): Promise<AiBudgetStatus> {
 async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, cycleSignal: AbortSignal, deadlineAtMs: number) {
   const startedAt = Date.now();
   const checkedAt = new Date().toISOString();
-  const processingDeadlineAtMs = deadlineAtMs - REPORTING_RESERVE_MS;
+  const deliveryDeadlineAtMs = deadlineAtMs - REPORTING_RESERVE_MS;
+  const processingDeadlineAtMs = deliveryDeadlineAtMs - (isSimpleAlertPilot() ? PILOT_DELIVERY_RESERVE_MS : 0);
   const assertCycleActive = () => {
     if (Date.now() >= deadlineAtMs) throw new Pr262CycleDeadlineError();
     if (cycleSignal.aborted) {
       throw cycleSignal.reason instanceof Error ? cycleSignal.reason : new Error("pr262_cycle_aborted");
     }
   };
+
+  // Already-approved deliveries must get time before discovery or paid reviews.
+  // Keep the existing cycle deadline and one recovery pass; new approvals still
+  // use the immediate delivery path below.
+  const earlyDeliveryRecovery = isSimpleAlertPilot()
+    ? await processPendingSeriousSignalDeliveries({
+        maxJobs: 4,
+        signal: composedSignal([cycleSignal, AbortSignal.timeout(30_000)]),
+        deadlineAtMs: Math.min(processingDeadlineAtMs, Date.now() + 30_000),
+      }).catch((error) => ({
+        ok: false,
+        error: error instanceof Error ? error.message.slice(0, 200) : "serious_signal_delivery_recovery_failed",
+      }))
+    : null;
+  assertCycleActive();
 
   let sourceBudget: Awaited<ReturnType<typeof createPr262SensorBudgetedFetch>> | null = null;
   let sensor: Awaited<ReturnType<typeof runPr262LightweightSensorV3>> | null = null;
@@ -423,13 +441,13 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
           typeof watchOut.outboxKey === "string" ? watchOut.outboxKey : null,
         ].filter((value): value is string => Boolean(value)))];
       for (const outboxKey of outboxKeys) {
-        if (Date.now() >= processingDeadlineAtMs || cycleSignal.aborted) {
+        if (Date.now() >= deliveryDeadlineAtMs || cycleSignal.aborted) {
           deadlineStoppedAdmissions = true;
           break;
         }
         const delivery = await deliverSeriousSignalOutbox(outboxKey, {
           signal: cycleSignal,
-          deadlineAtMs: processingDeadlineAtMs,
+          deadlineAtMs: deliveryDeadlineAtMs,
         }).catch((error) => ({
           ok: false,
           outboxKey,
@@ -481,7 +499,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
     }
   }
 
-  const deliveryRecovery = processingDeadlineAtMs - Date.now() >= 30_000 && !cycleSignal.aborted
+  const deliveryRecovery = earlyDeliveryRecovery ?? (processingDeadlineAtMs - Date.now() >= 30_000 && !cycleSignal.aborted
     ? await processPendingSeriousSignalDeliveries({
         maxJobs: 4,
         signal: cycleSignal,
@@ -490,7 +508,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
         ok: false,
         error: error instanceof Error ? error.message.slice(0, 200) : "serious_signal_delivery_recovery_failed",
       }))
-    : { ok: false, skipped: true, reason: "cycle_deadline_reserve" };
+    : { ok: false, skipped: true, reason: "cycle_deadline_reserve" });
 
   assertCycleActive();
   state = await readPr262ChangeSensorState();
@@ -650,6 +668,8 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
       seriousSells,
       seriousWatchOuts,
       deadlineMs: deadlineAtMs - startedAt,
+      deliveryReserveMs: isSimpleAlertPilot() ? PILOT_DELIVERY_RESERVE_MS : 0,
+      reportingReserveMs: REPORTING_RESERVE_MS,
       deadlineStoppedAdmissions,
       eventResults: eventResults.slice(0, capacity),
     },
@@ -689,9 +709,10 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
 }
 
 async function runPr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput = {}) {
+  const maximumCycleMs = isSimpleAlertPilot() ? PILOT_MAX_CYCLE_MS : MAX_CYCLE_MS;
   const maxCycleMs = Number.isFinite(input.maxCycleMs)
-    ? Math.max(1_000, Math.min(MAX_CYCLE_MS, Math.round(Number(input.maxCycleMs))))
-    : MAX_CYCLE_MS;
+    ? Math.max(1_000, Math.min(maximumCycleMs, Math.round(Number(input.maxCycleMs))))
+    : maximumCycleMs;
   const deadlineAtMs = Date.now() + maxCycleMs;
   const deadlineAbort = new AbortController();
   const deadlineTimer = setTimeout(() => deadlineAbort.abort(new Pr262CycleDeadlineError()), maxCycleMs);

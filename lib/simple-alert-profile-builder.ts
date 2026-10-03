@@ -5,7 +5,7 @@ import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
 import { pilotCompanies } from "@/lib/simple-alert-pilot-scope";
 import { ensureCompanyProfile } from "@/lib/opportunity-engine/company-profile-cache";
-import { profileCik, verifiedCompanyProfile } from "@/lib/company-profile";
+import { COMPANY_PROFILE_PARSER_REVISION, profileCik, verifiedCompanyProfile } from "@/lib/company-profile";
 import { loadEquityUniverse } from "@/lib/equity-signal/universe";
 import { createPr262SensorBudgetedFetch } from "@/lib/opportunity-engine/pr262-sensor-fetch-budget";
 
@@ -21,30 +21,81 @@ async function read(key: string) {
 }
 const dayOf = (date: Date) => new Date(date.getTime() + 7 * 3600_000).toISOString().slice(0, 10);
 
-/** Counts first-time VERIFIED identities, never refreshes or attempts. */
+/** One source-verified company (CIK), never a second share class or refresh. */
 export function profileBatchPlan(listings: Row[], entries: Row[], now: Date, limit: number) {
   const day = dayOf(now);
-  const valid = new Map(entries.filter(row => verifiedCompanyProfile(row.profile, row, now))
-    .map(row => [`${row.ticker}:${profileCik(row.cik)}`, row]));
-  const newlyVerifiedToday = [...valid.values()].filter(row => typeof row.firstVerifiedAt === "string"
-    && Number.isFinite(Date.parse(row.firstVerifiedAt)) && dayOf(new Date(row.firstVerifiedAt)) === day).length;
-  const stored = new Map(entries.map(row => [`${row.ticker}:${profileCik(row.cik)}`, row]));
+  const valid = entries.filter(row => verifiedCompanyProfile(row.profile, row, now));
+  const validIssuers = new Set(valid.map(row => profileCik(row.cik)));
+  // Keep the earliest known verification across every alias, including expired
+  // profiles. A newly profiled second listing must not reset a company's age.
+  const firstByIssuer = new Map<string, number>();
+  for (const row of entries) {
+    const cik = profileCik(row.cik);
+    const at = Date.parse(String(row.firstVerifiedAt ?? object(row.profile).verifiedAt ?? ""));
+    if (cik && Number.isFinite(at) && at <= now.getTime()) firstByIssuer.set(cik, Math.min(firstByIssuer.get(cik) ?? Infinity, at));
+  }
+  const newlyVerifiedToday = [...validIssuers].filter(cik => cik && firstByIssuer.has(cik)
+    && dayOf(new Date(firstByIssuer.get(cik)!)) === day
+    && valid.some(row => profileCik(row.cik) === cik && typeof row.firstVerifiedAt === "string")).length;
   const cohort = new Set(pilotCompanies().map(row => row.ticker));
-  const seen = new Set<string>();
-  const due = listings.flatMap(row => {
+  const stored = new Map<string, Row[]>();
+  for (const row of entries) {
+    const cik = profileCik(row.cik);
+    if (cik) stored.set(cik, [...(stored.get(cik) ?? []), row]);
+  }
+  let ineligibleListings = 0, duplicateIssuerListings = 0;
+  const issuers = new Map<string, { ticker: string; cik: string; company: string; directoryConfirmed: boolean }>();
+  for (const row of listings) {
     const ticker = String(row.ticker ?? ""), cik = profileCik(row.cik), company = String(row.name ?? row.company ?? "");
+    // The declared universe scope is not enough: SEC's file also has OTC rows.
+    // Require explicit exchange and common/ADR evidence from this listing.
     if (!cik || !company || !/^[A-Z0-9.-]{1,12}$/.test(ticker)
-      || !Array.isArray(row.sourceNames) || !row.sourceNames.includes("SEC company_tickers_exchange")) return [];
-    const key = `${ticker}:${cik}`, previous = stored.get(key);
-    if (seen.has(key) || valid.has(key) || Date.parse(String(previous?.nextAttemptAt ?? "")) > now.getTime()) return [];
-    seen.add(key);
-    return [{ ticker, cik, company, lastAttempt: Date.parse(String(previous?.updatedAt ?? "")) || 0 }];
-  }).sort((a, b) => Number(cohort.has(b.ticker)) - Number(cohort.has(a.ticker)) || a.lastAttempt - b.lastAttempt || a.ticker.localeCompare(b.ticker));
-  return { newlyVerifiedToday, due: due.slice(0, Math.max(0, Math.min(limit, PROFILE_DAILY_TARGET - newlyVerifiedToday))), eligible: due.length };
+      || !["common_stock", "adr"].includes(String(row.securityType))
+      || !/^(?:NASDAQ|NYSE(?: American| Arca)?|Cboe BZX|IEXG)$/i.test(String(row.exchange ?? ""))
+      || !Array.isArray(row.sourceNames) || !row.sourceNames.includes("SEC company_tickers_exchange")) {
+      ineligibleListings++; continue;
+    }
+    const candidate = { ticker, cik, company, directoryConfirmed: row.sourceNames.some(source => String(source).startsWith("Nasdaq Trader")) };
+    const prior = issuers.get(cik);
+    if (prior) duplicateIssuerListings++;
+    // CIK, not ticker spelling, establishes shared issuer identity. Prefer the
+    // fixed pilot or a security-directory-confirmed listing as representative.
+    // Shorter aliases break ties only; no security type is inferred from suffix.
+    const rank = (value: typeof candidate) => Number(cohort.has(value.ticker)) * 2 + Number(value.directoryConfirmed);
+    if (!prior || rank(candidate) > rank(prior)
+      || (rank(candidate) === rank(prior) && (candidate.ticker.length < prior.ticker.length
+        || (candidate.ticker.length === prior.ticker.length && candidate.ticker.localeCompare(prior.ticker) < 0)))) issuers.set(cik, candidate);
+  }
+  const due = [...issuers.values()].flatMap(identity => {
+    if (validIssuers.has(identity.cik)) return [];
+    const previous = stored.get(identity.cik) ?? [];
+    const deferred = previous.some(row => {
+      const parserRepair = row.error === "company_profile_products_and_customers_not_extracted"
+        && row.parserRevision !== COMPANY_PROFILE_PARSER_REVISION;
+      return !parserRepair && Date.parse(String(row.nextAttemptAt ?? "")) > now.getTime();
+    });
+    if (deferred) return [];
+    return [{ ...identity, lastAttempt: Math.max(0, ...previous.map(row => Date.parse(String(row.updatedAt ?? "")) || 0)) }];
+  }).sort((a, b) => a.lastAttempt - b.lastAttempt || a.ticker.localeCompare(b.ticker));
+  const pilot = due.filter(row => cohort.has(row.ticker));
+  const fresh = due.filter(row => !cohort.has(row.ticker) && !row.lastAttempt);
+  const retries = due.filter(row => !cohort.has(row.ticker) && row.lastAttempt);
+  const ordered = [...pilot];
+  // An endless supply of untouched issuers cannot starve due retries. Reserve
+  // each fourth background slot for the oldest retry, without ignoring backoff.
+  let freshCursor = 0, retryCursor = 0, slot = 0;
+  while (freshCursor < fresh.length || retryCursor < retries.length) {
+    const retryTurn = slot++ % 4 === 3 || freshCursor >= fresh.length;
+    ordered.push(retryTurn && retryCursor < retries.length ? retries[retryCursor++]
+      : freshCursor < fresh.length ? fresh[freshCursor++] : retries[retryCursor++]);
+  }
+  return { newlyVerifiedToday, due: ordered.slice(0, Math.max(0, Math.min(limit, PROFILE_DAILY_TARGET - newlyVerifiedToday))),
+    eligible: due.length, ineligibleListings, duplicateIssuerListings, dueRetries: due.filter(row => row.lastAttempt > 0).length };
 }
 
 export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: typeof fetch = fetch) {
   if (!isSimpleAlertPilot() || process.env.SWING_UP_SIMPLE_PILOT_ROLE !== "profiles") throw new Error("simple_pilot_profile_role_required");
+  const startedAt = Date.now();
   const signal = AbortSignal.timeout(175_000);
   const day = dayOf(now), key = pr262StorageKey(`pilot/profile-builder/${day}.json`), owner = crypto.randomUUID();
   const loaded = await read(key);
@@ -57,11 +108,19 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
   const claim = await writeVersionedJsonToR2(key, state, loaded.saved.etag ? { expectedEtag: loaded.saved.etag } : { createOnly: true });
   if (!claim.written || claim.conflict) return { ok: true, status: "busy", target: PROFILE_DAILY_TARGET };
   let nextRequest = 0, requests = 0, requestFailures = 0, responseBodyFailures = 0, circuitOpen = false;
+  let pacingTail: Promise<void> = Promise.resolve();
   const paced: typeof fetch = async (request, init) => {
-    if (circuitOpen) throw new Error("simple_profile_source_cooldown");
-    signal.throwIfAborted();
-    await pause(Math.max(0, nextRequest - Date.now()), undefined, { signal });
-    nextRequest = Date.now() + 1000;
+    const requestSignal = init?.signal ? AbortSignal.any([signal, init.signal]) : signal;
+    const ready = pacingTail.then(async () => {
+      requestSignal.throwIfAborted();
+      if (circuitOpen) throw new Error("simple_profile_source_cooldown");
+      await pause(Math.max(0, nextRequest - Date.now()), undefined, { signal: requestSignal });
+      requestSignal.throwIfAborted();
+      if (circuitOpen) throw new Error("simple_profile_source_cooldown");
+      nextRequest = Date.now() + 1000;
+    });
+    pacingTail = ready.catch(() => undefined);
+    await ready;
     requests++;
     try {
       const response = await fetchImpl(request, { ...init, signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal });
@@ -71,6 +130,9 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
     } catch (error) { requestFailures++; throw error; }
   };
   let attempted = 0, verified = 0, before = 0, after = 0, status = "completed", failure: string | null = null;
+  let eligibility: Row = {}, retryAttempts = 0;
+  const pendingReasons: Record<string, number> = {};
+  const attemptedIssuers = new Set<string>();
   try {
     const provider = await createPr262SensorBudgetedFetch({ now, fetchImpl: paced, signal });
     const universe = await loadEquityUniverse(provider.fetchImpl, now);
@@ -79,18 +141,42 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
     const entries = Array.isArray(cache.value.entries) ? cache.value.entries.map(object) : [];
     const plan = profileBatchPlan(universe.snapshot.entries, entries, now, count);
     before = plan.newlyVerifiedToday;
+    eligibility = { eligibleCompanies: plan.eligible, ineligibleListings: plan.ineligibleListings,
+      duplicateIssuerListings: plan.duplicateIssuerListings, dueRetries: plan.dueRetries };
     status = before >= PROFILE_DAILY_TARGET ? "target_reached" : plan.due.length ? "completed" : "no_due_profiles";
-    for (const identity of plan.due) {
-      if (signal.aborted || circuitOpen) break;
-      attempted++;
-      if (await ensureCompanyProfile(identity, provider.fetchImpl, new Date(), { signal,
-        // The paced fetch counts errors before headers and non-2xx responses.
-        // Count a later body-read failure once against that existing attempt.
-        onResponseBodyFailure: () => { requestFailures++; responseBodyFailures++; },
-      })) verified++;
-    }
+    let cursor = 0, workerFailed = false;
+    const worker = async () => {
+      while (cursor < plan.due.length && !signal.aborted && !circuitOpen && !workerFailed) {
+        const identity = plan.due[cursor++];
+        attempted++; attemptedIssuers.add(identity.cik);
+        if (identity.lastAttempt) retryAttempts++;
+        try {
+          if (await ensureCompanyProfile(identity, provider.fetchImpl, new Date(), { signal,
+            // Headers/connect errors are counted by paced fetch; body failures
+            // belong to that same request, not an invented additional attempt.
+            onResponseBodyFailure: () => { requestFailures++; responseBodyFailures++; },
+          })) verified++;
+        } catch (error) { workerFailed = true; throw error; }
+      }
+    };
+    // Overlap only independent issuer work. Provider reservations and network
+    // starts stay serialized; global quotas and 1 request/second are unchanged.
+    const results = await Promise.allSettled([worker(), worker()]);
+    const rejected = results.find(result => result.status === "rejected");
+    if (rejected?.status === "rejected") throw rejected.reason;
     const fresh = await read(profilesKey());
-    after = profileBatchPlan(universe.snapshot.entries, Array.isArray(fresh.value.entries) ? fresh.value.entries.map(object) : [], new Date(), 0).newlyVerifiedToday;
+    const freshEntries = Array.isArray(fresh.value.entries) ? fresh.value.entries.map(object) : [];
+    after = profileBatchPlan(universe.snapshot.entries, freshEntries, new Date(), 0).newlyVerifiedToday;
+    for (const row of freshEntries) {
+      const cik = profileCik(row.cik);
+      if (!cik || !attemptedIssuers.has(cik) || Date.parse(String(row.updatedAt ?? "")) < startedAt
+        || verifiedCompanyProfile(row.profile, row, new Date())) continue;
+      const error = String(row.error ?? "");
+      const reason = typeof row.extractionFailure === "string" ? row.extractionFailure
+        : /budget|quota|cadence/i.test(error) ? "provider_budget_deferred"
+        : error.match(/^company_profile_[a-z0-9_]+/i)?.[0] ?? "source_request_failed";
+      pendingReasons[reason] = (pendingReasons[reason] ?? 0) + 1;
+    }
     if (circuitOpen) status = "source_cooldown";
     else if (signal.aborted) status = "time_budget_reached";
     else if (after >= PROFILE_DAILY_TARGET) status = "target_reached";
@@ -99,15 +185,16 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
     status = "failed"; failure = error instanceof Error ? error.message.slice(0, 250) : "profile_builder_failed";
   }
   const summary = { ok: status !== "failed", checkedAt: new Date().toISOString(), status, target: PROFILE_DAILY_TARGET,
-    attempted, unverifiedThisRun: attempted - verified, verificationYieldPercent: attempted ? verified / attempted * 100 : null, newlyVerifiedThisRun: verified, newlyVerifiedToday: after || before, remaining: Math.max(0, PROFILE_DAILY_TARGET - (after || before)),
+    attempted, unverifiedThisRun: attempted - verified, verificationYieldPercent: attempted ? verified / attempted * 100 : null, verifiedThisRun: verified, newlyVerifiedThisRun: Math.max(0, after - before), newlyVerifiedToday: after || before, remaining: Math.max(0, PROFILE_DAILY_TARGET - (after || before)),
     requests, requestFailures, responseBodyFailures, failureRatePercent: requests ? requestFailures / requests * 100 : null,
+    ...eligibility, retryAttempts, pendingReasons, durationMs: Date.now() - startedAt, concurrency: 2,
     modelCalls: 0, failure, guarantees500: false };
   const current = await read(key);
   if (current.value.owner !== owner) throw new Error("simple_profile_lease_lost");
   const saved = await writeVersionedJsonToR2(key, { ...state, ...summary, leaseUntil: null,
     // Unused reserved slots can be safely returned once this process settles.
     attemptsReserved: alreadyReserved + attempted, totalAttempts: (Number(state.totalAttempts) || 0) + attempted,
-    totalVerified: (Number(state.totalVerified) || 0) + verified }, { expectedEtag: current.saved.etag! });
+    totalVerified: after || before }, { expectedEtag: current.saved.etag! });
   if (!saved.written || saved.conflict) throw new Error("simple_profile_summary_not_saved");
   console.info(`[simple-profile-builder] ${JSON.stringify(summary)}`);
   return summary;

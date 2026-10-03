@@ -60,7 +60,7 @@ export async function readCompanyProfiles(identities: CompanyIdentity[], now = n
   return result;
 }
 
-async function boundedText(response: Response, complete?: (text: string) => boolean) {
+async function boundedText(response: Response, complete?: (text: string) => boolean, onResponseBodyFailure?: () => void) {
   const maximumBytes = complete ? 12_000_000 : 2_000_000;
   if (!response.ok) throw new Error(`company_profile_http_${response.status}`);
   if (!complete && Number(response.headers.get("content-length") ?? 0) > maximumBytes) throw new Error("company_profile_document_too_large");
@@ -70,7 +70,14 @@ async function boundedText(response: Response, complete?: (text: string) => bool
   let size = 0, body = "", lastChecked = 0;
   try {
     while (true) {
-      const chunk = await reader.read();
+      let chunk: Awaited<ReturnType<typeof reader.read>>;
+      try { chunk = await reader.read(); }
+      catch (error) {
+        // Fetch has already returned successful headers. A later stream
+        // timeout/transport error is still a failed request, not missing prose.
+        onResponseBodyFailure?.();
+        throw error;
+      }
       if (chunk.done) return body + decoder.decode();
       size += chunk.value.byteLength;
       if (size > maximumBytes) throw new Error("company_profile_document_too_large");
@@ -104,7 +111,7 @@ function annualFiling(body: Json, identity: CompanyIdentity, now: Date): Filing 
 }
 
 /** Exact issuer metadata, at most two named historical indexes, and one annual filing. */
-export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl: typeof fetch, now = new Date(), options: { signal?: AbortSignal } = {}) {
+export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl: typeof fetch, now = new Date(), options: { signal?: AbortSignal; onResponseBodyFailure?: () => void } = {}) {
   const exact = { ticker: text(identity.ticker).toUpperCase(), company: text(identity.company), cik: profileCik(identity.cik) };
   if (!exact.cik || !exact.company || !/^[A-Z0-9.-]{1,12}$/.test(exact.ticker)) return null;
   const { entries } = await load();
@@ -116,7 +123,7 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
     firstVerifiedAt: prior?.firstVerifiedAt, filing: prior?.filing, cachedParserRevision: prior?.cachedParserRevision, parserRevision: COMPANY_PROFILE_PARSER_REVISION };
   // Persist backoff before network; budget wrappers still make their own durable reservations.
   await store(entry);
-  const request = async (url: string, complete?: (text: string) => boolean) => boundedText(await fetchImpl(url, { headers: { Accept: "text/html,application/json", "User-Agent": "SwingUp/1.0 support@swingup.app" }, cache: "no-store", redirect: "error", signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(12000)]) : AbortSignal.timeout(12000) }), complete);
+  const request = async (url: string, complete?: (text: string) => boolean) => boundedText(await fetchImpl(url, { headers: { Accept: "text/html,application/json", "User-Agent": "SwingUp/1.0 support@swingup.app" }, cache: "no-store", redirect: "error", signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(12000)]) : AbortSignal.timeout(12000) }), complete, options.onResponseBodyFailure);
   let phase = "issuer_submissions";
   try {
     const priorFilingAge = now.getTime() - Date.parse(prior?.filing?.filedAt ?? "");

@@ -56,7 +56,7 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
     attemptsReserved: alreadyReserved + count, target: PROFILE_DAILY_TARGET, updatedAt: now.toISOString() };
   const claim = await writeVersionedJsonToR2(key, state, loaded.saved.etag ? { expectedEtag: loaded.saved.etag } : { createOnly: true });
   if (!claim.written || claim.conflict) return { ok: true, status: "busy", target: PROFILE_DAILY_TARGET };
-  let nextRequest = 0, requests = 0, requestFailures = 0, circuitOpen = false;
+  let nextRequest = 0, requests = 0, requestFailures = 0, responseBodyFailures = 0, circuitOpen = false;
   const paced: typeof fetch = async (request, init) => {
     if (circuitOpen) throw new Error("simple_profile_source_cooldown");
     signal.throwIfAborted();
@@ -83,7 +83,11 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
     for (const identity of plan.due) {
       if (signal.aborted || circuitOpen) break;
       attempted++;
-      if (await ensureCompanyProfile(identity, provider.fetchImpl, new Date(), { signal })) verified++;
+      if (await ensureCompanyProfile(identity, provider.fetchImpl, new Date(), { signal,
+        // The paced fetch counts errors before headers and non-2xx responses.
+        // Count a later body-read failure once against that existing attempt.
+        onResponseBodyFailure: () => { requestFailures++; responseBodyFailures++; },
+      })) verified++;
     }
     const fresh = await read(profilesKey());
     after = profileBatchPlan(universe.snapshot.entries, Array.isArray(fresh.value.entries) ? fresh.value.entries.map(object) : [], new Date(), 0).newlyVerifiedToday;
@@ -96,7 +100,7 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
   }
   const summary = { ok: status !== "failed", checkedAt: new Date().toISOString(), status, target: PROFILE_DAILY_TARGET,
     attempted, unverifiedThisRun: attempted - verified, verificationYieldPercent: attempted ? verified / attempted * 100 : null, newlyVerifiedThisRun: verified, newlyVerifiedToday: after || before, remaining: Math.max(0, PROFILE_DAILY_TARGET - (after || before)),
-    requests, requestFailures, failureRatePercent: requests ? requestFailures / requests * 100 : null,
+    requests, requestFailures, responseBodyFailures, failureRatePercent: requests ? requestFailures / requests * 100 : null,
     modelCalls: 0, failure, guarantees500: false };
   const current = await read(key);
   if (current.value.owner !== owner) throw new Error("simple_profile_lease_lost");

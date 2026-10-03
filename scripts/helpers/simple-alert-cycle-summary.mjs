@@ -27,7 +27,7 @@ export function simpleAlertCycleSummary(body) {
     sourceDaily: pick(result.cost?.daily, ["date", "sourceAttempts", "sourceFailures"]),
     processingDaily: pick(result.cost?.daily, ["date", "processingAttempts", "processingFailures", "committeeReviewAttempts", "committeeTechnicalFailures", "committeeOutcomeUnknown", "processingMeasuredCycles", "processingMeasurementStartedAt"]),
     profiles: pick(result.companyProfiles, ["attempted", "verified", "status"]),
-    profileProduction: pick(result, ["status", "target", "attempted", "newlyVerifiedThisRun", "newlyVerifiedToday", "remaining"]),
+    profileProduction: pick(result, ["status", "target", "attempted", "newlyVerifiedThisRun", "newlyVerifiedToday", "remaining", "requests", "requestFailures", "responseBodyFailures", "failureRatePercent"]),
     // This is a diagnostic summary, never an approval or delivery receipt.
     receiptVerifiedBySummary: false,
   };

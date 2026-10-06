@@ -1,5 +1,51 @@
 # Simple Alerts launch and operating record
 
+## Maintenance verification — 6 October 2026, 12:27 Bangkok
+
+Read the current input-accounting, storage/valuation, framework and pilot/evidence operating records first. Fresh GitHub comparison confirms head `e3541ceb0f6ca3471896da3b65540bb495d559ed` differs from runtime `c3641df7e323ae4678b95bfc8861755546b1f339` only in three documentation files. All four exact-code deployments remain successful; the four docs-only successor builds were SKIPPED. Sensor `d5ae83a2-507f-4caa-9dfc-c76d9165c4b6`, profiles `26f1daf0-1a78-4d16-be6f-8f48a62deaf8`, web `a69a16da-a9c3-459f-a351-487e58c6d5b8` and inert foundation `36337745-439e-4ebb-9b12-eeb842f43e3c` are unchanged. No active new code rollout was found.
+
+### Bounded verification: INOD has not completed its technical retry
+
+Two subsequent normal sensor cycles completed HTTP 200 at **05:02:51 and 05:18:23 UTC**, durations 46,418 and 45,094 ms. Neither made a paid model call or completed a new assessment. The first reopened INOD's case, then stopped before reservation on `paid_evidence_cooldown`, with next paid retry **7 October 04:32:18.074 UTC / 11:32:18 Bangkok**. Its original partial paid attempt therefore remains the only INOD Committee attempt; UPST's earlier complete review does not establish INOD recovery.
+
+Inspected current `pr262-research-evidence.ts` and `pr262-event-job.ts`: the former writes a 24-hour paid-review hold after a paid attempt unless all provider requests were rejected without usage; the latter checks matching candidate fingerprints before requesting another reservation. INOD has two real usage receipts, so the five-minute no-usage exception does not apply. Its follow-up changed to `awaiting_committee_capacity` while preserving the paid hold. This is a same-evidence protection, not exhausted money or proof of a complete review. The existing follow-up hold was not cleared, shortened or bypassed. No forced retry, policy bump, ledger mutation or runtime code change was made.
+
+At 05:18, UPST's evidence-only follow-up also stopped on unchanged evidence with no charge; its next evidence collection was scheduled for 05:33:09.987 UTC. It still needs the dated half-year EPS/CFO bridge, loan-adjusted sustainable cash flow, debt/maturity/recourse and diluted-share reconciliation, and justified valuation assumptions documented by the completed review. Current financialFacts presence was false (10/11 fields); no new verified bridge or completed analysis is claimed. The older generic `budget_deferred` quality label must be interpreted with `blockerCategory=same_evidence`, not reported as a spending stop.
+
+Both runs retained two pending cases, zero hygiene drops and zero expired/source-unread outcomes. Oldest due queue age increased from 31 to 47 minutes; this is waiting, not useful completion. There were two non-idle processing attempts, zero new technical failures and two nontechnical deferrals; zero Committee attempts, so this window has no measurable Committee failure rate. Daily counters through 05:18 remain 22 recorded cycles, three distinct admitted valuation cases, six processing invocations with one technical failure (16.67%), two Committee attempts with one technical failure (50%). INOD remains technically incomplete, PGY remains deterministic risk-rejected, and UPST has one completed insufficient-evidence review. Idle invocations and repeated deferrals are not additional assessed cases.
+
+### Sources, approval/delivery and shared cost
+
+Source failures in these two cycles: SEC broad 0/1, SEC urgent 0/2, halts 0/2 and market watch 0/2, total **0/7**. Daily sensor transport counters are 0/63; these exclude the separate profile network denominator and do not imply complete evidence. No source 403/429/timeout or provider quota block was reported in these payloads. Direct-issuer checks were not due, with all 25 missing SEC-website records still retained. Original INOD/UPST quote timestamps remain 5 October 23:56:20 / 23:58:07 UTC; fresh collection times do not make those quotes current.
+
+Both exact-code isolated authenticated web-feed controls passed and verified existing test-only receipt `b7d82a18e18c58b1279199c771772719.json`; duplicates were suppressed, the negative control passed and test data remained excluded from live signals. External test channels stayed disabled. Both real durable consumers found zero outboxes, due jobs, deliveries and errors. No final approval, Serious Buy/Sell/Watch Out or live delivery receipt occurred.
+
+Shared rolling accounting is unchanged at **$0.423085 recorded, $0 reserved, $0 pending/unknown exposure, $9.576915 remaining under $10**, healthy ledger, two recorded reviews. The $2.7538 maximum next-review hold and 20-review limit remain. Provider invoice verification and actual infrastructure spending/headroom under the separate $20/month limit remain unavailable. No resources, subscriptions or spending limits changed.
+
+### Exact-code profile completions and denominator reconciliation
+
+Three scheduled profile passes on `c3641df` completed HTTP 200, all normal time-budget exits, no AI calls:
+
+| Completion UTC | Attempts | First-time verifications | Requests | Request/body failures | Daily verified / remaining |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 04:55:47 | 21 | 3 | 33 | 0 / 0 | 154 / 346 |
+| 05:12:06 | 19 | 5 | 29 | 0 / 0 | 159 / 341 |
+| 05:26:19 | 19 | 0 | 31 | 0 / 0 | 159 / 341 |
+
+Total **59 attempts, 8 new verified issuers (13.56% yield), 51 unverified**, 93 requests and zero recorded request/body failures. New verified ticker rows: THO, TIC, TIGR, TK, TKLF, AHG, TLK and TLRY. Daily target remains **159/500, short by 341**. All current 25 cohort profiles remain verified. Profile retry backlog rose from 2,920 to 2,940 across these summaries. A successful worker with zero yield is not progress toward the target.
+
+Reconciled all 59 per-company structured log rows with the summaries: 26 customer-extraction gaps, nine business-and-customer gaps, five unavailable annual filings, two missing business sections, two oversized documents, one unresolved 40-F/AIF and **six execution-time deferrals**. Raw AGYS/TIMB, TLSA/TLS and TNC/TNDM rows explicitly say `company_profile_time_budget_deferred`; each pass incorrectly groups those two as `provider_budget_deferred`. No raw source timeout/403/429 or request failure occurred among these completed rows. Zero network failures does not erase the 45 extraction/document gaps or six unfinished timed-out-of-budget tasks.
+
+Located the reporting cause in both pending-reason paths of `lib/simple-alert-profile-builder.ts`: the broad `/budget|quota|cadence/` match runs before the specific `company_profile_...` error classifier, so `time_budget` is relabeled as provider quota. No telemetry patch was deployed or accepted by this check. A next small repair can preserve the exact time-budget reason ahead of that generic match, with isolated tests for true provider quota/cadence, transport errors and unchanged verification/accounting behavior. No need to alter throttles or extend runtime to correct these counts. No live transient R2 write-recovery diagnostic appeared in the observed passes; upstream transient recovery is still not proven merely by success.
+
+### Preserved scope and next step
+
+Live configuration read-back retains pilot-only branches, sensor every 15 minutes, profile minutes 7/22/37/52, NEVER restart, docs-only watch exclusions, and foundation `node scripts/simple-alert-paused.mjs` without cron. Retired foundation remains offline and queue-reset sleeping. Main scanning stays stopped. Staged telemetry patch `97789f67-b0f5-4cb3-b689-bd46c2b4c63f` is unchanged and untouched. No concurrent work was overwritten.
+
+The bounded work completed here is exact-commit retry verification, source/processing/profile reconciliation and code-level diagnosis of the cooldown and deferral labels. It did not retest or redeploy already repaired code. Next: narrowly correct the demonstrated profile deferral label; continue evidence collection within existing provider limits; verify INOD only when existing unchanged-evidence/accounting gates admit it, without a forced paid replay. Continue monitoring complete dated evidence and natural final decisions. Remain at 25: reliability, distinct-case, trading-session, real delivery and budget-headroom gates are not all proven. No new critical data/approval incident, budget stop, authentication requirement or actual Serious Alert was observed; routine findings belong in the separate report.
+
+Evidence: [current code](https://github.com/Team-AI-Factory/swing-up/commit/c3641df7e323ae4678b95bfc8861755546b1f339), [input repair and prior completed review](pilot-committee-input-recovery.md), [Railway environment](https://railway.com/project/83d99341-d622-475f-8035-00ef3d0916d1?environmentId=87afb8d7-c4fc-4f84-92b6-5d2820a689b6).
+
 ## Maintenance verification — 6 October 2026, 11:36 Bangkok
 
 Read the profile-storage/valuation recovery record, both evidence/model upgrade records and current pilot operating documents first. This check verified the newly published repair instead of duplicating it. Exact code `5705075e8b9047d7411844091cbd9b33807941d7` deployed successfully to web `ed4d98d4-90e4-4297-a4c8-4b9ae18416fe`, sensor `7d6c7f25-e328-4b9a-974a-4aee8d4fcd49`, profiles `1f4458a9-6957-428d-88be-9cfe2258a3a5` and inert foundation `e4d97cb7-906d-49f5-9fe2-2892b1e7d12e`. The first sensor execution subsequently failed; deployment success is not operational success.

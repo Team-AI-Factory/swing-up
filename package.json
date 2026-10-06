@@ -90,7 +90,7 @@
     "smoke:company-card-facts": "node scripts/company-card-facts-smoke.mjs"
   },
   "dependencies": {
-    "next": "^15.1.3",
+    "next": "15.5.24",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "@prisma/client": "^6.10.1"
@@ -101,7 +101,7 @@
     "@types/react": "^19.0.2",
     "@types/react-dom": "^19.0.2",
     "eslint": "^9.17.2",
-    "eslint-config-next": "^15.1.3",
+    "eslint-config-next": "15.5.24",
     "typescript": "^5.7.2",
     "prisma": "^6.10.1"
   }

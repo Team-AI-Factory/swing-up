@@ -1,0 +1,11 @@
+# Pilot framework security patch — 6 October 2026
+
+Railway's build of pilot repair `5705075e8b9047d7411844091cbd9b33807941d7` reported dependency advisories. A fresh production dependency audit confirmed Next.js 15.5.19 was within published vulnerable ranges. The maintainer identifies 15.5.24 as the patched 15.x release for the AVIF image-optimization and Windows-specific remote-code-execution advisories. The latter is not evidence of a Linux Railway compromise. No compromise was observed.
+
+Pin Next.js and its matching ESLint configuration to 15.5.24, and refresh the lockfile. This stays on the existing major/minor release line and supports the existing web build's Node 18 runtime. No infrastructure, model, source, budget, cohort, approval, delivery or main-scanning configuration changes are included.
+
+Validation: production build, type/lint checks performed by the build, all 20 existing route smoke checks, existing scoped-auth regression, and actual unauthenticated POST checks for cron, publishing and Committee routes. The middleware intentionally hides denied routes with HTTP 404 and `{ok:false,error:"not_found"}` plus `cache-control: no-store`. Local tests bind explicitly to loopback because the execution environment disallows network-interface enumeration.
+
+After the patch, `npm audit --omit=dev` reports zero critical findings, seven high and one moderate dependency findings. This is not a claim that all advisories are resolved. The remaining audit entries concern PostCSS/source-map parsing, Sharp's inherited native libraries, Nanoid edge-case sizes, and Prisma configuration's recursive-object merger. Assess actual reachable inputs and compatible fixes separately; do not use a forced broad dependency upgrade. The app currently has no `next/image` imports, AVIF public files, custom rewrites or Server Actions found in the inspected application paths, and this patch supplies the upstream AVIF restriction regardless.
+
+Primary references: [AVIF advisory and patched releases](https://github.com/vercel/next.js/security/advisories/GHSA-2xp9-vwfh-vxw4), [Server Actions denial-of-service advisory](https://github.com/vercel/next.js/security/advisories/GHSA-m99w-x7hq-7vfj). Successful Railway deployment and runtime checks must be recorded independently of local validation.

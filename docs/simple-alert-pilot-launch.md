@@ -1,5 +1,40 @@
 # Simple Alerts launch and operating record
 
+## Maintenance verification — 6 October 2026, 22:53 Bangkok
+
+Read the current launch, pilot, Committee-input, storage/valuation and framework records first. Pilot head remained `0d7faa9dfc1dfb054f36de373f90e06c7a965f6c`; main remains identical to `a5cd9289686705b52e9691b4c5739b7cd88cf8fe`, scanning stopped. Railway still runs sensor/web/inert foundation on `33bb178` and the concurrent profile deployment `90728111` on docs-only successor `d7e302c`. Live commands, schedules, resources and docs-excluding watch patterns are unchanged; foundation remains paused, retired foundation offline and queue-reset sleeping. The unrelated STAGED telemetry patch `97789f67` and historical pending work were not applied.
+
+### Bounded investigation: reproduce price-derived valuation revision changes offline
+
+Traced the actual code path: `pr262-pilot-watch-valuation.ts` calls `analyzeUsValueScannerRow`, then `hardenUsValueCompanyAnalysis`, whose financial-sector overlay calls `evaluateSectorSpecialistValuation`. The financial model derives book value/share as current price divided by price/book; its EV/EBITDA proxy uses current price multiplied by target/current EV/EBITDA. The generic model also derives share count from market capitalization/current price. These are provider-ratio-derived estimates, not newly read filing facts.
+
+Executed those exact current TypeScript parser, hardening, specialist and revision modules in an **offline fictional-issuer characterization**, with fetch/storage calls configured to throw. All filing/fact inputs, ratio inputs and assumption text were held fixed. Price alone moved from 100 to 101. Results:
+
+| Fictional method | Price 100 | Price 101 |
+| --- | ---: | ---: |
+| Financial book/ROE | 33.25 | 33.58 |
+| Financial earnings power | 22.00 | 22.00 |
+| Financial EV/EBITDA proxy | 47.00 | 47.47 |
+| Base fair value | 33.25 | 33.58 |
+
+Only the **outlookRange, modelAssumptions and valuation** component hashes changed—the same component pattern observed live. Controls passed: retrieval-time-only change leaves the hash unchanged; synchronizing price/book and EV/EBITDA ratios with the synthetic 1% price move restores the original hash; a genuine EPS change remains visible. No model call, provider request or production write occurred. Test input used Finance / Finance-Rental-Leasing, EPS 2, ROE 10%, net margin 20%, growth 10%, price/book 4, EV/EBITDA 20; target methods were 1.33x book, 11x EPS and 9.4x EBITDA. This records a reproducible price/ratio synchronization failure class, not an invented UPST financial model.
+
+**Limit:** this does not establish that live provider ratios were stale or unchanged. Historical raw cohort-watch snapshots are replaced, and component hashes alone cannot reveal which underlying provider values changed. Do not remove material assumptions from the fingerprint, substitute estimated issuer facts, or reset existing locks on this synthetic result. No runtime patch was justified without that final attribution. The next narrow diagnostic should compare current price, price/book, EV/EBITDA and fundamental-input changes from successive exact-issuer watch rows, with original retrieval provenance, before choosing a suppression repair. Financial-document and fact hashes still do not demonstrate improved missing evidence.
+
+### Fresh runtime proof
+
+Five sensor HTTP200 completions from **14:48:11 through 15:47:31 UTC**: two further completed UPST reviews, two idle cycles, then one unpaid same-evidence deferral. The reviews used `70466409da8369d8` and `1914994bf9858423`, cost **$0.334116 / $0.339706**, and again returned **insufficient evidence**, not approval. Four required roles completed in each. Nonterminal audit suffixes: `valuation-9cedfa60bc5e49480c3ab9da-ce21c02a8e178098d0d3e6ca.json` and `valuation-9cedfa60bc5e49480c3ab9da-aa7077e6529094760f699756.json` under the existing cohort/date prefix. The 15:47 diagnostic returned to the already-paid `70466409da8369d8` revision; the durable ledger denied another call with `candidate_already_recorded`. This verifies suppression even when a prior revision returns after an intervening different revision.
+
+No new distinct case, Serious Buy/Sell/Watch Out, approval, live outbox or real delivery. INOD technical retry remains unobserved; UPST still needs dated earnings/cash-flow, debt/maturity/recourse, loan funding and diluted-share evidence. Two pending events retained with no queue deletion/expiry; last oldest-ready wait **676 minutes**. Five existing isolated positive/negative/duplicate controls passed using the same TEST-ONLY receipt `dc00537ab56f6265fa623062725348ae.json`, with no resend and external test channels disabled.
+
+Window source failures: SEC urgent **0/4**, broad SEC **0/1**, halts **0/5**, market watch **0/5**. Other not-due/excluded sources are not successful reads; direct issuer coverage remains missing 25 SEC website records. Daily totals: **64 cycles, source 0/182, processing 1/31 (3.2258%), Committee technical failures 1/7 (14.2857%), 29 nontechnical deferrals**, three distinct admitted cases. Repeated UPST assessments are not additional distinct cases or proof of two qualifying windows.
+
+Four profile passes from **14:55:40 through 15:40:40 UTC** reconcile to **91 raw attempts: one first-time verification, 90 pending**. All 91 were retries. Day total **295/500 newly verified, 205 remaining**; 25/25 cohort profiles verified, 3,246 due retries. Source fetch failures **0/32**, body failures zero, model calls zero. Pending reasons: customer extraction 51, business/customer extraction 17, unavailable annual filing 11, runtime deferrals 6, unverified 40-F/AIF 3, oversized document 1, business extraction 1. Profile yield is **1/91 (1.10%)**, not 91 completions. Two separate profile-cache conditional PUT HTTP502 episodes each preserved concurrent changes; they are outside the fetch denominator, with no successful-PUT denominator available.
+
+Shared rolling accounting: **$2.092312 recorded/exposure, $0 reservations, $0 pending unknown exposure, $7.907688 remaining under $10**. No hard fuse, warning or authentication requirement. Provider invoice and infrastructure actual spending remain unverified; no resources/subscriptions changed. Keep the $2.7538 maximum review hold, current models, evidence/prompt limits and 20-review cap.
+
+Next: establish the actual watch-input changes for the reproduced price/ratio class, preserve prior suppression locks, and inspect an exact failed customer-extraction source before a parser repair. Continue INOD's due retry and primary financial-evidence checks without forcing another review. Remain at the current 25 and all existing scale gates. Maintenance/reporting continue.
+
 ## Maintenance verification — 6 October 2026, 21:44 Bangkok
 
 Fresh required operating-document reads and branch comparisons found pilot head `c2c23da420a4f1fb776a8d0329786084f6ae473a` unchanged; main remains `a5cd9289686705b52e9691b4c5739b7cd88cf8fe` and stopped. Live sensor/web/inert foundation still run `33bb17841ae2a5174dd5d05663b4d930632dbbe6`; profiles remain on the concurrent operator's `90728111-68d5-4613-ac08-10d81b0541f7` deployment at documentation-only successor `d7e302c`. Fresh comparison against runtime code changes only this launch document. Sensor and profiles-only commands/schedules, inert foundation's paused command and docs-excluding build patterns are retained. Retired foundation is offline, queue-reset sleeping. Unrelated staged telemetry `97789f67` and historical pending deployment work remain untouched.

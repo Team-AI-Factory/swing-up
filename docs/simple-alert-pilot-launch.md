@@ -1,5 +1,41 @@
 # Simple Alerts launch and operating record
 
+## Maintenance verification — 6 October 2026, 10:33 Bangkok
+
+Read the current pilot operating documents and both evidence/model upgrade documents first. The latest evidence-model deployment record supersedes older launch descriptions. Fresh GitHub comparison from code commit `441d3ec294c0a7e89b12f916bd4d042c408d5cb1` to `pilot-simple-alerts` shows one documentation-only commit and only the two evidence-model documents changed; runtime code is unchanged at head `a57fb09b9dee3752fd83db3c03f3d785c4013ce0`.
+
+### Deployment and bounded verification
+
+Verified the first completed production profile outcomes after the upgrade, alongside scheduled sensor completions and isolated delivery controls. Current sensor remains `7869f82d-e76f-4b06-a867-0f3dc12c4996` on code commit `441d3ec`; web `75a25700-a2c4-4f5e-87b2-a3c887b7633b` and inert foundation `4308eb79-addc-449b-8751-dd60e5bb6e0e` are also successful. Profile service has subsequent same-code redeployments `33fae3a9-8301-4021-98d4-fcf4f6f23e62` and current `68f1dc06-c578-4ff5-9c25-82b01c28867d`, both referencing the docs-only head. These were observed, not initiated by this maintenance check.
+
+Live configs retain pilot-only sources, sensor every 15 minutes, profiles at minutes 7/22/37/52, NEVER restart policy and docs-only exclusions. Foundation remains `node scripts/simple-alert-paused.mjs` without cron; retired foundation has no deployment and queue-reset remains sleeping. Main scanning remains stopped. The unrelated profile telemetry patch `97789f67-b0f5-4cb3-b689-bd46c2b4c63f` is still STAGED and was left untouched. No deployment, runtime edit, resource increase, main change or shared-data mutation was performed.
+
+### Completed cycles and safety evidence
+
+Logs from 02:54–03:34 UTC returned 52 sensor and 87 profile rows, below the 500-row caps. Three scheduled sensor cycles completed HTTP 200 at 03:01:51, 03:15:52 and 03:32:42 UTC, with durations 22,760 / 17,992 / 20,791 ms. All attest the current `small-ai-25-20261003-v1` cohort and 25 official CIK mappings. No new admitted events, assessments, paid reviews, technical processing attempts, approvals, Serious Buy/Sell/Watch Out alerts, source-unread decisions or expiries occurred. Queue is empty; oldest-wait fields are null, not measured zero-latency decisions. Source failure counts are SEC urgent 0/2, trading halts 0/3 and market watch 0/3, total 0/8. SEC broad and direct issuer made no attempts. This tiny window is not a reliability pass. Processing and Committee rates remain undefined at 0/0.
+
+No sensor quota blocks, 403/429 or timeout appear in these completed payloads. Universe freshness reports true, with last refresh at 2026-10-05T21:02:11.359Z. The direct-issuer gap remains: 25 feedless companies and retained `issuer_website_missing_in_sec_submissions`; absence of fresh attempts is not repaired coverage.
+
+All three isolated authenticated web-feed controls pass, verify the same commit-scoped durable test receipt, suppress duplicates, pass the negative control and exclude test data from the live Serious Signal feed. External channels remain disabled. Receipt:
+`branch-labs/simple-alerts/cohorts/small-ai-25-20261003-v1/serious-signal/delivery-test/receipts/web_feed/499d0530b69123cd646e9d595a825d4c.json`.
+Three real delivery-consumer checks found no outboxes/jobs/deliveries or errors. There is still no real alert receipt or measured approval-to-delivery latency, and no live paid new-model review.
+
+Latest shared rolling ledger reports $0 recorded, $0 reserved, $0 exposure and $10 remaining; the conservative next-review reservation is $2.7538. This is the preserved existing ledger, not a reset or invoice verification. Actual infrastructure cost/headroom under the separate $20/month ceiling remains unknown.
+
+### Profile production and recurring failure
+
+The 03:11:00 UTC profile response failed HTTP 503 with `r2_state_write_http_502`: five attempts, one extraction verification, zero reported newly verified in that failed pass, eight requests and zero summary request/body failures. The raw rows additionally show SUPN `source_request_failed`, but the failed summary has empty pendingReasons. The exact underlying source HTTP code is unavailable. Do not present 0/8 as complete profile-source success or label this storage 502 as a source-provider 502.
+
+The 03:27:51 UTC pass completed HTTP 200 at its normal time budget: 22 attempts, five newly verified, 17 unverified, 22.73% pass yield, 37 requests, zero reported request/body failures, no AI calls. Current daily ledger reports **129 newly verified / 500, 371 remaining**. Cohort profiles report 25/25 verified. Pending reasons in the successful pass: eight customer-extraction gaps, six business/customer-extraction gaps, one unresolved 40-F/AIF, one unavailable annual filing and one provider-budget deferral. Raw final SWKHL row is time-budget deferred; preserve that distinction from provider quota in further accounting work.
+
+Across these two new-code completions, one of two profile passes failed; 27 attempts and five pass-reported new verifications are not 27 completed profiles. The daily ledger increased from 123 to 129 between summaries whereas the successful pass reports five new verifications. This may include previously persisted partial work; identity-level reconciliation is required before assigning the extra one to a specific run. Do not double-count extraction successes or infer data loss from this discrepancy. Due profile retries rose from 2,855 to 2,862. Current Railway cron status is succeeded, but that does not erase the preceding failed run; its removed deployment is omitted from the current recent-failure count.
+
+Inspected exact published `lib/r2-warehouse.ts`: `r2_state_write_http_502` comes from the versioned conditional PUT path, after 412 conflicts are separately handled. It is not an approval rejection or SEC transport status. Current profile logs do not identify the failed object/size or establish whether the server committed the write before returning 502. Blind retries or overwriting state without reconciling the ETag are not justified. Existing write telemetry is opt-in and the unrelated profile telemetry patch remains uncommitted. No speculative write/retry change was made, and no new local test pass or deployed repair is claimed. The completed bounded work is live production verification and failure-denominator reconciliation.
+
+Next: identify the specific failing conditional write and reproduce its ambiguous-success/ETag behavior in isolation before a narrow pilot-only repair; preserve concurrent telemetry work, shared accounting, leases and verified profiles. Continue recording completed scheduled passes, partial/source failures and real new-model receipts when a natural eligible case occurs. Retain all current 25 identities and all expansion gates; no scale-up or feature addition is justified. This is recurrence of an already reported storage failure, with no new critical incident, budget stop, authentication need or real Serious Alert requiring an hourly notification.
+
+Evidence: [Railway environment](https://railway.com/project/83d99341-d622-475f-8035-00ef3d0916d1?environmentId=87afb8d7-c4fc-4f84-92b6-5d2820a689b6), [deployed code](https://github.com/Team-AI-Factory/swing-up/commit/441d3ec294c0a7e89b12f916bd4d042c408d5cb1), [current upgrade record](evidence-model-deployment.md).
+
 ## First completed live pilot runs — 3 October 2026, 19:20 Bangkok
 
 Main remains stopped and all four intended services have successfully switched to `pilot-simple-alerts`. The normal connected-plugin deployment succeeded; no further deployment approval or browser sign-in is needed. Main is unchanged. The 25-company pilot now has an actual completed live scan, beyond build success.

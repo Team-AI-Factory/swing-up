@@ -1,4 +1,5 @@
 import { applyPilotResearchAlertPolicy } from "@/lib/simple-alert-pilot-scope";
+import { validatedReviewEvidenceSnapshot } from "@/lib/equity-signal/review-evidence-revision";
 import { completeCommitteeReview, committeeRequestsRejectedWithoutUsage } from "@/lib/ai-committee/review-policy";
 import { readCompanyProfiles } from "@/lib/opportunity-engine/company-profile-cache";
 import { verifiedCompanyProfile, profileCik } from "@/lib/company-profile";
@@ -176,6 +177,11 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
     for (let attempt = 0; attempt < 4; attempt++) {
       const prior = await readVersionedTextFromR2(key);
       const saved = await writeVersionedJsonToR2(key, { cik: candidate.cik, fingerprint: report.candidateFingerprint,
+        // Completed-review provenance only; never seed from an unpaid retry or
+        // a partial/failed Committee attempt. Existing keys and ledger survive.
+        reviewEvidenceSnapshot: validatedReviewEvidenceSnapshot(candidate.reviewEvidenceSnapshot, {
+          fingerprint: report.candidateFingerprint, cik: candidate.cik, direction: candidate.direction,
+        }),
         outcome: output.overallRecommendation === "approve" ? report.seriousSignalFound === true ? "approved" : "approved_pending_checks" : output.overallRecommendation === "reject" ? "rejected" : "needs_more_data",
         reviewedAt: now.toISOString() }, prior.etag ? { expectedEtag: prior.etag } : { createOnly: true });
       if (saved.written) break;

@@ -12,7 +12,7 @@ import { runAiCommittee, TRUSTED_IN_MEMORY_EVIDENCE } from "@/lib/ai-committee/o
 import type { AiCommitteeEvidencePack, EvidenceStrength } from "@/lib/ai-committee/evidence-pack";
 import { getAiCommitteeProviderStatus } from "@/lib/ai-committee/provider";
 import { buildImpactCandidates, fingerprintCandidate } from "@/lib/equity-signal/analysis";
-import { reviewEvidenceRevision } from "@/lib/equity-signal/review-evidence-revision";
+import { reviewEvidenceRevision, validatedReviewEvidenceSnapshot } from "@/lib/equity-signal/review-evidence-revision";
 import { collectEventSources } from "@/lib/equity-signal/event-sources";
 import { buildValuationCandidate, reassessValuationCandidate } from "@/lib/equity-signal/valuation-candidate";
 import type { UsValueCompanyAnalysis } from "@/lib/opportunity-engine/us-value-investing-engine";
@@ -603,7 +603,7 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       ? valuationEvidenceAudit(targeted?.storedCompanyAnalysis, best.fundamentals, best.quote?.price ?? null, now) : null;
     // Stable evidence revisions allow another review when missing facts arrive.
     // Fetch timestamps and small quote ticks cannot manufacture new evidence.
-    const evidenceRevision = reviewEvidenceRevision({
+    const reviewEvidenceInputs = {
       source: best.receipts.filter(r => r.channel !== "nasdaq_trade_halts").map(r => ({ id: r.id, summary: r.summary, rawEventType: r.rawEventType })),
       companyProfile: companyProfile ? { business: companyProfile.business, customers: companyProfile.customers, sourceUrl: companyProfile.sourceUrl, sourceFiledAt: companyProfile.sourceFiledAt, ...customerEvidenceDetails } : null,
       industry: industryLabel(targeted?.storedCompanyAnalysis?.industry, companyProfile?.industry),
@@ -623,10 +623,14 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
         return { base: value?.baseValue, low: value?.conservativeValue, high: value?.optimisticValue,
           currentPriceSupportsValuation: best.gateChecks.currentPriceSupportsValuation };
       })() : null,
-    });
+    };
+    const evidenceRevision = reviewEvidenceRevision(reviewEvidenceInputs);
     const fingerprint = best.eventFamily === "valuation_gap" ? `valuation:${best.cik}:${best.direction}:${evidenceRevision}`
       : inclusiveReview ? `${fingerprintCandidate(best)}:${evidenceRevision}` : fingerprintCandidate(best);
     const selectedCandidate = {
+      reviewEvidenceSnapshot: best.eventFamily === "valuation_gap" ? validatedReviewEvidenceSnapshot({
+        version: 1, fingerprint, cik: best.cik, direction: best.direction, evidence: reviewEvidenceInputs,
+      }, { fingerprint, cik: best.cik, direction: best.direction }) : null,
       companyProfile,
       financialDocuments, valuationAudit,
       ticker: best.ticker,

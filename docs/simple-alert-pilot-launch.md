@@ -1,5 +1,45 @@
 # Simple Alerts launch and operating record
 
+## Maintenance verification — 6 October 2026, 11:36 Bangkok
+
+Read the profile-storage/valuation recovery record, both evidence/model upgrade records and current pilot operating documents first. This check verified the newly published repair instead of duplicating it. Exact code `5705075e8b9047d7411844091cbd9b33807941d7` deployed successfully to web `ed4d98d4-90e4-4297-a4c8-4b9ae18416fe`, sensor `7d6c7f25-e328-4b9a-974a-4aee8d4fcd49`, profiles `1f4458a9-6957-428d-88be-9cfe2258a3a5` and inert foundation `e4d97cb7-906d-49f5-9fe2-2892b1e7d12e`. The first sensor execution subsequently failed; deployment success is not operational success.
+
+### Exact-commit completed sensor outcome
+
+The normal 04:30 UTC scheduled cycle returned HTTP 503 at 04:33:50 UTC, duration 197,502 ms. It retained `small-ai-25-20261003-v1`, all 25 identities and correct mappings. Fresh exact-issuer valuation admission now works: three distinct research cases entered, INOD, PGY and UPST. These are valuation cases, not three newly published issuer announcements.
+
+- INOD: analyst and valuation roles completed on `gpt-6.1-sol`; skeptic failed locally with `prompt_too_large`, **60,997 bytes against the unchanged 60,000-byte ceiling**. Final judge was blocked, with no Astra call. This is a technical failure, not an investment rejection, insufficient-evidence conclusion or approval. Two completed reviewers also identified financial-statement/valuation-input gaps; an 11/11 presence score does not resolve those questions.
+- PGY: deterministic `candidate_valuation_risk_rejected` on business-quality/balance-sheet/risk checks; no paid Committee call. Its terminal result and history were persisted.
+- UPST: no paid call; deferred for `cycle_time_budget` because 229,771 ms remained versus the required 335,000 ms. This is review capacity, not a $10 budget stop, despite the generic `budget_deferred` label in one quality field. Preserve this distinction in reporting.
+
+There were 3 non-idle processing attempts, 1 technical processing failure (33.33%), 1 admitted Committee review and 1 technical Committee failure (100%), plus 1 nontechnical deferral. The fourth funnel admission is the final idle invocation, not a fourth distinct case. Zero completed full Committee decisions, final approvals, Serious Buy/Sell/Watch Out alerts, real outboxes or deliveries. Two cases remain queued for scheduled retries; zero queue hygiene drops. INOD's paid attempt was durably recorded at:
+`branch-labs/simple-alerts/cohorts/small-ai-25-20261003-v1/event-job/nonterminal-audits/2026-10-06/valuation-bbb76fcfe9e70ff9543888d3-4cbd4ac63372d9eba5bac219.json`.
+It is an immutable nonterminal audit, not a terminal result or delivery receipt. Queue wait was 0.45 minutes for INOD and 2.75 minutes for UPST; INOD's first Committee attempt was 0.79 minutes after admission and its partial review lasted 0.83 minutes. Completed-review and approval-to-delivery latency remain unmeasured.
+
+Source transport results in this cycle: SEC urgent 0/1 failures, halts 0/1 and market watch 0/1, total 0/3. Broad SEC/direct issuer were not due; no source quota blocks, 403/429 or timeouts were reported in this payload. Direct issuer discovery still retains 25 feedless identities with `issuer_website_missing_in_sec_submissions`; not-due work is not repaired coverage. Valuation quotes remained dated 5 October 23:56–23:58 UTC, about 276 minutes old when assessed. Admission timestamps and fresh fetches must not be substituted for original quote/source dates.
+
+### Safety and actual accounting
+
+The exact repair commit passed isolated authenticated web-feed positive, negative and duplicate controls at 04:30:30 UTC, with test data excluded from live Serious Signals and external channels disabled. Verified test-only receipt:
+`branch-labs/simple-alerts/cohorts/small-ai-25-20261003-v1/serious-signal/delivery-test/receipts/web_feed/e50c426c01aae651da8ab6a406e29d91.json`.
+The real durable consumer found zero outboxes/jobs/deliveries and zero errors. No live alert delivery has been demonstrated by this run.
+
+The shared existing rolling ledger reconciled the $2.7538 reservation to **$0.092157 actual-token recorded cost**, $0 reserved, $0 unknown/pending exposure and $9.907843 remaining under $10. Two model responses report 28,848 prompt tokens, 2,004 completion tokens, 28,842 cache-write prompt tokens and 1,315 reasoning tokens; pricing receipts were verified by the application. This is not provider-invoice verification. Ledger health is true; no reset, second allowance or weaker-model fallback occurred. Actual infrastructure spending/headroom under $20/month remains unverified.
+
+### Profiles, concurrent work and next bounded step
+
+Four completed preceding-code profile passes at approximately 03:42, 03:57, 04:12 and 04:28 UTC reported 85 attempts, 20 first-time verifications, 147 requests and 2 request failures. The latest daily ledger is **149 newly verified / 500, 351 remaining**. The 04:28 completion began on the prior code and must not be attributed to the new repair. All 25 cohort profiles were already verified; that is distinct from the daily production target. Raw and partial source-failure accounting remains a follow-up, and these request counters do not establish complete source success.
+
+As of 04:36 UTC, the exact repair profile deployment has no completed runtime logs in the post-rollout window. Its first scheduled pass and real transient-write recovery remain **unverified**, even though the prior operator documented passing regression tests. This check inspected the conditional-write, partial-worker reconciliation and admission changes and their regression assertions; it did not rerun those local suites or claim an observed live transient recovery.
+
+Fresh GitHub comparison detected active concurrent work: `848cccca4ae4f6e2890c9c00f519268263ac4849` updates only framework dependencies and `docs/pilot-framework-security-patch.md`. All four corresponding builds were BUILDING at this checkpoint. This maintenance run did not alter, accept, redeploy or overwrite that work. Live configs remain pilot-only, sensor every 15 minutes, profiles at 7/22/37/52, NEVER restart, and docs-only watch exclusions. Foundation's runtime explicitly reports paused without scanning/network/paid calls/storage writes; retired foundation remains offline and queue-reset sleeping. Main remains stopped. Unrelated staged telemetry patch `97789f67-b0f5-4cb3-b689-bd46c2b4c63f` remains untouched.
+
+Next repair target is the concrete INOD prompt overflow after previous reviewer results accumulate. Current source already deduplicates identical evidence text and serializes compact JSON; raising the cap or deleting evidence is not justified. Reconstruct the exact immutable attempt into an isolated fixture, verify lossless prompt budgeting across all four roles and guard against repeated paid failures before a narrow pilot-only change. Coordinate with the active rollout; do not duplicate existing storage/valuation repairs. Also confirm the first completed profile pass on the repair or its framework-only successor and reconcile actual first-time verifications after partial failure. No new runtime code was published by this check.
+
+Remain at the authorized 25. No expansion or feature addition: the measured processing failure rate fails the reliability gate and full-review/delivery evidence remains incomplete. No fabricated/wrong-company/duplicate/unapproved publication incident, budget stop, authentication need or real Serious Alert was observed. The failed cron is an operational repair item, not evidence of a critical data/approval incident. Continue maintenance and the separate twice-daily report.
+
+Evidence: [repair commit](https://github.com/Team-AI-Factory/swing-up/commit/5705075e8b9047d7411844091cbd9b33807941d7), [recovery design](profile-storage-and-valuation-recovery.md), [concurrent framework record](pilot-framework-security-patch.md), [Railway environment](https://railway.com/project/83d99341-d622-475f-8035-00ef3d0916d1?environmentId=87afb8d7-c4fc-4f84-92b6-5d2820a689b6).
+
 ## Maintenance verification — 6 October 2026, 10:33 Bangkok
 
 Read the current pilot operating documents and both evidence/model upgrade documents first. The latest evidence-model deployment record supersedes older launch descriptions. Fresh GitHub comparison from code commit `441d3ec294c0a7e89b12f916bd4d042c408d5cb1` to `pilot-simple-alerts` shows one documentation-only commit and only the two evidence-model documents changed; runtime code is unchanged at head `a57fb09b9dee3752fd83db3c03f3d785c4013ce0`.

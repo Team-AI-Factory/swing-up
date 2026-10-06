@@ -1,5 +1,31 @@
 # Simple Alerts launch and operating record
 
+## Maintenance repair — 6 October 2026, 13:16 Bangkok
+
+Read all current pilot, input-accounting, storage/valuation, framework and evidence/model records. Fresh GitHub head remained `7867e55de2ada1d127f7fef0646290cb7d8b433b`; runtime is still `c3641df7e323ae4678b95bfc8861755546b1f339` with only documentation successors. Railway has no new active rollout or service incident; the unrelated staged telemetry patch remains untouched. Main remains stopped, foundation inert, retired foundation offline and queue-reset sleeping.
+
+### Bounded reporting repair
+
+Six more real profile time-limit deferrals at 05:42, 05:55 and 06:12 UTC were again incorrectly summarized as provider-budget holds: TOVX/AIM, CNH/TREE and TRON/AIRJ. The cause remains the broad `budget|quota|cadence` expression matching `company_profile_time_budget_deferred` before its specific reason is retained.
+
+Added exactly two runtime classifier lines in `lib/simple-alert-profile-builder.ts`, one for cohort missing-profile diagnostics and one for per-pass pending reasons. Both preserve the explicit time-budget label before the generic provider-budget match. This changes reporting only: no requests, timeouts, concurrency, pacing, profile eligibility, verification quality, retry dates, Committee input, approvals, delivery, shared ledger, model, cohort, subscriptions or infrastructure configuration changed.
+
+Added `scripts/simple-alert-profile-deferral-labels-smoke.mjs`. The isolated regression executed the real builder with synthetic I/O and first failed on the original code (four provider holds instead of two time holds plus two provider holds). It passed after the two-line change. It checks both diagnostic paths, exact and suffixed time-limit errors, genuine quota/cadence holds, transport and extraction failures, verified versus unverified counts, first-time counts, remaining target, no invented network/model calls, settled lease, the 2,500-attempt cap, busy lease and role fence. No live sources, paid tests or external delivery were used. This focused regression is not a full local application build or proof of improved profile extraction. Railway build and exact-commit runtime verification are pending publication at this entry.
+
+### Fresh pre-repair operating evidence
+
+Three sensor cycles returned HTTP 200 at 05:31:11, 05:47:38 and 06:01:43 UTC. No new cases, paid reviews, approvals, Serious Alerts or real outboxes/deliveries. UPST's one non-idle invocation deferred on unchanged evidence; due queue age was 76 minutes, and both existing cases remain preserved. INOD's paid cooldown remains until 7 October 04:32:18 UTC unless the existing evidence rules admit a meaningful change. No forced retry or hold reset. Test-only authenticated web-feed controls continue to pass with their existing durable receipt, negative control, duplicate suppression and live-feed exclusion.
+
+This observation window has source failures 0/7: SEC urgent 0/1, halts 0/3, market watch 0/3; broad SEC and direct issuer did not attempt. No observed source quota/403/429/timeout in these completed payloads. Daily counters through 06:01 are 25 cycles, 0/70 sensor-source failures, 1/7 processing failures (14.29%), and 1/2 technical Committee failures (50%). Deferrals and idle cycles cannot count as new assessed cases or erase the earlier failure. The 25 missing direct-issuer website records and UPST's required dated financial/valuation facts remain unresolved.
+
+Three profile completions returned HTTP 200 at 05:42:58, 05:55:19 and 06:12:56 UTC: 20/21/20 attempts, 5/2/5 verifications, but only **5/2/4 newly verified issuers**. Total **61 attempts, 11 first-time companies**, 97 requests with zero request/body failures; raw rows corroborate six execution-time deferrals. Latest daily total **170/500, 330 remaining**, all current 25 cohort profiles verified. The twelfth extraction verification is not a twelfth new company. Due retry backlog is 2,999. No live R2 transient recovery diagnostic was observed.
+
+Shared rolling ledger remains healthy at **$0.423085 recorded, $0 reserved, $0 pending/unknown exposure, $9.576915 remaining under $10**. The $2.7538 reservation ceiling, 20-review limit, 335-second paid-admission reserve and eight-minute sensor runtime remain. Actual provider invoice and infrastructure spending under $20/month remain unverified. No resources or subscriptions were added.
+
+Next: publish this narrow pilot-only correction using a guarded fast-forward, observe the normal connected Railway rollout without applying staged telemetry, then compare an exact-code profile completion's raw time-deferral rows with its corrected summary. Do not claim a live fix from tests/builds alone. Keep 25 identities and all scale-up gates. Continue improving actual evidence/profile yield within current limits; no feature expansion is justified. No new critical incident, budget stop, authentication request or approved live alert was found.
+
+Evidence: [Railway environment](https://railway.com/project/83d99341-d622-475f-8035-00ef3d0916d1?environmentId=87afb8d7-c4fc-4f84-92b6-5d2820a689b6), [previous runtime](https://github.com/Team-AI-Factory/swing-up/commit/c3641df7e323ae4678b95bfc8861755546b1f339).
+
 ## Maintenance verification — 6 October 2026, 12:27 Bangkok
 
 Read the current input-accounting, storage/valuation, framework and pilot/evidence operating records first. Fresh GitHub comparison confirms head `e3541ceb0f6ca3471896da3b65540bb495d559ed` differs from runtime `c3641df7e323ae4678b95bfc8861755546b1f339` only in three documentation files. All four exact-code deployments remain successful; the four docs-only successor builds were SKIPPED. Sensor `d5ae83a2-507f-4caa-9dfc-c76d9165c4b6`, profiles `26f1daf0-1a78-4d16-be6f-8f48a62deaf8`, web `a69a16da-a9c3-459f-a351-487e58c6d5b8` and inert foundation `36337745-439e-4ebb-9b12-eeb842f43e3c` are unchanged. No active new code rollout was found.

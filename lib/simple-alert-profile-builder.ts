@@ -33,6 +33,7 @@ export function pilotProfileCoverage(entries: Row[], now: Date) {
     const extraction = typeof row?.extractionFailure === "string" && /^company_profile_[a-z0-9_]{1,100}$/.test(row.extractionFailure) ? row.extractionFailure : null;
     const error = typeof row?.error === "string" ? row.error : "";
     const reason = !row ? "cache_entry_missing" : extraction
+      ?? (/^company_profile_time_budget_deferred\b/.test(error) ? "company_profile_time_budget_deferred" : null)
       ?? (/budget|quota|cadence/.test(error) ? "provider_budget_deferred" : error.match(/^company_profile_[a-z0-9_]{1,100}/)?.[0])
       ?? (error ? "source_request_failed" : "cached_profile_fails_current_verification");
     const url = typeof filing.url === "string" && new RegExp(`^https://www\\.sec\\.gov/Archives/edgar/data/${Number(company.cik)}/[0-9]{18}/[A-Za-z0-9._-]+\\.html?$`).test(filing.url) ? filing.url : null;
@@ -224,6 +225,7 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
         || verifiedCompanyProfile(row.profile, row, new Date())) continue;
       const error = String(row.error ?? "");
       const reason = typeof row.extractionFailure === "string" ? row.extractionFailure
+        : /^company_profile_time_budget_deferred\b/i.test(error) ? "company_profile_time_budget_deferred"
         : /budget|quota|cadence/i.test(error) ? "provider_budget_deferred"
         : error.match(/^company_profile_[a-z0-9_]+/i)?.[0] ?? "source_request_failed";
       pendingReasons[reason] = (pendingReasons[reason] ?? 0) + 1;

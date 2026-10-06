@@ -30,7 +30,8 @@ const overrides = {
   "node:crypto": crypto,
   "@/lib/r2-warehouse": r2,
   "@/lib/simple-alert-pilot-runtime": { isSimpleAlertPilot: () => pilot },
-  "@/lib/simple-alert-pilot-scope": { pilotCompanies: () => cohort, pilotIncludes: () => true, pilotSourceEnabled: () => true },
+  "@/lib/simple-alert-pilot-scope": { pilotCompanies: () => cohort, pilotIncludes: () => true, pilotSourceEnabled: () => true,
+    pilotUpsideBlocker: identity => cohort.find(row => row.ticker === identity.ticker && row.upsidePolicy === "financing_compliance_quarantine") ? "quarantined" : null },
   "@/lib/opportunity-engine/pr262-storage": { pr262StorageKey: key => `${namespace}${key}` },
 };
 const realUniverse = loadTsModule("@/lib/equity-signal/universe", overrides);
@@ -129,6 +130,29 @@ try {
     assert.deepEqual(requests.at(-1).columns, [...engine.US_VALUE_SCANNER_COLUMNS]);
   }
   const safeIdentity = identities.find(identity => !cache.pilotValuationUnitsBlocker(identity));
+  now = new Date(now.getTime() + 1);
+  const cheapRow = scannerRow(safeIdentity, { close: 10, earnings_per_share_diluted_ttm: 2,
+    net_income: 200_000_000, free_cash_flow: 150_000_000, price_earnings_ttm: 5 });
+  const freshValuation = await marketWatch(async () => new Response(JSON.stringify({ data: [cheapRow] })),
+    cache.pilotWatchExposure(universe(), now), now, 0, []);
+  assert.ok(freshValuation.events.some(event => event.kind === "valuation_review"), "Fresh qualifying valuation data must reach review without an old foundation or a price spike");
+  assert.ok(freshValuation.events.every(event => event.sourceProvider === "valuation_foundation_review"));
+  assert.equal(freshValuation.prices[0].liveQuoteVerified, false, "Research admission never certifies the retrieved quote");
+  const sameValuation = await marketWatch(async () => new Response(JSON.stringify({ data: [cheapRow] })),
+    cache.pilotWatchExposure(universe(), now), new Date(now.getTime() + 1000), 0, []);
+  assert.deepEqual(sameValuation.events.map(event => event.id), freshValuation.events.map(event => event.id), "Same-day evidence retains stable event IDs");
+  now = new Date(now.getTime() + 1000);
+  for (const rows of [[cheapRow, cheapRow], [scannerRow(safeIdentity, { is_primary: false })],
+    [scannerRow(safeIdentity, { currency: "EUR" })], [scannerRow(safeIdentity, { name: "WRONG" })],
+    [scannerRow(safeIdentity, { earnings_per_share_diluted_ttm: null, net_income: null, free_cash_flow: null, price_book_ratio: null })]]) {
+    assert.equal(cache.pilotWatchValuationThresholds(rows, safeIdentity, now), null, "Ambiguous identity, incompatible units and insufficient methods cannot supply thresholds");
+  }
+  assert.equal(cache.pilotWatchValuationThresholds([cheapRow], { ...safeIdentity, cik: "0000000999" }, now), null);
+  const held = cohort.find(row => row.upsidePolicy === "financing_compliance_quarantine");
+  const heldIdentity = identities.find(row => row.ticker === held.ticker);
+  const heldLevels = cache.pilotWatchValuationThresholds([scannerRow(heldIdentity, { earnings_per_share_diluted_ttm: 2, net_income: 200_000_000, free_cash_flow: 150_000_000 })], heldIdentity, now);
+  assert.ok(heldLevels);
+  assert.equal(heldLevels.buyBelowPrice, null); assert.equal(heldLevels.strongBuyBelowPrice, null, "Financing quarantine cannot acquire upside review authority");
   assert.equal(await cache.readPilotWatchValuation(safeIdentity, new Date(now.getTime() + 15 * 60_000 + 1)), null);
   assert.equal(await cache.readPilotWatchValuation(safeIdentity, new Date(now.getTime() - 1)), null);
   assert.equal(await cache.readPilotWatchValuation({ ...safeIdentity, cik: "0000000999" }, now), null);
@@ -171,6 +195,7 @@ try {
   identities = cache.pilotWatchIdentities(universe(), now);
   assert.equal(identities.length, 1, "Proven ADR identity permits monitoring.");
   assert.equal(cache.pilotValuationUnitsBlocker(identities[0]), "pilot_valuation_currency_or_ads_basis_unverified");
+  assert.equal(cache.pilotWatchValuationThresholds([scannerRow(identities[0])], identities[0], now), null);
   now = new Date(now.getTime() + 1);
   await cache.persistPilotWatchValuations([scannerRow(identities[0])], identities, now);
   assert.equal(await cache.readPilotWatchValuation(identities[0], now), null, "USD quote currency does not prove RMB financial or per-ADS consistency.");
@@ -186,6 +211,8 @@ try {
   assert.equal((await cache.persistPilotWatchValuations([], [], now)).reason, "outside_pilot");
   assert.equal(cache.pilotWatchExposure(universe(), now).length, 0);
 } finally { Date.now = savedDateNow; }
-console.log(JSON.stringify({ ok: true, originalStarvationReproducedCycles: 3, providerRequestsForThreeWatchesAndCacheReuses: networkCalls,
+console.log(JSON.stringify({ ok: true, originalStarvationReproducedCycles: 3, freshValuationResearchWithoutFoundation: true,
+  ambiguousValuationRowsRejected: true, upsideQuarantinePreserved: true, stableSameDayReviewIdentity: true,
+  providerRequestsForThreeWatchesAndCacheReuses: networkCalls,
   unchangedSharedQuota: 300, unchangedCadenceMinutes: 4.5, cohortSizeWithoutFoundation: 25, maximumCacheAgeMinutes: 15,
   exactIdentityFailClosed: true, weekendQuoteNotLabeledLive: true, foreignAdsValuationWithheld: true }));

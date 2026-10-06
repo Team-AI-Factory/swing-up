@@ -59,7 +59,7 @@ const savedEnv = { ...process.env }, info = console.info;
 Object.assign(process.env, { SWING_UP_SIMPLE_PILOT_ENABLED: "true", RAILWAY_GIT_BRANCH: "pilot-simple-alerts", RAILWAY_PROJECT_ID: "83d99341-d622-475f-8035-00ef3d0916d1", RAILWAY_ENVIRONMENT_ID: "87afb8d7-c4fc-4f84-92b6-5d2820a689b6", SWING_UP_PR262_STORAGE_PREFIX: "branch-labs/simple-alerts/", SWING_UP_R2_WRITE_PREFIX: "branch-labs/simple-alerts/", SWING_UP_SIMPLE_PILOT_ROLE: "profiles" });
 try {
   console.info = () => {};
-  for (const mode of ["parallel", "source_circuit", "worker_failure", "daily_cap"]) {
+  for (const mode of ["parallel", "source_circuit", "worker_failure", "worker_partial", "daily_cap"]) {
     const objects = new Map(), starts = [], rows = [identity("ONE", 11), identity("TWO", 12), identity("THREE", 13)];
     let active = 0, maxActive = 0, lastFinished = 0, summaryWritten = 0;
     const storage = {
@@ -77,9 +77,14 @@ try {
       "@/lib/opportunity-engine/company-profile-cache": { ensureCompanyProfile: async (row, fetcher) => {
         active++; maxActive = Math.max(maxActive, active);
         try {
-          if (mode === "worker_failure") {
+          if (mode === "worker_failure" || mode === "worker_partial") {
             if (row.ticker === "ONE") { await delay(10); throw new Error("synthetic_storage_failure"); }
-            await delay(50); return null;
+            await delay(50);
+            if (mode === "worker_partial") {
+              objects.set("research-evidence/company-profiles-v1.json", { entries: [entry(row, new Date())] });
+              return companyProfileFixture(row, new Date());
+            }
+            return null;
           }
           try { const response = await fetcher(`https://example.test/${row.cik}`); if (!response.ok) return null; }
           catch { return null; }
@@ -100,6 +105,14 @@ try {
     if (mode === "parallel") { assert.equal(result.newlyVerifiedThisRun, 3); assert.equal(result.attempted, 3); }
     if (mode === "source_circuit") { assert.equal(starts.length, 1); assert.equal(result.status, "source_cooldown"); assert.equal(result.newlyVerifiedThisRun, 0); }
     if (mode === "worker_failure") { assert.equal(result.status, "failed"); assert.equal(result.newlyVerifiedThisRun, 0); }
+    if (mode === "worker_partial") {
+      assert.equal(result.status, "failed"); assert.equal(result.ok, false);
+      assert.equal(result.failure, "synthetic_storage_failure");
+      assert.equal(result.newlyVerifiedThisRun, 1, "Persisted partial work is reconciled even when its peer fails");
+      assert.equal(result.newlyVerifiedToday, 1);
+      assert.equal(result.remaining, 499);
+      assert.equal(result.attempted, 2, "No new companies start after a storage failure");
+    }
     if (mode === "daily_cap") { assert.equal(result.attempted, 2); assert.equal([...objects.entries()].find(([key]) => key.startsWith("pilot/profile-builder/"))[1].attemptsReserved, 2500); }
   }
   console.log("Profile throughput: unique CIK counting, actual listing eligibility, alias cooldown, fair retries, parser-repair revisit, bounded two-worker overlap, original pacing/circuit/daily caps and all-workers-settled persistence passed.");

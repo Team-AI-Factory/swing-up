@@ -118,6 +118,7 @@ const mappingProbeProvider = async () => ({
 const stubs = {
   "@/lib/opportunity-engine/pr262-pilot-watch-valuation": {
     pilotWatchExposure: () => [],
+    pilotWatchValuationThresholds: () => null,
     persistPilotWatchValuations: async () => ({ written: false, records: 0, reason: "separate_focused_test" }),
   },
   "@/lib/opportunity-engine/us-value-investing-engine": loadTsModule("@/lib/opportunity-engine/us-value-investing-engine", {

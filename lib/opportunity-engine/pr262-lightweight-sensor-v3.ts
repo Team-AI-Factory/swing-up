@@ -1,4 +1,4 @@
-import { persistPilotWatchValuations, pilotWatchExposure } from "@/lib/opportunity-engine/pr262-pilot-watch-valuation";
+import { persistPilotWatchValuations, pilotWatchExposure, pilotWatchValuationThresholds } from "@/lib/opportunity-engine/pr262-pilot-watch-valuation";
 import { US_VALUE_SCANNER_COLUMNS } from "@/lib/opportunity-engine/us-value-investing-engine";
 import { COMMITTEE_MODEL_POLICY } from "@/lib/ai-committee/model-policy";
 import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
@@ -480,7 +480,8 @@ async function marketWatch(fetchImpl: typeof fetch, exposure: Pr262ExposureEntry
     const item = byTicker.get(ticker);
     if (!item || price === null || price <= 0 || !item.tradingViewSymbol
       || (isSimpleAlertPilot() && row.s !== item.tradingViewSymbol)) continue;
-    const threshold = item.strongBuyBelowPrice !== null && price <= item.strongBuyBelowPrice ? "strong_buy_price_crossed" : item.buyBelowPrice !== null && price <= item.buyBelowPrice ? "buy_price_crossed" : item.trimAbovePrice !== null && price >= item.trimAbovePrice ? "trim_price_crossed" : null;
+    const levels = isSimpleAlertPilot() ? pilotWatchValuationThresholds(body.data ?? [], item, now) : item;
+    const threshold = levels?.strongBuyBelowPrice != null && price <= levels.strongBuyBelowPrice ? "strong_buy_price_crossed" : levels?.buyBelowPrice != null && price <= levels.buyBelowPrice ? "buy_price_crossed" : levels?.trimAbovePrice != null && price >= levels.trimAbovePrice ? "trim_price_crossed" : null;
     prices.push({ ticker, checkedAt: now.toISOString(), tradingViewSymbol: item.tradingViewSymbol, price, changePercent: change, relativeVolume, threshold,
       ...(isSimpleAlertPilot() ? { quoteObservedAt: null, liveQuoteVerified: false as const } : {}) });
     if (!threshold && Math.abs(change) < 5 && relativeVolume < 3) continue;
@@ -517,7 +518,8 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
   const universe = await loadEquityUniverse(fetchImpl, now);
   const resolver = buildStructuredTickerResolver(universe.snapshot.entries);
   // Pilot identities do not depend on an old cohort's valuation/exposure cache.
-  // Fresh official universe identity is still mandatory; valuation stays absent.
+  // Fresh official universe identity is still mandatory. Only the subsequent
+  // cohort watch response can supply research thresholds for these identities.
   exposure.entries = isSimpleAlertPilot() ? pilotWatchExposure(universe.snapshot, now) : exposure.entries.filter(pilotIncludes);
   const loaded = await loadState();
   const state = loaded.state;

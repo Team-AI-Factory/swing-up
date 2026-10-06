@@ -1,5 +1,5 @@
 import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
-import { pilotCompanies } from "@/lib/simple-alert-pilot-scope";
+import { pilotCompanies, pilotUpsideBlocker } from "@/lib/simple-alert-pilot-scope";
 import { validEquityUniverseSnapshot, type EquityUniverseSnapshot } from "@/lib/equity-signal/universe";
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
@@ -82,6 +82,25 @@ function exactAnalysis(row: unknown, identity: Identity, receivedAt: string) {
   if (!config || (object(config).exchange && `${exchange(object(config).exchange)}:${config.ticker}` !== identity.tradingViewSymbol)) return null;
   const analysis = analyzeUsValueScannerRow({ row, ...identity, receivedAt });
   return analysis ? hardenUsValueCompanyAnalysis(analysis) : null;
+}
+
+/** Research admission from this already-budgeted snapshot, never cohort
+ * backsolves or an old foundation. Dated quote/filing proof and Committee
+ * approval remain mandatory downstream; retrieval time is not a quote time. */
+export function pilotWatchValuationThresholds(rows: unknown[], identity: Identity, now: Date) {
+  if (!isSimpleAlertPilot() || pilotValuationUnitsBlocker(identity)) return null;
+  const matches = rows.filter(row => object(row).s === identity.tradingViewSymbol);
+  if (matches.length !== 1) return null;
+  const analysis = exactAnalysis(matches[0], identity, now.toISOString());
+  if (!analysis || analysis.currency !== "USD" || analysis.fairValue.baseValue === null
+    || analysis.fairValue.baseValue <= 0 || analysis.fairValue.methods.length < 2
+    || analysis.scores.fairValueConfidence < 70) return null;
+  const upsideHeld = Boolean(pilotUpsideBlocker(identity));
+  return {
+    buyBelowPrice: upsideHeld ? null : analysis.fairValue.buyBelowPrice,
+    strongBuyBelowPrice: upsideHeld ? null : analysis.fairValue.strongBuyBelowPrice,
+    trimAbovePrice: analysis.fairValue.trimAbovePrice,
+  };
 }
 
 /** Persist only rows from the single already-budgeted watch POST. No provider call

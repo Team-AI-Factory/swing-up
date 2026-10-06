@@ -44,6 +44,7 @@
     "smoke:pr262-analysis-only-orchestrator": "node scripts/pr262-analysis-only-orchestrator-smoke.mjs",
     "smoke:pr262-route-auth": "node scripts/pr262-route-auth-smoke.mjs",
     "smoke:r2-prefix-list": "node scripts/r2-prefix-list-smoke.mjs",
+    "smoke:r2-state-write-recovery": "node scripts/r2-state-write-recovery-smoke.mjs",
     "smoke:serious-signal-delivery": "node scripts/serious-signal-delivery-smoke.mjs",
     "smoke:equity-event-first-runner": "node scripts/equity-event-first-runner-smoke.mjs",
     "smoke:equity-history-optional-pilot": "node scripts/equity-history-optional-pilot-smoke.mjs",

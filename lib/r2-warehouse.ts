@@ -1,6 +1,7 @@
 import { pilotSharedMutationAllowed, SIMPLE_PILOT_PREFIX } from "@/lib/simple-alert-pilot-runtime";
 import crypto from "node:crypto";
 import { gunzipSync, gzipSync } from "node:zlib";
+import { setTimeout as pause } from "node:timers/promises";
 import { prisma } from "@/lib/db/client";
 import { redactSecrets } from "@/lib/redact-secrets";
 
@@ -192,7 +193,9 @@ async function signedFetch(
   regionOverride?: string,
   conditionalHeaders: Record<string, string> = {},
   query: Record<string, string> = {},
+  signal?: AbortSignal,
 ) {
+  signal?.throwIfAborted();
   assertR2MutationKeyAllowed(method, key);
   const c = getR2Config(regionOverride);
   if (!c.configured)
@@ -261,7 +264,7 @@ async function signedFetch(
     headers,
     body: body as BodyInit | undefined,
     cache: "no-store",
-    signal: AbortSignal.timeout(R2_REQUEST_TIMEOUT_MS),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(R2_REQUEST_TIMEOUT_MS)]) : AbortSignal.timeout(R2_REQUEST_TIMEOUT_MS),
   });
 }
 export function computeContentHash(payload: unknown) {
@@ -419,8 +422,8 @@ export function normalizeR2Etag(value: string | null | undefined) {
   return `"${strong.replace(/^"|"$/g, "")}"`;
 }
 
-export async function readVersionedTextFromR2(r2Key: string): Promise<VersionedR2Object> {
-  const res = await signedFetch("GET", r2Key);
+export async function readVersionedTextFromR2(r2Key: string, options: { signal?: AbortSignal } = {}): Promise<VersionedR2Object> {
+  const res = await signedFetch("GET", r2Key, undefined, undefined, undefined, {}, {}, options.signal);
   if (res.status === 404) return { found: false, text: null, etag: null };
   if (!res.ok) throw new Error(`r2_state_read_http_${res.status}`);
   const text = decodeVersionedR2Text(Buffer.from(await res.arrayBuffer()));
@@ -492,7 +495,7 @@ export async function listR2ObjectKeys(
 export async function writeVersionedJsonToR2(
   r2Key: string,
   payload: unknown,
-  options: { expectedEtag?: string | null; createOnly?: boolean } = {},
+  options: { expectedEtag?: string | null; createOnly?: boolean; signal?: AbortSignal } = {},
 ) {
   if (options.expectedEtag && options.createOnly) throw new Error("r2_state_invalid_write_condition");
   const condition: Record<string, string> = {};
@@ -501,27 +504,80 @@ export async function writeVersionedJsonToR2(
   const compactPr262State = r2Key.startsWith("production/pr262/")
     || r2Key.startsWith("branch-labs/pr-262/");
   const encoded = encodeVersionedJsonForR2(r2Key, payload);
-  const res = await signedFetch("PUT", r2Key, encoded.body, encoded.contentType, undefined, condition);
-  if (process.env.SWING_UP_PR262_R2_WRITE_TELEMETRY?.trim().toLowerCase() === "true"
-    && compactPr262State) {
-    console.log(`[pr262-r2-write] ${JSON.stringify({
-      key: r2Key,
-      bytes: encoded.body.length,
-      uncompressedBytes: encoded.uncompressedBytes,
-      compressed: encoded.compressed,
-      status: res.status,
-      conflict: res.status === 412,
+  const conditional = Object.keys(condition).length > 0;
+  // Bound the whole conditional operation, including read-back and backoff.
+  // Ordinary successful writes still take exactly one request.
+  const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(45_000)]) : AbortSignal.timeout(45_000);
+  const conflict = () => ({ written: false, conflict: true, etag: null });
+  const matches = (saved: VersionedR2Object) => saved.found && saved.etag && saved.text === decodeVersionedR2Text(encoded.body);
+  const observe = (attempt: number, status: number | null, outcome: string) => {
+    // Failure-only diagnostics identify the object and request size without
+    // logging document contents, signing headers, response bodies or credentials.
+    console.warn(`[r2-state-write-recovery] ${JSON.stringify({
+      key: r2Key.replace(/[^A-Za-z0-9/_.=-]/g, "_").slice(0, 240),
+      bytes: encoded.body.length, uncompressedBytes: encoded.uncompressedBytes,
+      conditional, attempt, status, outcome,
     })}`);
+  };
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    let res: Response | undefined;
+    let failure: Error;
+    try {
+      res = await signedFetch("PUT", r2Key, encoded.body, encoded.contentType, undefined, condition, {}, signal);
+      failure = new Error(`r2_state_write_http_${res.status}`);
+    } catch (error) {
+      // Configuration, permission and caller cancellation errors are not retries.
+      if (signal.aborted || !conditional || !(error instanceof Error)
+        || !(error.name === "TimeoutError" || (error instanceof TypeError && /fetch failed|network/i.test(error.message)))) throw error;
+      failure = new Error("r2_state_write_transport_failed", { cause: error });
+    }
+    if (res) {
+      if (process.env.SWING_UP_PR262_R2_WRITE_TELEMETRY?.trim().toLowerCase() === "true" && compactPr262State) {
+        console.log(`[pr262-r2-write] ${JSON.stringify({ key: r2Key, bytes: encoded.body.length,
+          uncompressedBytes: encoded.uncompressedBytes, compressed: encoded.compressed,
+          status: res.status, conflict: res.status === 412 })}`);
+      }
+      // A first-attempt conflict never confers ownership, even for equal content.
+      if (res.status === 412) { await res.body?.cancel(); return conflict(); }
+      if (res.ok) {
+        const etag = normalizeR2Etag(res.headers.get("etag"));
+        await res.body?.cancel();
+        if (etag) return { written: true, conflict: false, etag };
+        const verified = await readVersionedTextFromR2(r2Key, { signal });
+        if (!verified.found || !verified.etag) throw new Error("r2_state_write_missing_etag");
+        // Do not adopt the ETag of a different concurrent write.
+        return matches(verified) ? { written: true, conflict: false, etag: verified.etag } : conflict();
+      }
+    }
+    observe(attempt, res?.status ?? null, "failed");
+    if (res) await res.body?.cancel().catch(() => undefined);
+    if (!conditional || (res && ![408, 429, 500, 502, 503, 504].includes(res.status))) throw failure;
+    const retryAfter = res?.headers.get("retry-after");
+    const requestedDelay = retryAfter ? (/^\d+(\.\d+)?$/.test(retryAfter) ? Number(retryAfter) * 1000 : Date.parse(retryAfter) - Date.now()) : 0;
+    // A longer server cooldown is left to the next scheduled run.
+    if (Number.isFinite(requestedDelay) && requestedDelay > 10_000) throw failure;
+    const delayMs = Math.max(1000 * 2 ** (attempt - 1) + Math.floor(Math.random() * 250), requestedDelay || 0);
+    await pause(delayMs, undefined, { signal });
+    let current: VersionedR2Object;
+    try { current = await readVersionedTextFromR2(r2Key, { signal }); }
+    catch (error) {
+      observe(attempt, res?.status ?? null, "readback_failed_no_replay");
+      throw new Error("r2_state_write_reconciliation_failed", { cause: error });
+    }
+    // A 5xx/transport error can arrive after storage committed the PUT. A direct
+    // read of identical bytes and a real ETag acknowledges that existing write.
+    if (matches(current)) {
+      observe(attempt, res?.status ?? null, "committed_write_verified");
+      return { written: true, conflict: false, etag: current.etag };
+    }
+    const unchanged = options.createOnly ? !current.found : current.found && current.etag === condition["if-match"];
+    if (!unchanged) { observe(attempt, res?.status ?? null, "concurrent_change_preserved"); return conflict(); }
+    if (attempt === 3) { observe(attempt, res?.status ?? null, "attempt_limit"); throw failure; }
+    observe(attempt, res?.status ?? null, "retry_original_condition");
+    // Never substitute the read-back ETag: a later competing writer must still
+    // cause 412, allowing the caller to reload and merge its own state safely.
   }
-  if (res.status === 412) return { written: false, conflict: true, etag: null };
-  if (!res.ok) throw new Error(`r2_state_write_http_${res.status}`);
-  let etag = normalizeR2Etag(res.headers.get("etag"));
-  if (!etag) {
-    const verified = await readVersionedTextFromR2(r2Key);
-    if (!verified.found || !verified.etag) throw new Error("r2_state_write_missing_etag");
-    etag = verified.etag;
-  }
-  return { written: true, conflict: false, etag };
+  throw new Error("r2_state_write_attempt_limit");
 }
 async function put(
   r2Key: string,

@@ -207,7 +207,12 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
     // starts stay serialized; global quotas and 1 request/second are unchanged.
     const results = await Promise.allSettled([worker(), worker()]);
     const rejected = results.find(result => result.status === "rejected");
-    if (rejected?.status === "rejected") throw rejected.reason;
+    if (rejected?.status === "rejected") {
+      status = "failed";
+      failure = rejected.reason instanceof Error ? rejected.reason.message.slice(0, 250) : "profile_builder_failed";
+    }
+    // A failed peer may have persisted partial progress. Reconcile the actual
+    // cache after both workers settle, without calling a failed pass successful.
     const fresh = await read(profilesKey());
     const freshEntries = Array.isArray(fresh.value.entries) ? fresh.value.entries.map(object) : [];
     after = profileBatchPlan(universe.snapshot.entries, freshEntries, new Date(), 0).newlyVerifiedToday;
@@ -223,12 +228,14 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
         : error.match(/^company_profile_[a-z0-9_]+/i)?.[0] ?? "source_request_failed";
       pendingReasons[reason] = (pendingReasons[reason] ?? 0) + 1;
     }
-    if (circuitOpen) status = "source_cooldown";
-    else if (signal.aborted) status = "time_budget_reached";
-    else if (after >= PROFILE_DAILY_TARGET) status = "target_reached";
+    if (status !== "failed") {
+      if (circuitOpen) status = "source_cooldown";
+      else if (signal.aborted) status = "time_budget_reached";
+      else if (after >= PROFILE_DAILY_TARGET) status = "target_reached";
+    }
     await provider.flush();
   } catch (error) {
-    status = "failed"; failure = error instanceof Error ? error.message.slice(0, 250) : "profile_builder_failed";
+    status = "failed"; failure ??= error instanceof Error ? error.message.slice(0, 250) : "profile_builder_failed";
   }
   const summary = { ok: status !== "failed", checkedAt: new Date().toISOString(), status, target: PROFILE_DAILY_TARGET,
     attempted, unverifiedThisRun: attempted - verified, verificationYieldPercent: attempted ? verified / attempted * 100 : null, verifiedThisRun: verified, newlyVerifiedThisRun: firstVerifiedThisRun, newlyVerifiedToday: after || before, remaining: Math.max(0, PROFILE_DAILY_TARGET - (after || before)),

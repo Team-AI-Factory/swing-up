@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
 import { pilotCompanies, pilotUpsideBlocker } from "@/lib/simple-alert-pilot-scope";
 import { validEquityUniverseSnapshot, type EquityUniverseSnapshot } from "@/lib/equity-signal/universe";
@@ -145,6 +146,31 @@ export async function readPilotWatchValuation(identity: Identity, now: Date) {
   if (matches.length !== 1) return null;
   const analysis = exactAnalysis(matches[0].row, identity, receivedAt);
   if (!analysis) return null;
+  // Bounded attribution for price/ratio-derived revisions. Read the accepted
+  // cached row only: no new provider requests, storage writes or review authority.
+  // Retrieval provenance is not a financial period or an executable quote.
+  try {
+    const data = object(matches[0].row).d;
+    const cells = Array.isArray(data) ? data : [];
+    const numericInputs = Object.fromEntries(US_VALUE_SCANNER_COLUMNS.flatMap((column, index) => {
+      if (index < 8 || column === "sector" || column === "industry") return [];
+      const raw = cells[index];
+      const number = typeof raw === "number" ? raw
+        : typeof raw === "string" && raw.trim() && raw.length <= 80 ? Number(raw.replace(/,/g, "")) : NaN;
+      return [[column, Number.isFinite(number) ? number : null]];
+    }));
+    const selectorHashes = Object.fromEntries((["sector", "industry"] as const).map(column => {
+      const value = cells[US_VALUE_SCANNER_COLUMNS.indexOf(column)];
+      return [column, createHash("sha256").update(JSON.stringify(typeof value === "string" ? value : null)).digest("hex").slice(0, 16)];
+    }));
+    console.info("[simple-alert-watch-valuation-inputs]", JSON.stringify({
+      version: 1, ticker: identity.ticker, cik: identity.cik, tradingViewSymbol: identity.tradingViewSymbol,
+      source: "tradingview_cohort_watch", receivedAt,
+      observedAtMeaning: "provider_snapshot_retrieval", quoteObservedAt: null,
+      fundamentalPeriodAsOf: null, liveQuoteVerified: false, numericInputs, selectorHashes,
+      derivedRange: { low: analysis.fairValue.conservativeValue, base: analysis.fairValue.baseValue, high: analysis.fairValue.optimisticValue },
+    }));
+  } catch { /* Diagnostic failure must not change an accepted analysis. */ }
   const sourceTiming = {
     source: "tradingview_cohort_watch" as const, observedAtMeaning: "provider_snapshot_retrieval" as const,
     receivedAt, quoteObservedAt: null, fundamentalPeriodAsOf: null, liveQuoteVerified: false as const,

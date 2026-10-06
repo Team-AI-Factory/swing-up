@@ -89,6 +89,9 @@ assert.equal(cache.pilotWatchIdentities({ ...universe(), refreshedAt: "2026-10-0
 assert.equal(cache.pilotWatchIdentities({ ...universe(), refreshedAt: "2026-10-03T13:00:01Z" }, now).length, 0);
 
 const savedDateNow = Date.now;
+const savedConsoleInfo = console.info;
+const diagnostics = [];
+console.info = (...args) => diagnostics.push(args);
 let networkCalls = 0;
 let requests = [];
 Date.now = () => now.getTime();
@@ -130,6 +133,50 @@ try {
     assert.deepEqual(requests.at(-1).columns, [...engine.US_VALUE_SCANNER_COLUMNS]);
   }
   const safeIdentity = identities.find(identity => !cache.pilotValuationUnitsBlocker(identity));
+  assert.equal(diagnostics.length, 3, "Only accepted targeted cache reads emit diagnostics, not whole watch scans.");
+  const latestDiagnostic = JSON.parse(diagnostics.at(-1)[1]);
+  assert.equal(diagnostics.at(-1)[0], "[simple-alert-watch-valuation-inputs]");
+  assert.equal(latestDiagnostic.numericInputs.close, 10);
+  assert.equal(latestDiagnostic.numericInputs.price_book_ratio, 2);
+  assert.equal(latestDiagnostic.numericInputs.enterprise_value_ebitda_ttm, 10);
+  assert.equal(latestDiagnostic.numericInputs.earnings_per_share_diluted_ttm, 1);
+  assert.equal(latestDiagnostic.observedAtMeaning, "provider_snapshot_retrieval");
+  assert.equal(latestDiagnostic.quoteObservedAt, null);
+  assert.equal(latestDiagnostic.fundamentalPeriodAsOf, null);
+  assert.equal(latestDiagnostic.liveQuoteVerified, false);
+  assert.deepEqual(Object.keys(latestDiagnostic.derivedRange), ["low", "base", "high"]);
+  const cachedBeforeDiagnostic = structuredClone(objects);
+  const baselineAnalysis = await cache.readPilotWatchValuation(safeIdentity, now);
+  assert.equal(latestDiagnostic.derivedRange.low, baselineAnalysis.analysis.fairValue.conservativeValue);
+  assert.equal(latestDiagnostic.derivedRange.high, baselineAnalysis.analysis.fairValue.optimisticValue);
+  console.info = () => { throw new Error("isolated logging failure"); };
+  try {
+    assert.deepEqual(await cache.readPilotWatchValuation(safeIdentity, now), baselineAnalysis,
+      "Diagnostic failure cannot change valuation/evidence or admission.");
+  } finally { console.info = (...args) => diagnostics.push(args); }
+  assert.deepEqual(objects, cachedBeforeDiagnostic, "Diagnostics cannot write or change cached rows or quota.");
+  assert.equal(networkCalls, 3, "Diagnostics cannot add provider calls.");
+  await cache.readPilotWatchValuation({ ...safeIdentity, secret: "DO_NOT_LOG_IDENTITY_EXTRA" }, now);
+  assert.ok(!diagnostics.at(-1)[1].includes("DO_NOT_LOG"), "Only explicit identity keys may be logged.");
+  const rawCells = objects.get(cacheKey).value.records.find(record => record.ticker === safeIdentity.ticker).row.d;
+  const volumeIndex = engine.US_VALUE_SCANNER_COLUMNS.indexOf("volume");
+  const priceIndex = engine.US_VALUE_SCANNER_COLUMNS.indexOf("price_book_ratio");
+  rawCells[volumeIndex] = { secret: "DO_NOT_LOG_RAW_OBJECT" };
+  rawCells[priceIndex] = "2,000.125";
+  await cache.readPilotWatchValuation(safeIdentity, now);
+  const sanitized = JSON.parse(diagnostics.at(-1)[1]);
+  assert.equal(sanitized.numericInputs.volume, null);
+  assert.equal(sanitized.numericInputs.price_book_ratio, 2000.125, "Keep numeric precision for ratio attribution.");
+  assert.ok(!diagnostics.at(-1)[1].includes("DO_NOT_LOG"));
+  assert.ok(diagnostics.at(-1)[1].length < 3000, "Fixed-field numeric diagnostic stays bounded.");
+  objects.clear(); for (const [key, value] of cachedBeforeDiagnostic) objects.set(key, value);
+  const acceptedDiagnosticCount = diagnostics.length;
+  assert.equal(await cache.readPilotWatchValuation(safeIdentity, new Date(now.getTime() + 15 * 60_000 + 1)), null);
+  assert.equal(await cache.readPilotWatchValuation({ ...safeIdentity, cik: "0000000999" }, now), null);
+  pilot = false;
+  assert.equal(await cache.readPilotWatchValuation(safeIdentity, now), null);
+  pilot = true;
+  assert.equal(diagnostics.length, acceptedDiagnosticCount, "Stale/wrong-issuer/nonpilot data never emits accepted diagnostics.");
   now = new Date(now.getTime() + 1);
   const cheapRow = scannerRow(safeIdentity, { close: 10, earnings_per_share_diluted_ttm: 2,
     net_income: 200_000_000, free_cash_flow: 150_000_000, price_earnings_ttm: 5 });
@@ -210,7 +257,7 @@ try {
   assert.equal(await cache.readPilotWatchValuation(identities[0], now), null);
   assert.equal((await cache.persistPilotWatchValuations([], [], now)).reason, "outside_pilot");
   assert.equal(cache.pilotWatchExposure(universe(), now).length, 0);
-} finally { Date.now = savedDateNow; }
+} finally { Date.now = savedDateNow; console.info = savedConsoleInfo; }
 console.log(JSON.stringify({ ok: true, originalStarvationReproducedCycles: 3, freshValuationResearchWithoutFoundation: true,
   ambiguousValuationRowsRejected: true, upsideQuarantinePreserved: true, stableSameDayReviewIdentity: true,
   providerRequestsForThreeWatchesAndCacheReuses: networkCalls,

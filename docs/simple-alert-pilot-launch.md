@@ -1,5 +1,27 @@
 # Simple Alerts launch and operating record
 
+## Maintenance verification — 6 October 2026, 20:25 Bangkok
+
+Fresh pilot/launch and recovery-document reads found head `d7e302c40c5029aa406f5fe9aadbd6cdd4490a13` unchanged. Main remains identical to `a5cd9289686705b52e9691b4c5739b7cd88cf8fe` and scanning remains stopped. Sensor/web/inert foundation still run `33bb17841ae2a5174dd5d05663b4d930632dbbe6`. A concurrent profile redeployment `90728111-68d5-4613-ac08-10d81b0541f7`, created 13:07 UTC, runs `d7e302c`; fresh GitHub comparison confirms its only difference from `33bb178` is this launch document. Preserve that operator's deployment. Profile live config retains the profiles-only command, existing schedule/resources and docs-excluding watch patterns. The unrelated telemetry patch `97789f67` remains STAGED; no deployment or configuration mutation was made in this verification.
+
+### Bounded verification: stable evidence revision across a newer quote
+
+The next scheduled sensor cycle completed HTTP200 (completion log emitted **13:18:45 UTC**), duration 48.079s. Compared the complete new diagnostic at 13:18:25 with the 13:01:40 baseline: **all 13 component hashes and revision `af7416f087f1cbf6` match exactly**. The quote observation advanced from 13:01:05 to 13:16:36 UTC, with original observation dates retained. UPST was blocked by `candidate_already_recorded` / `same_evidence`, no paid call. This is live evidence of stable normalization and suppression for these two runs; it does not identify the historical difference involving `60ad1723d0dffa53`. No input rewriting, cooldown reset or speculative fingerprint repair is justified by this sample.
+
+One non-idle attempt had zero processing failures and one nontechnical deferral; the additional idle invocation is not another assessed case. Financial facts remain missing despite 10/11 presence fields. INOD's specific technical retry remains unobserved. Queue retains two items without deletion/expiry; oldest ready wait reached **527 minutes**. No new approval, Serious Buy/Sell/Watch Out, outbox or real delivery. Existing positive/negative/duplicate controls verified the same test-only receipt `dc00537ab56f6265fa623062725348ae.json`, without another send; external channels stay disabled and test data excluded from live signals.
+
+Sources this cycle: SEC urgent 0/1 failures, trading halts 0/1, market watch 0/1; broad SEC and direct issuer discovery not due. No source error/quota hold appeared in the payload. All 25 direct issuer website records remain missing. Daily record: **54 cycles, source 0/154, processing 1/26 (3.8462%), Committee technical failures 1/3, 24 nontechnical deferrals**. More deferrals do not demonstrate additional distinct assessments or two qualifying reliability windows.
+
+### First completed profile pass carrying the diagnostic code
+
+The concurrent same-runtime-code profile deployment completed HTTP200 at **13:14:24 UTC**: 18 attempts, 3 verifications all first-time, 15 pending; **280/500 newly verified today, 220 remaining**; all 25 cohort profiles verified, 3,242 due retries. Requests 25, request/body failures 0/25, zero model calls. Pending reasons reconcile to 15: customer extraction 8, business-and-customer extraction 2, missing business section 1, annual filing unavailable 2, runtime deferrals 2. These are incomplete profiles, not transport successes completing the target.
+
+Separately, one conditional profile-cache PUT returned HTTP502 at 13:13:37, followed by `concurrent_change_preserved` at 13:13:39. These two lines describe the same failure/recovery episode, not two failed requests. It is outside the profile source-fetch denominator; no successful-PUT denominator is available. The batch completed, but upstream storage failures are not eliminated. Another profile run started at 13:24 and was still in progress when inspected; no completion is credited.
+
+Shared rolling ledger remains **$0.743016 recorded/exposure, $0 reserved, $0 pending unknown exposure, $9.256984 headroom under the same $10 cap**. No budget stop or new human authentication requirement. Provider invoice and infrastructure actual spending remain unverified; no resources/subscriptions were added.
+
+Next: observe a naturally different revision and compare diagnostic components before changing review admission; obtain new dated UPST financial evidence without paying again for unchanged inputs, verify INOD's due technical retry and the next completed profile pass. This run completed bounded live verification; no runtime code change was needed. Retain current 25 identities and all scale-up gates. Maintenance/reporting continue.
+
 ## Deployment and runtime verification — 6 October 2026, 20:03 Bangkok
 
 Pilot-only diagnostic repair [33bb17841ae2a5174dd5d05663b4d930632dbbe6](https://github.com/Team-AI-Factory/swing-up/commit/33bb17841ae2a5174dd5d05663b4d930632dbbe6), tree `d5949c0fe327625d0dec6bad173da1ae3fd79e6e`, is live. All four connected Railway deployments succeeded:

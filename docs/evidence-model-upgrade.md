@@ -43,3 +43,7 @@ The maximum focused-review reservation is $2.7538, assuming five deep roles plus
 Mocked regression checks cover exact issuer matching, bounded retrieval, source-date preservation, missing financial facts, traceable annual cross-checks, meaningful-change fingerprints, supported reasoning parameters, pricing metadata and usage, model-specific cost accounting, unknown-price blocking, irrelevant event requests, durable review markers and unchanged publication gates. No live alert or paid test call is created by these tests.
 
 Real deployment receipts and any remaining evidence gaps belong in the pilot operating log. Passing tests does not establish investment accuracy or guarantee that a serious signal exists.
+
+## Deployment record
+
+See [evidence-model-deployment.md](evidence-model-deployment.md) for published commits, exact Railway deployments, completed-run evidence and remaining live-validation limits.

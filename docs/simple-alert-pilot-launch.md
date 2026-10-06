@@ -1,5 +1,28 @@
 # Simple Alerts launch and operating record
 
+## Verified reporting repair — 6 October 2026, 13:28 Bangkok
+
+Pilot-only commit [4e884bdf5bb41cde7e5bc0863e5198e247b11330](https://github.com/Team-AI-Factory/swing-up/commit/4e884bdf5bb41cde7e5bc0863e5198e247b11330), tested tree `71135f68218b8dad3df6ec5861d0d175c87a4b1a`, was published by guarded fast-forward from `7867e55de2ada1d127f7fef0646290cb7d8b433b`. It contains the two classifier lines and isolated regression described below, plus this operating log. No other runtime files changed. The normal connected Railway rollout succeeded on that exact commit for all four services:
+
+| Service | Successful exact-code deployment |
+| --- | --- |
+| Web | `b1356f14-d711-4fd3-8cab-7ccc85973b64` |
+| Sensor | `aa99a3e1-098c-4dd8-97e7-f461c4b14c8f` |
+| Profiles | `c2d780d5-affb-462a-8ad3-2a436dfa006e` |
+| Inert foundation | `2600a6b1-fcda-4618-8158-f10eda1a3012` |
+
+The production profile build compiled and passed lint/types and page generation. The new foundation explicitly logged paused/no scanning/network/paid calls/storage writes at 06:19:54 UTC; web became ready at 06:20:35. Main still matches `a5cd9289686705b52e9691b4c5739b7cd88cf8fe`; retired foundation remains offline and queue-reset sleeping. Existing cron schedules, no-restart policy, docs-excluding watch patterns, subscriptions and resource sizes were retained. The unrelated telemetry patch `97789f67-b0f5-4cb3-b689-bd46c2b4c63f` and historical pending operations were not accepted or altered.
+
+### Exact-code live proof
+
+The next normal scheduled profile pass on `c2d780d5` completed HTTP 200 at **06:26:58 UTC / 13:26:58 Bangkok** (checkedAt 06:26:56.424, duration 182,686 ms). It attempted **20** profiles: **6 verified and 6 first-time verifications**, **14 unverified**, **176 newly verified today / 500**, **324 remaining**. Raw verified rows are TRS, TRST, STVN, TRTN-PA, TRUP and AIV. The summary reports 37 requests, 0 request failures, 0 body failures, 0 model calls, and all current 25 cohort profiles verified. Due retry backlog is 3,010. The 30% yield is this single pass, not a guarantee of 500/day.
+
+**The reporting fix is live-verified:** AIXI's raw `company_profile_time_budget_deferred` record now agrees with exactly **1** occurrence of that same key in `pendingReasons`, with no fabricated provider-budget hold. Other pending reasons are customers-not-extracted 7, business-and-customers-not-extracted 2, unresolved 40-F/AIF 2, missing business section 1, document too large 1. These 13 extraction/source-resolution gaps plus 1 time deferral total all 14 unverified attempts; 0/37 transport failures does not mean 0 incomplete profiles. The existing time limit and provider throttling remain intact. This validates the exercised per-pass classifier; cohort missing-profile classification was tested in isolation but has no live missing cohort profiles to exercise it. No live transient-R2 retry proof is claimed.
+
+Latest completed sensor receipt read here is **06:17:31 UTC on the preceding c3641df runtime**, not on the new reporting commit: HTTP 200, 0 completed events, 1 nontechnical deferral, 0 AI calls/approvals/Serious Alerts, 0 outboxes and 0 real deliveries. Profile-ready queue age was 106 minutes. Daily measurement then had 26 cycles, source failures 0/74, processing failures **1/8 (12.5%)**, and technical Committee failures **1/2 (50%)**. An admitted/follow-up invocation is not another distinct assessed case. The shared ledger remained healthy at **$0.423085 recorded and total committed exposure, $0 reserved, $0 pending unknown usage**, leaving **$9.576915** under $10. Invoice and actual infrastructure spending remain unverified; no additional resources/subscriptions or paid test calls were made. The new sensor's next scheduled completion had not yet been read at this checkpoint.
+
+Next: verify that next ordinary sensor completion without forcing work; preserve INOD's paid cooldown and UPST's unchanged-evidence hold until existing meaningful-change rules are met. Obtain UPST's still-missing dated cash-flow/EPS, loan/debt/recourse, diluted-share and valuation-assumption evidence; address observed extraction and direct-issuer coverage gaps one at a time. Do not duplicate this classifier repair, reset queues/ledger, or mislabel runtime capacity as a spending stop. All scale-up gates remain unmet/inconclusive: retain current 25, no new features or recipients. No new critical incident, budget stop, human authentication requirement or live approved Serious Alert was found. Maintenance and twice-daily reporting continue.
+
 ## Maintenance repair — 6 October 2026, 13:16 Bangkok
 
 Read all current pilot, input-accounting, storage/valuation, framework and evidence/model records. Fresh GitHub head remained `7867e55de2ada1d127f7fef0646290cb7d8b433b`; runtime is still `c3641df7e323ae4678b95bfc8861755546b1f339` with only documentation successors. Railway has no new active rollout or service incident; the unrelated staged telemetry patch remains untouched. Main remains stopped, foundation inert, retired foundation offline and queue-reset sleeping.

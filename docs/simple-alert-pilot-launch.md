@@ -1,6 +1,27 @@
 # Simple Alerts launch and operating record
 
-## Bounded watch-input diagnostic — 6 October 2026, 23:17 Bangkok
+## Diagnostic deployment checkpoint — 6 October 2026, 23:21 Bangkok
+
+Published pilot-only code `940dd053c531c601265c2ca44a4a43a56a60b0dd`, matching tested tree `56c0d7e88e69d8393f9f360d699e700d008b1329`. GitHub confirms only the watch-valuation diagnostic, its existing smoke test and this launch log changed. Full Railway production compilation, lint/type checks and page generation passed. All four exact-commit deployments are SUCCESS:
+
+| Service | Deployment |
+| --- | --- |
+| Sensor | `12749b54-ab08-4861-949b-fbde75d87eb3` |
+| Profiles | `1077ffbf-f1d8-4f96-a93d-c51439cf3e00` |
+| Web | `d8b3fb6e-ec66-47d4-87b4-b45cb402f8b5` |
+| Inert foundation | `0334dbf9-9d1c-4df6-8a16-e3b2863d6e22` |
+
+Web started with no pending database migrations. At **16:20:22 UTC**, the exact-code inert foundation explicitly reported no scanning, network, paid calls or storage writes. Retired foundation stays offline, queue-reset sleeping and main stopped. Current live profile config still uses the profiles-only command, unchanged schedule and docs-excluding watch patterns; unrelated telemetry `97789f67` remains STAGED.
+
+**Runtime limit:** the new cron deployments are ready but have no completed sensor/profile execution or emitted input diagnostic yet. Deployment success is not proof of a completed diagnostic, improved review economics or a healthy pilot. Do not rerun a paid review merely to test logging. Observe the next normal exact-code run, then compare successive accepted input diagnostics alongside revision component hashes. The actual historical UPST provider cause remains unproven.
+
+The previous sensor's regular 16:15 run completed HTTP200 at **16:15:53 UTC before replacement**, with no review, no new event, no alert/outbox/delivery and no reservation/pending exposure. This is not an interrupted paid review or another assessed case. Day counters now **66 cycles, source 0/187, processing 1/32 (3.125%), Committee technical 1/8 (12.5%)**; two events remain queued. Across the two new inspected old-code cycles, source failures were SEC urgent **0/1**, halts **0/2**, market watch **0/2**; all other not-due/excluded sources are not successful reads. Shared recorded/exposure remains **$2.421478**, reserved and pending unknown exposure zero, **$7.578522** headroom under $10. Invoice verification and infrastructure actual spend remain unavailable.
+
+A further old-code profile pass completed HTTP200 at **16:11:43 UTC**: **22 retry attempts, zero new verifications, 22 pending, source failures 0/5**, zero model calls. Together with the preceding 15:55 pass: **46 attempts / one first-time verification / 45 pending / source 0/14 failures**. Day remains **296/500, 204 short**; 25/25 cohort profiles verified, 3,212 due retries. This low yield reflects extraction/filing gaps and runtime deferrals, not 46 completed profiles. No storage-error line appeared in these two completed-pass logs; that is not proof the upstream conditional PUT issue is cured.
+
+Next maintenance: verify the new input diagnostic on an exact-code completed run without forcing reviews; retain original dates and suppression locks, then compare real price/ratio/financial changes before a narrowly evidenced admission fix. Continue INOD's specific retry and dated UPST evidence checks, profile customer-extraction investigation and receipt verification. Keep current25, existing models/holds/limits and every scale gate. No extra resources, subscriptions, staged changes or main writes. Continue maintenance and reporting.
+
+## Bounded watch-input diagnostic — 6 October 2026, 23:15 Bangkok
 
 Fresh required document reads and branch/config checks found pilot head `43f1be7c554a7eac0e9a954109fe5ca01fd3e46e` unchanged. Main remains `a5cd9289686705b52e9691b4c5739b7cd88cf8fe` and stopped. Existing live runtime remains `33bb178`, with the concurrent profile deployment on documentation-only successor `d7e302c`; this patch builds on all current work. The unrelated staged telemetry patch `97789f67` is not applied.
 

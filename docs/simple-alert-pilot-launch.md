@@ -1,5 +1,57 @@
 # Simple Alerts launch and operating record
 
+## Live diagnostic verification and cause attribution — 7 October 2026, 00:45 Bangkok
+
+Fresh required operating-document reads, branch comparison and connected Railway inspection confirm sensor/web/inert foundation still run `940dd053c531c601265c2ca44a4a43a56a60b0dd`. Current pilot head `190c00c9ca21f3105453984b5bd52ec500997bbe` differs only in this launch document. Another operator redeployed profiles as `086d28a4-efbb-4146-811f-451d19db780a` on that documentation-only head at 16:24 UTC; preserve it. Live pilot commands, schedules and docs-excluding watch patterns remain intact. Main head remains `a5cd9289686705b52e9691b4c5739b7cd88cf8fe`, stopped; foundation paused, retired foundation offline and queue-reset sleeping. The unrelated STAGED telemetry patch `97789f67` and historical pending work remain untouched.
+
+### Bounded verification completed: actual live inputs reproduce the revision drift
+
+The exact-code sensor completed five normal HTTP200 cycles at **16:34:12, 16:46:40, 17:03:12, 17:16:29 and 17:34:59 UTC on 6 October**. Three accepted UPST watch reads emitted the new bounded numeric diagnostic. Its retrieval timestamp remained explicitly retrieval-only, with quote/financial-period timestamps null and liveQuoteVerified=false. This closes the previous pending runtime-diagnostic check.
+
+Captured input/output pairs:
+
+| Retrieval UTC | Price | Raw price/book | Raw EV/EBITDA | Derived low / base / high | Revision |
+| --- | ---: | ---: | ---: | --- | --- |
+| 16:31:37.825 | 24.39 | 2.9932256639340236 | 45.38494341321532 | 6.75 / 7.79 / 13.04 | `8a3a27f6ccccce78` |
+| 17:00:39.932 | 24.28 | 2.9797260811938537 | 45.24275224410972 | 6.74 / 7.79 / 13.02 | `8761d47352a2abf6` |
+| 17:32:14.409 | 24.21 | 2.9711354376319274 | 45.15226695467888 | 6.73 / 7.79 / 13.03 | `093a2eefb56c13fc` |
+
+All captured financial fields stayed identical: revenue 1,043,857,000; net income 53,601,000; FCF -289,046,000; diluted EPS 0.5492; growth, margins, debt/equity, current ratio, ROE and ROA unchanged. Sector/industry hashes match Finance and Finance/Rental/Leasing. Financial-document, fact, source, profile and readiness component hashes also stayed unchanged. Only outlookRange, modelAssumptions and valuation revision components changed.
+
+Offline replay used the current parser, hardening and sector-specialist modules, verified against fresh GitHub blobs (local sources differ only by an extra terminal newline). No provider, model or storage I/O was allowed. Replaying the captured numeric rows reproduced **every live range exactly**. Changing only the six market-derived inputs—price, market capitalization, P/E, P/B, P/S and EV/EBITDA—reproduced each later range; restoring those inputs restored the first range despite later volume/volatility changes. The reconstructed identity description was a replay label, not invented issuer evidence.
+
+Concrete mechanisms:
+- Raw price / raw P/B is **8.1484 in all three samples**. The engine rounds P/B to 2.99, 2.98 and 2.97 before the specialist calculates book value/share again. That early rounding makes the book/ROE method move **13.04 → 13.02 → 13.03**, even though the unrounded implied book value is constant.
+- The financial EV/EBITDA method calculates a current-price-based ratio proxy. Its output moves **6.75 → 6.74 → 6.73** with market inputs. This is not a newly read enterprise-to-equity/debt bridge.
+- Earnings-power value remains **7.79**, and all three method assumption texts remain exactly unchanged (1.60x book, 14.2x earnings, 12.6x EBITDA targets). These target assumptions are model outputs, not verified issuer facts.
+
+Thus the latest three live revision differences are attributable to market-derived valuation recalculation, including an identified rounding artifact—not new captured financial facts or newly justified assumptions. This does not retrospectively identify every earlier revision. It also does not authorize deleting all valuation inputs from the fingerprint or treating provider ratios as dated financial evidence. A precision-only repair would remove the book artifact but leave the EV proxy-driven repeat-admission path, so it is not a complete suppression fix.
+
+### Review, delivery, source and queue evidence
+
+The three UPST follow-ups each completed all four required roles (three Sol, one Astra), finishReason=stop with actual usage receipts; all returned **insufficient evidence**, not approval. Costs **$0.326111, $0.317341 and $0.332803** total **$0.976255**. Immutable nonterminal audit suffixes under the existing cohort/date prefix:
+- `valuation-9cedfa60bc5e49480c3ab9da-12979ef12ad2698e0609f273.json`
+- `valuation-9cedfa60bc5e49480c3ab9da-b80495f84a9fd81054e7be0a.json`
+- `valuation-9cedfa60bc5e49480c3ab9da-0b96263efac4cac096267666.json`
+
+These remain one existing UPST case; no new distinct case, approved Serious Buy/Sell/Watch Out, live outbox or real delivery. INOD's specific technical retry remains unobserved. Missing dated half-year EPS/CFO, debt/maturity/conversion/dilution and sustainable loan-adjusted cash-flow/model bridges remain blockers. Presence 10/11 does not answer those questions. Queue retains two events with no deletion/expiry; latest non-idle oldest-ready wait **781 minutes**. Review durations were about 1.49, 1.54 and 1.66 minutes; no live approval-to-delivery latency exists.
+
+Five isolated positive/negative/duplicate controls passed on the exact code. The first persisted authenticated web-feed TEST-ONLY receipt `a75464cf0be7fcaf952fc769b4b9f964.json`; later invocations verified it without resend. External channels remained disabled and the test remained excluded from live Serious Signals.
+
+Window source failures: broad SEC **0/2**, urgent SEC **0/4**, halts **0/5**, market watch **0/5**. No 403/429/timeout or quota hold appeared in these completed sensor operations; not-due/excluded sources are not successful reads. Direct issuer website coverage is still unresolved. Latest UTC daily counters: **71 cycles, source 0/203, processing 1/35 (2.8571%), Committee technical 1/11 (9.0909%)**. Five successful cycles and repeated UPST reviews do not establish two qualifying windows, 20 distinct cases or scale-up readiness.
+
+### Profiles across Bangkok midnight and budget
+
+Six completed same-runtime-code profile passes from **16:32:05 through 17:42:26 UTC** reconcile to **142 raw issuer result rows: three first-time verifications, 139 pending**, all retries. Verified issuers were BFST, WEAV and BMGL; their original filing dates remain 2026-02-26, 2026-03-05 and 2025-11-18, respectively. Source-fetch failures **0/66**, body failures zero, AI calls zero. Yield **3/142 (2.11%)**, not 142 completions.
+
+Last observed **6 October Bangkok** total was **297/500, 203 short**; after midnight the **7 October Bangkok** total is **2/500, 498 remaining**. The reset is the profile daily counter, not an AI-ledger reset. All current25 cohort profiles remain verified; 3,157 due retries. Pending reasons reconcile: customers not extracted 62; business/customers 32; annual filing unavailable 18; time deferral 8; oversized document 7; business section missing 6; unverified 40-F/AIF 5; business not extracted 1. No new revenue-country coverage is established by these completion counters.
+
+Six separate conditional profile-cache PUT HTTP502 episodes each logged concurrent_change_preserved. They are outside the 66 fetch requests; successful-PUT denominator remains unavailable. Preserve those failures separately; completed batches do not prove the upstream storage issue is cured.
+
+Shared rolling accounting: **$3.397733 recorded/exposure, $0 reserved, $0 pending unknown exposure, $6.602267 remaining under $10**; 11 recorded attempts have token receipts, including the earlier partial attempt. No hard fuse, $6 warning, new authentication requirement or invoice verification. Infrastructure actual spend remains unknown under the separate $20/month constraint. No resources or subscriptions changed.
+
+Next bounded repair: add a migration-safe, pilot-only nonterminal repeat-admission guard that recognizes unchanged dated financial evidence and unchanged substantive method assumptions despite these market-derived proxy changes, while retaining existing fingerprints/ledger locks, legitimate new filings/facts/assumptions, direction/readiness transitions and all final approval gates. Test against these captured pairs plus genuinely changed financial evidence before deploying; a new hash must not silently create another allowance. Do not force another paid review for validation. Continue source-gap and profile extraction work. This run completed live verification and exact cause reproduction; no speculative runtime or queue mutation was made. Remain at current25 and continue maintenance/reporting.
+
 ## Diagnostic deployment checkpoint — 6 October 2026, 23:21 Bangkok
 
 Published pilot-only code `940dd053c531c601265c2ca44a4a43a56a60b0dd`, matching tested tree `56c0d7e88e69d8393f9f360d699e700d008b1329`. GitHub confirms only the watch-valuation diagnostic, its existing smoke test and this launch log changed. Full Railway production compilation, lint/type checks and page generation passed. All four exact-commit deployments are SUCCESS:

@@ -113,6 +113,11 @@ function customerDescriptionRank(sentence: string, identity: CompanyIdentity) {
   // A stated recipient of a commercial service is a customer population;
   // named buyers and a geography-only passenger count are not required.
   if (airCarrierService.test(sentence)) return 1;
+  // A platform's audience is not necessarily its paying customer. This bounded
+  // annual-report construction explicitly names fees collected by the issuer
+  // from marketers, while preserving the distinct reward recipients verbatim.
+  const advertisingFees = new RegExp(`^Through (?:our platform|the ${issuerSubject(identity)} platform), our financial media network, marketers can deliver advertising content to customers that allows them to earn rewards, which are funded with a portion of the fees we collect from marketers[.]$`, "i");
+  if (advertisingFees.test(sentence)) return 2;
   // Partner categories need adjacent, explicit commercial payment terms.
   // A generic collaboration or a supplier payment cannot satisfy this path.
   const commercialPartners = sentence.match(commercialPartnerPopulation)?.[1];

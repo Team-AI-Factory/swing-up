@@ -152,7 +152,7 @@ try {
     body: JSON.stringify(deliveryTest
       ? { confirmDeliveryTest: true }
       : { mode: analysisOnly ? "analysis_only" : "sensor_and_analysis" }),
-    signal: AbortSignal.timeout(240_000),
+    signal: AbortSignal.timeout(390_000),
   });
   const body = await response.text();
   try {

@@ -119,7 +119,7 @@ try {
     const body = JSON.parse(options.body);
     assert.deepEqual(body.response_format, { type: "json_object" }, "JSON must be enforced by the provider contract, not just prose");
     assert.ok(body.max_tokens <= 800, "Reliable formatting must preserve the existing token-cost bound");
-    assert.match(body.messages[0].content, /entire response must fit \d+ output tokens/);
+    assert.match(body.messages[0].content, /visible JSON answer within approximately \d+ tokens/);
     assert.match(body.messages[0].content, /at most two short items/);
     return completed();
   };

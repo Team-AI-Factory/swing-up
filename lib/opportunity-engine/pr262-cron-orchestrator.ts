@@ -40,7 +40,7 @@ const PILOT_MAX_CYCLE_MS = 480_000;
 const PILOT_MIN_PAID_REVIEW_BUDGET_MS = 335_000;
 const PILOT_DELIVERY_RESERVE_MS = 45_000;
 const REPORTING_RESERVE_MS = 15_000;
-const MIN_EVENT_START_BUDGET_MS = 45_000;
+const MIN_EVENT_START_BUDGET_MS = 180_000;
 
 type Json = Record<string, unknown>;
 type Pr262CycleInput = {
@@ -298,7 +298,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
   const notificationResults: Json[] = [];
   const aiCostResults: Json[] = [];
   let aiBudget = await safeAiBudgetStatus();
-  const providerAccessDiagnostic = aiBudget.unknownUsageReviews > 0
+  const providerAccessDiagnostic = aiBudget.unknownUsageReviews > 0 || readyAtStart > 0
     ? await probeOpenAiCommitteeProviderAccess(cycleSignal)
     : { status: "skipped", reason: "no_unknown_usage_reviews", readOnly: true, callsPaidModel: false, billingQuotaVerified: false };
   if (providerAccessDiagnostic.status !== "skipped") console.info(JSON.stringify({ kind: "pr262_openai_access_diagnostic", checkedAt, ...providerAccessDiagnostic }));

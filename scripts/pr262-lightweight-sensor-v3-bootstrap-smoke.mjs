@@ -246,6 +246,7 @@ stubs["@/lib/opportunity-engine/pr262-change-sensor"].partitionPr262PendingEvent
 
 const loaded = { exports: {} };
 new Function("require", "module", "exports", output)((name) => {
+  if (name === "@/lib/ai-committee/model-policy") return loadTsModule(name);
   if (["@/lib/simple-alert-pilot-runtime", "@/lib/simple-alert-pilot-scope"].includes(name)) return loadTsModule(name);
   if (name in stubs) return stubs[name];
   if (name === "@/lib/opportunity-engine/market-watch-selection") return loadTsModule(name);

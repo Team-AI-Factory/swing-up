@@ -51,8 +51,8 @@ try {
     const request = JSON.parse(init.body); requests.push(request);
     assert.ok(init.signal instanceof AbortSignal);
     assert.equal(request.service_tier, "default"); assert.equal(request.n, 1);
-    assert.equal(request.max_completion_tokens, 4096); assert.equal(request.max_tokens, undefined);
-    assert.equal(request.reasoning_effort, "low"); assert.equal(request.verbosity, "low");
+    assert.equal(request.max_completion_tokens, policy.committeeModelOutputLimit(request.model, 1000)); assert.equal(request.max_tokens, undefined);
+    assert.equal(request.reasoning_effort, policy.committeeReasoningEffort(request.model)); assert.equal(request.verbosity, "low");
     assert.equal(request.temperature, undefined); assert.equal(request.tools, undefined);
     assert.equal(request.messages[0].role, "developer", "Reasoning-model instructions use the current developer role");
     if (scenario === "schema_error") return Response.json({ error: { code: "invalid_request_error", message: "private prompt not for logs" } }, { status: 400 });
@@ -72,7 +72,7 @@ try {
         prompt_tokens_details: details, completion_tokens_details: { reasoning_tokens: 1000 } } });
   };
   assert.equal(provider.getAiCommitteeProviderStatus().requestTimeoutMs, 60_000);
-  assert.equal(policy.AI_COMMITTEE_REVIEW_MAX_COST_USD, 1.9346);
+  assert.equal(policy.AI_COMMITTEE_REVIEW_MAX_COST_USD, 2.7538);
   const completed = await committee.runAiCommittee(input);
   assert.equal(completed.ok, true);
   assert.equal(reads, 1, "Models Read403 must not be mistaken for completion403");

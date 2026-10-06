@@ -139,6 +139,7 @@ const localRequire = (name) => {
   if (["@/lib/alert-details", "@/lib/company-profile", "@/lib/signal-explanation", "@/lib/valuation-availability", "@/lib/equity-signal/valuation-candidate", "@/lib/equity-signal/review-evidence-revision"].includes(name)) return loadTsModule(name);
   if (["@/lib/ai-committee/review-policy", "@/lib/equity-signal/us-market-calendar"].includes(name)) return loadTsModule(name);
   if (name === "@/lib/opportunity-engine/pr262-ai-daily-cost") return loadTsModule(name, { "@/lib/r2-warehouse": {} });
+  if (["@/lib/ai-committee/model-policy", "@/lib/equity-signal/financial-evidence"].includes(name)) return loadTsModule(name);
   throw new Error(`Unexpected runner import: ${name}`);
 };
 const awaitImportCrypto = { createHash: () => ({ update() { return this; }, digest: () => "0123456789abcdef0123456789abcdef" }) };

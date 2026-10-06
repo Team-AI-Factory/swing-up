@@ -205,7 +205,7 @@ export type ImpactCandidate = {
     checkedAt: string | null;
     latestFiledAt: string | null;
     fiscalPeriodEnd: string | null;
-    items: Array<{ metric: string; value: number; unit: string; periodStart?: string | null; filedAt: string | null; periodEnd: string | null; form: string | null }>;
+    items: Array<{ metric: string; value: number; unit: string; concept?: string; accession?: string | null; sourceUrl?: string; periodStart?: string | null; filedAt: string | null; periodEnd: string | null; form: string | null }>;
     error: string | null;
   } | null;
   historicalAnalog: HistoricalAnalogAnalysis & { source: string };

@@ -1,6 +1,6 @@
 import type { AiCommitteeModelTier } from "@/lib/ai-committee/agents";
 import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
-import { AI_COMMITTEE_MODEL_POLICY_VERSION, AI_COMMITTEE_REVIEW_MAX_PROMPT_BYTES, AI_COMMITTEE_ROLE_MODELS, committeeModelOutputLimit, knownCommitteeModel, reasoningCommitteeModel } from "@/lib/ai-committee/model-policy";
+import { AI_COMMITTEE_MODEL_POLICY_VERSION, AI_COMMITTEE_REVIEW_MAX_PROMPT_BYTES, AI_COMMITTEE_ROLE_MODELS, committeeModelOutputLimit, committeeReasoningEffort, knownCommitteeModel, reasoningCommitteeModel } from "@/lib/ai-committee/model-policy";
 
 export type AiCommitteeProviderStatus = {
   provider: "openai";
@@ -87,12 +87,8 @@ function envFlag(name: string, defaultValue = false) {
   return ["1", "true", "yes", "on"].includes(value.toLowerCase());
 }
 
-function defaultModel() {
-  return process.env.OPENAI_MODEL?.trim() || "gpt-4.1-mini";
-}
-
 function configuredModel(tier: AiCommitteeModelTier) {
-  const fallback = isSimpleAlertPilot() ? AI_COMMITTEE_ROLE_MODELS[tier] : defaultModel();
+  const fallback = process.env.OPENAI_MODEL?.trim() || AI_COMMITTEE_ROLE_MODELS[tier];
   if (tier === "final") return process.env.AI_COMMITTEE_FINAL_MODEL?.trim() || fallback;
   if (tier === "deep") return process.env.AI_COMMITTEE_DEEP_MODEL?.trim() || fallback;
   return process.env.AI_COMMITTEE_FAST_MODEL?.trim() || fallback;
@@ -107,8 +103,8 @@ function configuredModelAllowlist() {
 
 function requestTimeoutMs() {
   if (isSimpleAlertPilot()) return 60_000;
-  const configured = Number(process.env.AI_COMMITTEE_REQUEST_TIMEOUT_MS ?? 20_000);
-  return Number.isFinite(configured) ? Math.max(1_000, Math.min(60_000, Math.round(configured))) : 20_000;
+  const configured = Number(process.env.AI_COMMITTEE_REQUEST_TIMEOUT_MS ?? 60_000);
+  return Number.isFinite(configured) ? Math.max(1_000, Math.min(60_000, Math.round(configured))) : 60_000;
 }
 
 function dryRunDefault(configured: boolean, enabled: boolean) {
@@ -147,7 +143,7 @@ function modelDiagnostic(tier: AiCommitteeModelTier, model: string, allowed: boo
     expectedPilotModel: AI_COMMITTEE_ROLE_MODELS[tier], allowed,
     allowlist: [...configured].filter(knownCommitteeModel),
     unrecognizedAllowlistEntries: [...configured].filter(value => !knownCommitteeModel(value)).length,
-    reasoningEffort: reasoningCommitteeModel(model) ? "low" : null,
+    reasoningEffort: reasoningCommitteeModel(model) ? committeeReasoningEffort(model) : null,
     totalOutputCeiling: committeeModelOutputLimit(model, 1000), requestTimeoutMs: reasoningCommitteeModel(model) ? 60_000 : requestTimeoutMs(), serviceTier: "default" };
 }
 
@@ -255,8 +251,8 @@ export async function runOpenAiCommitteeProvider(options: AiCommitteeRunOptions)
         Authorization: `Bearer ${process.env.OPENAI_API_KEY?.trim()}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ model, messages, response_format: responseFormat, service_tier: "default", n: 1,
-        ...(reasoning ? { max_completion_tokens: outputLimit, reasoning_effort: "low", verbosity: "low" }
+      body: JSON.stringify({ model, messages, response_format: responseFormat, service_tier: "default", store: false, n: 1,
+        ...(reasoning ? { max_completion_tokens: outputLimit, reasoning_effort: committeeReasoningEffort(model), verbosity: "low" }
           : { max_tokens: outputLimit, temperature: 0.2 }) }),
       signal,
     });

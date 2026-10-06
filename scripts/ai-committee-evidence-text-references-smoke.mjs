@@ -79,7 +79,7 @@ try {
   };
   // Representative current runner topology: identical SEC summary in two
   // differently shaped receipt wrappers. This is not a historical live replay.
-  const summary = "Synthetic unverified example for regression only. ".repeat(1000).slice(0, 25_900);
+  const summary = "Synthetic unverified example for regression only. ".repeat(1000).slice(0, 25_500);
   const evidence = { ...pack,
     filingEvidence: { ...section, items: [{ title: "Synthetic earnings guidance", summary, url: "https://example.invalid/test", form: "8-K" }] },
     newsEvidence: { ...section, items: [{ title: "Synthetic earnings guidance", summary, url: "https://example.invalid/test", primarySource: true, official: true, channel: "sec_current_filings" }] },

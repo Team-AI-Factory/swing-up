@@ -81,7 +81,7 @@ const mixedReport = (id) => {
 try {
   process.env.SWING_UP_PR262_AI_DAILY_LIMIT_USD = "10";
   process.env.SWING_UP_PR262_AI_REVIEW_RESERVATION_USD = "0.75";
-  assert.ok(Math.abs(bound - 1.9346) < 1e-12, "Six-call exposure must cover five Sol roles, one Astra judge, 61K input and 4096 total output tokens each at cache-write rates.");
+  assert.ok(Math.abs(bound - 2.7538) < 1e-12, "Six-call exposure must cover five Sol roles, one Astra judge, 61K input and 8192 Sol and 16384 Astra total output tokens at cache-write rates.");
   reset([charge("prior", 9.9)]);
   assert.equal((await getPr262AiDailyBudgetStatus(now)).allowed, false);
   assert.equal((await getPr262AiDailyBudgetStatus(now)).nextReviewReservationUsd, bound, "Obsolete 75-cent environment overrides cannot return.");

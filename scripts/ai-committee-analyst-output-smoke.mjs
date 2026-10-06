@@ -89,7 +89,7 @@ try {
   assert.equal(corrected.committeeOutput.modelUsageSummary.actualOpenAiUsage.responsesWithUsage, 4);
   assert.equal(corrected.compatibility.publishes, false);
   assert.equal(corrected.compatibility.sendsTelegram, false);
-  assert.equal(cost.PR262_REVIEW_MAX_COST_USD, 1.9346, "Use the verified mixed-model reservation; the daily cap stays $10");
+  assert.equal(cost.PR262_REVIEW_MAX_COST_USD, 2.7538, "Use the verified mixed-model reservation; the daily cap stays $10");
 
   for (scenario of ["length_valid_json", "length_partial_json", "content_filter", "refusal"]) {
     calls = [];

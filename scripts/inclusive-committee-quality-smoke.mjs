@@ -96,7 +96,7 @@ const pack = {
   score: {}, currentRiskLabels: [], missingEvidence: ["full_source_evidence_incomplete", "fundamentalsEvidence"], dataFreshnessWarnings: [],
   researchReview: { enabled: true, gaps: ["full_source_evidence_incomplete", "fundamentalsEvidence"] },
 };
-const input = { [committee.TRUSTED_IN_MEMORY_EVIDENCE]: pack, persistResult: false, mode: "preview", dryRun: false, confirmRun: true, maxAgents: 13, maxCostUsd: 0.75 };
+const input = { [committee.TRUSTED_IN_MEMORY_EVIDENCE]: pack, persistResult: false, mode: "preview", dryRun: false, confirmRun: true, maxAgents: 13, maxCostUsd: 10 };
 const reviewed = await committee.runAiCommittee(input);
 assert.equal(calls, 14, "The real orchestrator must run all roles despite admitted research gaps");
 assert.equal(reviewed.committeeOutput.overallRecommendation, "needs_more_data", "Even unanimous positive mock agents cannot override missing hard evidence");

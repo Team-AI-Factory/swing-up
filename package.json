@@ -87,7 +87,8 @@
     "pilot:live-smoke": "node scripts/simple-alert-live-smoke.mjs",
     "pilot:simple-alerts": "node scripts/simple-alert-pilot.mjs",
     "smoke:simple-alert-pilot": "node scripts/simple-alert-pilot-smoke.mjs",
-    "smoke:company-card-facts": "node scripts/company-card-facts-smoke.mjs"
+    "smoke:company-card-facts": "node scripts/company-card-facts-smoke.mjs",
+    "smoke:ai-committee-prompt-budget": "node scripts/ai-committee-prompt-budget-smoke.mjs"
   },
   "dependencies": {
     "next": "15.5.24",

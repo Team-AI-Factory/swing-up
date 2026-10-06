@@ -81,6 +81,15 @@ export type AiCommitteeRunOptions = {
   responseSchema?: { name: string; schema: Record<string, unknown> };
 };
 
+/** Bound the text the model receives, including role/schema framing. JSON's
+ * transport escaping is decoded before tokenization and is not extra input. */
+export function committeePromptInputBytes(messages: Array<{ role: string; content: string }>, responseFormat?: unknown) {
+  const encoder = new TextEncoder();
+  return messages.reduce((total, message) => total + encoder.encode(message.content).byteLength, 0)
+    + encoder.encode(JSON.stringify(messages.map(message => ({ ...message, content: "" })))).byteLength
+    + (responseFormat ? encoder.encode(JSON.stringify(responseFormat)).byteLength : 0);
+}
+
 function envFlag(name: string, defaultValue = false) {
   const value = process.env[name];
   if (value === undefined) return defaultValue;
@@ -208,8 +217,7 @@ export async function runOpenAiCommitteeProvider(options: AiCommitteeRunOptions)
     const maximumPromptBytes = Math.max(1_000, Math.min(reasoning ? AI_COMMITTEE_REVIEW_MAX_PROMPT_BYTES : Infinity, Math.floor(Number(configuredPromptLimit))));
     // A schema is also model input. Keep it inside the existing reserved input
     // ceiling, rather than silently consuming the request-framing allowance.
-    const promptBytes = new TextEncoder().encode(JSON.stringify(messages)
-      + (options.responseSchema ? JSON.stringify(responseFormat) : "")).byteLength;
+    const promptBytes = committeePromptInputBytes(messages, options.responseSchema ? responseFormat : undefined);
     if (promptBytes > maximumPromptBytes) {
       const failure: AiCommitteeProviderFailure = { category: "input_limit", stopRemainingAgents: true, promptBytes, maximumPromptBytes };
       return { ok: false as const, status: "prompt_too_large" as const, failure, modelTier: options.tier, providerStatus: status };

@@ -69,7 +69,7 @@ try {
   globalThis.fetch = async (url, options) => {
     assert.equal(url, "https://api.openai.com/v1/chat/completions");
     const request = JSON.parse(options.body);
-    assert.ok(bytes(request.messages) <= 60_000);
+    assert.ok(provider.committeePromptInputBytes(request.messages, request.response_format?.type === "json_schema" ? request.response_format : undefined) <= 60_000);
     calls++;
     return Response.json({ choices: [{ message: { content: JSON.stringify({ verdict: "needs_more_data", confidence: 75,
       keyFindings: ["Company: Synthetic issuer makes labelled test products for this regression only.", "What happened: Synthetic terms remain unresolved and cannot establish a completed transaction.", "Why it matters: Synthetic uncertainty affects the proposed direction of this test case.", "Possible outcome: Synthetic consequences depend on terms that have not been confirmed.", "Risks: Synthetic missing final terms block an approval despite complete mock-provider responses."], supportingEvidence: ["Synthetic source"],
@@ -79,7 +79,7 @@ try {
   };
   // Representative current runner topology: identical SEC summary in two
   // differently shaped receipt wrappers. This is not a historical live replay.
-  const summary = "Synthetic unverified example for regression only. ".repeat(1000).slice(0, 25_500);
+  const summary = "Synthetic unverified example for regression only. ".repeat(1000).slice(0, 25_800);
   const evidence = { ...pack,
     filingEvidence: { ...section, items: [{ title: "Synthetic earnings guidance", summary, url: "https://example.invalid/test", form: "8-K" }] },
     newsEvidence: { ...section, items: [{ title: "Synthetic earnings guidance", summary, url: "https://example.invalid/test", primarySource: true, official: true, channel: "sec_current_filings" }] },

@@ -56,7 +56,15 @@ try {
     assert.equal(request.temperature, undefined); assert.equal(request.tools, undefined);
     assert.equal(request.messages[0].role, "developer", "Reasoning-model instructions use the current developer role");
     if (scenario === "schema_error") return Response.json({ error: { code: "invalid_request_error", message: "private prompt not for logs" } }, { status: 400 });
-    const agent = JSON.parse(request.messages[1].content).agent.id;
+    const prompt = JSON.parse(request.messages[1].content);
+    const agent = prompt.agent.id;
+    for (const review of prompt.previousResults) {
+      assert.equal(Object.hasOwn(review, "tokenUsage"), false, "Billing telemetry is retained in receipts, not repeated as investment evidence");
+      if (review.status === "completed") {
+        assert.equal(review.verdict, "needs_more_data");
+        assert.ok(review.missingData.includes("Verified sustainable earnings"), "Every prior review's material blocker remains visible");
+      }
+    }
     if (agent === "analyst_agent") assert.equal(request.response_format.json_schema.strict, true);
     const output = { agentId: agent, verdict: "needs_more_data", confidence: 70,
       keyFindings: ["Company: Synthetic", "What happened: Synthetic", "Why it matters: Synthetic", "Possible outcome: Unknown", "Risks: Missing evidence"],

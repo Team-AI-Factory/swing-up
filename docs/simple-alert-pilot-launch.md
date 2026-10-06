@@ -1,5 +1,35 @@
 # Simple Alerts launch and operating record
 
+## Deployment and runtime verification — 6 October 2026, 20:03 Bangkok
+
+Pilot-only diagnostic repair [33bb17841ae2a5174dd5d05663b4d930632dbbe6](https://github.com/Team-AI-Factory/swing-up/commit/33bb17841ae2a5174dd5d05663b4d930632dbbe6), tree `d5949c0fe327625d0dec6bad173da1ae3fd79e6e`, is live. All four connected Railway deployments succeeded:
+
+| Service | Deployment |
+| --- | --- |
+| Sensor | `92bc33eb-24c7-47c2-8c13-c529833e8303` |
+| Profiles | `1a115a93-1dd2-4644-ad63-4f46f857f70c` |
+| Web | `8fbc94ed-cd14-4630-a601-4e326da9bce0` |
+| Inert foundation | `fb618568-c439-4a26-b782-58d5a08f0032` |
+
+Production build compiled, type-checked and generated pages; web startup reported no pending migrations. All live source branches remain pilot-only, four watch patterns remain `["**","!/docs/**"]`, cron/start commands unchanged. Inert foundation explicitly logged no scanning/network/paid calls/storage writes at 12:56:52 UTC. Retired foundation remains offline and queue-reset sleeping. The unrelated telemetry patch remains STAGED and untouched. No main restart, resources, subscriptions or accounting reset.
+
+The normal exact-code 13:00 UTC sensor run completed HTTP200 at **13:01:45 UTC**, duration 53.641s. At 13:01:40 it emitted the new 13-component hash-only diagnostic for UPST revision `af7416f087f1cbf6`; live fields confirm `priceReady=true`. UPST was then denied by the existing `candidate_already_recorded` / `same_evidence` lock, with **zero paid calls**. A different revision on this diagnostic is not yet observed; do not claim attribution of the historical fingerprint change from this single sample.
+
+Baseline diagnostic for the next comparison:
+```json
+{"version":1,"revision":"af7416f087f1cbf6","components":{"source":"38a5866276429e89","companyProfile":"36c11204d1cd3845","industry":"cf5dd474d6d0fcdf","outlookRange":"b1c66c06400e2348","reviewPolicy":"42d51ea8d2d994a1","financialDocuments":"2fbc939a4de6662b","modelAssumptions":"dc894f05b33cb963","facts":"4de269ca558bff70","sourceComplete":"b5bea41b6c623f7c","priceReady":"b5bea41b6c623f7c","haltKnown":"b5bea41b6c623f7c","halted":"fcbcf165908dd18a","valuation":"e65e7e5dd891e45f"}}
+```
+
+Completed run: 0 processing failures/1 non-idle attempt, one nontechnical same-evidence deferral; zero new assessed cases/approvals/Serious Alerts. Queue retains two items, oldest ready wait 510 minutes; no expirations/deletions counted as completion. The old quality label `budget_deferred` is superseded by the explicit `same_evidence` blocker: this was not a spending stop. INOD-specific technical retry remains unobserved.
+
+Daily counters now 53 cycles, source 0/151, processing 1/25 = 4%, Committee technical 1/3, 23 nontechnical deferrals. Eight observed sensor completions since 11:16 show source errors: SEC broad 0/2, SEC urgent 0/5, halts 0/8, market-watch 0/8 (cycle source-attempt units, not underlying HTTP requests). Direct issuer discovery was not due, still 25 missing SEC-website records; this is not restored IR coverage. These deferral-heavy counters do not establish 20 distinct assessed cases or two qualifying windows.
+
+Existing isolated authenticated web-feed controls passed on this exact commit at 13:00:50 UTC: positive delivery, negative rejection and duplicate suppression. Durable **TEST-ONLY** receipt `branch-labs/simple-alerts/cohorts/small-ai-25-20261003-v1/serious-signal/delivery-test/receipts/web_feed/dc00537ab56f6265fa623062725348ae.json`; excluded from live Serious Signals, external channels disabled. Live consumer found 0 outboxes, 0 due jobs and 0 deliveries. Shared ledger remains $0.743016 recorded/exposure, $0 reserved, $0 pending unknown exposure; $9.256984 headroom.
+
+The preceding profile deployment completed another HTTP200 at 12:56:23 UTC: 19 attempts, 2 newly verified, 17 pending, 0/27 request failures, no AI calls. Daily total **277/500, 223 remaining**. Across seven observed passes since 11:26: 136 attempts, 24 newly verified, 112 pending, request failures 1/213 including the same one body failure; eight R2 502 concurrent-change-preserved events are separate. The new diagnostic deployment's first dedicated profile pass is not yet observed. All 25 cohort profiles remain verified, but unresolved financial evidence and customer/filing extraction gaps persist.
+
+Next bounded verification: compare future normal component diagnostics when a different revision appears; preserve existing fingerprints and locks until the actual changed component is proven. Continue INOD retry and new dated UPST evidence checks, plus exact-code profile yield. Remain at 25; invoice verification, infrastructure actual spending and scale-up gates remain unresolved.
+
 ## Maintenance repair — 6 October 2026, 19:53 Bangkok
 
 Fresh required operating-document reads and branch checks found pilot head `bcbe2a15a96341cdbf3b1a356fdfab71d2fd21bd` unchanged; main remains `a5cd9289686705b52e9691b4c5739b7cd88cf8fe` and stopped. All four live pilot services were still on runtime `4e884bdf5bb41cde7e5bc0863e5198e247b11330`; unrelated staged telemetry `97789f67-b0f5-4cb3-b689-bd46c2b4c63f` and historical pending work remain untouched.

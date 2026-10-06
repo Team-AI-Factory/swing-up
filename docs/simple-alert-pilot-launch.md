@@ -1,5 +1,23 @@
 # Simple Alerts launch and operating record
 
+## Maintenance repair — 6 October 2026, 19:53 Bangkok
+
+Fresh required operating-document reads and branch checks found pilot head `bcbe2a15a96341cdbf3b1a356fdfab71d2fd21bd` unchanged; main remains `a5cd9289686705b52e9691b4c5739b7cd88cf8fe` and stopped. All four live pilot services were still on runtime `4e884bdf5bb41cde7e5bc0863e5198e247b11330`; unrelated staged telemetry `97789f67-b0f5-4cb3-b689-bd46c2b4c63f` and historical pending work remain untouched.
+
+### Bounded change: explain review-evidence revisions without changing admission
+
+UPST's two historical paid insufficient-evidence reviews used different revision fingerprints, but the original packets are not available through the connected read path. Current logs cannot identify the changed component. Add a pilot-only `simple-alert-review-revision` diagnostic using the existing exact branch/project/environment/storage guard: at most 13 fixed component labels with 16-character hashes, alongside the existing revision. No raw evidence, URLs, financial values or additional persistence/network/paid calls. Logging failures are isolated. The existing revision calculation, evidence normalization, cooldown/duplicate locks, review criteria and model/budget limits are unchanged. This does not reconstruct historical inputs or justify another paid review.
+
+Validation: new `scripts/review-evidence-revision-diagnostics-smoke.mjs` passed fixed pre-change fingerprint fixtures, meaningful fact/readiness differences, quote/retrieval-time normalization, key-order stability, all six guard conditions including main exclusion, bounded non-raw output and throwing-logger isolation. A separate offline 2,000-input old/new comparison produced identical revision fingerprints. Scoped TypeScript check passed. Full production builds and exact-code runtime diagnostic observation are pending publication/deployment verification below.
+
+### Fresh completed production evidence before this repair
+
+Seven scheduled sensor HTTP200 completions from 11:16:27 through 12:47:30 UTC had no additional paid review, Serious Alert, live outbox or delivery. Latest daily record: 52 cycles; source failures 0/147; processing failures 1/24 (4.1667%); Committee technical failures 1/3; 22 nontechnical deferrals. The lower processing ratio comes from additional deferred attempts, not additional distinct assessed cases or two qualifying observation windows. Pending queue remains 2; last non-idle oldest wait was 482 minutes at 12:33. INOD's specific retry is still unobserved; do not force it or repay for unchanged UPST evidence.
+
+Six profile completions, 11:26:48–12:42:00 UTC: 117 attempts, 22 newly verified and 95 pending. Daily newly verified 275/500, **225 remaining**; all 25 cohort profiles verified. Provider request failures 1/186 (0.5376%), including one body failure in that same numerator; seven separately logged transient R2 502 write failures preserved concurrent changes and are outside that provider denominator. This does not prove all storage retries succeeded. Keep extraction gaps and provider allowances distinct from transport failures.
+
+Shared rolling ledger: recorded/exposure $0.743016, reserved $0, unknown pending exposure $0, headroom $9.256984 under the existing $10 cap. Provider invoice and actual infrastructure spending remain unverified; no resource/subscription changes. Remain at the current 25 cohort: elapsed sessions, distinct assessments, sustained failure-rate windows and approval/delivery gates are not proven. Next: verify the diagnostic on exact deployed code and compare component hashes only when normal runs produce distinct fingerprints; continue INOD retry, dated UPST evidence and profile-yield checks without weakening gates.
+
 ## Maintenance verification — 6 October 2026, 18:16 Bangkok
 
 Fresh operating-document reads and GitHub comparison found pilot head `ecbf3bbdf06eeadb7c007075431c635e32598fc1` unchanged before this entry, with all four docs-only builds SKIPPED. Main remains identical to `a5cd9289686705b52e9691b4c5739b7cd88cf8fe`, with scanning stopped. Railway live metadata still identifies [4e884bdf5bb41cde7e5bc0863e5198e247b11330](https://github.com/Team-AI-Factory/swing-up/commit/4e884bdf5bb41cde7e5bc0863e5198e247b11330) on sensor `aa99a3e1`, profiles `c2d780d5`, web `b1356f14` and inert foundation `2600a6b1`; retired foundation offline, queue-reset sleeping. No new concurrent rollout or authentication requirement. Unrelated staged telemetry and historical pending operations remain untouched.

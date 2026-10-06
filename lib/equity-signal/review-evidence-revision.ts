@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
 
 type Json = Record<string, unknown>;
 const object = (value: unknown): Json => value && typeof value === "object" && !Array.isArray(value) ? value as Json : {};
@@ -7,7 +8,7 @@ const stable = (value: unknown): unknown => Array.isArray(value) ? value.map(sta
 
 /** A new retrieval time or quote tick is not a new financial fact. */
 export function reviewEvidenceRevision(evidence: Json) {
-  const normalized = {
+  const normalized: Json = {
     ...evidence,
     source: (Array.isArray(evidence.source) ? evidence.source : []).map(value => {
       const receipt = object(value);
@@ -20,5 +21,18 @@ export function reviewEvidenceRevision(evidence: Json) {
       return [fact.metric, fact.value, fact.unit, fact.periodStart, fact.periodEnd, fact.filedAt, fact.form, fact.concept, fact.accession, fact.sourceUrl];
     }).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
   };
-  return crypto.createHash("sha256").update(JSON.stringify(stable(normalized))).digest("hex").slice(0, 16);
+  const revision = crypto.createHash("sha256").update(JSON.stringify(stable(normalized))).digest("hex").slice(0, 16);
+  if (isSimpleAlertPilot()) {
+    // Diagnostic only: preserve the existing revision and admission locks.
+    // Fixed labels and digests never expose source text, URLs or financial values.
+    try {
+      const components: Record<string, string> = {};
+      for (const key of ["source", "companyProfile", "industry", "outlookRange", "reviewPolicy", "financialDocuments", "modelAssumptions", "facts", "sourceComplete", "priceReady", "haltKnown", "halted", "valuation"]) {
+        if (normalized[key] !== undefined) components[key] = crypto.createHash("sha256")
+          .update(JSON.stringify(stable(normalized[key]))).digest("hex").slice(0, 16);
+      }
+      console.info(`[simple-alert-review-revision] ${JSON.stringify({ version: 1, revision, components })}`);
+    } catch { /* Diagnostic failure cannot change review eligibility. */ }
+  }
+  return revision;
 }

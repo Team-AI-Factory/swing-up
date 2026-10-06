@@ -10,7 +10,7 @@ function load(path, dependencies = {}) {
   new Function("require", "module", "exports", output)((name) => {
     if (name === "node:crypto") return crypto;
     if (name in dependencies) return dependencies[name];
-    if (name === "@/lib/ai-committee/review-policy") return loadTsModule(name);
+    if (["@/lib/ai-committee/model-policy", "@/lib/ai-committee/evidence-text-references", "@/lib/ai-committee/review-policy"].includes(name)) return loadTsModule(name);
     throw new Error(`Unexpected dependency: ${name}`);
   }, m, m.exports);
   return m.exports;
@@ -77,6 +77,7 @@ const committee = load("lib/ai-committee/orchestrator.ts", {
   "@/lib/ai-committee/run-persistence": { persistAiCommitteeRun: async () => { throw new Error("Unexpected database write"); } },
   "@/lib/ai-committee/provider": {
     getAiCommitteeProviderStatus: () => ({ configured: true, enabled: true, dryRunDefault: false }),
+    modelForTier: () => "gpt-4.1-mini",
     runOpenAiCommitteeProvider: async (input) => {
       calls++;
       assert.match(input.messages[0].content, /research review with explicitly incomplete evidence/);
@@ -96,7 +97,7 @@ const pack = {
   score: {}, currentRiskLabels: [], missingEvidence: ["full_source_evidence_incomplete", "fundamentalsEvidence"], dataFreshnessWarnings: [],
   researchReview: { enabled: true, gaps: ["full_source_evidence_incomplete", "fundamentalsEvidence"] },
 };
-const input = { [committee.TRUSTED_IN_MEMORY_EVIDENCE]: pack, persistResult: false, mode: "preview", dryRun: false, confirmRun: true, maxAgents: 13, maxCostUsd: 0.75 };
+const input = { [committee.TRUSTED_IN_MEMORY_EVIDENCE]: pack, persistResult: false, mode: "preview", dryRun: false, confirmRun: true, maxAgents: 13, maxCostUsd: 10 };
 const reviewed = await committee.runAiCommittee(input);
 assert.equal(calls, 14, "The real orchestrator must run all roles despite admitted research gaps");
 assert.equal(reviewed.committeeOutput.overallRecommendation, "needs_more_data", "Even unanimous positive mock agents cannot override missing hard evidence");

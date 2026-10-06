@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import ts from "typescript";
+import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 
 const source = await readFile(new URL("../lib/ai-committee/provider.ts", import.meta.url), "utf8");
 const transpiled = ts.transpileModule(source, {
@@ -7,7 +8,7 @@ const transpiled = ts.transpileModule(source, {
   fileName: "provider.ts",
 });
 const loadedModule = { exports: {} };
-new Function("require", "module", "exports", transpiled.outputText)(() => ({}), loadedModule, loadedModule.exports);
+new Function("require", "module", "exports", transpiled.outputText)(name => loadTsModule(name), loadedModule, loadedModule.exports);
 const { runOpenAiCommitteeProvider } = loadedModule.exports;
 if (typeof runOpenAiCommitteeProvider !== "function") throw new Error("OpenAI committee provider did not load.");
 

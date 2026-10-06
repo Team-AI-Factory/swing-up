@@ -38,12 +38,12 @@ const loadedModule = { exports: {} };
 const importStubs = {
   "@/lib/ai-committee/agents": { AI_COMMITTEE_AGENTS: [] },
   "@/lib/ai-committee/evidence-pack": { buildAiCommitteeEvidencePack: async () => ({ ok: false }) },
-  "@/lib/ai-committee/provider": { getAiCommitteeProviderStatus: () => ({ configured: false, enabled: false, dryRunDefault: true }), runOpenAiCommitteeProvider: async () => ({ ok: false, status: "disabled" }) },
+  "@/lib/ai-committee/provider": { modelForTier: () => "gpt-4.1-mini", getAiCommitteeProviderStatus: () => ({ configured: false, enabled: false, dryRunDefault: true }), runOpenAiCommitteeProvider: async () => ({ ok: false, status: "disabled" }) },
   "@/lib/ai-committee/run-persistence": { persistAiCommitteeRun: async () => null },
 };
 const localRequire = (specifier) => {
   if (specifier in importStubs) return importStubs[specifier];
-  if (["@/lib/ai-committee/review-policy", "@/lib/equity-signal/us-market-calendar"].includes(specifier)) return loadTsModule(specifier);
+  if (["@/lib/ai-committee/model-policy", "@/lib/ai-committee/evidence-text-references", "@/lib/ai-committee/review-policy", "@/lib/equity-signal/us-market-calendar"].includes(specifier)) return loadTsModule(specifier);
   throw new Error(`Unexpected import while loading committee decision: ${specifier}`);
 };
 new Function("require", "module", "exports", transpiled.outputText)(localRequire, loadedModule, loadedModule.exports);

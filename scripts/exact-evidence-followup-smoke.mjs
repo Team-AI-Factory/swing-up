@@ -42,7 +42,7 @@ let saved = null, requests = 0;
 const cache = { read: async () => saved, write: async value => { saved = structuredClone(value); } };
 const candidate = () => ({ ticker: "EXM", cik: "0000000001", eventFamily: "valuation_gap", eventObservedAt: "2026-09-18T11:00:00Z" });
 const fetchFacts = async () => { requests++; return Response.json(body); };
-await fundamentals.enrichCandidateFundamentals(candidate(), fetchFacts, now, cache);
+await fundamentals.enrichCandidateFundamentals({ ...candidate(), eventFamily: "earnings_guidance" }, fetchFacts, now, cache);
 assert.equal(requests, 1);
 const compared = await fundamentals.enrichCandidateFundamentals(candidate(), fetchFacts, now, { ...cache, requiredMetrics: financialTask.fields });
 assert.equal(requests, 2, "Latest-only cache must not satisfy the requested prior-year comparison");
@@ -76,7 +76,7 @@ assert.equal(incomplete.candidate.fundamentals.available, false, "Two current me
 
 const stored = new Map(); let revision = 0;
 const persistedEvidence = loadTsModule("@/lib/opportunity-engine/pr262-research-evidence", {
-  "@/lib/company-profile": { verifiedCompanyProfile: () => ({ company: "Example Corp" }) },
+  "@/lib/company-profile": { verifiedCompanyProfile: () => ({ company: "Example Corp", business: "Makes software", customers: "Business customers" }) },
   "@/lib/opportunity-engine/company-profile-cache": { readCompanyProfiles: async () => new Map() },
   "@/lib/opportunity-engine/pr262-storage": { pr262StorageKey: key => `test/${key}` },
   "@/lib/r2-warehouse": {

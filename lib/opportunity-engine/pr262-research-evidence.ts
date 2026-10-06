@@ -83,6 +83,14 @@ export async function readResearchAlerts(): Promise<Json[]> {
   });
 }
 
+export async function readLastValuationReview(cik: string) {
+  const stored = await readVersionedTextFromR2(`${ROOT}/valuation-reviews/${cik}.json`);
+  if (!stored.found || !stored.text) return null;
+  const row = object(JSON.parse(stored.text));
+  return row.cik === cik && typeof row.fingerprint === "string" && typeof row.outcome === "string"
+    ? { fingerprint: row.fingerprint, outcome: row.outcome } : null;
+}
+
 export function isResearchAlertCurrent(alert: Json, nowMs = Date.now()) {
   // Collection attempts update the card, but cannot renew the underlying evidence.
   const observedAt = alert.kind === "valuation"
@@ -118,12 +126,15 @@ export function evidenceTasks(report: Json) {
   const financialPatterns = Object.entries({ revenue: /revenue|sales/i, diluted_eps: /\beps\b|earnings per share/i,
     operating_cash_flow: /cash flow|cash generation/i, capital_expenditure: /capex|capital expenditure/i,
     long_term_debt_noncurrent: /debt|leverage/i, shares_outstanding: /shares|dilution/i,
+    operating_income: /operating (?:income|margin|profit)|margins?/i, gross_profit: /gross (?:profit|margin)/i,
+    long_term_debt_current: /current debt|debt maturit|short.term debt/i,
     net_income: /net income|net profit/i, assets: /assets/i, liabilities: /liabilities/i,
   });
   const financialMetrics = financialPatterns.filter(([, pattern]) => pattern.test(joined)).map(([metric]) => metric);
   const comparativeMetrics = financialPatterns.filter(([, pattern]) => gaps.some(gap => pattern.test(gap)
     && /prior[- ]year|year[- ]over[- ]year|\byoy\b|same (?:quarter|period) last year/i.test(gap))).map(([metric]) => `${metric}_prior_year`);
   const candidate = object(report.selectedCandidate);
+  const valuation = candidate.eventFamily === "valuation_gap";
   const safeUrl = (value: unknown) => {
     try { const url = new URL(text(value)); return url.protocol === "https:" && !url.username && !url.password ? url.toString() : null; } catch { return null; }
   };
@@ -134,7 +145,7 @@ export function evidenceTasks(report: Json) {
     requiredExhibitType: text(item.requiredExhibitType) || null,
     exhibitStatus: text(item.eventExhibitStatus) || "not_assessed", failureReason: text(item.errorCategory) || null,
   }));
-  const documentAction = documents.some(item => item.exhibitStatus === "download_failed")
+  const documentAction = valuation ? "Retrieve the latest exact-issuer annual and quarterly financial statements; no new event or event exhibit is required." : documents.some(item => item.exhibitStatus === "download_failed")
     ? "Retry the exact required exhibit URL whose download failed."
     : documents.some(item => item.exhibitStatus === "required_not_found")
       ? "Resolve the named required exhibit from the exact filing index or its primary-document links."
@@ -144,6 +155,7 @@ export function evidenceTasks(report: Json) {
   return { gaps: gaps.slice(0, 20), tasks: [
     ...(/company profile|products or services|customers|industry|classification/i.test(joined) ? [{ type: "company_profile", action: "Retrieve the exact issuer's business description, customers and SEC industry classification before publication.", complete: false }] : []),
     ...(/valuation|forecast range|currency/i.test(joined) ? [{ type: "valuation_inputs", action: "Refresh this issuer's financial model and currency; require a supported three-case price range. Do not invent a target.", ticker: text(candidate.ticker), complete: false }] : []),
+    ...(valuation || /segment|customer concentration|margins?/i.test(joined) ? [{ type: "financial_documents", action: "Retrieve dated annual/quarterly financial sections for segments, customers, margins and cash/debt. Preserve exact excerpts and disclose missing sections.", topics: [...(/segment/i.test(joined) ? ["segments"] : []), ...(/customer concentration/i.test(joined) ? ["customers"] : []), ...(/margin/i.test(joined) ? ["margins"] : [])], complete: false }] : []),
     ...(/source|filing|exhibit|proof|Truth/i.test(joined) ? [{ type: "source_document", action: documentAction, documents, sourceUrls: (Array.isArray(candidate.receipts) ? candidate.receipts : []).map(item => safeUrl(object(item).url)).filter(Boolean).slice(0, 3), complete: false }] : []),
     ...(/fundamental|magnitude|material|financial|revenue/i.test(joined) || financialMetrics.length ? [{ type: "financial_facts", action: comparativeMetrics.length ? "Retrieve dated current and comparable prior-year facts with the same reporting duration." : "Refresh dated company facts and compare the event's size with the company.", fields: [...financialMetrics, ...comparativeMetrics], comparison: comparativeMetrics.length ? "prior_year_same_duration" : null, complete: false }] : []),
     ...(/price|quote|market|halt/i.test(joined) ? [{ type: "market_evidence", action: "Refresh the price observation and trading-halt check.", ticker: text(candidate.ticker), fields: ["price", "observedAt", "marketSession", "tradingHaltState"], previousObservationAt: text(object(candidate.quote).observedAt) || null, complete: false }] : []),
@@ -158,6 +170,17 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
   const output = object(committee.output);
   const screeningRejected = report.status === "candidate_valuation_risk_rejected";
   const paid = report.openAiCalled === true;
+  if (paid && candidate.eventFamily === "valuation_gap" && /^\d{10}$/.test(text(candidate.cik)) && completeCommitteeReview(committee)) {
+    const key = `${ROOT}/valuation-reviews/${candidate.cik}.json`;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const prior = await readVersionedTextFromR2(key);
+      const saved = await writeVersionedJsonToR2(key, { cik: candidate.cik, fingerprint: report.candidateFingerprint,
+        outcome: output.overallRecommendation === "approve" ? report.seriousSignalFound === true ? "approved" : "approved_pending_checks" : output.overallRecommendation === "reject" ? "rejected" : "needs_more_data",
+        reviewedAt: now.toISOString() }, prior.etag ? { expectedEtag: prior.etag } : { createOnly: true });
+      if (saved.written) break;
+      if (!saved.conflict || attempt === 3) throw new Error("valuation_review_marker_write_failed");
+    }
+  }
   const eventId = text(event.id);
   const nextEvidenceCheckAt = new Date(now.getTime() + 15 * 60_000).toISOString();
   const previousFollowup = await readEvidenceFollowup(eventId);
@@ -170,23 +193,34 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
   const financialItems = Array.isArray(object(candidate.fundamentals).items) ? object(candidate.fundamentals).items as unknown[] : [];
   const financialFactsRequired = ["valuation_gap", "earnings_guidance", "financing_dilution", "contract_award", "merger_acquisition"].includes(String(candidate.eventFamily)) || requiredFinancialFields.length > 0;
   const details = alertDetails(candidate, input.companyAnalysis, now);
+  const financialDocuments = object(candidate.financialDocuments);
+  const documentRows = (Array.isArray(financialDocuments.documents) ? financialDocuments.documents : []).map(object);
+  const requiredTopics = requestedTasks.tasks.flatMap(task => task.type === "financial_documents" && "topics" in task ? task.topics : []);
+  const documentsRequired = candidate.eventFamily === "valuation_gap" || requiredTopics.length > 0;
+  const auditMissing = object(candidate.valuationAudit).missingEssentialFacts;
   const completeness = {
+    financialDocuments: !documentsRequired || (documentRows.length > 0 && documentRows.every(row => row.readComplete === true)
+      && Array.isArray(financialDocuments.failures) && financialDocuments.failures.length === 0
+      && requiredTopics.every(topic => documentRows.some(row => (Array.isArray(row.excerpts) ? row.excerpts : []).some(item => object(item).topic === topic)))),
     companyProfile: Boolean(verifiedCompanyProfile(candidate.companyProfile, candidate, now)),
     industry: Boolean(details.industry), priceScenarios: completePriceOutlook(details.outlook),
     issuer: Boolean((candidate.ticker ?? event.ticker) && (candidate.cik ?? event.cik)), sourceDocument: input.sourceDecisionGrade,
     financialFacts: !financialFactsRequired || (object(candidate.fundamentals).available === true
-      && requiredFinancialFields.every(metric => financialItems.some(item => object(item).metric === metric))),
+      && requiredFinancialFields.every(metric => financialItems.some(item => object(item).metric === metric))
+      && (!Array.isArray(auditMissing) || auditMissing.length === 0)),
     marketPrice: Boolean(object(candidate.quote).price), currentMarketPrice: object(candidate.quote).actionableForSeriousSignal === true,
     direction: candidate.direction === "upside" || candidate.direction === "downside",
     tradingHaltCheck: object(report.tradingHaltSafety).currentStateKnown === true,
   };
-  const applicableFields = Object.entries(completeness).filter(([field]) => field !== "priceScenarios" || !details.valuationException);
+  const applicableFields = Object.entries(completeness).filter(([field]) => (field !== "priceScenarios" || !details.valuationException)
+    && (field !== "financialDocuments" || documentsRequired));
   const requiredFieldCount = applicableFields.length;
   const known = applicableFields.filter(([, complete]) => complete).length;
   const collectionGaps = [
     ...details.missing,
     ...(!completeness.companyProfile ? ["A verified company profile with products or services and customers is required."] : []),
     ...(!completeness.sourceDocument ? ["The source document or required filing exhibit is incomplete."] : []),
+    ...(!completeness.financialDocuments ? ["Required financial document sections are missing."] : []),
     ...(!completeness.financialFacts ? ["Verified financial fundamentals are missing."] : []),
     ...(!completeness.marketPrice || !completeness.currentMarketPrice ? ["A current market price observation is needed."] : []),
     ...(!completeness.direction ? ["The causal business effect and investment direction need more evidence."] : []),
@@ -197,7 +231,7 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
   ] });
   const timing = evidenceTiming({ event, candidate, committee, previous: object(object(previousFollowup.quality).timing), collection: input.collectionTiming, paid, now });
   const quality = { fields: completeness, availableFields: known, requiredFields: requiredFieldCount,
-    applicability: { financialFacts: financialFactsRequired, priceScenarios: !details.valuationException },
+    applicability: { financialDocuments: documentsRequired, financialFacts: financialFactsRequired, priceScenarios: !details.valuationException },
     valuationException: details.valuationException ? "verified_negative_earnings_event" : null,
     committeeCompleted: completeCommitteeReview(committee),
     reviewOutcome: completeCommitteeReview(committee)
@@ -279,6 +313,7 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
     const alert = { id: hash(eventId), eventId, createdAt: now.toISOString(), eventObservedAt: event.observedAt,
       ticker: candidate.ticker, company: candidate.company, cik: candidate.cik, companyProfile: candidate.companyProfile ?? null, action: candidate.direction === "upside" ? "buy" : candidate.direction === "downside" ? "sell" : "watch_out",
       valuationObservedAt: input.companyAnalysis?.observedAt ?? null,
+      financialDocuments: candidate.financialDocuments ?? null, valuationAudit: candidate.valuationAudit ?? null,
       reviewEvidenceFingerprint: candidate.evidenceFingerprint ?? report.candidateFingerprint ?? null,
       eventHeadline: candidate.eventHeadline, kind: candidate.eventFamily === "valuation_gap" ? "valuation" : "event",
       currentPrice: object(candidate.quote).price ?? null, priceObservedAt: object(candidate.quote).observedAt ?? null,

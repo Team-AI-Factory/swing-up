@@ -12,6 +12,7 @@ function compile(url, dependencies = {}) {
     if (["@/lib/signal-explanation", "@/lib/equity-signal/valuation-candidate"].includes(name)) return loadTsModule(name);
     if (name === "@/lib/ai-committee/review-policy") return loadTsModule(name);
     if (name === "@/lib/opportunity-engine/pr262-ai-daily-cost") return loadTsModule(name, { "@/lib/r2-warehouse": {} });
+    if (name === "@/lib/ai-committee/model-policy") return loadTsModule(name);
     throw new Error(`Unexpected import in optional-history smoke: ${name}`);
   }, cjsModule, cjsModule.exports);
   return cjsModule.exports;

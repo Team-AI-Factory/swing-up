@@ -19,7 +19,7 @@ const METRICS = [
   { label: "gross_profit", concepts: ["GrossProfit"], units: ["USD"] },
 ] as const;
 
-type FactUnit = { val?: unknown; filed?: unknown; end?: unknown; start?: unknown; form?: unknown; fy?: unknown; fp?: unknown; frame?: unknown };
+type FactUnit = { val?: unknown; filed?: unknown; end?: unknown; start?: unknown; form?: unknown; fy?: unknown; fp?: unknown; frame?: unknown; accn?: unknown };
 
 function number(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -47,7 +47,7 @@ function datedFacts(facts: Record<string, unknown>, concepts: readonly string[],
         if (value === null || !filedAt || !periodEnd || filedAt > today || periodEnd > today
           || !Number.isFinite(Date.parse(filedAt)) || !Number.isFinite(Date.parse(periodEnd))
           || (annualOnly && (days < 330 || days > 380))) return [];
-        return [{ concept, value, unit, filedAt, periodEnd, periodStart, form: typeof row.form === "string" ? row.form : null }];
+        return [{ concept, value, unit, filedAt, periodEnd, periodStart, accession: typeof row.accn === "string" ? row.accn : null, form: typeof row.form === "string" ? row.form : null }];
       });
     });
   });
@@ -94,7 +94,7 @@ function applyCompanyScale(candidate: ImpactCandidate, annualRevenue: ReturnType
   return reassessCandidateAfterFundamentals(candidate, now);
 }
 
-export type VerifiedFactsSnapshot = { cik: string; fundamentals: NonNullable<ImpactCandidate["fundamentals"]>; annualRevenue: ReturnType<typeof latestFact> };
+export type VerifiedFactsSnapshot = { evidenceVersion?: 2; cik: string; fundamentals: NonNullable<ImpactCandidate["fundamentals"]>; annualRevenue: ReturnType<typeof latestFact> };
 export type VerifiedFactsCache = { requiredMetrics?: string[]; read: (cik: string) => Promise<VerifiedFactsSnapshot | null>; write: (snapshot: VerifiedFactsSnapshot) => Promise<void> };
 
 export async function enrichCandidateFundamentals(candidate: ImpactCandidate | null, fetchImpl: typeof fetch, now: Date, cache?: VerifiedFactsCache) {
@@ -111,13 +111,14 @@ export async function enrichCandidateFundamentals(candidate: ImpactCandidate | n
     const datedFacts = saved?.fundamentals.items.every(item => Number.isFinite(item.value)
       && Number.isFinite(Date.parse(item.filedAt ?? "")) && Date.parse(item.filedAt!) <= now.getTime()
       && Number.isFinite(Date.parse(item.periodEnd ?? "")) && Date.parse(item.periodEnd!) <= now.getTime());
-    const requestedFactsPresent = (cache?.requiredMetrics ?? []).every(metric => saved?.fundamentals.items.some(item => item.metric === metric));
+    const requestedMetrics = cache?.requiredMetrics ?? [];
+    const requestedFactsPresent = requestedMetrics.every(metric => saved?.fundamentals.items.some(item => item.metric === metric));
     if (saved?.cik === candidate.cik && saved.fundamentals.sourceUrl === sourceUrl && saved.fundamentals.available && datedFacts && Number.isFinite(checked)
       && checked <= now.getTime() && now.getTime() - checked <= 6 * 60 * 60_000
       && (candidate.eventFamily === "valuation_gap" || checked >= eventAt)) {
       reusableSaved = saved;
     }
-    if (reusableSaved && requestedFactsPresent) {
+    if (reusableSaved && requestedFactsPresent && (candidate.eventFamily !== "valuation_gap" || saved?.evidenceVersion === 2)) {
       const saved = reusableSaved;
       candidate.fundamentals = structuredClone(saved.fundamentals);
       if (candidate.eventFamily !== "valuation_gap") applyCompanyScale(candidate, saved.annualRevenue, sourceUrl, now);
@@ -135,20 +136,26 @@ export async function enrichCandidateFundamentals(candidate: ImpactCandidate | n
     const facts = { ...ifrs, ...usGaap, ...dei };
     const items: NonNullable<ImpactCandidate["fundamentals"]>["items"] = METRICS.flatMap((metric) => {
       const fact = latestFact(facts, metric.concepts, metric.units, now);
-      return fact ? [{ metric: metric.label, value: fact.value, unit: fact.unit, periodStart: fact.periodStart, filedAt: fact.filedAt, periodEnd: fact.periodEnd, form: fact.form }] : [];
+      return fact ? [{ metric: metric.label, value: fact.value, unit: fact.unit, periodStart: fact.periodStart, filedAt: fact.filedAt, periodEnd: fact.periodEnd, form: fact.form, concept: fact.concept, accession: fact.accession, sourceUrl }] : [];
     });
     const currentMetricCount = items.length;
     for (const metric of METRICS) {
-      if (!cache?.requiredMetrics?.includes(`${metric.label}_prior_year`)) continue;
+      if (candidate.eventFamily === "valuation_gap") {
+        const annual = latestFact(facts, metric.concepts, metric.units, now, true);
+        if (annual) items.push({ metric: `${metric.label}_annual`, value: annual.value, unit: annual.unit,
+          periodStart: annual.periodStart, filedAt: annual.filedAt, periodEnd: annual.periodEnd, form: annual.form,
+          concept: annual.concept, accession: annual.accession, sourceUrl });
+      }
+      if (candidate.eventFamily !== "valuation_gap" && !cache?.requiredMetrics?.includes(`${metric.label}_prior_year`)) continue;
       const fact = priorYearFact(facts, metric.concepts, metric.units, now);
-      if (fact) items.push({ metric: `${metric.label}_prior_year`, value: fact.value, unit: fact.unit, periodStart: fact.periodStart, filedAt: fact.filedAt, periodEnd: fact.periodEnd, form: fact.form });
+      if (fact) items.push({ metric: `${metric.label}_prior_year`, value: fact.value, unit: fact.unit, periodStart: fact.periodStart, filedAt: fact.filedAt, periodEnd: fact.periodEnd, form: fact.form, concept: fact.concept, accession: fact.accession, sourceUrl });
     }
     const latestFiledAt = items.map((item) => item.filedAt).filter((value): value is string => Boolean(value)).sort().at(-1) ?? null;
     const fiscalPeriodEnd = items.map((item) => item.periodEnd).filter((value): value is string => Boolean(value)).sort().at(-1) ?? null;
     candidate.fundamentals = { available: currentMetricCount >= 3, sourceUrl, checkedAt: now.toISOString(), latestFiledAt, fiscalPeriodEnd, items, error: items.length ? null : "no_supported_company_facts" };
     const annualRevenue = latestFact(facts, METRICS[0].concepts, ["USD"], now, true);
     if (candidate.eventFamily !== "valuation_gap") applyCompanyScale(candidate, annualRevenue, sourceUrl, now);
-    if (candidate.fundamentals.available) await cache?.write({ cik: candidate.cik, fundamentals: candidate.fundamentals, annualRevenue }).catch(() => undefined);
+    if (candidate.fundamentals.available) await cache?.write({ evidenceVersion: 2, cik: candidate.cik, fundamentals: candidate.fundamentals, annualRevenue }).catch(() => undefined);
     const provider: ProviderResult = { provider: "sec_company_facts", status: items.length ? "connected" : "temporarily_unavailable", checkedAt: now.toISOString(), nextRetryAt: null, sourceUrls: [sourceUrl], receipts: [], recordsRead: items.length, error: items.length ? null : "no_supported_company_facts", entitlementVerified: true, cached: false };
     return { candidate, provider };
   } catch (error) {

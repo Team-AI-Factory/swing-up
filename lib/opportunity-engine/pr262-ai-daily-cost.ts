@@ -1,4 +1,5 @@
 import { readOpenAiBillingAudit } from "@/lib/ai-committee/billing-audit";
+import { AI_COMMITTEE_MODEL_PRICES, AI_COMMITTEE_REVIEW_MAX_PROMPT_BYTES, AI_COMMITTEE_REASONING_MAX_OUTPUT_TOKENS, AI_COMMITTEE_REVIEW_MAX_CALLS, AI_COMMITTEE_REVIEW_MAX_COST_USD } from "@/lib/ai-committee/model-policy";
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 
@@ -8,15 +9,15 @@ const AUDIT_RETENTION_DAYS = 45;
 const AUDIT_RETENTION_MS = AUDIT_RETENTION_DAYS * WINDOW_MS;
 const DEFAULT_LIMIT_USD = 10;
 const DEFAULT_WARNING_USD = 6;
-// A temporary maximum exposure, never booked as spending: six bounded calls,
-// at most one token per UTF-8 prompt byte plus framing, and 1,000 output tokens.
-export const PR262_REVIEW_MAX_PROMPT_BYTES = 60_000;
-export const PR262_REVIEW_MAX_OUTPUT_TOKENS = 1_000;
-export const PR262_REVIEW_MAX_CALLS = 6;
-export const PR262_REVIEW_MAX_COST_USD = PR262_REVIEW_MAX_CALLS * (((PR262_REVIEW_MAX_PROMPT_BYTES + 1000) * 0.4 + PR262_REVIEW_MAX_OUTPUT_TOKENS * 1.6) / 1_000_000);
-const GPT_4_1_MINI_INPUT_USD_PER_MILLION = 0.4;
-const GPT_4_1_MINI_CACHED_INPUT_USD_PER_MILLION = 0.1;
-const GPT_4_1_MINI_OUTPUT_USD_PER_MILLION = 1.6;
+// Maximum exposure, never booked as spending: up to five Sol roles and one
+// Astra judge, bounded prompt bytes plus framing and TOTAL completion tokens
+// (including reasoning). Cache-write input rates are the worst-case category.
+// Existing reservations retain their original amount; only new admissions use
+// this policy. An old reservation cannot be reused for a new model request.
+export const PR262_REVIEW_MAX_PROMPT_BYTES = AI_COMMITTEE_REVIEW_MAX_PROMPT_BYTES;
+export const PR262_REVIEW_MAX_OUTPUT_TOKENS = AI_COMMITTEE_REASONING_MAX_OUTPUT_TOKENS;
+export const PR262_REVIEW_MAX_CALLS = AI_COMMITTEE_REVIEW_MAX_CALLS;
+export const PR262_REVIEW_MAX_COST_USD = AI_COMMITTEE_REVIEW_MAX_COST_USD;
 // A reservation is retained for the full rolling spend window unless a known
 // no-call path releases it or a completed call reconciles it. A crashed process
 // therefore cannot silently reopen paid capacity whose usage is unknown.
@@ -366,26 +367,73 @@ export async function releasePr262AiCommitteeBudgetReservation(candidateFingerpr
   throw new Error("pr262_ai_daily_cost_release_conflict");
 }
 
-function actualCostFromReport(report: Json) {
+function actualCostFromReport(report: Json): { costUsd: number; inputPendingUpperBoundUsd: number } | null {
   const committee = object(report.committee);
   const output = object(committee.output);
   const usageSummary = object(output.modelUsageSummary);
   const actual = object(usageSummary.actualOpenAiUsage);
   // Each response's actual token receipt counts, including a partial review.
-  if (!(Number(actual.responsesWithUsage) > 0)) return 0;
+  if (actual.responsesWithUsage === undefined || actual.responsesWithUsage === 0) {
+    const roles = Array.isArray(usageSummary.roleDiagnostics) ? usageSummary.roleDiagnostics.map(object) : [];
+    return roles.some(role => role.usageReported === true) ? null : { costUsd: 0, inputPendingUpperBoundUsd: 0 };
+  }
+  const count = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+  const responses = count(actual.responsesWithUsage);
+  if (responses === null || responses === 0) return null;
+  const roles = Array.isArray(usageSummary.roleDiagnostics) ? usageSummary.roleDiagnostics.map(object) : [];
+  if (roles.length && roles.filter(role => role.usageReported === true).length !== responses) return null;
   const tokens = object(actual.tokens);
-  const prompt = finite(tokens.promptTokens);
-  const cached = finite(tokens.cachedPromptTokens) ?? 0;
-  const completion = finite(tokens.completionTokens);
-  if (prompt === null || completion === null || prompt < 0 || completion < 0 || cached < 0 || cached > prompt) return null;
-  const models = Object.keys(object(actual.byModel));
-  if (models.some(model => !["gpt-4.1-mini", "gpt-4.1-mini-2025-04-14"].includes(model))) return null;
-
-  const inputRate = GPT_4_1_MINI_INPUT_USD_PER_MILLION;
-  const cachedRate = GPT_4_1_MINI_CACHED_INPUT_USD_PER_MILLION;
-  const outputRate = GPT_4_1_MINI_OUTPUT_USD_PER_MILLION;
-  const uncachedPrompt = Math.max(0, prompt - cached);
-  return (uncachedPrompt * inputRate + cached * cachedRate + completion * outputRate) / 1_000_000;
+  const prompt = count(tokens.promptTokens);
+  const cached = tokens.cachedPromptTokens === undefined ? 0 : count(tokens.cachedPromptTokens);
+  const completion = count(tokens.completionTokens);
+  if (prompt === null || completion === null || cached === null || cached > prompt) return null;
+  const byModel = object(actual.byModel);
+  const models = Object.keys(byModel);
+  if (!models.length) return null;
+  let costUsd = 0;
+  let inputPendingUpperBoundUsd = 0;
+  let cacheWritesIncomplete = false;
+  const summed = { prompt: 0, cached: 0, written: 0, completion: 0, responses: 0 };
+  for (const model of models) {
+    if (!Object.hasOwn(AI_COMMITTEE_MODEL_PRICES, model)) return null;
+    const price = AI_COMMITTEE_MODEL_PRICES[model];
+    const row = object(byModel[model]);
+    const legacyMini = model === "gpt-4.1-mini" || model === "gpt-4.1-mini-2025-04-14";
+    // Historical mini receipts predate pricing metadata/cache-write billing.
+    // New-model metadata must prove the actual model, tier and receipt fields.
+    // A missing cache-write count is unknown, never an inferred zero.
+    if (row.pricingVerified !== true && !(legacyMini && row.pricingVerified === undefined)) return null;
+    const rowPrompt = count(row.promptTokens);
+    const rowCached = legacyMini && row.cachedPromptTokens === undefined ? 0 : count(row.cachedPromptTokens);
+    const missingCacheWrites = !legacyMini && row.cacheWritePromptTokens === undefined;
+    const rowWritten = row.cacheWritePromptTokens === undefined ? 0 : count(row.cacheWritePromptTokens);
+    const rowCompletion = count(row.completionTokens);
+    const rowResponses = count(row.responses);
+    if (rowPrompt === null || rowCached === null || rowWritten === null || rowCompletion === null
+      || rowResponses === null || rowResponses < 1 || rowCached + rowWritten > rowPrompt) return null;
+    if (row.totalTokens !== undefined && (count(row.totalTokens) === null || Number(row.totalTokens) < rowPrompt + rowCompletion)) return null;
+    // Completion tokens already include reasoning. Do not charge it twice.
+    costUsd += (rowCached * price.cachedInput + rowCompletion * price.output) / 1_000_000;
+    if (missingCacheWrites) {
+      cacheWritesIncomplete = true;
+      // The API schema makes this field optional, without promising omitted
+      // means zero. Exact output/cache-read charges remain known. Classify all
+      // other input as bounded uncertainty, not invented actual spending.
+      inputPendingUpperBoundUsd += (rowPrompt - rowCached) * Math.max(price.input, price.cacheWrite) / 1_000_000;
+    } else {
+      costUsd += ((rowPrompt - rowCached - rowWritten) * price.input + rowWritten * price.cacheWrite) / 1_000_000;
+    }
+    summed.prompt += rowPrompt;
+    summed.cached += rowCached;
+    summed.written += rowWritten;
+    summed.completion += rowCompletion;
+    summed.responses += rowResponses;
+  }
+  // The aggregate and model receipts must describe exactly the same calls.
+  // Inconsistent or incomplete reports retain their durable exposure hold.
+  if (summed.prompt !== prompt || summed.cached !== cached || summed.completion !== completion || summed.responses !== responses
+    || (tokens.cacheWritePromptTokens !== undefined && (cacheWritesIncomplete || count(tokens.cacheWritePromptTokens) !== summed.written))) return null;
+  return { costUsd, inputPendingUpperBoundUsd };
 }
 
 export async function recordPr262AiCommitteeCost(reportValue: unknown, now = new Date()) {
@@ -400,9 +448,12 @@ export async function recordPr262AiCommitteeCost(reportValue: unknown, now = new
   const roles = Array.isArray(summary.roleDiagnostics) ? summary.roleDiagnostics.map(object) : [];
   const rejected = (role: Json) => [400, 401, 403, 404, 422, 429].includes(Number(object(role.providerFailure).httpStatus))
     || ["not_configured", "disabled", "confirmation_required", "model_not_configured", "model_not_allowed", "prompt_too_large"].includes(String(role.error));
-  const uncertain = actual === null || (roles.length === 0 && !(Number(object(summary.actualOpenAiUsage).responsesWithUsage) > 0))
+  const unobservedCalls = (roles.length === 0 && !(Number(object(summary.actualOpenAiUsage).responsesWithUsage) > 0))
     || roles.some(role => role.status !== "blocked" && role.status !== "planned" && role.usageReported !== true && !rejected(role));
-  const failure = roles.map(role => object(role.providerFailure)).find(value => typeof value.category === "string");
+  const uncertain = actual === null || actual.inputPendingUpperBoundUsd > 0 || unobservedCalls;
+  // The provider was never called for an oversized packet. Keep that case's
+  // retry hold without opening a shared outage stop for unrelated companies.
+  const failure = roles.map(role => object(role.providerFailure)).find(value => typeof value.category === "string" && value.category !== "input_limit");
   const cooldownMs = failure ? Math.min(60 * 60_000, Math.max(5 * 60_000, Number(failure.retryAfterSeconds ?? 0) * 1000,
     ["quota", "authentication", "permission"].includes(String(failure.category)) ? 30 * 60_000 : 0)) : 0;
   const retryAt = new Date(now.getTime() + (cooldownMs || (uncertain ? WINDOW_MS : 5 * 60_000))).toISOString();
@@ -421,15 +472,22 @@ export async function recordPr262AiCommitteeCost(reportValue: unknown, now = new
     }
     const reservedAmount = loaded.state.reservations.find((item) => item.id === id)?.amountUsd
       ?? reviewReservationUsd(limitUsd());
-    const costUsd = Math.max(0, actual ?? 0);
+    const costUsd = Math.max(0, actual?.costUsd ?? 0);
+    // Only narrow a hold when diagnostics prove every attempted call has a
+    // receipt or a definite rejection. A timeout/unknown model/tier preserves
+    // the full remaining review reservation, including its historical amount.
+    const pendingUpperBoundUsd = actual && actual.inputPendingUpperBoundUsd > 0 && roles.length > 0 && !unobservedCalls
+      ? actual.inputPendingUpperBoundUsd : Math.max(0, reservedAmount - costUsd);
     const entry: CostEntry = {
       id,
       recordedAt: now.toISOString(),
       ticker: typeof candidate.ticker === "string" ? candidate.ticker : null,
       alertType: typeof report.alertType === "string" ? report.alertType : null,
-      costUsd: Math.round(costUsd * 1_000_000) / 1_000_000,
+      // Round new receipts up to ledger precision so tiny cached-input charges
+      // cannot disappear. Historical stored charges are never repriced.
+      costUsd: Math.ceil(costUsd * 1_000_000) / 1_000_000,
       source: uncertain ? "usage_pending" : costUsd > 0 ? "actual_tokens" : "rejected_request",
-      ...(uncertain ? { pendingUpperBoundUsd: Math.max(0, reservedAmount - costUsd) } : {}),
+      ...(uncertain ? { pendingUpperBoundUsd: Math.ceil(pendingUpperBoundUsd * 1_000_000) / 1_000_000 } : {}),
       ...(costUsd === 0 || uncertain ? { retryAt } : {}),
     };
     const next: State = {
@@ -442,7 +500,7 @@ export async function recordPr262AiCommitteeCost(reportValue: unknown, now = new
       entries: [...loaded.state.entries.filter(item => item.id !== id || item.source === "actual_tokens" || item.source === "usage_pending"), entry],
       auditEntries: [...loaded.state.auditEntries, entry],
       reservations: loaded.state.reservations.filter((item) => item.id !== id),
-      providerCooldown: failure ? { until: retryAt, category: String(failure.category), ...(typeof failure.code === "string" ? { code: failure.code } : {}), ...(typeof failure.httpStatus === "number" ? { httpStatus: failure.httpStatus } : {}) } : undefined,
+      providerCooldown: failure ? { until: retryAt, category: String(failure.category), ...(typeof failure.code === "string" ? { code: failure.code } : {}), ...(typeof failure.httpStatus === "number" ? { httpStatus: failure.httpStatus } : {}) } : loaded.state.providerCooldown,
     };
     const written = await writeVersionedJsonToR2(
       STATE_KEY,

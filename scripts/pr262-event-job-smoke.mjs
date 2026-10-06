@@ -585,6 +585,8 @@ new Function("require", "module", "exports", output)((name) => {
   if (["@/lib/company-profile", "@/lib/opportunity-engine/company-profile-cache"].includes(name)) return loadTsModule(name, stubs);
   if (name === "@/lib/opportunity-engine/pr262-research-evidence") return loadTsModule(name, stubs);
   if (["@/lib/ai-committee/review-policy", "@/lib/equity-signal/us-market-calendar", "@/lib/opportunity-engine/pr262-review-blockers"].includes(name)) return loadTsModule(name);
+  if (name === "@/lib/equity-signal/financial-evidence") return loadTsModule(name, stubs);
+  if (name === "@/lib/ai-committee/model-policy") return loadTsModule(name);
   throw new Error(`Unexpected event-job import: ${name}`);
 }, cjsModule, cjsModule.exports);
 

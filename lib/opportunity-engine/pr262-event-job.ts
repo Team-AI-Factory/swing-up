@@ -1,7 +1,8 @@
+import { collectFinancialDocuments } from "@/lib/equity-signal/financial-evidence";
 import { completeCommitteeReview, committeeRequestsRejectedWithoutUsage } from "@/lib/ai-committee/review-policy";
 import { verifiedCompanyProfile } from "@/lib/company-profile";
 import { ensureCompanyProfile, warmFoundationCompanyProfiles } from "@/lib/opportunity-engine/company-profile-cache";
-import { recordResearchEvidence, readEvidenceFollowup, verifiedFactsCache, reserveRejectionAudit } from "@/lib/opportunity-engine/pr262-research-evidence";
+import { recordResearchEvidence, readEvidenceFollowup, readLastValuationReview, verifiedFactsCache, reserveRejectionAudit } from "@/lib/opportunity-engine/pr262-research-evidence";
 import crypto from "node:crypto";
 import { lookup, resolve4 } from "node:dns/promises";
 import * as https from "node:https";
@@ -1432,6 +1433,7 @@ function compactAnalysisDiagnostics(report: Json) {
   const topTicker = text(top.ticker)?.toUpperCase() ?? null;
   return {
     status: text(report.status),
+    reviewOutcome: text(report.reviewOutcome),
     qualityScore: finiteDiagnosticNumber(report.qualityScore),
     committee: report.openAiCalled === true ? {
       status: text(object(report.committee).status),
@@ -2128,7 +2130,10 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
           allowOpenAi: effectiveAllowOpenAi,
           aiProviderBlockedReason: input.aiProviderBlockedReason,
           allowIncompleteCommitteeReview: true,
-          verifiedFactsCache: { ...verifiedFactsCache, requiredMetrics: (Array.isArray(priorFollowup.tasks) ? priorFollowup.tasks : []).flatMap(task => Array.isArray(object(task).fields) ? object(task).fields as string[] : []) },
+          collectFinancialDocuments: cik => collectFinancialDocuments(cik, quotaAwareFetch, now, jobAbort.signal),
+          financialDocumentsRequested: (Array.isArray(priorFollowup.tasks) ? priorFollowup.tasks : []).some(task => object(task).type === "financial_documents"),
+          previousValuationReview: valuationReview && resolved.event.cik ? await readLastValuationReview(resolved.event.cik) : null,
+          verifiedFactsCache: { ...verifiedFactsCache, requiredMetrics: (Array.isArray(priorFollowup.tasks) ? priorFollowup.tasks : []).flatMap(task => object(task).type === "financial_facts" && Array.isArray(object(task).fields) ? object(task).fields as string[] : []) },
           reserveRejectionAudit: () => reserveRejectionAudit(event.id, now),
           resolveCompanyProfile: identity => ensureCompanyProfile(identity, quotaAwareFetch, now, { signal: jobAbort.signal }),
           fetchImpl: quotaAwareFetch,

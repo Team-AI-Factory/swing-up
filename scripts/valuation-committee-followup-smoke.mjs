@@ -7,10 +7,12 @@ const analysis = { ticker: "TEST", company: "Test Software", industry: "Software
   scores: { fairValueConfidence: 90, evidenceCompleteness: 90, businessQuality: 85, balanceSheet: 75, risk: 20 }, fundamentals: { revenue: 1000000000 }, decision: { action: "buy" } };
 const receipt = { id: "valuation:TEST", title: "Test valuation review", summary: JSON.stringify(analysis), url: "https://www.tradingview.com/symbols/NASDAQ-TEST/", publisher: "TradingView company financials", publishedAt: now.toISOString(), channel: "market_price_sensor", official: false, primarySource: false, scheduled: false, symbolHints: ["TEST"], companyHints: ["Test Software"], rawEventType: "valuation_review" };
 const provider = name => ({ provider: name, status: "connected", checkedAt: now.toISOString(), nextRetryAt: null, sourceUrls: [], receipts: [], recordsRead: 1, error: null, entitlementVerified: true, cached: false });
+let invalidScope = false;
 let roleCalls = 0, quoteReady = true, livePrice = 50, denyBudget = false, missingFacts = false, reservations = 0;
 const overrides = {
   "@/lib/ai-committee/provider": {
     getAiCommitteeProviderStatus: () => ({ configured: true, enabled: true, dryRunDefault: false }),
+    modelForTier: () => "gpt-4.1-mini",
     runOpenAiCommitteeProvider: async input => {
       roleCalls++;
       assert.match(input.messages[0].content, /company-first valuation review/);
@@ -24,7 +26,7 @@ const overrides = {
       if (data.agent.id !== "final_judge") assert.doesNotMatch(input.messages[0].content, /As Final Judge/);
       assert.match(data.decisionRules.discoveryProviderGap, /not required for valuation/);
       assert.equal(data.evidencePack.evidenceSections.fundamentals.items[0].source, "pr262_stored_company_analysis", "The valuation must reach the prompt instead of being sliced away behind three balance-sheet fields");
-      return { ok: true, model: "gpt-4.1-mini", content: JSON.stringify({ agentId: data.agent.id, verdict: "positive", confidence: 95, keyFindings: data.agent.id === "analyst_agent" ? ["Company: Test Software sells business software.", "What happened: Its price is below the model estimate.", "Why it matters: The estimate may be worth more than the market price.", "Possible outcome: The gap could close if the assumptions hold.", "Risks: Earnings could disappoint."] : [], supportingEvidence: [], concerns: [], missingData: [], followUpChecks: [], suggestedActionLabel: "Review valuation", riskNotes: [] }) };
+      return { ok: true, finishReason: "stop", model: "gpt-4.1-mini", content: JSON.stringify({ agentId: data.agent.id, verdict: "positive", confidence: 95, keyFindings: data.agent.id === "analyst_agent" ? ["Company: Test Software sells business software.", "What happened: Its price is below the model estimate.", "Why it matters: The estimate may be worth more than the market price.", "Possible outcome: The gap could close if the assumptions hold.", "Risks: Earnings could disappoint."] : [], supportingEvidence: [], concerns: [], missingData: invalidScope ? ["A new event-specific headline is required"] : [], followUpChecks: [], suggestedActionLabel: "Review valuation", riskNotes: [] }) };
     },
   },
   "@/lib/ai-committee/evidence-pack": { buildAiCommitteeEvidencePack: async () => { throw new Error("Unexpected DB read"); } },
@@ -41,7 +43,12 @@ const overrides = {
 };
 const runner = loadTsModule("@/lib/equity-signal/runner", overrides);
 const facts = { cik: 1, facts: { "us-gaap": Object.fromEntries(["Revenues", "NetIncomeLoss", "Assets", "CashAndCashEquivalentsAtCarryingValue"].map((name, i) => [name, { units: { USD: [{ val: 1000000 * (i + 1), start: "2025-01-01", end: "2025-12-31", filed: "2026-02-20", form: "10-K" }] } }])) } };
-const input = { now, resolveCompanyProfile: async identity => companyProfileFixture(identity, now), allowOpenAi: true, allowIncompleteCommitteeReview: true,
+Object.assign(facts.facts["us-gaap"], Object.fromEntries([
+  ["StockholdersEquity", "USD", 5000000], ["CommonStockSharesOutstanding", "shares", 1000000],
+  ["EarningsPerShareDiluted", "USD/shares", 2], ["NetCashProvidedByUsedInOperatingActivities", "USD", 2000000],
+  ["PaymentsToAcquirePropertyPlantAndEquipment", "USD", 100000],
+].map(([concept, unit, val]) => [concept, { units: { [unit]: [{ val, start: "2025-01-01", end: "2025-12-31", filed: "2026-02-20", form: "10-K" }] } }])));
+const input = { now, collectFinancialDocuments: async () => ({ version: 1, cik: "0000000001", checkedAt: now.toISOString(), nextCheckAt: now.toISOString(), cached: false, failures: [], documents: [{ url: "https://www.sec.gov/Archives/edgar/data/1/000000000126000001/annual.htm", form: "10-K", filedAt: "2026-02-20", digest: "test-financial-document", readComplete: true, excerpts: [{ topic: "segments", text: "Synthetic source-backed software segment facts" }, { topic: "customers", text: "Synthetic customer concentration facts" }, { topic: "margins", text: "Synthetic margin facts" }] }] }), resolveCompanyProfile: async identity => companyProfileFixture(identity, now), allowOpenAi: true, allowIncompleteCommitteeReview: true,
   beforeOpenAiCall: async () => { reservations++; return !denyBudget; },
   fetchImpl: async () => Response.json(missingFacts ? { cik: 1, facts: {} } : facts),
   targetedContext: { analysisKind: "valuation", universe: { entries: [{ ticker: "TEST", name: "Test Software", cik: "0000000001", aliases: [], exchange: "NASDAQ", securityType: "common_stock" }], coverage: {}, sources: [] },
@@ -94,7 +101,7 @@ await evidence.recordResearchEvidence({ event, report: approved, approvedResultK
 assert.equal((await evidence.readResearchAlerts())[0].committeeApproved, true);
 assert.equal((await evidence.readEvidenceFollowup(event.id)).status, "completed");
 assert.equal((await evidence.readResearchAlerts()).length, 1, "Review updates replace the existing alert");
-console.log("Valuation: real 14-role orchestration, no-news admission, financial/price publication gates, budget guard, explanations and durable evidence follow-up passed.");
+console.log("Valuation: real focused orchestration, no-news admission, financial/price publication gates, budget guard, explanations and durable evidence follow-up passed.");
 
 const fundamentals = loadTsModule("@/lib/equity-signal/fundamentals");
 const valuationHelpers = loadTsModule("@/lib/equity-signal/valuation-candidate");
@@ -105,7 +112,7 @@ const freshCandidate = () => valuationHelpers.buildValuationCandidate(analysis, 
 await fundamentals.enrichCandidateFundamentals(freshCandidate(), factFetch, now, cache);
 await fundamentals.enrichCandidateFundamentals(freshCandidate(), factFetch, new Date(now.getTime() + 60000), cache);
 assert.equal(requests, 1, "Verified dated facts must be reused across collection attempts");
-await fundamentals.enrichCandidateFundamentals(freshCandidate(), factFetch, new Date(now.getTime() + 120000), { ...cache, requiredMetrics: ["diluted_eps"] });
+await fundamentals.enrichCandidateFundamentals(freshCandidate(), factFetch, new Date(now.getTime() + 120000), { ...cache, requiredMetrics: ["long_term_debt_noncurrent"] });
 assert.equal(requests, 2, "A requested missing financial field must cause a fresh collection");
 cached.cik = "0000000002";
 await fundamentals.enrichCandidateFundamentals(freshCandidate(), factFetch, new Date(now.getTime() + 180000), cache);
@@ -170,3 +177,28 @@ const trapped = await runner.runEquitySignalLab({ ...input, targetedContext: { .
 assert.equal(trapped.status, "candidate_valuation_risk_rejected");
 assert.equal(trapped.openAiCalled, false);
 assert.equal(roleCalls, riskBeforeCalls, "A known failing value-trap screen must not spend Committee budget");
+
+// Completed same-evidence reviews survive fresh scan IDs and small price changes.
+denyBudget = false;
+await evidence.recordResearchEvidence({ event, report: approved, approvedResultKey: "test/verified-result.json", companyAnalysis: analysis, sourceDecisionGrade: true, sourceFailureReason: null, now });
+const previousValuationReview = await evidence.readLastValuationReview("0000000001");
+assert.equal(previousValuationReview.outcome, "approved");
+const callsBeforeUnchanged = roleCalls;
+livePrice = 50.05;
+const unchanged = await runner.runEquitySignalLab({ ...input, previousValuationReview,
+  targetedContext: { ...input.targetedContext, receipts: [{ ...receipt, id: "valuation:TEST:next-scan", summary: JSON.stringify({ ...analysis, observedAt: now.toISOString() }) }] } });
+assert.equal(unchanged.status, "qualified_candidate_already_reviewed", JSON.stringify({reason: unchanged.noSignalReason, blockers: unchanged.blockers, candidates: unchanged.rankedCandidates}));
+assert.equal(unchanged.openAiCalled, false);
+assert.equal(roleCalls, callsBeforeUnchanged, "An unchanged valuation review cannot spend again");
+const changed = await runner.runEquitySignalLab({ ...input, previousValuationReview,
+  targetedContext: { ...input.targetedContext, storedCompanyAnalysis: { ...analysis, fairValue: { ...analysis.fairValue, baseValue: 102 } } } });
+assert.equal(changed.openAiCalled, true, "A changed model estimate may receive a new evidence review");
+assert.notEqual(changed.candidateFingerprint, previousValuationReview.fingerprint);
+livePrice = 50;
+invalidScope = true;
+const scopeMismatch = await runner.runEquitySignalLab(input);
+assert.equal(scopeMismatch.seriousSignalFound, false);
+assert.equal(scopeMismatch.reviewOutcome, "technical_failure");
+assert.ok(scopeMismatch.committee.roleDiagnostics.some(role => role.error === "valuation_review_scope_mismatch"));
+invalidScope = false;
+console.log("Persisted unchanged-evidence deduplication, changed valuation admission and irrelevant event-demand rejection passed.");

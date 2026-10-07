@@ -496,12 +496,16 @@ async function marketWatch(fetchImpl: typeof fetch, exposure: Pr262ExposureEntry
   return { events, prices, nextOffset: selection.nextOffset, valuationPersistence };
 }
 
-export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl?: typeof fetch } = {}) {
+export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl?: typeof fetch;
+  deadlineAtMs?: number } = {}) {
   // 480s cycle - 335s paid review - 45s delivery - 15s reporting leaves 85s.
-  // Keep source collection's additional direct work inside 45s from entry,
-  // leaving 30s early recovery and 10s mapping/admission overhead. Slow prior
-  // sources cause direct work to defer rather than consuming paid-review time.
-  const sourceDeadlineAtMs = isSimpleAlertPilot() ? Date.now() + 45_000 : undefined;
+  // The orchestrator may reclaim unused early recovery time, up to 60s here,
+  // while retaining 10s preparation and the full paid-admission minimum.
+  // Standalone callers keep the conservative 45s window. Prior source/storage
+  // work still reduces the direct monitor's actual remaining time.
+  const startedAtMs = Date.now();
+  const sourceDeadlineAtMs = isSimpleAlertPilot()
+    ? Math.min(startedAtMs + 60_000, input.deadlineAtMs ?? startedAtMs + 45_000) : undefined;
   const now = input.now ?? new Date();
   const fetchImpl = input.fetchImpl ?? fetch;
   let exposureError: string | null = null;
@@ -972,6 +976,12 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
     sectorFanoutEvents: contextualSectorFanouts.length,
     contextOnlySectorFanoutEvents: contextualSectorFanouts.length,
     directAnnouncementMonitoring,
+    sourceWindow: sourceDeadlineAtMs === undefined ? null : {
+      allocatedMs: Math.max(0, sourceDeadlineAtMs - startedAtMs),
+      collectionDeadlineAt: new Date(sourceDeadlineAtMs).toISOString(),
+      elapsedMs: Date.now() - startedAtMs,
+      paidAdmissionGuardRemainsAuthoritative: true as const,
+    },
     pendingEventCount: pending.length,
     queueHygiene: partitioned.hygiene,
     r2Persistence: {

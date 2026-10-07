@@ -30,6 +30,12 @@ let paidTechnicalFailure = false;
 const measuredCycles = [];
 let aiBudgetMode = "available";
 let allowSensorRun = false;
+let earlyDeliveryMs = 0;
+let lastSensorInput = null;
+let initialProviderLedgerMs = 0;
+let sensorWorkMs = 0;
+let evidencePreparationMs = 0;
+let expectedSourcePaidAdmission = null;
 let accessDiagnosticCalls = 0;
 let unknownUsageReviews = 0;
 let accessDiagnostic = { status: "completed", readOnly: true, callsPaidModel: false, billingQuotaVerified: false, modelAvailable: { fast: true, deep: true, final: true } };
@@ -99,6 +105,7 @@ const stubs = {
     processPendingSeriousSignalDeliveries: async () => {
       deliveryRecoveryCalls += 1;
       if (process.env.SWING_UP_SIMPLE_PILOT_ENABLED === "true") processingOrder.push("delivery");
+      advanceCycleClock(earlyDeliveryMs);
       return { ok: deliveryHealthy, jobsAttempted: 0, ...(deliveryHealthy ? {} : { error: "delivery_queue_unhealthy" }) };
     },
   },
@@ -201,6 +208,17 @@ const stubs = {
         assert.equal(paidReservationCalls, before, "A review that cannot finish must not reserve or spend money");
         return { ok: true, status: "event_job_deferred", nonterminal: true, eventsProcessed: 0, openAiCalled: false,
           error: "pr262_event_report_retry:qualified_signal_openai_reservation_denied:blocker=review_capacity" };
+      }
+      if (eventMode === "pilot_source_paid_boundary") {
+        eventMode = "idle";
+        advanceCycleClock(evidencePreparationMs);
+        const before = paidReservationCalls;
+        const allowed = await input.beforeOpenAiCall({ candidateFingerprint: "source-paid-boundary", ticker: "TEST", direction: "upside" });
+        assert.equal(allowed, expectedSourcePaidAdmission);
+        assert.equal(paidReservationCalls, before + (allowed ? 1 : 0), "Insufficient post-source time must block the durable paid reservation");
+        if (!allowed) assert.equal(input.aiReservationBlockedReason(), "cycle_time_budget");
+        return { ok: true, status: "event_job_deferred", nonterminal: true, eventsProcessed: 0, openAiCalled: false,
+          error: "pr262_event_report_retry:candidate_needs_more_data" };
       }
       if (eventMode === "consume_processing_window") {
         eventMode = "idle";
@@ -380,14 +398,19 @@ const stubs = {
     },
   },
   "@/lib/opportunity-engine/pr262-lightweight-sensor-v3": {
-    runPr262LightweightSensorV3: async () => {
+    runPr262LightweightSensorV3: async input => {
       sensorCalls += 1;
+      lastSensorInput = { ...input, startedAtMs: Date.now() };
+      advanceCycleClock(sensorWorkMs);
       if (!allowSensorRun) throw new Error("analysis_only_must_not_scan_sources");
       return { ok: true, newEvents: 0, sectorFanoutEvents: 0, exposureCompanies: 1, sourceSummary: [], costPolicy: {}, queueHygiene, r2Persistence: { queueWritten: false } };
     },
   },
   "@/lib/opportunity-engine/pr262-sensor-fetch-budget": {
-    createPr262SensorBudgetedFetch: async () => ({ fetchImpl: async () => { throw new Error("unexpected_fetch"); }, flush: async () => ({ persisted: true }), summary: () => ({ calls: 0 }) }),
+    createPr262SensorBudgetedFetch: async () => {
+      advanceCycleClock(initialProviderLedgerMs);
+      return { fetchImpl: async () => { throw new Error("unexpected_fetch"); }, flush: async () => ({ persisted: true }), summary: () => ({ calls: 0 }) };
+    },
   },
   "@/lib/opportunity-engine/pr262-serious-watch-out-authority": {
     promotePr262SeriousWatchOut: async () => {
@@ -400,7 +423,7 @@ const stubs = {
 };
 const loaded = { exports: {} };
 new Function("require", "module", "exports", output)((name) => {
-  if (["@/lib/opportunity-engine/pr262-processing-reliability", "@/lib/simple-alert-pilot-runtime", "@/lib/simple-alert-pilot-scope", "@/lib/simple-alert-pilot-cohort"].includes(name)) return loadTsModule(name);
+  if (["@/lib/opportunity-engine/pr262-pilot-source-window", "@/lib/opportunity-engine/pr262-processing-reliability", "@/lib/simple-alert-pilot-runtime", "@/lib/simple-alert-pilot-scope", "@/lib/simple-alert-pilot-cohort"].includes(name)) return loadTsModule(name);
   if (name in stubs) return stubs[name];
   if (name === "@/lib/ai-committee/model-policy") return loadTsModule(name);
   throw new Error(`Unexpected analysis-only orchestrator import: ${name}`);
@@ -785,11 +808,48 @@ try {
   assert.equal(timeWait.processing.eventDeferrals, 1);
   assert.equal(timeWait.processing.paidTimeBudgetDeferrals, 1);
   assert.equal(timeWait.processing.paidAdmissionMinimumMs, 335000);
+  eventMode = "idle";
+  for (const [recoveryMs, ledgerMs, expectedSourceMs] of [[3800, 0, 60000], [15000, 0, 60000],
+    [20000, 0, 55000], [30000, 0, 45000], [30000, 45000, 0], [30000, 50000, -5000]]) {
+    simulatedNow = realDateNow();
+    const startedAtMs = simulatedNow;
+    earlyDeliveryMs = recoveryMs;
+    initialProviderLedgerMs = ledgerMs;
+    const sensorCycle = await loaded.exports.runPr262CronCycle();
+    assert.equal(lastSensorInput.deadlineAtMs - lastSensorInput.startedAtMs, expectedSourceMs);
+    assert.ok(lastSensorInput.deadlineAtMs + 10000 + 335000 <= startedAtMs + 480000 - 45000 - 15000);
+    assert.equal(sensorCycle.processing.paidAdmissionMinimumMs, 335000);
+    assert.equal(sensorCycle.processing.deliveryReserveMs, 45000);
+    assert.equal(sensorCycle.processing.reportingReserveMs, 15000);
+  }
+  initialProviderLedgerMs = 0;
+  earlyDeliveryMs = 30000;
+  sensorWorkMs = 45000;
+  for (const [preparationMs, expectedAdmission] of [[10000, true], [10001, false]]) {
+    simulatedNow = realDateNow();
+    evidencePreparationMs = preparationMs;
+    expectedSourcePaidAdmission = expectedAdmission;
+    eventMode = "pilot_source_paid_boundary";
+    const before = paidReservationCalls;
+    const sensorCycle = await loaded.exports.runPr262CronCycle();
+    assert.equal(sensorCycle.processing.paidTimeBudgetDeferrals, expectedAdmission ? 0 : 1);
+    assert.equal(paidReservationCalls, before + (expectedAdmission ? 1 : 0));
+    if (!expectedAdmission) {
+      const denied = sensorCycle.aiCostControl.results.find(row => row.reason === "cycle_time_budget");
+      assert.equal(denied.remainingMs, 334999);
+      assert.equal(denied.minimumRequiredMs, 335000);
+    }
+  }
 } finally {
   Date.now = realDateNow;
   state.pending = beforePilotState;
   advanceCycleClock = () => {};
   eventMode = "idle";
+  earlyDeliveryMs = 0;
+  initialProviderLedgerMs = 0;
+  sensorWorkMs = 0;
+  evidencePreparationMs = 0;
+  expectedSourcePaidAdmission = null;
   for (const key of Object.keys(process.env)) if (!(key in savedPilotEnvironment)) delete process.env[key];
   Object.assign(process.env, savedPilotEnvironment);
 }

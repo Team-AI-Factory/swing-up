@@ -17,7 +17,7 @@ process.env.SWING_UP_SIMPLE_PILOT_ROLE = "profiles";
 async function run(mode) {
   let elapsed = 0, admissionSignal, workSignal, persistenceSignal, countSignal, summarySignal;
   const timers = [], objects = new Map(), revisions = new Map(), writes = [], sourceStarts = [], printed = [];
-  let countReads = 0, summaryReads = 0, summaryWrites = 0, cleanupWrites = 0;
+  let countReads = 0, summaryReads = 0, summaryWrites = 0, cleanupWrites = 0, workProfileReads = 0;
   const advance = value => {
     assert.ok(value >= elapsed, "Clock never moves backward"); elapsed = value;
     for (const timer of timers) if (timer.at <= elapsed && !timer.controller.signal.aborted) timer.controller.abort(new DOMException(`Timer ${timer.duration} elapsed`, "TimeoutError"));
@@ -47,6 +47,9 @@ async function run(mode) {
   const wrap = (operation, reason) => Object.assign(new Error(reason.message, { cause: reason }), { name: reason.name, storageDomain: "r2_state", storageOperation: operation });
   const storage = {
     readVersionedTextFromR2: async (key, options = {}) => {
+      // Admission occurs at 90s. Model preparation before the issuer's first
+      // cache read separately, so its bounded store still begins at 130s.
+      if (key === profileKey && options.signal === workSignal && ++workProfileReads === 2) advance(130_000);
       options.signal?.throwIfAborted();
       if (key === profileKey && options.signal === countSignal) {
         countReads++;
@@ -104,7 +107,7 @@ async function run(mode) {
           cleanupWrites++;
           assert.equal(workSignal.aborted, true);
           assert.equal(own.error, "company_profile_time_budget_deferred");
-          assert.equal(own.nextAttemptAt, new Date(start + 130_000 + 300_000).toISOString());
+          assert.equal(own.nextAttemptAt, new Date(start + 90_000 + 300_000).toISOString());
           advance(mode === "healthy_admission_put" ? 149_998 : 144_999);
           options.signal.throwIfAborted();
         }
@@ -129,7 +132,7 @@ async function run(mode) {
     "@/lib/simple-alert-pilot-runtime": { isSimpleAlertPilot: () => true },
     "@/lib/simple-alert-pilot-scope": { pilotCompanies: () => [] },
     "node:timers/promises": { setTimeout: async (_ms, value, options = {}) => { options.signal?.throwIfAborted(); return value; } },
-    "@/lib/equity-signal/universe": { loadEquityUniverse: async () => { advance(mode === "late_admission_stop" ? 130_000 : 100_000); return { snapshot: { refreshedAt: now.toISOString(), entries: [identity].map(listing) } }; } },
+    "@/lib/equity-signal/universe": { loadEquityUniverse: async () => { advance(mode === "late_admission_stop" ? 130_000 : 90_000); return { snapshot: { refreshedAt: now.toISOString(), entries: [identity].map(listing) } }; } },
     "@/lib/opportunity-engine/pr262-sensor-fetch-budget": { createPr262SensorBudgetedFetch: async input => ({ fetchImpl: input.fetchImpl, flush: async () => {} }) },
   };
   const cache = loadTsModule("@/lib/opportunity-engine/company-profile-cache", overrides);
@@ -175,6 +178,8 @@ async function run(mode) {
   assert.equal(cleanupWrites, lateStop || fullSource ? 0 : 1, "Uncertain writes never get a cleanup overwrite");
   assert.equal(writes.filter(row => row.key === profileKey).length, lateStop ? 0 : 2, "Late admission starts no profile transaction; ordinary work keeps one admission and one result/cleanup");
   if (!lateStop) assert.ok(timers.some(timer => timer.duration === 15_000), "Per-store 15s cap retained");
+  if (!lateStop) assert.equal(writes.find(row => row.key === profileKey).value.entries.find(row => row.cik === identity.cik).updatedAt,
+    new Date(start + 90_000).toISOString(), "Every finalization fault case exercises an issuer admitted before 100s");
   if (cleanupWrites) assert.ok(timers.some(timer => timer.duration === 5_000), "Cleanup 5s cap retained");
   if (mode === "slow_summary") assert.equal(elapsed, 234_999, "Even slow summary completes before235s, retaining HTTP headroom");
 }

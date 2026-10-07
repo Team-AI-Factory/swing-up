@@ -416,7 +416,10 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
     if (storageOperation) entry.error = `company_profile_storage_${storageOperation}_failed:${error instanceof Error ? error.message : "r2_state_storage_failed"}`.slice(0, 200);
     const reason = entry.extractionFailure ?? entry.error.match(/^company_profile_[a-z0-9_]+/i)?.[0]
       ?? (/budget|quota|cadence/i.test(entry.error) ? "provider_budget_deferred" : error instanceof Error && error.name === "TimeoutError" ? "source_timeout" : "source_request_failed");
-    console.info(JSON.stringify({ kind: "pr262_company_profile_result", ticker: exact.ticker, status: "pending", phase, reason }));
+    const storageContext = ["provider_budget_reservation", "submissions_snapshot"].includes(String(object(error).storageContext))
+      ? String(object(error).storageContext) : null;
+    console.info(JSON.stringify({ kind: "pr262_company_profile_result", ticker: exact.ticker, status: "pending", phase, reason,
+      ...(storageOperation && storageContext ? { storageContext } : {}) }));
     await persistEntry(deadlineCleanup);
     if (storageOperation) throw error;
     return cached;

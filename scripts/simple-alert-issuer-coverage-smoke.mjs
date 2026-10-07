@@ -18,7 +18,7 @@ assert.match(orchestrator, /PILOT_MAX_CYCLE_MS = 480_000/);
 assert.match(orchestrator, /PILOT_MIN_PAID_REVIEW_BUDGET_MS = 335_000/);
 assert.match(orchestrator, /PILOT_DELIVERY_RESERVE_MS = 45_000/);
 assert.match(orchestrator, /REPORTING_RESERVE_MS = 15_000/);
-assert.match(sensor, /sourceDeadlineAtMs = isSimpleAlertPilot\(\) \? Date.now\(\) \+ 45_000/);
+assert.match(sensor, /Math.min\(startedAtMs \+ 60_000, input.deadlineAtMs \?\? startedAtMs \+ 45_000\)/);
 assert.equal(480_000 - 30_000 - 45_000 - 10_000 - 45_000 - 15_000, 335_000,
   "Early recovery, source window and pre-admission overhead preserve paid and delivery reserves.");
 assert.match(sensor, /newEvents: direct.events.length - \(direct.initialCatchupEvents \?\? 0\)/,
@@ -151,7 +151,7 @@ try {
   }
   assert.equal(observed.size, 25, "All exact CIKs receive independent submission coverage within two fast cycles.");
   // R2 reads/writes and provider latency make the real path slower than the
-  // 1/sec pacing alone. Thirteen checks still fit the 28s SEC / 35s direct
+  // 1/sec pacing alone. Thirteen checks still fit the bounded SEC / direct
   // slices in this deterministic 200ms-storage + 800ms-network scenario.
   storageDelayMs = 200; sourceDelayMs = 800;
   const delayedBudget = await makeMonitorBudget();
@@ -298,20 +298,25 @@ try {
   const sensorFetch = async request => String(request) === rootUrl(cohort[0])
     ? new Response(JSON.stringify(body(cohort[0]))) : new Response(sensorFeed);
   const firstSensor = await sensorRuntime.runPr262LightweightSensorV3({ now: new Date(), fetchImpl: sensorFetch });
+  assert.equal(firstSensor.sourceWindow.allocatedMs, 45_000, "Standalone sensor callers keep the conservative window");
   assert.equal(firstSensor.newEvents, 0, "First-read catch-up must not inflate top-level daily new-live-case totals.");
   assert.equal(firstSensor.initialCatchupEvents, 2);
   assert.equal(firstSensor.queueAdmissions, 2);
   assert.equal(firstSensor.pendingEventCount, 2);
   const firstQueue = objects.get(prefix + "sensor/state-v1.json").value.pending;
   assert.ok(firstQueue.every(event => event.observedAt === publishedAt && event.reason.includes("Initial source catch-up")));
-  const repeatedSensor = await sensorRuntime.runPr262LightweightSensorV3({ now: new Date(), fetchImpl: sensorFetch });
+  const repeatedSensor = await sensorRuntime.runPr262LightweightSensorV3({ now: new Date(), fetchImpl: sensorFetch, deadlineAtMs: clock + 120_000 });
+  assert.equal(repeatedSensor.sourceWindow.allocatedMs, 60_000, "An input deadline cannot exceed the source allocation cap");
+  assert.equal(repeatedSensor.directAnnouncementMonitoring.directWorkBudgetMs, 45_000);
   assert.equal(repeatedSensor.newEvents, 0);
   assert.equal(repeatedSensor.initialCatchupEvents, 0);
   assert.equal(repeatedSensor.queueAdmissions, 0);
   clock += 15 * 60_000;
   const laterPublished = new Date(clock - 60_000).toISOString();
   sensorFeed = freshFeed.replace("</channel>", `<item><title>new contract</title><link>https://same.example/genuine-new-release</link><pubDate>${laterPublished}</pubDate></item></channel>`);
-  const laterSensor = await sensorRuntime.runPr262LightweightSensorV3({ now: new Date(), fetchImpl: sensorFetch });
+  const laterSensor = await sensorRuntime.runPr262LightweightSensorV3({ now: new Date(), fetchImpl: sensorFetch, deadlineAtMs: clock + 30_000 });
+  assert.equal(laterSensor.sourceWindow.allocatedMs, 30_000, "A shorter caller envelope must reach the real monitor");
+  assert.equal(laterSensor.directAnnouncementMonitoring.directWorkBudgetMs, 25_000);
   assert.equal(laterSensor.newEvents, 1);
   assert.equal(laterSensor.initialCatchupEvents, 0);
   assert.equal(laterSensor.queueAdmissions, 1);

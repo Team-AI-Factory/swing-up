@@ -28,6 +28,7 @@ import { readPr262QueueAdmissionPlan, unavailablePr262QueueAdmissionPlan } from 
 import { pr262QueueBlocker } from "@/lib/opportunity-engine/pr262-review-blockers";
 import { runPr262LightweightSensorV3 } from "@/lib/opportunity-engine/pr262-lightweight-sensor-v3";
 import { createPr262SensorBudgetedFetch } from "@/lib/opportunity-engine/pr262-sensor-fetch-budget";
+import { pr262PilotSourceWindow } from "@/lib/opportunity-engine/pr262-pilot-source-window";
 import { promotePr262SeriousWatchOut } from "@/lib/opportunity-engine/pr262-serious-watch-out-authority";
 import { recordPr262CostEffectiveness } from "@/lib/opportunity-engine/pr262-cost-effectiveness";
 import { pr262ProcessingReliability } from "@/lib/opportunity-engine/pr262-processing-reliability";
@@ -243,7 +244,10 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
     assertCycleActive();
     sourceBudget = await createPr262SensorBudgetedFetch({ signal: cycleSignal });
     try {
-      sensor = await runPr262LightweightSensorV3({ fetchImpl: sourceBudget.fetchImpl });
+      const sourceWindow = isSimpleAlertPilot() ? pr262PilotSourceWindow({ startedAtMs: Date.now(),
+        processingDeadlineAtMs, paidAdmissionMinimumMs: PILOT_MIN_PAID_REVIEW_BUDGET_MS }) : undefined;
+      sensor = await runPr262LightweightSensorV3({ fetchImpl: sourceBudget.fetchImpl,
+        ...(sourceWindow ? { deadlineAtMs: sourceWindow.deadlineAtMs } : {}) });
     } finally {
       budgetPersistence = await sourceBudget.flush().catch((error) => ({
         persisted: false,
@@ -647,6 +651,7 @@ async function executePr262Cycle(mode: Pr262CycleMode, input: Pr262CycleInput, c
       providerBudget: sourceBudget?.summary() ?? null,
       providerBudgetPersistence: budgetPersistence,
       directAnnouncementMonitoring: sensor.directAnnouncementMonitoring,
+      sourceWindow: sensor.sourceWindow,
       queueHygiene: sensor.queueHygiene,
       r2Persistence: sensor.r2Persistence,
     } : {

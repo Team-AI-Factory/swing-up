@@ -30,8 +30,8 @@ const MAX_FEEDS_POLLED_PER_CYCLE = 20;
 // per 15-minute cycle use at most 1248/day, still guarded by the unchanged shared
 // 3500/day allowance and 29-minute per-CIK floor. Work remains sequential.
 const PILOT_MAX_SEC_CHECKS_PER_CYCLE = 13;
-const PILOT_DIRECT_WORK_MS = 35_000;
-const PILOT_SEC_WORK_MS = 28_000;
+const PILOT_DIRECT_WORK_MS = 45_000;
+const PILOT_SEC_WORK_MS = 42_000;
 const PILOT_REGISTRY_RESERVE_MS = 5_000;
 const SEC_POLL_CADENCE_MS = 29 * 60_000;
 const SEC_AGENT = "SwingUp/1.0 support@swingup.app";

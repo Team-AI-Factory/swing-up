@@ -210,7 +210,7 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
   const pendingReasons: Record<string, number> = {};
   const attemptedIssuers = new Set<string>(), acknowledgedVerifiedIssuers = new Set<string>();
   try {
-    const provider = await createPr262SensorBudgetedFetch({ now, fetchImpl: paced, signal });
+    const provider = await createPr262SensorBudgetedFetch({ now, fetchImpl: paced, signal, persistenceSignal });
     const universe = await loadEquityUniverse(provider.fetchImpl, now);
     if (now.getTime() - Date.parse(universe.snapshot.refreshedAt) > 86400_000) throw new Error("simple_profile_universe_stale");
     const cache = await readProfileCache();

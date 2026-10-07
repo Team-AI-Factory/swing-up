@@ -1,6 +1,8 @@
 import type { AiCommitteeModelTier } from "@/lib/ai-committee/agents";
 import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
-import { AI_COMMITTEE_MODEL_POLICY_VERSION, AI_COMMITTEE_REVIEW_MAX_PROMPT_BYTES, AI_COMMITTEE_ROLE_MODELS, committeeModelOutputLimit, committeeReasoningEffort, knownCommitteeModel, reasoningCommitteeModel } from "@/lib/ai-committee/model-policy";
+import { AI_COMMITTEE_MODEL_POLICY_VERSION, AI_COMMITTEE_ROLE_MODELS, committeeModelOutputLimit, committeeReasoningEffort, knownCommitteeModel, reasoningCommitteeModel } from "@/lib/ai-committee/model-policy";
+import { committeePromptPreflight } from "@/lib/ai-committee/prompt-input";
+export { committeePromptInputBytes } from "@/lib/ai-committee/prompt-input";
 
 export type AiCommitteeProviderStatus = {
   provider: "openai";
@@ -33,6 +35,8 @@ export type AiCommitteeProviderFailure = {
   retryAfterSeconds?: number;
   promptBytes?: number;
   maximumPromptBytes?: number;
+  // Numeric-only, allowlisted section sizes; nested entries overlap their parent.
+  promptSectionBytes?: Record<string, number>;
   // Stop remaining roles in this review. input_limit is local to its packet,
   // not evidence of a shared provider outage.
   stopRemainingAgents: boolean;
@@ -80,15 +84,6 @@ export type AiCommitteeRunOptions = {
   maximumPromptBytes?: number;
   responseSchema?: { name: string; schema: Record<string, unknown> };
 };
-
-/** Bound the text the model receives, including role/schema framing. JSON's
- * transport escaping is decoded before tokenization and is not extra input. */
-export function committeePromptInputBytes(messages: Array<{ role: string; content: string }>, responseFormat?: unknown) {
-  const encoder = new TextEncoder();
-  return messages.reduce((total, message) => total + encoder.encode(message.content).byteLength, 0)
-    + encoder.encode(JSON.stringify(messages.map(message => ({ ...message, content: "" })))).byteLength
-    + (responseFormat ? encoder.encode(JSON.stringify(responseFormat)).byteLength : 0);
-}
 
 function envFlag(name: string, defaultValue = false) {
   const value = process.env[name];
@@ -212,17 +207,8 @@ export async function runOpenAiCommitteeProvider(options: AiCommitteeRunOptions)
     : { type: "json_object" };
   const reasoning = reasoningCommitteeModel(model);
   const messages = options.messages.map(message => reasoning && message.role === "system" ? { ...message, role: "developer" } : message);
-  const configuredPromptLimit = options.maximumPromptBytes ?? (reasoning ? AI_COMMITTEE_REVIEW_MAX_PROMPT_BYTES : undefined);
-  if (Number.isFinite(configuredPromptLimit)) {
-    const maximumPromptBytes = Math.max(1_000, Math.min(reasoning ? AI_COMMITTEE_REVIEW_MAX_PROMPT_BYTES : Infinity, Math.floor(Number(configuredPromptLimit))));
-    // A schema is also model input. Keep it inside the existing reserved input
-    // ceiling, rather than silently consuming the request-framing allowance.
-    const promptBytes = committeePromptInputBytes(messages, options.responseSchema ? responseFormat : undefined);
-    if (promptBytes > maximumPromptBytes) {
-      const failure: AiCommitteeProviderFailure = { category: "input_limit", stopRemainingAgents: true, promptBytes, maximumPromptBytes };
-      return { ok: false as const, status: "prompt_too_large" as const, failure, modelTier: options.tier, providerStatus: status };
-    }
-  }
+  const failure = committeePromptPreflight({ ...options, model });
+  if (failure) return { ok: false as const, status: "prompt_too_large" as const, failure, modelTier: options.tier, providerStatus: status };
 
   const outputLimit = committeeModelOutputLimit(model, options.maxTokens ?? 700);
   if (reasoning) {

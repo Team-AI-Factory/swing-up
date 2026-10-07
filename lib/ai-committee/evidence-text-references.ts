@@ -25,7 +25,10 @@ export function referenceRepeatedEvidenceText(value: Json) {
   const ids = new Map<string, string>();
   const sharedEvidenceTexts: Record<string, string> = {};
   for (const [text, count] of counts) {
-    if (count < 2) continue;
+    // A complete field may also occur inside a source-prefixed or qualified
+    // field. Reuse that exact text, never a guessed common fragment.
+    const repeatedInWrapper = count < 2 && [...counts.keys()].some(other => other !== text && other.includes(text));
+    if (count < 2 && !repeatedInWrapper) continue;
     const id = `verbatim_${ids.size + 1}`;
     ids.set(text, id);
     sharedEvidenceTexts[id] = text;

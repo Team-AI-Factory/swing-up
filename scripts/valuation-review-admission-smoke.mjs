@@ -51,6 +51,8 @@ let writeFailure = null;
 let silentFailure = null;
 let forcedConflicts = 0;
 let readBarrier = null;
+let inputLimitHeld = false;
+let inputLimitReadFailure = false;
 const storage = {
   readVersionedTextFromR2: async key => {
     operations.push({ kind: "read", key });
@@ -90,6 +92,10 @@ const storage = {
 const materiality = loadTsModule("@/lib/equity-signal/valuation-review-materiality");
 const reviewPolicy = loadTsModule("@/lib/ai-committee/review-policy");
 const imports = {
+  "@/lib/opportunity-engine/pr262-research-evidence": { unchangedCommitteeInputLimitHeld: async () => {
+    if (inputLimitReadFailure) throw new Error("test_input_hold_read_failure");
+    return inputLimitHeld;
+  } },
   "@/lib/r2-warehouse": storage,
   "@/lib/opportunity-engine/pr262-storage": { pr262StorageKey: storageKey },
   "@/lib/equity-signal/valuation-review-materiality": materiality,
@@ -136,6 +142,7 @@ const admitted = (label, price = 100, hoursAgo = 1, overrides = {}) => ({
 function put(key, value) { objects.set(key, { value: structuredClone(value), etag: `"seed-${++etagCounter}"` }); }
 function reset(rows = []) {
   objects.clear(); operations.length = 0;
+  inputLimitHeld = false; inputLimitReadFailure = false;
   readFailure = null; writeFailure = null; silentFailure = null; forcedConflicts = 0; readBarrier = null;
   put(leaseKey, { version: 1, updatedAt: now.toISOString(), lease: {
     eventId, ownerId, acquiredAt: now.toISOString(), expiresAt: new Date(now.getTime() + 300_000).toISOString(),
@@ -395,6 +402,24 @@ function seedCostLedger() {
     auditEntries: [charge, pending], auditTrackingStartedAt: at(1) });
   return { charge, pending, hold };
 }
+
+test("input-limit hold and unreadable hold stop the actual callback before money or count changes", async () => {
+  reset([admitted("existing-paid")]); seedCostLedger();
+  const beforeCount = snapshot(committeeKey), beforeCost = snapshot(costKey);
+  let moneyCalls = 0;
+  const wrapped = callback({ input: { beforeOpenAiCall: async () => { moneyCalls++; return true; } } });
+  inputLimitHeld = true;
+  assert.equal(await wrapped.beforeOpenAiCall(candidate("oversized")), false);
+  assert.equal(wrapped.status().committeeBlockedReason, "unchanged_prompt_input_limit");
+  assert.equal(moneyCalls, 0);
+  assert.deepEqual(snapshot(committeeKey), beforeCount);
+  assert.deepEqual(snapshot(costKey), beforeCost);
+  inputLimitHeld = false; inputLimitReadFailure = true;
+  await assert.rejects(wrapped.beforeOpenAiCall(candidate("unreadable")), /test_input_hold_read_failure/);
+  assert.equal(moneyCalls, 0);
+  assert.deepEqual(snapshot(committeeKey), beforeCount);
+  assert.deepEqual(snapshot(costKey), beforeCost);
+});
 
 test("real callback preflight denies duplicates before money and preserves old charges/holds", async () => {
   reset([admitted("already-paid")]);

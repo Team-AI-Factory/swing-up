@@ -61,6 +61,26 @@ partialUsage.output.modelUsageSummary.actualOpenAiUsage.responsesWithUsage = 1;
 assert.equal(evidence.committeeInputLimitRejectedWithoutUsage(partialUsage), false,
   "Observed provider usage must never be classified as a zero-usage input rejection");
 
+// A real lossless transport repair invalidates only a proven-zero technical hold.
+const inputPolicy = loadTsModule("@/lib/ai-committee/prompt-input");
+assert.equal(evidence.COMMITTEE_INPUT_POLICY_REVISION, inputPolicy.AI_COMMITTEE_INPUT_POLICY_REVISION);
+assert.equal(inputPolicy.AI_COMMITTEE_INPUT_POLICY_REVISION, "utf8-schema-framing-60000-lossless-records-v2");
+const holdEntry = [...stored.values()].find(entry => entry.value.candidateFingerprint === "valuation:issuer:downside:unchanged");
+assert.ok(holdEntry);
+holdEntry.value.policyRevision = "utf8-schema-framing-60000-v1";
+const oldHold = structuredClone(holdEntry);
+assert.equal(await evidence.unchangedCommitteeInputLimitHeld("valuation:issuer:downside:unchanged"), false,
+  "The obsolete encoder's zero-use rejection must not prevent the repaired input from reaching preflight");
+assert.deepEqual(holdEntry, oldHold, "Reading an obsolete hold does not delete or rewrite history");
+await evidence.recordCommitteeInputLimitHold("valuation:issuer:downside:unchanged", promptLimitCommittee,
+  new Date("2026-10-07T06:00:00Z"));
+assert.equal(await evidence.unchangedCommitteeInputLimitHeld("valuation:issuer:downside:unchanged"), true,
+  "An intrinsic overflow under the new transport must be held again");
+await evidence.recordCommitteeInputLimitHold("valuation:issuer:downside:partial", partialUsage,
+  new Date("2026-10-07T06:00:00Z"));
+assert.equal(await evidence.unchangedCommitteeInputLimitHeld("valuation:issuer:downside:partial"), false,
+  "A used or uncertain request must never be migrated into the proven-zero input hold");
+
 const eventJob = readFileSync(new URL("../lib/opportunity-engine/pr262-event-job.ts", import.meta.url), "utf8");
 const holdCheck = eventJob.indexOf("await unchangedCommitteeInputLimitHeld(reservation.candidateFingerprint)");
 const terminalReserve = eventJob.indexOf("terminalReserved = await reserveTerminalReview", holdCheck);

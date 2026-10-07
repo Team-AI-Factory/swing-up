@@ -1,3 +1,4 @@
+import { AI_COMMITTEE_INPUT_POLICY_REVISION } from "@/lib/ai-committee/prompt-input";
 import { applyPilotResearchAlertPolicy } from "@/lib/simple-alert-pilot-scope";
 import { validatedReviewEvidenceSnapshot } from "@/lib/equity-signal/review-evidence-revision";
 import type { LegacyTerminalReview } from "@/lib/opportunity-engine/pr262-terminal-reviews";
@@ -20,7 +21,7 @@ const text = (v: unknown) => typeof v === "string" ? v.slice(0, 1500) : "";
 const hash = (v: string) => crypto.createHash("sha256").update(v).digest("hex").slice(0, 24);
 const ROOT = pr262StorageKey("research-evidence");
 export const RESEARCH_ALERT_INDEX_KEY = `${ROOT}/alerts-v1.json`;
-export const COMMITTEE_INPUT_POLICY_REVISION = "utf8-schema-framing-60000-v1";
+export const COMMITTEE_INPUT_POLICY_REVISION = AI_COMMITTEE_INPUT_POLICY_REVISION;
 
 export async function readEvidenceFollowup(eventId: string) {
   const saved = await readVersionedTextFromR2(`${ROOT}/followups/${hash(eventId)}.json`);

@@ -43,7 +43,7 @@ const importStubs = {
 };
 const localRequire = (specifier) => {
   if (specifier in importStubs) return importStubs[specifier];
-  if (["@/lib/ai-committee/model-policy", "@/lib/ai-committee/evidence-text-references", "@/lib/ai-committee/review-policy", "@/lib/equity-signal/us-market-calendar"].includes(specifier)) return loadTsModule(specifier);
+  if (["@/lib/ai-committee/model-policy", "@/lib/ai-committee/evidence-text-references", "@/lib/ai-committee/evidence-record-references", "@/lib/ai-committee/prompt-input", "@/lib/ai-committee/review-policy", "@/lib/equity-signal/us-market-calendar"].includes(specifier)) return loadTsModule(specifier);
   throw new Error(`Unexpected import while loading committee decision: ${specifier}`);
 };
 new Function("require", "module", "exports", transpiled.outputText)(localRequire, loadedModule, loadedModule.exports);

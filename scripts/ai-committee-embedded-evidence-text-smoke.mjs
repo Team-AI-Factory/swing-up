@@ -9,6 +9,7 @@ const pack = JSON.parse(readFileSync(new URL("./fixtures/committee-serv-reconstr
 const original = structuredClone(pack);
 const textModule = loadTsModule("@/lib/ai-committee/evidence-text-references");
 const provider = loadTsModule("@/lib/ai-committee/provider");
+const promptInput = loadTsModule("@/lib/ai-committee/prompt-input");
 const policy = loadTsModule("@/lib/ai-committee/model-policy");
 const oldInstructions = textModule.SHARED_EVIDENCE_TEXT_INSTRUCTIONS;
 function restore(value, dictionary, embeddedOnly = false) {
@@ -32,10 +33,17 @@ const oldModule = { ...textModule, SHARED_EVIDENCE_TEXT_INSTRUCTIONS: oldInstruc
     const encoded = textModule.referenceRepeatedEvidenceText(value);
     return { ...encoded, embeddedReferences: 0, evidencePack: restore(encoded.evidencePack, encoded.sharedEvidenceTexts, true) };
   } };
-let captured = [], transport = [];
+let captured = [], transport = [], fetchCalls = 0;
 function committee(module) {
   return loadTsModule("@/lib/ai-committee/orchestrator", {
     "@/lib/ai-committee/evidence-text-references": module,
+    "@/lib/ai-committee/prompt-input": { ...promptInput, committeePromptPreflight: options => {
+      const failure = promptInput.committeePromptPreflight(options);
+      // Whole-review preflight now stops oversized base prompts before the
+      // provider wrapper is invoked. Capture that exact pure-gate input.
+      if (failure && !captured.length) captured.push(structuredClone(options));
+      return failure;
+    } },
     "@/lib/ai-committee/evidence-pack": { buildAiCommitteeEvidencePack() { throw Error("unexpected_read"); } },
     "@/lib/ai-committee/run-persistence": { persistAiCommitteeRun() { throw Error("unexpected_write"); } },
     "@/lib/ai-committee/provider": { ...provider, runOpenAiCommitteeProvider: async options => {
@@ -60,6 +68,7 @@ try {
     AI_COMMITTEE_MODEL_ALLOWLIST: "gpt-6.1-sol,gpt-6-astra,gpt-6-luna" });
   console.info = () => {};
   globalThis.fetch = async (url, init) => {
+    fetchCalls++;
     if (url.endsWith("/models")) return Response.json({ data: [{ id: "gpt-6.1-sol" }, { id: "gpt-6-astra" }] });
     assert.equal(url, "https://api.openai.com/v1/chat/completions");
     const request = JSON.parse(init.body);
@@ -75,6 +84,8 @@ try {
     const before = await baseline.runAiCommittee({ ...input, [baseline.TRUSTED_IN_MEMORY_EVIDENCE]: pack });
     assert.equal(before.agentResults[0].error, "prompt_too_large");
     assert.equal(transport.length, 0);
+    assert.equal(fetchCalls, 0, "Intrinsic overflow precedes compatibility reads and model requests");
+    assert.equal(before.committeeOutput.modelUsageSummary.actualOpenAiUsage.responsesWithUsage, 0);
     const beforeRequest = captured[0], beforePayload = JSON.parse(beforeRequest.messages[1].content);
     assert.equal(bytes(beforeRequest), 64_017, "Fixture must retain its measured pre-fix overflow");
     captured = []; transport = [];

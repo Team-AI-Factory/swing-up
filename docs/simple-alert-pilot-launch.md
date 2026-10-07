@@ -1,3 +1,17 @@
+## New INOD packet failed closed before provider use; repeat suppressed — 7 October 2026, 22:48 Bangkok
+
+A new natural INOD valuation packet reached the Committee preflight at 15:02 UTC. Its first-role prompt measured **61,786 UTF-8 bytes**, above the unchanged 60,000-byte transport cap. The v3 whole-review guard stopped all four roles before any provider request: actual OpenAI usage was zero, the rejected-request ledger entry was **$0**, no approval was produced, and no outbox, notification or delivery was created. The attempt is nevertheless one new processing failure and one new technical Committee failure under the conservative reliability accounting. Its immutable nonterminal audit is `branch-labs/simple-alerts/cohorts/small-ai-25-20261003-v1/event-job/nonterminal-audits/2026-10-07/valuation-bbb76fcfe9e70ff9543888d3-433d4a0c0deddb8863c39ece.json`.
+
+The next due cycle at 15:19 UTC provided the required live containment verification. INOD was classified `same_evidence` before provider use and reservation; `openAiCalled=false`, no usage or cost was added, and no second audit or publication artifact was written. That cycle completed HTTP200 with four nontechnical deferrals and zero Committee attempts or technical failures. No code change, prompt-cap increase, evidence truncation or paid replay is justified: the existing fail-closed guard and exact-evidence hold behaved as designed.
+
+A documentation-only sensor redeploy, `6eff19fb-2ef1-4cc8-84d5-0e549afaf1b9`, is live from branch `pilot-simple-alerts` at head `ca2ad8d878ea0f38cdc8ab92e787cf3bb01fb02b`. GitHub comparison confirms that head differs from tested runtime `86da747b3a156dba0282db93d057fc250c85d35a` only in this launch log, so the deployed executable tree is unchanged. The 15:30 cycle completed HTTP200 with no due analyses. Main scanning remains stopped, the cohort remains 25, and the unrelated staged telemetry patch `97789f67-b0f5-4cb3-b689-bd46c2b4c63f` remains untouched.
+
+Daily reliability is now source **47/835 (5.63%)**, processing **6/143 (4.20%)**, and technical Committee **6/11 (54.55%)**; the scale gates remain failed. The rolling ledger is **$3.262727 recorded/exposure, $0 reserved, $0 pending unknown, and $6.737273 headroom under $10**. Provider billing remains unverified. The latest profile pass completed HTTP200 at 15:39 UTC with 18 attempts, 22 source requests, one new verification, zero request/body/storage/count failures, zero model calls, **28/500 newly verified today**, and 472 remaining; all 25 cohort profiles remain verified. No Serious Buy/Sell/Watch Out exists and no live delivery receipt exists.
+
+Next: keep the new INOD evidence fingerprint held until genuinely changed decision-grade evidence fits the unchanged lossless prompt policy, continue profile production, and investigate the recurring direct-source preparation timeout without weakening source or review gates. Remain at 25.
+
+---
+
 ## Repeated contention path reverified; source timeout still blocks scale — 7 October 2026, 20:52 Bangkok
 
 The deployed pilot remains exact runtime `86da747b3a156dba0282db93d057fc250c85d35a` on all four active services; documentation-only head `76e64b0a410520559b075b34da0774ccb5c8baea` was correctly skipped. Main scanning remains stopped, the fixed cohort remains 25, and the unrelated staged telemetry patch `97789f67-b0f5-4cb3-b689-bd46c2b4c63f` remains untouched.

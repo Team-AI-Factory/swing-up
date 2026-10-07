@@ -7,7 +7,7 @@ import { collectFinancialDocuments } from "@/lib/equity-signal/financial-evidenc
 import { completeCommitteeReview, committeeRequestsRejectedWithoutUsage } from "@/lib/ai-committee/review-policy";
 import { verifiedCompanyProfile } from "@/lib/company-profile";
 import { ensureCompanyProfile, warmFoundationCompanyProfiles } from "@/lib/opportunity-engine/company-profile-cache";
-import { recordResearchEvidence, readEvidenceFollowup, readLastValuationReview, readLegacyTerminalReviews, verifiedFactsCache, reserveRejectionAudit } from "@/lib/opportunity-engine/pr262-research-evidence";
+import { recordResearchEvidence, readEvidenceFollowup, readLastValuationReview, readLegacyTerminalReviews, unchangedCommitteeInputLimitHeld, verifiedFactsCache, reserveRejectionAudit } from "@/lib/opportunity-engine/pr262-research-evidence";
 import crypto from "node:crypto";
 import { lookup, resolve4 } from "node:dns/promises";
 import * as https from "node:https";
@@ -2208,6 +2208,11 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
     let terminalReserved = false;
     const beforeOpenAiCall: NonNullable<EquitySignalLabInput["beforeOpenAiCall"]> = async (reservation) => {
       assertJobActive();
+      if (await unchangedCommitteeInputLimitHeld(reservation.candidateFingerprint)) {
+        committeeRetryAt = null;
+        committeeBlockedReason = "unchanged_prompt_input_limit";
+        return false;
+      }
       if (priorFollowup.candidateFingerprint === reservation.candidateFingerprint
         && Date.parse(String(priorFollowup.paidReviewNotBefore ?? "")) > now.getTime()) {
         committeeRetryAt = String(priorFollowup.paidReviewNotBefore);

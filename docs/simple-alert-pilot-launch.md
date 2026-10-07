@@ -1,3 +1,15 @@
+## Two consecutive clean profile windows after repair; scale remains blocked — 7 October 2026, 10:27 Bangkok
+
+The second independent scheduled profile observation carrying runtime **`659da3fe2521da6518241a101a0839c85aa06fc7`** started at 03:24:19 UTC, about two minutes after its nominal Railway slot, and completed **HTTP200** at 03:26:15 UTC. The documentation-only successor `80c3342e5b19ca8e09a444210f1e549c69d70d08` was skipped for builds and carries the same deployed runtime; schedule metadata alone was not counted as a run.
+
+The pass completed with bounded status `time_budget_reached`: 23 attempts, 25 source requests, **zero request failures, zero body failures, no storage/cache/count failure**, reconciled daily count **12/500**, 488 remaining, and all 25 cohort profiles verified. It produced zero new verifications and made zero model calls. Combined with the prior exact-code repaired pass, the admission/drain change now has two consecutive clean observations totaling 43 attempts and 47 source requests without a profile transport or storage failure. This supports the repair, but does not establish sustained 500/day yield; both repaired passes produced zero new profiles.
+
+The intervening exact-code sensor cycle completed HTTP200 with no due case, paid call, approval, live outbox or delivery. INOD's SEC snapshot refreshed successfully again at 03:16:46 UTC; IR discovery and a latest-code paid Committee retry remain unobserved. One of two issuer-feed polls timed out, so the source window remains nonqualifying: daily source **22/167 (13.17%)**, processing **1/25 (4.00%)**, and technical Committee **1/6 (16.67%)**. Five items remain scheduled for retry, none currently due or profile-ready. The shared ledger remains **$5.259739 recorded/exposure, $0 reserved, $0 pending unknown, $4.740261 headroom under $10**.
+
+No new code or deployment was justified. Main remains stopped, the fixed cohort remains 25, no Serious Alert exists, and the unrelated staged telemetry patch remains untouched. Next: continue independent profile observations, reduce source transport/preparation failures without weakening provider backoff, and wait for genuinely changed evidence before another paid review. Scale-up remains ineligible.
+
+---
+
 ## Profile namespace and drain-time repairs verified once; scale remains blocked — 7 October 2026, 10:10 Bangkok
 
 Fresh evidence exposed two distinct profile persistence incidents after the prior single successful pass. On deployed runtime `9b7a6489da47699865c77948c8ca5ef81921dd43`, a pass completed HTTP503 after about 150 seconds: 26 attempts, 25 source requests, zero request/body failures, one verification and one first-time verification (ENIC), durable reconciliation at **11/500**, then `company_profile_storage_write_failed` for EXPE during annual-filing work. This was a technical storage failure, not a source failure or useful completion.

@@ -213,9 +213,15 @@ async function store(entry: Entry, previous: Entry | undefined, roleSignal?: Abo
       } catch { /* Unknown stays failed; no replay, cleanup overwrite or new source. */ }
     }
     observe(error, settlement);
+    // A cross-process winner that changes this issuer before an admission PUT
+    // is a safe deferral: no source work or write began, and the winner remains
+    // authoritative. Finalization and any post-PUT ambiguity still fail closed.
+    const supersededAdmission = admission && writes === 0 && error instanceof Error
+      && error.message === "company_profile_cache_superseded";
     // In particular, do not let ensureCompanyProfile's source-error handler
     // issue a different write after this outcome could not be established.
-    throw new ProfileCacheWriteError(error, !deadlineCleanup && writes === 0 && (admission || !persistenceSignal) && causedByRoleAbort(error, roleSignal));
+    throw new ProfileCacheWriteError(error, !deadlineCleanup && writes === 0
+      && (supersededAdmission || (admission || !persistenceSignal) && causedByRoleAbort(error, roleSignal)));
   } finally {
     release?.();
   }

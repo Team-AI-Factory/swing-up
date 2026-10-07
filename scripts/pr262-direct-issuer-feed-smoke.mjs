@@ -110,8 +110,9 @@ const runtime = await loaded.exports.runPr262DirectAnnouncementMonitor({
             recent: {
               accessionNumber: ["0000000001-26-000001"],
               form: ["8-K"],
-              acceptanceDateTime: ["20260828084500"],
+              acceptanceDateTime: ["2026-08-28T08:45:00Z"],
               filingDate: ["2026-08-28"],
+              primaryDocument: ["current-report.htm"],
               items: ["2.02,9.01"],
               primaryDocDescription: ["Current report"],
             },
@@ -637,21 +638,23 @@ assert.equal(reconciledConflict.transientDiscoveryBacklog, 1, "Backlog telemetry
 assert.equal(reconciledConflict.confirmedNoFeedBacklog, 0);
 assert.equal(reconciledConflict.attemptCount, 1, "This invocation's already-spent attempt remains visible");
 assert.equal(reconciledConflict.successCount, 1);
-assert.deepEqual(reconciledConflict.registryPersistence, { written: false, conflict: true, winnerLoaded: true });
+assert.deepEqual(reconciledConflict.registryPersistence, { written: false, conflict: true, winnerLoaded: true, failureStage: null, error: null, telemetryBasis: "persisted_registry" });
 
 registryTextOverride = "{not-json";
 let invalidRegistryProviderCalls = 0;
-await assert.rejects(
-  () => loaded.exports.runPr262DirectAnnouncementMonitor({
+const invalidRegistry = await loaded.exports.runPr262DirectAnnouncementMonitor({
     now: new Date("2027-12-01T01:00:00.000Z"),
     exposure: [exposureCompany("CASCO", "0000000111")],
     fetchImpl: async () => {
       invalidRegistryProviderCalls += 1;
       return noWebsiteResponse;
     },
-  }),
-  /pr262_direct_feed_registry_invalid_json/,
-);
+  });
+assert.match(invalidRegistry.registryPersistence.error, /pr262_direct_feed_registry_invalid_json/);
+assert.equal(invalidRegistry.sourcePreparationFailures, 1);
+assert.equal(invalidRegistry.failureCount, 0);
+assert.equal(invalidRegistry.attemptCount, 0);
+assert.equal(invalidRegistry.registryPersistence.telemetryBasis, "unavailable");
 registryTextOverride = null;
 assert.equal(invalidRegistryProviderCalls, 0, "An unreadable registry must fail before any provider request");
 

@@ -72,7 +72,9 @@ export function pr262StorageKey(relativeKey: string, environment: StorageEnviron
     // Private queues/audits/metrics are versioned; old records stay untouched.
     const sharedProfileDay = /^pilot\/profile-builder\/\d{4}-\d{2}-\d{2}\.json$/.test(relative);
     const sharedReviewAllowance = relative === "event-job/runtime/committee-budgets-v1.json";
-    return `${sharedProfileDay || sharedReviewAllowance ? prefix : pilotCohortStoragePrefix(prefix)}${relative}`;
+    const sharedTerminalEvidence = relative === "terminal-reviews-v1" || relative.startsWith("terminal-reviews-v1/")
+      || relative === "serious-signal/evidence-delivery-v1" || relative.startsWith("serious-signal/evidence-delivery-v1/");
+    return `${sharedProfileDay || sharedReviewAllowance || sharedTerminalEvidence ? prefix : pilotCohortStoragePrefix(prefix)}${relative}`;
   }
   return `${prefix}${relative}`;
 }

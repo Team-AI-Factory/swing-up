@@ -354,7 +354,11 @@ function summarizeEvidence(pack: AiCommitteeEvidencePack) {
       filing: { summary: pack.filingEvidence.summary, items: pack.filingEvidence.items.slice(0, 3) },
       news: { summary: pack.newsEvidence.summary, items: prioritizedNews.ordered.slice(0, 8) },
       priceVolume: { summary: pack.priceVolumeEvidence.summary, items: pack.priceVolumeEvidence.items.slice(0, 3) },
-      fundamentals: { summary: pack.fundamentalsEvidence.summary, items: pack.fundamentalsEvidence.items.slice(0, 16) },
+      // The bounded SEC collector appends annual and comparable prior-year
+      // facts after current facts. A positional cap silently hides those inputs
+      // from every reviewer. Preserve them; the provider's byte cap still
+      // rejects an oversized prompt before any request is sent.
+      fundamentals: { summary: pack.fundamentalsEvidence.summary, items: pack.fundamentalsEvidence.items },
       macro: { summary: pack.macroEvidence.summary, items: pack.macroEvidence.items.slice(0, 3) },
       cryptoFx: { summary: pack.cryptoFxEvidence.summary, items: pack.cryptoFxEvidence.items.slice(0, 3) },
       historical: { summary: pack.historicalPatternMatch.summary, items: pack.historicalPatternMatch.items.slice(0, 3) },

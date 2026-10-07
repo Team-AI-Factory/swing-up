@@ -13,11 +13,13 @@ import type { AiCommitteeEvidencePack, EvidenceStrength } from "@/lib/ai-committ
 import { getAiCommitteeProviderStatus } from "@/lib/ai-committee/provider";
 import { buildImpactCandidates, fingerprintCandidate } from "@/lib/equity-signal/analysis";
 import { reviewEvidenceRevision, validatedReviewEvidenceSnapshot } from "@/lib/equity-signal/review-evidence-revision";
+import { terminalReviewEvidence, terminalPublicationPacketKey, type TerminalEvidence } from "@/lib/equity-signal/terminal-review-evidence";
+import { valuationReviewBaseline, type ValuationReviewBaseline } from "@/lib/equity-signal/valuation-review-materiality";
 import { collectEventSources } from "@/lib/equity-signal/event-sources";
 import { buildValuationCandidate, reassessValuationCandidate } from "@/lib/equity-signal/valuation-candidate";
 import type { UsValueCompanyAnalysis } from "@/lib/opportunity-engine/us-value-investing-engine";
 import type { VerifiedFactsCache } from "@/lib/equity-signal/fundamentals";
-import { enrichCandidateFundamentals } from "@/lib/equity-signal/fundamentals";
+import { enrichCandidateFundamentals, requiredFinancialFactPresent } from "@/lib/equity-signal/fundamentals";
 import { bootstrapPublicHistoricalSignals, mergeHistoricalSignals } from "@/lib/equity-signal/historical-bootstrap";
 import { fetchMacroContext } from "@/lib/equity-signal/macro";
 import { evaluateFiveCasePilotGate } from "@/lib/equity-signal/pilot-serious-signal-policy";
@@ -53,6 +55,9 @@ export type EquitySignalLabInput = {
   collectFinancialDocuments?: (cik: string) => Promise<FinancialDocuments>;
   financialDocumentsRequested?: boolean;
   previousValuationReview?: { fingerprint: string; outcome: string } | null;
+  terminalReview?: (input: { cik: string; ticker: string; fingerprint: string; evidence: TerminalEvidence }) => Promise<
+    { kind: "eligible" } | { kind: "held"; reason: string; outcome?: string }
+    | { kind: "terminal"; decision: { outcome: "approved" | "rejected" | "needs_more_data"; fingerprint: string; evidence: TerminalEvidence; decisionKey: string; direction: "upside" | "downside" | "unknown"; committee: Record<string, unknown>; publicationGatePassed?: boolean; publicationPacketKey?: string } }>;
   reserveRejectionAudit?: () => Promise<{
     commit: (now: Date) => Promise<boolean>;
     release: (now: Date) => Promise<void>;
@@ -64,7 +69,7 @@ export type EquitySignalLabInput = {
   outcomeTickers?: string[];
   historicalSignals?: HistoricalSignalRecord[];
   skipOpenAiCandidateFingerprints?: string[];
-  beforeOpenAiCall?: (reservation: { candidateFingerprint: string; checkedAt: string; ticker: string; direction: "upside" | "downside" | "unknown" }) => Promise<boolean>;
+  beforeOpenAiCall?: (reservation: { candidateFingerprint: string; checkedAt: string; ticker: string; direction: "upside" | "downside" | "unknown"; cik?: string; terminalEvidence?: TerminalEvidence; valuationBaseline?: ValuationReviewBaseline }) => Promise<boolean>;
   beforeProviderCall?: (request: EquityProviderCallRequest) => Promise<EquityProviderCallDecision>;
   reserveSecFilingDetailAccessions?: ReserveSecFilingDetailAccessions;
   /**
@@ -604,7 +609,8 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
     // Stable evidence revisions allow another review when missing facts arrive.
     // Fetch timestamps and small quote ticks cannot manufacture new evidence.
     const reviewEvidenceInputs = {
-      source: best.receipts.filter(r => r.channel !== "nasdaq_trade_halts").map(r => ({ id: r.id, summary: r.summary, rawEventType: r.rawEventType })),
+      source: best.receipts.filter(r => r.channel !== "nasdaq_trade_halts").map(r => ({ id: r.id, summary: r.summary, rawEventType: r.rawEventType,
+        url: r.url, publishedAt: r.publishedAt, official: r.official })),
       companyProfile: companyProfile ? { business: companyProfile.business, customers: companyProfile.customers, sourceUrl: companyProfile.sourceUrl, sourceFiledAt: companyProfile.sourceFiledAt, ...customerEvidenceDetails } : null,
       industry: industryLabel(targeted?.storedCompanyAnalysis?.industry, companyProfile?.industry),
       outlookRange: (() => {
@@ -625,14 +631,25 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       })() : null,
     };
     const evidenceRevision = reviewEvidenceRevision(reviewEvidenceInputs);
-    const fingerprint = best.eventFamily === "valuation_gap" ? `valuation:${best.cik}:${best.direction}:${evidenceRevision}`
+    const valuationBaseline = best.eventFamily === "valuation_gap" ? valuationReviewBaseline({
+      cik: best.cik ?? "", evidence: reviewEvidenceInputs, analysis: targeted?.storedCompanyAnalysis ?? {},
+      gateChecks: best.gateChecks, direction: best.direction, price: best.quote?.price ?? null,
+    }) : undefined;
+    let fingerprint = best.eventFamily === "valuation_gap" ? `valuation:${best.cik}:${best.direction}:${evidenceRevision}`
       : inclusiveReview ? `${fingerprintCandidate(best)}:${evidenceRevision}` : fingerprintCandidate(best);
+    const terminalEvidence = best.cik ? terminalReviewEvidence({ cik: best.cik, ticker: best.ticker,
+      scope: best.eventFamily === "valuation_gap" ? "valuation" : "event", evidence: reviewEvidenceInputs,
+      analysis: targeted?.storedCompanyAnalysis, price: best.quote?.price ?? null }) : null;
     const selectedCandidate = {
+      terminalEvidence,
+      terminalDecisionKey: null as string | null,
       reviewEvidenceSnapshot: best.eventFamily === "valuation_gap" ? validatedReviewEvidenceSnapshot({
         version: 1, fingerprint, cik: best.cik, direction: best.direction, evidence: reviewEvidenceInputs,
       }, { fingerprint, cik: best.cik, direction: best.direction }) : null,
       companyProfile,
       financialDocuments, valuationAudit,
+      ...(valuationBaseline ? { valuationBaseline } : {}),
+      valuationAdmittedAt: null as string | null,
       ticker: best.ticker,
       company: best.company,
       industry: industryLabel(targeted?.storedCompanyAnalysis?.industry, companyProfile?.industry),
@@ -679,12 +696,38 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       priceForecast: best.priceForecast,
       alertReadiness: seriousActionEligible(best) ? "actionable_candidate" : "watch_only",
     };
+    // This runs before any paid admission, including daily aliases and legacy
+    // exact-key checks. A completed approval can rerun publication checks only.
+    const terminal = terminalEvidence && best.cik && input.terminalReview
+      ? await input.terminalReview({ cik: best.cik, ticker: best.ticker, fingerprint, evidence: terminalEvidence }) : null;
+    if (terminal?.kind === "held" || (terminal?.kind === "terminal" && terminal.decision.outcome !== "approved")) {
+      const decision = terminal.kind === "terminal" ? terminal.decision : null;
+      if (decision) {
+        selectedCandidate.terminalEvidence = decision.evidence; selectedCandidate.terminalDecisionKey = decision.decisionKey;
+        fingerprint = decision.fingerprint; selectedCandidate.evidenceFingerprint = fingerprint;
+      }
+      const outcome = decision?.outcome ?? (terminal.kind === "held" ? terminal.outcome : undefined) ?? "held";
+      const followup = outcome === "needs_more_data" || outcome === "unknown";
+      return { ...common, status: followup ? "candidate_needs_more_data" : "qualified_candidate_already_reviewed", reviewOutcome: outcome,
+        terminalReviewUncertain: outcome === "unknown",
+        ...(followup ? { researchReview: { admitted: true, publicationHeld: true } } : {}),
+        seriousSignalFound: false, actionableSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint,
+        selectedCandidate, qualityScore: best.score, ...(decision ? { committee: decision.committee } : {}),
+        blockers: ["The durable review history does not establish new substantive evidence. No additional review was purchased."], technicalFailureFingerprint: null };
+    }
+    const replay = terminal?.kind === "terminal" ? terminal.decision : null;
+    if (replay) {
+      fingerprint = replay.fingerprint;
+      selectedCandidate.evidenceFingerprint = fingerprint;
+      selectedCandidate.terminalEvidence = replay.evidence;
+      selectedCandidate.terminalDecisionKey = replay.decisionKey;
+    }
     const pilotUpsideHold = best.direction === "upside" ? pilotUpsideBlocker(best) : null;
     if (pilotUpsideHold) return { ...common, status: "candidate_pilot_upside_quarantined", seriousSignalFound: false,
       actionableSignalFound: false, alertType: null, openAiCalled: false, candidateFingerprint: fingerprint,
       selectedCandidate, qualityScore: best.score, blockers: [pilotUpsideHold], technicalFailureFingerprint: null };
     if (!companyProfile) return { ...common, status: "candidate_company_profile_pending", seriousSignalFound: false, actionableSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, blockers: ["A source-backed company profile describing its products or services and customers is required before publication."], technicalFailureFingerprint: null };
-    if (input.previousValuationReview?.fingerprint === fingerprint && ["approved", "rejected", "needs_more_data", "approved_pending_checks"].includes(input.previousValuationReview.outcome)) {
+    if (!terminal && input.previousValuationReview?.fingerprint === fingerprint && ["approved", "rejected", "needs_more_data", "approved_pending_checks"].includes(input.previousValuationReview.outcome)) {
       return { ...common, status: "qualified_candidate_already_reviewed", reviewOutcome: input.previousValuationReview.outcome,
         seriousSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score,
         blockers: ["The financial evidence and material valuation thresholds are unchanged since the completed review. Collection continues without another paid review."], technicalFailureFingerprint: null };
@@ -693,7 +736,7 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
     if (!details.complete) return { ...common, status: "candidate_alert_details_pending", seriousSignalFound: false, actionableSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, blockers: details.missing, technicalFailureFingerprint: null };
     if (best.eventFamily === "valuation_gap" && best.gateChecks.valueTrapRiskAcceptable === false) return { ...common, status: "candidate_valuation_risk_rejected", seriousSignalFound: false, actionableSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, blockers: ["The apparent discount fails the business-quality, balance-sheet or risk checks. Reassess when the financial evidence changes."], technicalFailureFingerprint: null };
     if (!inclusiveReview && !best.quote) return { ...common, status: "qualified_event_market_quote_unavailable", seriousSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, blockers: ["The event qualified before the market moved, but no usable price anchor was available for a safe entry or outcome record. The event remains on the watch queue; no OpenAI budget was spent."], technicalFailureFingerprint: null };
-    if ((input.skipOpenAiCandidateFingerprints?.includes(fingerprint) || input.skipOpenAiCandidateFingerprints?.includes(fingerprintCandidate(best)))) return { ...common, status: "qualified_candidate_already_reviewed", seriousSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, blockers: ["The same event evidence was reviewed recently, so OpenAI was not called again."], technicalFailureFingerprint: null };
+    if (!replay && (input.skipOpenAiCandidateFingerprints?.includes(fingerprint) || input.skipOpenAiCandidateFingerprints?.includes(fingerprintCandidate(best)))) return { ...common, status: "qualified_candidate_already_reviewed", seriousSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, blockers: ["The same event evidence was reviewed recently, so OpenAI was not called again."], technicalFailureFingerprint: null };
     const watchOnlyBlocker = !best.quote
       ? "Current market quote is unavailable."
       : best.quote.actionableForSeriousSignal !== true
@@ -723,14 +766,45 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       };
     }
     const pilotGate = evaluateFiveCasePilotGate(best);
+    if (replay) {
+      const committee = replay.committee, judge = committee.finalJudge as Record<string, unknown> | undefined;
+      const financialReplayReady = (!valuationAudit || valuationAudit.missingEssentialFacts.length === 0)
+        && (!financialDocuments ? best.eventFamily !== "valuation_gap" && replay.evidence.comparison.external.documents.length === 0
+          : financialDocuments.documents.length > 0 && financialDocuments.failures.length === 0
+            && financialDocuments.documents.every(document => document.readComplete === true))
+        && (input.verifiedFactsCache?.requiredMetrics ?? []).every(metric =>
+          requiredFinancialFactPresent(best.fundamentals?.items ?? [], metric, now));
+      const seriousSignalFound = replay.publicationGatePassed === true && ["upside", "downside"].includes(best.direction) && replay.direction === best.direction && completeCommitteeReview(committee)
+        && judge?.verdict === "positive" && Number(judge.confidence) >= 80 && best.gatePassed
+        && replay.publicationPacketKey === terminalPublicationPacketKey(selectedCandidate)
+        && financialReplayReady && !targeted?.sourceEvidenceIncomplete && !watchOnlyBlocker && Boolean(best.quote);
+      const actionableSignalFound = seriousSignalFound && seriousActionEligible(best);
+      const alertType = !seriousSignalFound ? null : actionableSignalFound ? best.direction === "upside" ? "buy" : "sell" : "watch";
+      return { ...common, status: seriousSignalFound ? `serious_${alertType}` : "candidate_needs_more_data",
+        reviewOutcome: seriousSignalFound ? "approved" : "approved_pending_checks", terminalReviewReplayed: true,
+        researchReview: { admitted: true, gaps: [], publicationHeld: !seriousSignalFound },
+        seriousSignalFound, actionableSignalFound, alertType, openAiCalled: false, candidateFingerprint: fingerprint,
+        selectedCandidate, committee, historicalPilot: pilotGate, qualityScore: best.score,
+        blockers: seriousSignalFound ? [] : ["The completed approval is retained; current publication checks are still pending."], technicalFailureFingerprint: null };
+    }
     const aiProvider = getAiCommitteeProviderStatus();
     if (input.aiProviderBlockedReason) return { ...common, status: "committee_provider_access_blocked", seriousSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, committee: { configured: aiProvider.configured, enabled: aiProvider.enabled, providerBlockedReason: input.aiProviderBlockedReason }, blockers: [`The read-only OpenAI access check blocked paid review: ${input.aiProviderBlockedReason}. Evidence collection continues; no paid request or budget reservation was made.`], technicalFailureFingerprint: `openai_access_${input.aiProviderBlockedReason}`, failureScope: "configuration", repairEligible: false };
     if (!input.allowOpenAi) return { ...common, status: "qualified_signal_openai_not_requested", seriousSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, committee: { configured: aiProvider.configured, enabled: aiProvider.enabled }, blockers: ["The rolling OpenAI review budget was not available; the qualified event remains recorded without another paid call."], technicalFailureFingerprint: null };
     if (!aiProvider.configured || !aiProvider.enabled) return { ...common, ok: false, status: "configuration_blocker", seriousSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, blockers: [aiProvider.configured ? "AI committee is disabled." : "OPENAI_API_KEY is not available in this deployment."], technicalFailureFingerprint: aiProvider.configured ? "ai_committee_disabled" : "openai_key_missing", failureScope: "configuration", repairEligible: false };
-    if (input.beforeOpenAiCall && !await input.beforeOpenAiCall({ candidateFingerprint: fingerprint, checkedAt: now.toISOString(), ticker: best.ticker, direction: best.direction })) return { ...common, status: "qualified_signal_openai_reservation_denied", seriousSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, blockers: ["The durable committee budget or same-evidence lock denied this paid review."], technicalFailureFingerprint: null };
+    if (input.beforeOpenAiCall && !await input.beforeOpenAiCall({ candidateFingerprint: fingerprint, checkedAt: now.toISOString(), ticker: best.ticker, direction: best.direction, ...(best.cik ? { cik: best.cik } : {}), ...(terminalEvidence ? { terminalEvidence } : {}), ...(valuationBaseline ? { valuationBaseline } : {}) })) return { ...common, status: "qualified_signal_openai_reservation_denied", seriousSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, blockers: ["The durable committee budget or same-evidence lock denied this paid review."], technicalFailureFingerprint: null };
     admittedCandidateFingerprint = fingerprint;
+    if (valuationBaseline) selectedCandidate.valuationAdmittedAt = now.toISOString();
     const pack = evidencePack(best, providers, macroResult.context, now, fingerprint, quoted.benchmarkQuote, targeted?.storedCompanyAnalysis);
     pack.financialDiligence = { documents: financialDocuments, valuationAudit };
+    // General dated-facts availability does not satisfy a specifically
+    // requested current debt split. Keep old rows as history while exposing
+    // the unresolved period requirement to every reviewer and consensus gate.
+    for (const metric of input.verifiedFactsCache?.requiredMetrics ?? []) {
+      if (["long_term_debt_current", "long_term_debt_noncurrent"].includes(metric)
+        && !requiredFinancialFactPresent(best.fundamentals?.items ?? [], metric, now)) {
+        pack.missingEvidence.push(`Missing ${metric === "long_term_debt_current" ? "current" : "long-term"} debt fact for the latest verified balance-sheet period: ${metric}.`);
+      }
+    }
     if (financialDocuments) pack.sourceLinks = [...new Set([...pack.sourceLinks, ...financialDocuments.documents.map(d => d.url)])];
     if (financialDocuments && (!financialDocuments.documents.length || financialDocuments.failures.length)) pack.missingEvidence.push("Required financial filings could not be fully collected; see dated document failures.");
     if (valuationAudit) pack.missingEvidence.push(...valuationAudit.missingEssentialFacts.map(field => `Missing dated financial fact: ${field}`));

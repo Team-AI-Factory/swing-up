@@ -2,7 +2,7 @@ import { extractFinancialNoteCustomerEvidence, verifiedFinancialNoteCustomerEvid
 import { annualInformationFormBusinessText, secAnnualFilingIndexUrl } from "@/lib/company-profile-annual-source";
 import { extractRevenueGeography, revenueGeographyFromQuote, type RevenueGeography } from "@/lib/company-revenue-geography";
 /** Company descriptions must be extracts from a dated, identity-verified source. */
-export const COMPANY_PROFILE_PARSER_REVISION = 11;
+export const COMPANY_PROFILE_PARSER_REVISION = 13;
 export type CompanyIdentity = { ticker?: unknown; company?: unknown; cik?: unknown };
 export type VerifiedCompanyProfile = {
   version: 1; status: "verified"; ticker: string; company: string; cik: string;
@@ -29,6 +29,12 @@ export const profileCik = (v: unknown) => /^\d{1,10}$/.test(String(v ?? "")) && 
 const placeholder = /not yet been verified|still being collected|is the listed company|is classified in|company profile.*(?:missing|unavailable)/i;
 const customerSubjects = "(?:customers?|clients?|consumers?|patients?|subscribers?|end.users?|end.markets?|markets?|customer base|client base|customer segments?|market segments?)";
 const customerPredicate = new RegExp(`^(?:(?:our|the company['’]s|a|an|the)\\s+)?(?:(?:primary|principal|main|largest|target|core|professional|DIY|current|diverse)\\s+)?[\"“]?${customerSubjects}[\"”]?\\s+(?:(?:we serve|primarily|mainly|principally|largely|generally|predominantly)\\s+)*(?:include[sd]?|comprise[sd]?|consists? of|range[sd]? from|are|is(?: defined as)?)\\s+(.+)`, "i");
+const loanOrigination = /^We (?:(?:predominantly|primarily|principally|mainly) )?originate (?:(?:floating|fixed)[- ]rate )?first mortgage loans(?:, or whole loans)?,? directly to borrowers[.!]?$/i;
+function qualifiedClinicalBusiness(sentence: string) {
+  // This exact sourced R&D overview retains its scientific attribution. Do
+  // not exempt an entire loosely matched sentence from forecast screening.
+  return /^We are a clinical-stage biopharmaceutical company developing a novel disease-modifying approach targeting what we believe to be a key underlying cause of Alzheimer[’']s disease(?:, or AD)?[.]$/i.test(sentence);
+}
 const airCarrierService = /^(?:Together with our [^.]{1,300}, )?our primary business activity is the operation of (?:a|an) [^.!?]{1,100}air carrier, providing scheduled air transportation for passengers(?: and cargo)?\b/i;
 const commercialPartnerPopulation = /^We have (?:extensive )?experience partnering with (.+?)\. Our partnership agreements(?: to date)? have (?:commonly )?included: .+near-term payments for access, research, and intellectual property rights.+royalties on net sales of drugs[.!]?$/i;
 const customerCaveat = /\b(?:no (?:single )?customer|\d+(?:\.\d+)?%|percent|concentration|accounts? receivable|credit risk|loss of|contracts? with customers|none of our business|mainland China|legal (?:entity|structure))\b/i;
@@ -59,13 +65,22 @@ function issuerSubject(identity: CompanyIdentity) {
   return `(?:we|the company|our company|our business${company ? `|${company}` : ""}${alias})`;
 }
 function operatingBusiness(sentence: string, identity: CompanyIdentity) {
+  // Compensation and procurement arrangements do not identify what an issuer
+  // sells. These guards also run on cached profiles, before customer recovery.
+  const ownWorkforce = /\b(?:our|its|the company['’]s) (?:(?:global|eligible|current|former|full[- ]time|part[- ]time)\s+){0,3}(?:employees|associates|staff|team members)\b/i;
+  if (ownWorkforce.test(sentence) && /\b(?:total rewards|compensation|retirement plans|provident fund|benefit package|professional development|training opportunities)\b/i.test(sentence)) return false;
+  if (/^(?:We|The Company) (?:also )?provides? employee paid supplemental life and accident insurance plans[.]$/i.test(sentence)) return false;
+  if (/^(?:We|The company) (?:(?:also|currently) )?(?:offer|offers|provide|provides) (?:(?:our|all|eligible|full[- ]time|part[- ]time|non[- ]executive|officer)\s+){0,6}employees\b.{0,160}\b(?:total compensation|base salary|cash target bonus|employee stock purchase|benefit package|paid time off)\b/i.test(sentence)
+    || /^We (?:(?:also|currently) )?(?:offer|provide) (?:\d+ paid days of time off|paid parental leave to)\b/i.test(sentence)
+    || /^We (?:(?:currently|primarily) )?operate under work[- ]order programs\b/i.test(sentence)) return false;
+  if (/\bwe (?:believe|expect|intend)\b/i.test(sentence) && !qualifiedClinicalBusiness(sentence)) return false;
   // A list introduction is not the list itself. Continue to a complete source
   // sentence instead of publishing a product-free description as verified.
   if (filingBoilerplate.test(sentence) || unresolvedEntity.test(sentence)
     || /:\s*$/.test(sentence)
     || /\b(?:the following|as follows|listed below|described below)\s*[.:]?$/i.test(sentence)) return false;
   if (/\b(?:to|for)\s+(?:our|its|the company['’]s)\s+(?:employees|staff|team members)(?:\s+and\s+their\s+families)?\b/i.test(sentence)) return false;
-  if (airCarrierService.test(sentence)) return true;
+  if (airCarrierService.test(sentence) || loanOrigination.test(sentence) || qualifiedClinicalBusiness(sentence)) return true;
   if (/^We are (?:a|an) (?:(?:U[.]S[.]-based|[A-Za-z-]+)\s+){0,8}technology company (?:developing(?: and offering)?|offering) .{0,160}\b(?:software|semiconductors?|robotic systems|artificial intelligence)\b/i.test(sentence)) return true;
   if (/^(?:We|The Company) (?:design|designs|sell|sells|provide|provides|operate|operates) (?:our|the|its) (?:products|systems|solutions)\s+(?:to|with|through)\b/i.test(sentence)) return false;
   if (/^Our activities include .{0,100}\b(?:deployment|operation) of .{0,80}\b(?:robotic systems|medical devices|semiconductor systems)\b/i.test(sentence)) return true;
@@ -110,9 +125,12 @@ function customerDescriptionRank(sentence: string, identity: CompanyIdentity) {
   // Pre-commercial issuers cannot name a buyer population that does not yet
   // exist. Preserve their explicit source statement about product revenue.
   if (new RegExp(`^${issuerSubject(identity)}\\s+have\\s+(?:(?:not(?: yet)? generated (?:any )?revenue from (?:product sales|the sale of (?:our )?products))|(?:no (?:approved|commercially available) products.{0,100}have not generated (?:any )?revenue from product sales))[.!]?$`, "i").test(sentence)) return 1;
+  // The disclosed marketing audience is not itself assumed to buy. This
+  // compound sentence separately identifies the actual hospital sales channel.
+  if (/^In the (?:US|United States) and Canada, we market our products and preservation services primarily to physicians and sell our products through our approximately \d{1,3}-person direct sales team to hospitals and other healthcare facilities[.]$/i.test(sentence)) return 1;
   // A stated recipient of a commercial service is a customer population;
   // named buyers and a geography-only passenger count are not required.
-  if (airCarrierService.test(sentence)) return 1;
+  if (airCarrierService.test(sentence) || loanOrigination.test(sentence)) return 1;
   // A platform's audience is not necessarily its paying customer. This bounded
   // annual-report construction explicitly names fees collected by the issuer
   // from marketers, while preserving the distinct reward recipients verbatim.
@@ -156,6 +174,14 @@ function customerDescriptionRank(sentence: string, identity: CompanyIdentity) {
   const direct = new RegExp(`^${issuerSubject(identity)}\\s+(?:(?:primarily|mainly|principally)\\s+)?(?:serves?\\s+|(?:sells?|provides?|offers?|suppl(?:y|ies)|delivers?)\\s+(?:.{1,220}?\\s+)?to\\s+)(.+)`, "i");
   const relationship = /^We have (?:well-established |established |long-standing )?relationships with (.+?), which we serve\b/i;
   const passiveProducts = /^Our (?:[\w-]+\s+){0,5}(?:products(?: and services)?|services(?: and products)?)\s+are\s+(?:also\s+)?(?:sold|offered|distributed|marketed|supplied)\s+(?:primarily\s+)?(?:through|to)\s+(.+)/i;
+  // The new adverb placement is admitted only for a complete explicit
+  // consumer-sales clause and supported product wording, with no arbitrary
+  // hypothetical product modifier or forecast/conditional tail.
+  const passiveSold = sentence.match(/^Our (?:Aquasana branded |branded )?products\s+are\s+(?:(?:also|primarily|mainly|principally|predominantly)\s+){0,2}sold\s+(?:(?:primarily|mainly|principally|predominantly|directly)\s+){0,2}to\s+(consumers(?: through e-commerce channels)?)[.]$/i)?.[1];
+  const speculative = /\b(?:potential|prospective|hypothetical|forecast|illustrative|proposed|planned|future|target|not|never|internal use|to us|we (?:expect|believe|intend)|after launch)\b/i;
+  const passiveSoldPopulation = passiveSold && !speculative.test(sentence) ? passiveSold : undefined;
+  const passiveRecipient = sentence.match(passiveProducts)?.[1];
+  const passivePopulation = passiveRecipient && !speculative.test(sentence) ? passiveRecipient : undefined;
   const providerMarkets = new RegExp(`^${issuerSubject(identity)}\\s+(?:is|are)\\s+.{0,100}\\b(?:provider|supplier|manufacturer|distributor)\\b.{0,150}\\bto\\s+customers\\s+in\\s+(.+)`, "i");
   // "For" can explicitly name the commercial service recipient. Require an
   // already-valid issuer operating statement and a concrete population at the
@@ -175,7 +201,7 @@ function customerDescriptionRank(sentence: string, identity: CompanyIdentity) {
   const directPopulation = directMatch && !/\b(?:access|exposure|proximity|introductions?)\s+to\s*$/i.test(directPrefix)
     && !purposeInfinitive.test(directMatch[1]) ? directMatch[1] : undefined;
   const recipient = explicit?.[1] ?? explicitForPopulation ?? directPopulation ?? sentence.match(relationship)?.[1]
-    ?? sentence.match(passiveProducts)?.[1] ?? sentence.match(providerMarkets)?.[1];
+    ?? passiveSoldPopulation ?? passivePopulation ?? sentence.match(providerMarkets)?.[1];
   if (!recipient) return 0;
   // Some retailers define professional buyers by the businesses receiving
   // products. Keep the full source sentence, and inspect its explicit named
@@ -186,7 +212,7 @@ function customerDescriptionRank(sentence: string, identity: CompanyIdentity) {
     && /\b(?:markets?|industries|sectors?)\b/i.test(group);
   // These predicates describe usage, terms, geography or satisfaction, not a
   // customer population. Retain the original sentence when it does qualify.
-  if (group.length < 4 || (!buyerGroups.test(group) && !namedIndustries) || /^(?:from|able|likely|using|provided|required|offered|encouraged|expected|invited|eligible|entitled|satisfied|located|based|concentrated|subject|responsible|supported|served|purchasing|important|critical|essential|diverse|highly|intensely|competitive|fragmented|characterized|help|enable|ensure|improve|access|use|store|manage|our\b|their\b|customers?\b|clients?\b|consumers?\s+(?:who|that)\s+(?:use|access))\b/i.test(group)) return 0;
+  if (group.length < 4 || purposeInfinitive.test(group) || (!buyerGroups.test(group) && !namedIndustries) || /^(?:from|able|likely|using|provided|required|offered|encouraged|expected|invited|eligible|entitled|satisfied|located|based|concentrated|subject|responsible|supported|served|purchasing|important|critical|essential|diverse|highly|intensely|competitive|fragmented|characterized|help|enable|ensure|improve|access|use|store|manage|our\b|their\b|customers?\b|clients?\b|consumers?\s+(?:who|that)\s+(?:use|access))\b/i.test(group)) return 0;
   return explicit ? 2 : 1;
 }
 export function verifiedCompanyProfile(value: unknown, identity: CompanyIdentity, now = new Date()): VerifiedCompanyProfile | null {
@@ -300,8 +326,8 @@ export function inspectCompanyProfileExtraction(input: ProfileExtractionInput) {
     .map(text), ...commercialPartnerQuotes, ...robotOrderQuotes].filter(sentence => sentence.length >= 25 && sentence.length <= 1100);
   const reject = /forward.looking|risk factors|may not|no assurance|could adversely|table of contents|incorporated by reference|annual report|securities and exchange|we expect|we believe|we intend/i;
   const useful = sentences.filter(sentence => !reject.test(sentence));
-  const business = useful.filter(sentence => sentence.length >= 60 && operatingBusiness(sentence, input.identity))
-    .map(sentence => ({ sentence, rank: /^Our (?:product portfolio|primary product offering|business model|activities include)/i.test(sentence) ? 3
+  const business = sentences.filter(sentence => !reject.test(sentence) || qualifiedClinicalBusiness(sentence)).filter(sentence => sentence.length >= 60 && operatingBusiness(sentence, input.identity))
+    .map(sentence => ({ sentence, rank: qualifiedClinicalBusiness(sentence) ? 3 : /^Our (?:product portfolio|primary product offering|business model|activities include)/i.test(sentence) ? 3
       : /^We also offer\b/i.test(sentence) ? 0
       : /\b(?:sell|sells|design|designs|develop|develops|manufacture|manufactures|offer|offers)\b/i.test(sentence) ? 2 : 1 }))
     .sort((a, b) => b.rank - a.rank)[0]?.sentence;

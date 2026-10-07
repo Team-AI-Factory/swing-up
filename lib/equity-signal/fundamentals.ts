@@ -29,6 +29,30 @@ function date(value: unknown) {
   return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
 }
 
+/** Historical debt stays in the evidence, but cannot fulfill a request for the
+ * current balance-sheet split. A later share-count observation is not a new
+ * balance-sheet period. Other requested metrics keep their existing semantics. */
+export function requiredFinancialFactPresent(items: readonly unknown[], metric: unknown, now: Date) {
+  if (typeof metric !== "string" || !metric) return false;
+  const rows = items.filter((item): item is Record<string, unknown> => Boolean(item)
+    && typeof item === "object" && !Array.isArray(item));
+  if (!["long_term_debt_current", "long_term_debt_noncurrent"].includes(metric)) {
+    return rows.some(item => item.metric === metric);
+  }
+  const validBalance = (item: Record<string, unknown>) => {
+    const end = date(item.periodEnd), filed = date(item.filedAt);
+    const endMs = end ? Date.parse(end) : NaN, filedMs = filed ? Date.parse(filed) : NaN;
+    return number(item.value) !== null && item.unit === "USD" && item.periodStart == null
+      && Number.isFinite(endMs) && Number.isFinite(filedMs) && endMs <= filedMs
+      && new Date(endMs).toISOString().slice(0, 10) === end && new Date(filedMs).toISOString().slice(0, 10) === filed
+      && filedMs <= now.getTime() && now.getTime() - endMs <= 550 * 86_400_000;
+  };
+  const balanceSheetPeriod = rows.filter(item => ["assets", "liabilities", "equity"].includes(String(item.metric))
+    && validBalance(item)).map(item => String(item.periodEnd)).sort().at(-1);
+  return Boolean(balanceSheetPeriod && rows.some(item => item.metric === metric
+    && validBalance(item) && item.periodEnd === balanceSheetPeriod));
+}
+
 function datedFacts(facts: Record<string, unknown>, concepts: readonly string[], units: readonly string[], now: Date, annualOnly = false) {
   const today = now.toISOString().slice(0, 10);
   const candidates = concepts.flatMap((concept) => {
@@ -112,7 +136,7 @@ export async function enrichCandidateFundamentals(candidate: ImpactCandidate | n
       && Number.isFinite(Date.parse(item.filedAt ?? "")) && Date.parse(item.filedAt!) <= now.getTime()
       && Number.isFinite(Date.parse(item.periodEnd ?? "")) && Date.parse(item.periodEnd!) <= now.getTime());
     const requestedMetrics = cache?.requiredMetrics ?? [];
-    const requestedFactsPresent = requestedMetrics.every(metric => saved?.fundamentals.items.some(item => item.metric === metric));
+    const requestedFactsPresent = requestedMetrics.every(metric => requiredFinancialFactPresent(saved?.fundamentals.items ?? [], metric, now));
     if (saved?.cik === candidate.cik && saved.fundamentals.sourceUrl === sourceUrl && saved.fundamentals.available && datedFacts && Number.isFinite(checked)
       && checked <= now.getTime() && now.getTime() - checked <= 6 * 60 * 60_000
       && (candidate.eventFamily === "valuation_gap" || checked >= eventAt)) {

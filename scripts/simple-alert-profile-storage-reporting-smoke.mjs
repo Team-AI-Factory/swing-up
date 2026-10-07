@@ -5,11 +5,19 @@ import { companyProfileFixture } from "./helpers/company-profile-fixture.mjs";
 const profileKey = "research-evidence/company-profiles-v1.json";
 const identities = ["ONE", "TWO"].map((ticker, i) => ({ ticker, company: `${ticker} Software`, cik: String(i + 1).padStart(10, "0") }));
 const listing = identity => ({ ...identity, name: identity.company, exchange: "Nasdaq", securityType: "common_stock", sourceNames: ["SEC company_tickers_exchange"] });
-const savedRole = process.env.SWING_UP_SIMPLE_PILOT_ROLE, info = console.info, originalDateNow = Date.now;
+const savedRole = process.env.SWING_UP_SIMPLE_PILOT_ROLE, info = console.info, originalDateNow = Date.now, originalTimeout = AbortSignal.timeout;
+let countSignal, persistenceController, activeMode;
+AbortSignal.timeout = milliseconds => {
+  if (milliseconds === 160_000 && activeMode === "persistence_deadline") return persistenceController.signal;
+  const signal = originalTimeout(milliseconds);
+  if (milliseconds === 175_000) countSignal = signal;
+  return signal;
+};
 process.env.SWING_UP_SIMPLE_PILOT_ROLE = "profiles";
 try {
   console.info = () => {};
-  for (const mode of ["available", "unavailable", "missing", "malformed", "missing_verified", "native_transport", "native_timeout", "alias", "deadline"]) {
+  for (const mode of ["available", "unavailable", "missing", "malformed", "missing_verified", "native_transport", "native_timeout", "alias", "persistence_deadline", "deadline"]) {
+    activeMode = mode; persistenceController = new AbortController();
     const objects = new Map(), revisions = new Map();
     let failureInjected = false, reconciliationRestored = false, requests = 0, reconciliationReads = 0;
     let resolveFirstWrite;
@@ -24,7 +32,7 @@ try {
     revisions.set(profileKey, 1);
     const storage = {
       readVersionedTextFromR2: async (key, options = {}) => {
-        if (key === profileKey && failureInjected && !reconciliationRestored && !options.signal) {
+        if (key === profileKey && failureInjected && !reconciliationRestored && options.signal === countSignal) {
           reconciliationReads++;
           if (mode === "unavailable") throw new Error("r2_state_read_http_503");
           if (mode === "missing") return { found: false, text: null, etag: null };
@@ -32,7 +40,7 @@ try {
           if (mode === "missing_verified") return { found: true, text: '{"entries":[]}', etag: "omitted" };
         }
         let value = objects.get(key);
-        if (key === profileKey && mode === "alias" && failureInjected && !reconciliationRestored && !options.signal) {
+        if (key === profileKey && mode === "alias" && failureInjected && !reconciliationRestored && options.signal === countSignal) {
           value = structuredClone(value);
           for (const row of value.entries) if (row.ticker === "ONE") { row.ticker = "ONE.A"; row.profile.ticker = "ONE.A"; }
         }
@@ -45,6 +53,10 @@ try {
           assert.ok(prior.entries.some(row => row.ticker === "ONE" && row.profile?.status === "verified"), "The actual verified cache write must precede the persistent pending-result PUT failure");
           failureInjected = true;
           if (mode === "deadline") Date.now = () => originalDateNow() + 175_001;
+          if (mode === "persistence_deadline") {
+            Date.now = () => originalDateNow() + 160_001;
+            persistenceController.abort(new DOMException("Persistence time window ended", "TimeoutError"));
+          }
           if (mode === "native_transport" || mode === "native_timeout") throw Object.assign(new Error(mode === "native_transport" ? "fetch failed" : "The operation was aborted due to timeout"), {
             storageDomain: "r2_state", storageOperation: "write", name: mode === "native_timeout" ? "TimeoutError" : "TypeError",
           });
@@ -82,7 +94,7 @@ try {
     const result = await builder.runSimpleAlertProfileBuilder(now, fetcher);
     assert.equal(result.ok, false);
     assert.equal(result.status, "failed");
-    assert.equal(result.failure, mode === "native_transport" ? "fetch failed" : mode === "native_timeout" ? "The operation was aborted due to timeout" : "r2_state_write_http_502");
+    assert.equal(result.failure, mode === "persistence_deadline" ? "Persistence time window ended" : mode === "native_transport" ? "fetch failed" : mode === "native_timeout" ? "The operation was aborted due to timeout" : "r2_state_write_http_502");
     assert.equal(result.failureCategory, "storage");
     assert.equal(result.storageFailureObserved, true);
     assert.equal(result.verifiedThisRun, 1, "Acknowledged verified work remains visible even when the later result cannot be saved");
@@ -96,7 +108,7 @@ try {
     const savedSummary = [...objects.entries()].find(([key]) => key.startsWith("pilot/profile-builder/"))[1];
     assert.equal(savedSummary.leaseUntil, null);
     assert.equal(savedSummary.attemptsReserved, 2, "The same two issuer attempts remain accounted once");
-    if (["available", "native_transport", "native_timeout", "alias"].includes(mode)) {
+    if (["available", "native_transport", "native_timeout", "alias", "persistence_deadline"].includes(mode)) {
       assert.equal(result.newlyVerifiedThisRun, 1);
       assert.equal(result.newlyVerifiedToday, 2);
       assert.equal(result.verificationCountsStatus, "cache_reconciled");
@@ -112,7 +124,7 @@ try {
       assert.equal(savedSummary.totalVerified, 1, "The last known baseline is retained, never silently raised or reset");
     }
     Date.now = originalDateNow;
-    reconciliationRestored = true;
+    reconciliationRestored = true; persistenceController = new AbortController();
     const firstAt = objects.get(profileKey).entries.find(row => row.ticker === "ONE").firstVerifiedAt;
     const retry = await builder.runSimpleAlertProfileBuilder(new Date(), fetcher);
     assert.equal(retry.ok, true);
@@ -125,6 +137,7 @@ try {
   }
 } finally {
   Date.now = originalDateNow;
+  AbortSignal.timeout = originalTimeout;
   console.info = info;
   if (savedRole === undefined) delete process.env.SWING_UP_SIMPLE_PILOT_ROLE; else process.env.SWING_UP_SIMPLE_PILOT_ROLE = savedRole;
 }

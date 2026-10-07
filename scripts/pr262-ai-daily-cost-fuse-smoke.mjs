@@ -36,6 +36,7 @@ new Function("require", "module", "exports", output)((specifier) => {
   }
   if (specifier === "@/lib/ai-committee/billing-audit") return loadTsModule(specifier, { "@/lib/r2-warehouse": {} });
   if (specifier === "@/lib/ai-committee/model-policy") return loadTsModule(specifier);
+  if (specifier === "@/lib/ai-committee/review-policy") return loadTsModule(specifier);
   throw new Error(`Unexpected AI fuse import: ${specifier}`);
 }, loaded, loaded.exports);
 
@@ -54,8 +55,10 @@ const charge = (id, costUsd, recordedAt = now.toISOString()) => ({ id, costUsd, 
 const report = (id, roles = [], responses = 0) => ({
   openAiCalled: true, checkedAt: now.toISOString(), candidateFingerprint: id, selectedCandidate: { ticker: "TEST" },
   committee: { output: { modelUsageSummary: { roleDiagnostics: roles, actualOpenAiUsage: {
-    responsesWithUsage: responses, tokens: { promptTokens: 1000, completionTokens: 500, cachedPromptTokens: 500 },
-    byModel: { "gpt-4.1-mini": { promptTokens: 1000, completionTokens: 500, cachedPromptTokens: 500, responses } },
+    responsesWithUsage: responses,
+    tokens: responses > 0 ? { promptTokens: 1000, completionTokens: 500, cachedPromptTokens: 500 }
+      : { promptTokens: 0, completionTokens: 0, cachedPromptTokens: 0 },
+    byModel: responses > 0 ? { "gpt-4.1-mini": { promptTokens: 1000, completionTokens: 500, cachedPromptTokens: 500, responses } } : {},
   } } } },
 });
 const reserve = (id, at = now) => reservePr262AiCommitteeBudget({ candidateFingerprint: id, ticker: "TEST", direction: "upside" }, at);

@@ -15,6 +15,12 @@ export function simpleAlertCycleSummary(body) {
   const recovery = result.notifications?.durableRecoveryConsumer;
   const direct = result.sensor?.directAnnouncementMonitoring;
   const issuerRows = Array.isArray(direct?.issuerSourceCoverage) ? direct.issuerSourceCoverage.slice(0, 25) : null;
+  const registryPersistence = {
+    ...pick(direct?.registryPersistence, ["written", "conflict", "winnerLoaded", "failureStage", "telemetryBasis"]),
+    error: typeof direct?.registryPersistence?.error === "string"
+      ? direct.registryPersistence.error.replace(/https?:\/\/[^\s]+/gi, "[url]").replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 200)
+      : null,
+  };
   return {
     summaryStatus: "parsed",
     pilot: pick(result.pilot, ["name", "branch", "cohortId", "companies"]),
@@ -31,7 +37,9 @@ export function simpleAlertCycleSummary(body) {
       ...pick(direct, ["eligibleCompanies", "officialSecIdentityMappedCompanies", "currentEligibleCompaniesKnown", "registeredFeeds", "feedsPolled", "feedSuccesses", "feedFailures", "secSubmissionsChecked", "secCheckAttempts", "secCheckSuccesses", "secCheckFailures", "secCheckDeferred", "secCacheHits", "sourcePreparationFailures", "initialCatchupEvents", "sourceCollectionDeadlineReached"]),
       liveNewEvents: pick(result.sensor, ["newEvents"]).newEvents,
       queuedCatchupEvents: pick(result.sensor, ["initialCatchupEvents"]).initialCatchupEvents,
-      currentSecSnapshots: issuerRows ? issuerRows.filter(row => row?.sec?.status === "current_snapshot").length : null,
+      registryPersistence,
+      currentSecSnapshots: issuerRows && registryPersistence.telemetryBasis !== "unavailable"
+        ? issuerRows.filter(row => row?.sec?.status === "current_snapshot").length : null,
       issuerRowsTruncated: issuerRows ? direct.issuerSourceCoverage.length > 25 : null,
       issuers: issuerRows?.map(row => ({ ticker: pick(row, ["ticker"]).ticker,
         sec: pick(row?.sec, ["status", "snapshotFetchedAt", "nextCheckAt"]),

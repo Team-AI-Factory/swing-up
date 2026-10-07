@@ -56,7 +56,21 @@ for (const stage of ["registry_read", "registry_write"]) {
     },
   });
   const began = Date.now();
-  await assert.rejects(() => direct.runPr262DirectAnnouncementMonitor({ exposure: [], deadlineAtMs: Date.now() + 25, fetchImpl: async () => { network++; throw new Error("No source expected"); } }), /timeout/i);
+  const result = await direct.runPr262DirectAnnouncementMonitor({ exposure: [company], deadlineAtMs: Date.now() + 25,
+    fetchImpl: async () => { network++; throw new Error("No source expected"); } });
+  assert.equal(result.attemptCount, 0);
+  assert.equal(result.failureCount, 0);
+  assert.equal(result.sourcePreparationFailures, 1);
+  assert.equal(result.registryPersistence.written, false);
+  assert.equal(result.registryPersistence.failureStage, stage === "registry_read" ? "load" : "write");
+  assert.match(result.registryPersistence.error, /timeout/i);
+  if (stage === "registry_read") {
+    assert.equal(result.registeredFeeds, null);
+    assert.equal(result.currentEligibleCompaniesKnown, null);
+    assert.equal(result.transientDiscoveryBacklog, null);
+    assert.equal(result.registryPersistence.telemetryBasis, "unavailable");
+    assert.equal(result.issuerSourceCoverage[0].sec.status, "registry_unavailable");
+  }
   assert.ok(Date.now() - began < 500, "Registry read/save cannot add the global 45s retry deadline");
   assert.equal(network, 0);
 }
@@ -89,7 +103,7 @@ for (const stage of ["snapshot_read", "reservation_read", "reservation_write", "
   loading = false;
   const direct = loadTsModule("@/lib/opportunity-engine/pr262-direct-announcements", overrides);
   const timer = setTimeout(() => controller.abort(new Error("source_deadline")), 20);
-  const result = await direct.runPr262DirectAnnouncementMonitor({ exposure: [company], now, deadlineAtMs: Date.now() + 500, fetchImpl: fetcher.fetchImpl });
+  const result = await direct.runPr262DirectAnnouncementMonitor({ exposure: [company], now, deadlineAtMs: Date.now() + 5500, fetchImpl: fetcher.fetchImpl });
   clearTimeout(timer);
   const expectedNetwork = ["network_failure", "snapshot_write"].includes(stage) ? 1 : 0;
   const expectedFailure = stage === "network_failure" ? 1 : 0;

@@ -115,13 +115,15 @@ try {
   await assert.rejects(r2.writeVersionedJsonToR2("production/pr262/forbidden.json", payload, { createOnly: true }), /r2_mutation_outside_write_prefix/);
   assert.equal(calls.length, 0, "Cancellation and write fences stop before network I/O");
 
-  const compressedKey = "branch-labs/pr-262/sensor/state-v1.json";
+  for (const compressedKey of ["branch-labs/pr-262/sensor/state-v1.json", "branch-labs/pr-262/research-evidence/company-profiles-v1.json"]) {
   const large = { entries: ["sample-only".repeat(5000)] };
   const encoded = r2.encodeVersionedJsonForR2(compressedKey, large);
   assert.equal(encoded.compressed, true);
   done = sequence([["PUT", () => fail(502)], ["GET", () => new Response(encoded.body, { headers: { etag: '"compressed"' } })]]);
   assert.equal((await r2.writeVersionedJsonToR2(compressedKey, large, { createOnly: true })).etag, '"compressed"');
   done();
+  assert.deepEqual(JSON.parse(r2.decodeVersionedR2Text(encoded.body)), large, "Private profile compression preserves the exact conditional-write intent");
+  }
   assert.ok(diagnostics.some(line => line.includes("committed_write_verified")));
   assert.ok(diagnostics.some(line => line.includes("concurrent_change_preserved")));
   assert.ok(diagnostics.every(line => !/fixture-secret|fixture-key|authorization|unique-owner/.test(line)), "Diagnostics never include secrets, signatures or payload values");

@@ -371,6 +371,7 @@ export async function objectExistsInR2(r2Key: string) {
 }
 
 const PR262_COMPRESSED_VERSIONED_STATE_SUFFIXES = [
+  "/research-evidence/company-profiles-v1.json",
   "/sensor/state-v1.json",
   "/sensor/provider-budgets-v1.json",
   "/sensor/direct-company-feeds-v1.json",

@@ -750,7 +750,7 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
     } | null,
     discoveryErrors: null as string[] | null,
     attemptErrors: null as string[] | null,
-    registryPersistence: null as { written: boolean; conflict: boolean; winnerLoaded: boolean } | null,
+    registryPersistence: null as Awaited<ReturnType<typeof runPr262DirectAnnouncementMonitor>>["registryPersistence"] | null,
   };
   try {
     const direct = await runPr262DirectAnnouncementMonitor({ exposure: exposure.entries, now, fetchImpl, deadlineAtMs: sourceDeadlineAtMs });
@@ -822,7 +822,7 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
           ? "partial"
           : "connected"
       : direct.deferredCount > 0 ? "budget_deferred"
-        : direct.eligibleCompanies > 0 || direct.registeredFeeds > 0
+        : direct.eligibleCompanies > 0 || (direct.registeredFeeds ?? 0) > 0
         ? "not_due"
         : "not_ready";
     summaries.push({

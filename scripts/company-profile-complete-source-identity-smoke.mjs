@@ -1,0 +1,16 @@
+import assert from "node:assert/strict";
+import { loadTsModule } from "./helpers/load-typescript-module.mjs";
+import { ref, html } from "./helpers/company-profile-financial-note-fixture.mjs";
+const h = loadTsModule("@/lib/company-profile-financial-customer-source");
+const inspect = (body = html, changes = {}) => h.inspectAnnualDocumentIdentity({ ...ref, html: body, ...changes });
+assert.equal(inspect()?.reportPeriod, "2025-12-31");
+assert.equal(inspect(html.replaceAll("2025", "2024"))?.reportPeriod, "2024-12-31", "Raw annual cache is independent of the narrower note-adapter period");
+for (const body of [html.replace("0001861737", "0001883085"), html.replaceAll("FY", "Q4"), html.replace("20-F", "10-Q"), html.replace("2025-01-01", "2025-10-01"), html.replace("2025-12-31", "2027-12-31"), html.replace("http://xbrl.sec.gov/dei/2025", "https://example.com/dei/2025"), html.replace("http://www.sec.gov/CIK", "https://example.com/CIK"), html.replace('name="dei:DocumentType"', 'style="display:none" name="dei:DocumentType"'), html.replace("</html>", ""), html + "<html></html>", "<html><body>SEC Request Rate Threshold Exceeded</body></html>"]) assert.equal(inspect(body), null);
+const addFlags = (annual, transition, ns = "http://www.xbrl.org/inlineXBRL/transformation/2020-02-12") => html.replace('<html ', `<html xmlns:transform="${ns}" `).replace("</body>", `<ix:nonNumeric name="dei:DocumentAnnualReport" contextRef="c1" format="transform:${annual}">x</ix:nonNumeric><ix:nonNumeric name="dei:DocumentTransitionReport" contextRef="c1" format="transform:${transition}">o</ix:nonNumeric></body>`);
+for (const ns of ["http://www.xbrl.org/inlineXBRL/transformation/2020-02-12", "http://www.xbrl.org/inlineXBRL/transformation/2022-02-16"]) assert.ok(inspect(addFlags("fixed-true", "fixed-false", ns)));
+for (const body of [addFlags("fixed-false", "fixed-false"), addFlags("fixed-true", "fixed-true"), addFlags("fixed-true", "fixed-false", "https://evil.example/transform"), addFlags("fixed-true", "unknown"), addFlags("fixed-true", "fixed-false").replace('contextRef="c1" format="transform:fixed-true"', 'contextRef="other" format="transform:fixed-true"')]) assert.equal(inspect(body), null);
+const ballot = addFlags("boolballotbox", "boolballotbox", "http://www.sec.gov/inlineXBRL/transformation/2015-08-31").replace('>x</ix:', '>☒</ix:').replace('>o</ix:', '>☐</ix:');
+assert.ok(inspect(ballot)); assert.equal(inspect(ballot.replace('>☐</ix:', '>☑</ix:')), null); assert.equal(inspect(ballot.replace('>☒</ix:', '>x</ix:')), null);
+assert.equal(h.extractFinancialNoteCustomerEvidence({ ...ref, html: addFlags("fixed-true", "fixed-false") }), null, "Cache-only boolean support does not expand the published customer evidence adapter");
+for (const changes of [{ identity: { cik: "1883085" } }, { form: "10-K" }, { sourceUrl: ref.sourceUrl + "?other" }, { filedAt: "2024-01-01" }, { now: new Date("2025-01-01T00:00:00Z") }]) assert.equal(inspect(html, changes), null);
+console.log("Complete annual identity: matching DEI namespace, CIK, form, annual duration and dates; false, foreign, hidden, duplicate, truncated and SEC error sources rejected.");

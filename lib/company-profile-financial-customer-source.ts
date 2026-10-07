@@ -309,20 +309,17 @@ function revenueQuote(nodes: Element[], ctx: string): string | null {
   return paragraphs[7];
 }
 
-export function extractFinancialNoteCustomerEvidence(input: FinancialNoteSourceReference & { html: string }): FinancialNoteCustomerEvidence | null {
-  const c = source(input); if (!c) return null;
-  // Cheap fail-closed guard before building a tree for unrelated annual notes.
-  if (typeof input.html !== "string" || input.html.length > MAX_HTML || !/<\/html>\s*$/.test(input.html)
-    || !/(?:TradeAndOtherAccountsReceivablePolicy|RevenueFromContractWithCustomerTextBlock)/.test(input.html)) return null;
-  const parsed = parse(input.html); if (!parsed) return null;
-  const { nodes } = parsed;
+/** The same strict annual metadata checks used for note attestations. This is
+ * an optional-cache content gate, not an authenticator for caller-supplied HTML.
+ * Trusted SEC discovery/transport and actual EOF are independently required. */
+function annualDocumentMetadata(nodes: Element[], input: FinancialNoteSourceReference, c: string, allowFixedBooleanTransforms = false) {
   const names = ["EntityCentralIndexKey", "DocumentType", "DocumentPeriodEndDate", "DocumentFiscalPeriodFocus"];
   const facts = names.map(name => fact(nodes, name));
   if (facts.some(f => !f)) return null;
   const [id, type, period, fiscal] = facts as Element[];
   const end = reportDate(rawText(period));
   if (cik(normalize(rawText(id))) !== c || normalize(rawText(type)) !== input.form || normalize(rawText(fiscal)) !== "FY"
-    || !end || end !== SUPPORTED_REPORT_PERIOD || Date.parse(end) > Date.parse(input.filedAt)) return null;
+    || !end || Date.parse(end) > Date.parse(input.filedAt)) return null;
   const ctx = id.attrs.contextref;
   if (!ctx || facts.some(f => f!.attrs.contextref !== ctx) || !context(nodes, ctx, c, end)) return null;
   for (const flagName of ["DocumentAnnualReport", "DocumentRegistrationStatement", "DocumentTransitionReport", "DocumentShellCompanyReport"]) {
@@ -330,9 +327,39 @@ export function extractFinancialNoteCustomerEvidence(input: FinancialNoteSourceR
     if (!all.length) continue;
     const f = fact(nodes, flagName);
     if (!f || f.attrs.contextref !== ctx) return null;
-    const v = normalize(rawText(f));
+    let v = normalize(rawText(f));
+    if (allowFixedBooleanTransforms && f.attrs.format) {
+      const transform = expanded(f.attrs.format, f);
+      // Cache identity only: the namespace-qualified registry transformation
+      // establishes the boolean regardless of a printed x/o checkbox glyph.
+      // https://www.xbrl.org/Specification/inlineXBRL-transformationRegistry/REC-2020-02-12/inlineXBRL-transformationRegistry-REC-2020-02-12.html
+      if (!transform) return null;
+      if (/^http:\/\/www\.xbrl\.org\/inlineXBRL\/transformation\/(?:2020-02-12|2022-02-16)$/.test(transform.uri)
+        && /^fixed-(?:true|false)$/.test(transform.local)) v = transform.local.slice("fixed-".length);
+      else if (transform.uri !== "http://www.sec.gov/inlineXBRL/transformation/2015-08-31"
+        || transform.local !== "boolballotbox" || !/^[☒☑☐]$/.test(v)) return null;
+    }
     if (!(flagName === "DocumentAnnualReport" ? /^(?:true|1|☒|☑)$/i : /^(?:false|0|☐)$/i).test(v)) return null;
   }
+  return { cik: c, form: input.form as "10-K" | "20-F", reportPeriod: end, contextRef: ctx };
+}
+export function inspectAnnualDocumentIdentity(input: FinancialNoteSourceReference & { html: string }) {
+  const c = source(input);
+  if (!c || typeof input.html !== "string" || !/<\/html>\s*$/.test(input.html)) return null;
+  const parsed = parse(input.html);
+  return parsed ? annualDocumentMetadata(parsed.nodes, input, c, true) : null;
+}
+
+export function extractFinancialNoteCustomerEvidence(input: FinancialNoteSourceReference & { html: string }): FinancialNoteCustomerEvidence | null {
+  const c = source(input); if (!c) return null;
+  // Cheap fail-closed guard before building a tree for unrelated annual notes.
+  if (typeof input.html !== "string" || input.html.length > MAX_HTML || !/<\/html>\s*$/.test(input.html)
+    || !/(?:TradeAndOtherAccountsReceivablePolicy|RevenueFromContractWithCustomerTextBlock)/.test(input.html)) return null;
+  const parsed = parse(input.html); if (!parsed) return null;
+  const { nodes } = parsed;
+  const metadata = annualDocumentMetadata(nodes, input, c);
+  if (!metadata || metadata.reportPeriod !== SUPPORTED_REPORT_PERIOD) return null;
+  const end = metadata.reportPeriod, ctx = metadata.contextRef;
   const candidates: FinancialNoteCustomerEvidence[] = [];
   const common = { version: 1 as const, sourceUrl: input.sourceUrl, sourceFiledAt: input.filedAt,
     cik: c, form: input.form as "10-K" | "20-F", reportPeriod: end };

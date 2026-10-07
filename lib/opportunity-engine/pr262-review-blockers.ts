@@ -26,7 +26,7 @@ export function pr262EvidenceRetryAt(blocker: Pr262ReviewBlocker | null, now: Da
 /** Keep duplicate protection separate from money, provider access and bookkeeping failures. */
 export function pr262ReservationBlocker(reason: string | null | undefined): Pr262ReviewBlocker {
   if (reason === "committee_disabled") return "committee_disabled";
-  if (["candidate_already_recorded", "candidate_already_reserved", "same_evidence", "paid_evidence_cooldown"].includes(reason ?? "")) return "same_evidence";
+  if (["candidate_already_recorded", "candidate_already_reserved", "same_evidence", "paid_evidence_cooldown", "valuation_immaterial_change", "valuation_baseline_unknown"].includes(reason ?? "")) return "same_evidence";
   if (reason === "daily_cost_fuse") return "ai_budget";
   if (reason === "daily_review_limit" || reason === "cycle_time_budget") return "review_capacity";
   if (reason === "provider_cooldown" || reason === "provider_access") return "ai_provider";

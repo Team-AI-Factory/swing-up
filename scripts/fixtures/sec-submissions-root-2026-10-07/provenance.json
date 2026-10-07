@@ -1,0 +1,38 @@
+[
+  {
+    "ticker": "INOD",
+    "cik": "0000903651",
+    "url": "https://data.sec.gov/submissions/CIK0000903651.json",
+    "fetchedAt": "2026-10-07T00:52:54.000Z",
+    "httpStatus": 200,
+    "contentType": "application/json",
+    "requestCount": 1,
+    "userAgent": "SwingUp/1.0 support@swingup.app",
+    "bytes": 162393,
+    "sha256": "070461656ae36691ad952bd53e529dd48fbb74b8f7191637d3c6bb79e27910f3",
+    "rowCount": 1000,
+    "emptyPrimaryDocumentRows": [
+      995,
+      996,
+      997,
+      998,
+      999
+    ]
+  },
+  {
+    "ticker": "TSSI",
+    "cik": "0001320760",
+    "url": "https://data.sec.gov/submissions/CIK0001320760.json",
+    "fetchedAt": "2026-10-07T00:53:13.000Z",
+    "httpStatus": 200,
+    "contentType": "application/json",
+    "requestCount": 1,
+    "userAgent": "SwingUp/1.0 support@swingup.app",
+    "bytes": 126257,
+    "sha256": "ff2d4878fe61d13c9ff86015aa12e2e3d712b7ec1f63a7721c1c0bde92ffe3c8",
+    "rowCount": 778,
+    "emptyPrimaryDocumentRows": [
+      416
+    ]
+  }
+]

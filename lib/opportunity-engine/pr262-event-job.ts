@@ -1,10 +1,13 @@
+import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
+import { checkTerminalReview, reserveTerminalReview, finishTerminalReviewAttempt, readTerminalDecision } from "@/lib/opportunity-engine/pr262-terminal-reviews";
+import { validatedTerminalEvidence } from "@/lib/equity-signal/terminal-review-evidence";
 import { pilotIncludes, pilotUpsideBlocker } from "@/lib/simple-alert-pilot-scope";
 import { readPilotWatchValuation, pilotValuationUnitsBlocker, PILOT_WATCH_VALUATION_MAX_AGE_MS } from "@/lib/opportunity-engine/pr262-pilot-watch-valuation";
 import { collectFinancialDocuments } from "@/lib/equity-signal/financial-evidence";
 import { completeCommitteeReview, committeeRequestsRejectedWithoutUsage } from "@/lib/ai-committee/review-policy";
 import { verifiedCompanyProfile } from "@/lib/company-profile";
 import { ensureCompanyProfile, warmFoundationCompanyProfiles } from "@/lib/opportunity-engine/company-profile-cache";
-import { recordResearchEvidence, readEvidenceFollowup, readLastValuationReview, verifiedFactsCache, reserveRejectionAudit } from "@/lib/opportunity-engine/pr262-research-evidence";
+import { recordResearchEvidence, readEvidenceFollowup, readLastValuationReview, readLegacyTerminalReviews, verifiedFactsCache, reserveRejectionAudit } from "@/lib/opportunity-engine/pr262-research-evidence";
 import crypto from "node:crypto";
 import { lookup, resolve4 } from "node:dns/promises";
 import * as https from "node:https";
@@ -13,6 +16,7 @@ import { Readable } from "node:stream";
 import { branchProviderCallRequest } from "@/lib/branch-signal-lab";
 import { providerCallBudgetDecision, type ProviderBudgetReservation } from "@/lib/branch-signal-lab-policy";
 import { PERMISSION_GATE_KEYS } from "@/lib/equity-signal/analysis";
+import { valuationReviewCooldown, type ValuationReviewBaseline, type ValuationReviewReference } from "@/lib/equity-signal/valuation-review-materiality";
 import { mergeHistoricalSignals } from "@/lib/equity-signal/historical-bootstrap";
 import type { HistoricalSignalRecord } from "@/lib/equity-signal/historical-analogs";
 import { mergeSecFilingDetails } from "@/lib/equity-signal/event-sources";
@@ -80,6 +84,7 @@ type CommitteeReservation = {
   reservedAt: string;
   ticker: string;
   direction: "upside" | "downside" | "unknown";
+  valuationBaseline?: ValuationReviewBaseline;
 };
 type ProviderReservation = ProviderBudgetReservation & {
   provider: string;
@@ -226,12 +231,17 @@ function normalizeState(value: unknown, now: Date): EventJobState {
   const reservations = Array.isArray(item.committeeReservations)
     ? item.committeeReservations.filter((raw): raw is CommitteeReservation => {
         const reservation = object(raw);
+        const unknownValuationTime = typeof reservation.candidateFingerprint === "string"
+          && /^valuation:\d{10}:/.test(reservation.candidateFingerprint)
+          && !Number.isFinite(Date.parse(String(reservation.reservedAt ?? "")));
         return typeof reservation.eventId === "string"
           && typeof reservation.candidateFingerprint === "string"
-          && typeof reservation.reservedAt === "string"
+          && (typeof reservation.reservedAt === "string" || unknownValuationTime)
           && typeof reservation.ticker === "string"
           && (reservation.direction === "upside" || reservation.direction === "downside" || reservation.direction === "unknown")
-          && now.getTime() - Date.parse(reservation.reservedAt) < 31 * 24 * 60 * 60_000;
+          // Preserve recognizable legacy valuation holds with unknown time.
+          // Treating missing metadata as expiry would reopen an old paid case.
+          && (unknownValuationTime || now.getTime() - Date.parse(String(reservation.reservedAt)) < 31 * 24 * 60 * 60_000);
       })
     : [];
   const providerReservations = Array.isArray(item.providerReservations)
@@ -485,11 +495,59 @@ async function reserveProviderCall(input: {
   throw new Error("pr262_event_job_provider_reservation_conflict");
 }
 
+function committeeCallDecision(input: {
+  reservations: CommitteeReservation[];
+  reservation: Pick<CommitteeReservation, "candidateFingerprint" | "ticker" | "direction" | "valuationBaseline">;
+  previousValuationReview?: ValuationReviewReference | null;
+  now: Date;
+}) {
+  const recent = input.reservations.filter(item => !Number.isFinite(Date.parse(item.reservedAt))
+    || input.now.getTime() - Date.parse(item.reservedAt) < COMMITTEE_WINDOW_MS);
+  const sameEvidence = recent.find(item => item.candidateFingerprint === input.reservation.candidateFingerprint
+    && (!Number.isFinite(Date.parse(item.reservedAt)) || input.now.getTime() - Date.parse(item.reservedAt) < EVIDENCE_REVIEW_COOLDOWN_MS));
+  if (sameEvidence) return { allowed: false as const,
+    nextRetryAt: Number.isFinite(Date.parse(sameEvidence.reservedAt)) ? new Date(Date.parse(sameEvidence.reservedAt) + EVIDENCE_REVIEW_COOLDOWN_MS).toISOString() : null,
+    reason: "same_evidence" };
+  const cik = /^valuation:(\d{10}):/.exec(input.reservation.candidateFingerprint)?.[1];
+  if (cik) {
+    const references: ValuationReviewReference[] = input.previousValuationReview ? [input.previousValuationReview] : [];
+    references.push(...recent.map(row => ({
+      fingerprint: row.candidateFingerprint, reviewedAt: row.reservedAt, valuationBaseline: row.valuationBaseline,
+    })));
+    // Reservation append order breaks equal-clock ties. A completed marker
+    // cannot supersede a later reservation at that same admission timestamp.
+    const matching = references.filter(row => row.fingerprint.startsWith(`valuation:${cik}:`)).reverse();
+    // Unknown-time legacy holds cannot be ordered safely. Otherwise compare to
+    // the latest admission, including incomplete/failed paid attempts; an older
+    // completed marker must not veto a material change from that latest attempt.
+    const currentDirection = /^valuation:\d{10}:(upside|downside):/.exec(input.reservation.candidateFingerprint)?.[1];
+    const unknown = matching.filter(row => !Number.isFinite(Date.parse(row.reviewedAt ?? "")));
+    const previous = unknown.find(row => {
+      const direction = /^valuation:\d{10}:(upside|downside):/.exec(row.fingerprint)?.[1];
+      return !direction || !currentDirection || direction === currentDirection;
+    }) ?? matching.filter(row => Number.isFinite(Date.parse(row.reviewedAt ?? "")))
+      .sort((a, b) => Date.parse(b.reviewedAt ?? "") - Date.parse(a.reviewedAt ?? ""))[0] ?? unknown[0] ?? null;
+    const materiality = valuationReviewCooldown({ fingerprint: input.reservation.candidateFingerprint,
+      valuationBaseline: input.reservation.valuationBaseline, previous, now: input.now });
+    if (materiality) return materiality;
+  }
+  // Unknown legacy valuation times hold only that issuer's valuation path;
+  // preserve the existing dated rolling count for genuine source events.
+  const dated = recent.filter(item => Number.isFinite(Date.parse(item.reservedAt)));
+  if (dated.length >= MAX_COMMITTEE_CALLS_PER_DAY) {
+    const oldest = [...dated].sort((left, right) => Date.parse(left.reservedAt) - Date.parse(right.reservedAt))[0];
+    return { allowed: false as const, nextRetryAt: Number.isFinite(Date.parse(oldest.reservedAt))
+      ? new Date(Date.parse(oldest.reservedAt) + COMMITTEE_WINDOW_MS).toISOString() : null, reason: "daily_review_limit" };
+  }
+  return { allowed: true as const, nextRetryAt: null, reason: "available" };
+}
+
 async function reserveCommitteeCall(input: {
   eventId: string;
   ownerId: string;
   now: Date;
-  reservation: { candidateFingerprint: string; ticker: string; direction: "upside" | "downside" | "unknown" };
+  reservation: Pick<CommitteeReservation, "candidateFingerprint" | "ticker" | "direction" | "valuationBaseline">;
+  previousValuationReview?: ValuationReviewReference | null;
 }) {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
@@ -498,16 +556,10 @@ async function reserveCommitteeCall(input: {
       return { allowed: false as const, nextRetryAt: null, reason: "lease_unavailable" };
     }
     const loaded = await loadCommitteeBudgetState(input.now);
-    const recent = loaded.state.reservations.filter((item) => input.now.getTime() - Date.parse(item.reservedAt) < COMMITTEE_WINDOW_MS);
-    const sameEvidence = recent.find((item) => item.candidateFingerprint === input.reservation.candidateFingerprint
-      && input.now.getTime() - Date.parse(item.reservedAt) < EVIDENCE_REVIEW_COOLDOWN_MS);
-    if (sameEvidence) {
-      return { allowed: false as const, nextRetryAt: new Date(Date.parse(sameEvidence.reservedAt) + EVIDENCE_REVIEW_COOLDOWN_MS).toISOString(), reason: "same_evidence" };
-    }
-    if (recent.length >= MAX_COMMITTEE_CALLS_PER_DAY) {
-      const oldest = [...recent].sort((left, right) => Date.parse(left.reservedAt) - Date.parse(right.reservedAt))[0];
-      return { allowed: false as const, nextRetryAt: new Date(Date.parse(oldest.reservedAt) + COMMITTEE_WINDOW_MS).toISOString(), reason: "daily_review_limit" };
-    }
+    const decision = committeeCallDecision({ ...input, reservations: loaded.state.reservations });
+    if (!decision.allowed) return decision;
+    const recent = loaded.state.reservations.filter(item => !Number.isFinite(Date.parse(item.reservedAt))
+      || input.now.getTime() - Date.parse(item.reservedAt) < COMMITTEE_WINDOW_MS);
     const next: EventJobCommitteeBudgetState = {
       version: 1,
       updatedAt: input.now.toISOString(),
@@ -1653,11 +1705,21 @@ async function finalizePersistedResult(input: {
   clock: () => Date;
   stopHeartbeat: () => Promise<void>;
   queueMutationSink?: (mutation: Pr262PendingSensorEventMutation) => void;
+  signal?: AbortSignal;
 }) {
   const validated = validatedResultPayload(input.payload, input.eventId, input.resultKey);
   const report = validated.report;
   const pointer = validated.pointer;
   const checkedAt = text(report.checkedAt) ?? input.now.toISOString();
+  // Recovery from the immutable result must establish the enduring decision
+  // before any approved outbox or publication path can be created.
+  if (isSimpleAlertPilot() && report.openAiCalled === true && completeCommitteeReview(report.committee)) {
+    const candidate = object(report.selectedCandidate);
+    await finishTerminalReviewAttempt({ cik: String(pointer.cik), ticker: String(pointer.ticker),
+      attemptId: text(report.terminalReviewAttemptId) ?? `result:${input.resultKey}`, eventId: input.eventId,
+      report, now: input.now, resultKey: input.resultKey, signal: input.signal });
+    if (!candidate.terminalDecisionKey) throw new Error("terminal_review_delivery_proof_missing");
+  }
   await writeMonotonicLatest(
     LATEST_KEY,
     validated.payload,
@@ -1672,7 +1734,17 @@ async function finalizePersistedResult(input: {
   let outboxKey: string | null = null;
   if (committeeApproved(report, pointer, input.now)) {
     const alertType = String(report.alertType);
-    const fingerprint = text(report.candidateFingerprint) ?? safeSegment(input.eventId);
+    const candidate = object(report.selectedCandidate);
+    if (isSimpleAlertPilot()) {
+      const evidence = validatedTerminalEvidence(candidate.terminalEvidence, { cik: candidate.cik, ticker: candidate.ticker });
+      if (!evidence || candidate.terminalDecisionKey !== evidence.decisionKey) throw new Error("terminal_review_delivery_proof_missing");
+      const terminal = await readTerminalDecision({ cik: evidence.cik, decisionKey: evidence.decisionKey, signal: input.signal });
+      if (!terminal || terminal.outcome !== "approved" || terminal.fingerprint !== report.candidateFingerprint
+        || terminal.direction !== candidate.direction || JSON.stringify(terminal.evidence) !== JSON.stringify(evidence)) {
+        throw new Error("terminal_review_delivery_proof_mismatch");
+      }
+    }
+    const fingerprint = text(candidate.terminalDecisionKey) ?? text(report.candidateFingerprint) ?? safeSegment(input.eventId);
     const seriousWatchOut = alertType === "sell"
       ? await promotePr262SeriousWatchOut(input.resultKey)
       : { promoted: false, outboxKey: null as string | null };
@@ -1710,7 +1782,12 @@ async function finalizePersistedResult(input: {
       if (written.conflict) {
         const existing = await readVersionedTextFromR2(outboxKey);
         const value = existing.found && existing.text ? object(JSON.parse(existing.text)) : {};
-        if (value.eventId !== input.eventId || value.resultKey !== input.resultKey) throw new Error("pr262_event_outbox_conflict");
+        const existingEvidence = validatedTerminalEvidence(object(value.candidate).terminalEvidence, { cik: candidate.cik, ticker: candidate.ticker });
+        const canonicalReplay = isSimpleAlertPilot() && existingEvidence && existingEvidence.decisionKey === candidate.terminalDecisionKey
+          && value.candidateFingerprint === report.candidateFingerprint && object(value.candidate).direction === candidate.direction;
+        if (!canonicalReplay && (value.eventId !== input.eventId || value.resultKey !== input.resultKey)) throw new Error("pr262_event_outbox_conflict");
+      } else if (!written.written) {
+        throw new Error("pr262_event_outbox_write_failed");
       }
     }
   }
@@ -1866,6 +1943,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
         clock,
         stopHeartbeat,
         queueMutationSink: input.queueMutationSink,
+        signal: jobAbort.signal,
       });
       return {
         ok: true,
@@ -2120,6 +2198,14 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
     const eventReceipts = [...source.receipts, ...haltProvider.receipts];
     let committeeRetryAt: string | null = null;
     let committeeBlockedReason: string | null = null;
+    const previousValuationReview = valuationReview && resolved.event.cik ? await readLastValuationReview(resolved.event.cik) : null;
+    const previousValuationAdmission = previousValuationReview ? { ...previousValuationReview,
+      reviewedAt: previousValuationReview.admittedAt ?? previousValuationReview.reviewedAt } : null;
+    const terminalGuard = isSimpleAlertPilot();
+    const legacyTerminalReviews = terminalGuard && resolved.event.cik
+      ? [...await readLegacyTerminalReviews(resolved.event.cik, jobAbort.signal), ...(previousValuationReview ? [previousValuationReview] : [])] : [];
+    const terminalAttemptId = crypto.randomUUID();
+    let terminalReserved = false;
     const beforeOpenAiCall: NonNullable<EquitySignalLabInput["beforeOpenAiCall"]> = async (reservation) => {
       assertJobActive();
       if (priorFollowup.candidateFingerprint === reservation.candidateFingerprint
@@ -2128,16 +2214,48 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
         committeeBlockedReason = "paid_evidence_cooldown";
         return false;
       }
-      if (input.beforeOpenAiCall && !await input.beforeOpenAiCall(reservation)) {
-        committeeRetryAt = input.aiReservationRetryAt?.() ?? null;
-        committeeBlockedReason = input.aiReservationBlockedReason?.() ?? null;
-        return false;
+      // Read-only preflight avoids taking a dollar hold for ordinary valuation
+      // jitter. The same decision is repeated under the existing count CAS.
+      if (valuationReview) {
+        await assertLeaseOwned(event.id, ownerId, now);
+        const budget = await loadCommitteeBudgetState(now);
+        const preflight = committeeCallDecision({ reservations: budget.state.reservations,
+          reservation, previousValuationReview: previousValuationAdmission, now });
+        if (!preflight.allowed) {
+          committeeRetryAt = preflight.nextRetryAt;
+          committeeBlockedReason = preflight.reason;
+          return false;
+        }
       }
-      const decision = await reserveCommitteeCall({ eventId: event.id, ownerId, now, reservation });
-      committeeRetryAt = decision.nextRetryAt;
-      committeeBlockedReason = decision.allowed ? null : decision.reason;
-      assertJobActive();
-      return decision.allowed;
+      if (terminalGuard) {
+        if (!reservation.cik || !reservation.terminalEvidence) throw new Error("terminal_review_admission_evidence_missing");
+        terminalReserved = await reserveTerminalReview({ cik: reservation.cik, ticker: reservation.ticker,
+          fingerprint: reservation.candidateFingerprint, evidence: reservation.terminalEvidence,
+          legacy: legacyTerminalReviews, eventId: event.id, attemptId: terminalAttemptId,
+          direction: reservation.direction, now, signal: jobAbort.signal });
+        if (!terminalReserved) { committeeBlockedReason = "terminal_same_evidence"; return false; }
+      }
+      let admitted = false;
+      try {
+        if (input.beforeOpenAiCall && !await input.beforeOpenAiCall(reservation)) {
+          committeeRetryAt = input.aiReservationRetryAt?.() ?? null;
+          committeeBlockedReason = input.aiReservationBlockedReason?.() ?? null;
+          return false;
+        }
+        const decision = await reserveCommitteeCall({ eventId: event.id, ownerId, now, reservation,
+          previousValuationReview: previousValuationAdmission });
+        committeeRetryAt = decision.nextRetryAt;
+        committeeBlockedReason = decision.allowed ? null : decision.reason;
+        assertJobActive();
+        admitted = decision.allowed;
+        return admitted;
+      } finally {
+        if (terminalReserved && !admitted) {
+          await finishTerminalReviewAttempt({ cik: reservation.cik!, ticker: reservation.ticker,
+            eventId: event.id, attemptId: terminalAttemptId, report: { openAiCalled: false }, now, signal: jobAbort.signal });
+          terminalReserved = false;
+        }
+      }
     };
     const effectiveAllowOpenAi = allowOpenAi && (source.decisionGrade || researchSourceUsable) && !sourceExpiredWithoutEvidence;
     const report = sourceExpiredWithoutEvidence
@@ -2164,7 +2282,8 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
           allowIncompleteCommitteeReview: true,
           collectFinancialDocuments: cik => collectFinancialDocuments(cik, quotaAwareFetch, now, jobAbort.signal),
           financialDocumentsRequested: (Array.isArray(priorFollowup.tasks) ? priorFollowup.tasks : []).some(task => object(task).type === "financial_documents"),
-          previousValuationReview: valuationReview && resolved.event.cik ? await readLastValuationReview(resolved.event.cik) : null,
+          previousValuationReview,
+          terminalReview: terminalGuard ? request => checkTerminalReview({ ...request, legacy: legacyTerminalReviews, signal: jobAbort.signal }) : undefined,
           verifiedFactsCache: { ...verifiedFactsCache, requiredMetrics: (Array.isArray(priorFollowup.tasks) ? priorFollowup.tasks : []).flatMap(task => object(task).type === "financial_facts" && Array.isArray(object(task).fields) ? object(task).fields as string[] : []) },
           reserveRejectionAudit: () => reserveRejectionAudit(event.id, now),
           resolveCompanyProfile: identity => ensureCompanyProfile(identity, quotaAwareFetch, now, { signal: jobAbort.signal }),
@@ -2186,6 +2305,11 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
           },
         }));
     assertJobActive();
+    if (terminalReserved) {
+      report.terminalReviewAttemptId = terminalAttemptId;
+      await finishTerminalReviewAttempt({ cik: resolved.directoryEntry.cik, ticker: resolved.directoryEntry.ticker,
+        eventId: event.id, attemptId: terminalAttemptId, report, now: clock(), resultKey, signal: jobAbort.signal });
+    }
     if (report.openAiCalled === true) await releaseRejectedCommitteeCall(event.id, report, now);
     const evidenceProgress = await recordResearchEvidence({ event: object(resolved.event), report,
       companyAnalysis: valuationAnalysis ? object(valuationAnalysis) : undefined,
@@ -2449,6 +2573,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
       clock,
       stopHeartbeat,
       queueMutationSink: input.queueMutationSink,
+      signal: jobAbort.signal,
     });
     return {
       ok: true,

@@ -10,6 +10,7 @@ const receipt = { id: "valuation:TEST", title: "Test valuation review", summary:
 const provider = name => ({ provider: name, status: "connected", checkedAt: now.toISOString(), nextRetryAt: null, sourceUrls: [], receipts: [], recordsRead: 1, error: null, entitlementVerified: true, cached: false });
 let invalidScope = false;
 let roleCalls = 0, quoteReady = true, livePrice = 50, denyBudget = false, missingFacts = false, reservations = 0;
+const promptCaptures = [];
 const overrides = {
   "@/lib/ai-committee/provider": {
     modelForTier: () => "gpt-4.1-mini", getAiCommitteeProviderStatus: () => ({ configured: true, enabled: true, dryRunDefault: false }),
@@ -17,6 +18,7 @@ const overrides = {
       roleCalls++;
       assert.match(input.messages[0].content, /company-first valuation review/);
       const data = JSON.parse(input.messages[1].content);
+      promptCaptures.push(data);
       assert.equal(data.evidencePack.analysisKind, "valuation");
       const companyProfile = data.evidencePack.evidenceSections.fundamentals.items.find(item => item.source === "verified_company_profile");
       assert.match(companyProfile.business, /inventory management software/);
@@ -226,3 +228,61 @@ assert.equal(scopeMismatch.reviewOutcome, "technical_failure");
 assert.ok(scopeMismatch.committee.roleDiagnostics.some(role => role.error === "valuation_review_scope_mismatch"));
 invalidScope = false;
 console.log("Persisted unchanged-evidence deduplication, changed valuation admission and irrelevant event-demand rejection passed.");
+
+// Historical debt can coexist with current general financial facts. A specific
+// request for the current split must still reach every role as a blocking gap,
+// even when all synthetic provider votes are positive.
+const debtFacts = period => {
+  const value = structuredClone(facts);
+  for (const concept of ["Assets", "StockholdersEquity"]) value.facts["us-gaap"][concept].units.USD = [
+    { val: 5000000, end: "2026-06-30", filed: "2026-08-06", form: "10-Q" },
+  ];
+  for (const concept of ["LongTermDebtCurrent", "LongTermDebtNoncurrent"]) value.facts["us-gaap"][concept] = {
+    units: { USD: [{ val: 877000, end: period, filed: period === "2022-12-31" ? "2023-02-24" : "2026-08-06", form: "10-Q" }] },
+  };
+  return value;
+};
+const debtInput = { ...input, verifiedFactsCache: { requiredMetrics: ["long_term_debt_current", "long_term_debt_noncurrent"],
+  read: async () => null, write: async () => {} } };
+const startDebtPrompts = promptCaptures.length;
+const staleDebt = await runner.runEquitySignalLab({ ...debtInput, fetchImpl: async () => Response.json(debtFacts("2022-12-31")) });
+assert.equal(staleDebt.selectedCandidate.gateChecks.verifiedFinancialFacts, true, "The broad availability flag remains separate from requested debt completeness");
+assert.equal(staleDebt.selectedCandidate.fundamentals.items.find(item => item.metric === "long_term_debt_current").periodEnd, "2022-12-31");
+assert.equal(staleDebt.committee.output.overallRecommendation, "needs_more_data");
+assert.equal(staleDebt.seriousSignalFound, false, "Positive synthetic votes cannot override a known current-debt evidence gap");
+assert.equal(promptCaptures.length - startDebtPrompts, 4);
+for (const prompt of promptCaptures.slice(startDebtPrompts)) {
+  assert.ok(prompt.evidencePack.missingEvidence.some(gap => /current debt fact.*balance-sheet period/.test(gap)));
+  assert.ok(prompt.evidencePack.missingEvidence.some(gap => /long-term debt fact.*balance-sheet period/.test(gap)));
+}
+const currentDebt = await runner.runEquitySignalLab({ ...debtInput, fetchImpl: async () => Response.json(debtFacts("2026-06-30")) });
+assert.equal(currentDebt.committee.output.overallRecommendation, "approve");
+assert.equal(currentDebt.seriousSignalFound, true, "Matching current debt removes only this gap; all existing synthetic approval controls still apply");
+console.log("Requested debt reaches every real role prompt: old debt remains historical and cannot pass consensus; matching current-period debt clears only its evidence gap.");
+// The completed-review baseline is a paid admission snapshot. Evidence refreshes
+// and older completions must not replace it with a rolling quote comparison.
+await evidence.recordResearchEvidence({ event, report: approved, companyAnalysis: analysis,
+  sourceDecisionGrade: true, sourceFailureReason: null, now });
+const paidMarker = await evidence.readLastValuationReview("0000000001");
+assert.ok(paidMarker.valuationBaseline);
+assert.equal(paidMarker.admittedAt, now.toISOString());
+const jitterRefresh = { ...approved, openAiCalled: false, status: "qualified_signal_openai_reservation_denied", committee: null,
+  candidateFingerprint: "valuation:0000000001:upside:new-penny-hash", selectedCandidate: { ...approved.selectedCandidate,
+    valuationBaseline: { ...paidMarker.valuationBaseline, price: 50.01 }, valuationAdmittedAt: null } };
+await evidence.recordResearchEvidence({ event, report: jitterRefresh, companyAnalysis: analysis,
+  sourceDecisionGrade: true, sourceFailureReason: null, now: new Date(now.getTime() + 60000) });
+assert.deepEqual(await evidence.readLastValuationReview("0000000001"), paidMarker, "Unpaid scans never advance the paid baseline or clock");
+await evidence.recordResearchEvidence({ event, report: { ...approved, candidateFingerprint: "valuation:0000000001:upside:older-paid",
+  selectedCandidate: { ...approved.selectedCandidate, valuationAdmittedAt: new Date(now.getTime() - 60000).toISOString() } },
+  companyAnalysis: analysis, sourceDecisionGrade: true, sourceFailureReason: null,
+  now: new Date(now.getTime() + 120000) });
+assert.deepEqual(await evidence.readLastValuationReview("0000000001"), paidMarker, "Slow older completion cannot displace the newest admission");
+const markerKey = "test/research-evidence/valuation-reviews/0000000001.json";
+objects.set(markerKey, { etag: "legacy", value: { cik: "0000000001", fingerprint: "valuation:0000000001:upside:legacy", outcome: "rejected", reviewedAt: now.toISOString() } });
+const legacyMarker = await evidence.readLastValuationReview("0000000001");
+assert.equal(legacyMarker.reviewedAt, now.toISOString());
+assert.equal(legacyMarker.admittedAt, null);
+assert.equal(legacyMarker.valuationBaseline, undefined, "Migration cannot synthesize a paid baseline from today's scan");
+objects.set(markerKey, { etag: "malformed", value: { cik: "0000000001" } });
+await assert.rejects(() => evidence.readLastValuationReview("0000000001"), /valuation_review_marker_invalid/);
+console.log("Paid marker snapshots, unpaid immutability, admission-time ordering and conservative legacy reads passed.");

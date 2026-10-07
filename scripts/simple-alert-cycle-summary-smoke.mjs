@@ -75,3 +75,27 @@ assert.equal(runtime.processing.deadlineMs, 480000);
 assert.equal(runtime.processing.deliveryReserveMs, 45000);
 assert.equal(runtime.processing.reportingReserveMs, 15000);
 console.log("simple alert bounded cycle summary smoke: passed");
+
+const failedRegistrySummary = simpleAlertCycleSummary(JSON.stringify({ sensor: { directAnnouncementMonitoring: {
+  secCheckAttempts: 1, secCheckSuccesses: 1, secCheckFailures: 0, sourcePreparationFailures: 1,
+  registryPersistence: { written: false, conflict: false, winnerLoaded: false, failureStage: "write",
+    error: "direct_registry_write:r2_state_write_http_502\nhttps://private.example/?token=not-for-logs " + "x".repeat(1000),
+    telemetryBasis: "unpersisted_observation" },
+  issuerSourceCoverage: [{ ticker: "SAFE", sec: { status: "current_snapshot" } }],
+} } }));
+assert.equal(failedRegistrySummary.issuerSources.currentSecSnapshots, 1);
+assert.equal(failedRegistrySummary.issuerSources.registryPersistence.telemetryBasis, "unpersisted_observation");
+assert.equal(failedRegistrySummary.issuerSources.registryPersistence.failureStage, "write");
+assert.equal(failedRegistrySummary.issuerSources.registryPersistence.written, false);
+assert.equal(failedRegistrySummary.issuerSources.secCheckFailures, 0);
+assert.ok(!failedRegistrySummary.issuerSources.registryPersistence.error.includes("not-for-logs"));
+assert.ok(!failedRegistrySummary.issuerSources.registryPersistence.error.includes("\n"));
+assert.ok(failedRegistrySummary.issuerSources.registryPersistence.error.length <= 200);
+assert.equal(summary.issuerSources.registryPersistence.written, null);
+assert.equal(summary.issuerSources.registryPersistence.telemetryBasis, null);
+const unavailableRegistry = simpleAlertCycleSummary(JSON.stringify({ sensor: { directAnnouncementMonitoring: {
+  registryPersistence: { telemetryBasis: "unavailable", failureStage: "load", written: false },
+  issuerSourceCoverage: [{ ticker: "SAFE", sec: { status: "registry_unavailable" } }],
+} } }));
+assert.equal(unavailableRegistry.issuerSources.currentSecSnapshots, null);
+console.log("Bounded cycle summary retains registry acknowledgement and observed-versus-durable evidence qualifiers.");

@@ -34,7 +34,7 @@ async function run({ mode, operation, kind, applied = false, catchWrite = "succe
   let sourceReads = 0, sourceWrites = 0, sourceRequests = 0, profileWrites = 0, profileFaults = 0, insertedOther = false;
   let sourceStorageError, sourceStorageCause, forwardedError;
   const controller = new AbortController(), originalTimeout = AbortSignal.timeout;
-  if (coincidentDeadline || exactRoleCancellation) AbortSignal.timeout = ms => ms === 175_000 ? controller.signal : originalTimeout(ms);
+  if (coincidentDeadline || exactRoleCancellation) AbortSignal.timeout = ms => ms === 140_000 ? controller.signal : originalTimeout(ms);
   const failSourceStorage = () => {
     if (coincidentDeadline || exactRoleCancellation) controller.abort(new DOMException("Role time window ended", "TimeoutError"));
     sourceStorageError = exactRoleCancellation
@@ -133,10 +133,10 @@ async function run({ mode, operation, kind, applied = false, catchWrite = "succe
   assert.equal(result.requestFailures, mode === "source_transport" ? 1 : 0);
   assert.equal(result.responseBodyFailures, 0);
   assert.equal(result.modelCalls, 0);
-  if (mode === "source_fault" && catchWrite !== "persistent") {
+  if (mode === "source_fault" && catchWrite !== "persistent" && !(exactRoleCancellation && operation === "read")) {
     assert.strictEqual(forwardedError, sourceStorageError, "The builder receives the unchanged original storage Error");
-    assert.equal(forwardedError.message, storageError(operation, kind).message);
-    assert.equal(forwardedError.name, storageError(operation, kind).name);
+    assert.equal(forwardedError.message, sourceStorageError.message);
+    assert.equal(forwardedError.name, sourceStorageError.name);
     assert.strictEqual(forwardedError.cause, sourceStorageCause);
     assert.equal(forwardedError.storageDomain, "r2_state");
     assert.equal(forwardedError.storageOperation, operation);
@@ -162,7 +162,7 @@ try {
     assert.equal(h.result.ok, true);
     assert.equal(h.result.verifiedThisRun, 1);
     assert.equal(h.result.newlyVerifiedThisRun, 1);
-    assert.equal(h.profileWrites, applied ? 3 : 4);
+    assert.equal(h.profileWrites, applied ? 2 : 3);
     assert.equal(h.row.firstVerifiedAt, stamp);
     assert.equal(h.row.verificationHistoryKnown, true);
     assert.equal(h.logs.some(log => log.status === "pending"), false);
@@ -172,7 +172,7 @@ try {
   assert.equal(persistent.result.failureCategory, "storage");
   assert.equal(persistent.result.storageFailureObserved, true);
   assert.equal(persistent.result.newlyVerifiedThisRun, 0);
-  assert.equal(persistent.profileWrites, 6);
+  assert.equal(persistent.profileWrites, 5);
   assert.equal(persistent.logs.some(log => log.status === "pending"), false);
 
   // Tagged source-cache R2 errors must reach the builder after storing backoff.
@@ -192,7 +192,7 @@ try {
       assert.equal(h.logs.find(log => log.status === "pending")?.reason, `company_profile_storage_${operation}_failed`);
       assert.equal(h.result.pendingReasons[`company_profile_storage_${operation}_failed`], 1);
       assert.equal(h.result.pendingReasons.source_request_failed, undefined);
-      assert.equal(h.profileWrites, 3);
+      assert.equal(h.profileWrites, 2);
       assert.equal(h.ownVerifiedWrites, 0);
       assert.equal(h.row.profile, null);
       assert.equal(h.row.firstVerifiedAt, undefined);
@@ -211,32 +211,39 @@ try {
     assert.equal(h.result.newlyVerifiedThisRun, 0);
     assert.equal(h.result.status, "failed");
     assert.equal(h.result.storageFailureObserved, true);
-    assert.equal(h.profileWrites, catchWrite === "persistent" ? 6 : 3);
+    assert.equal(h.profileWrites, catchWrite === "persistent" ? 5 : 2);
     assert.equal(h.sourceWrites, 1);
   }
 
   // Preserve the existing deadline cleanup allowance and five-minute backoff,
   // without concealing a coincident, independently tagged R2 error as success.
-  for (const operation of ["read", "write"]) {
-    const h = await run({ mode: "source_fault", operation, kind: "http", coincidentDeadline: true });
+  for (const operation of ["read", "write"]) for (const kind of ["http", "timeout"]) {
+    const h = await run({ mode: "source_fault", operation, kind, coincidentDeadline: true });
     assert.equal(h.result.status, "failed");
     assert.equal(h.result.failureCategory, "storage");
-    assert.equal(h.result.failure, `r2_state_${operation}_http_502`);
+    assert.equal(h.result.failure, storageError(operation, kind).message);
     assert.equal(h.row.nextAttemptAt, "2026-10-04T05:32:17.443Z");
-    assert.equal(h.profileWrites, 3);
+    assert.equal(h.profileWrites, 2);
     assert.equal(h.ownVerifiedWrites, 0);
   }
 
-  const budgetReadDeferred = await run({ mode: "budget_read_cancel", operation: "read", kind: "timeout", exactRoleCancellation: true });
-  assert.equal(budgetReadDeferred.result.status, "time_budget_reached", "Exact role cancellation of a read-only provider budget read remains a normal deferral");
-  assert.equal(budgetReadDeferred.result.failureCategory, null);
-  assert.equal(budgetReadDeferred.result.storageFailureObserved, false);
-  assert.equal(budgetReadDeferred.result.requestFailures, 0);
-  assert.equal(budgetReadDeferred.result.requests, 0);
-  assert.equal(budgetReadDeferred.row.error, "company_profile_time_budget_deferred");
-  assert.equal(budgetReadDeferred.row.nextAttemptAt, "2026-10-04T05:32:17.443Z");
-  assert.equal(budgetReadDeferred.profileWrites, 2, "Initial backoff and one bounded cleanup, without a retry");
-  assert.equal(budgetReadDeferred.sourceWrites, 0);
+  for (const mode of ["source_fault", "budget_read_cancel"]) {
+    const deferred = await run({ mode, operation: "read", kind: "timeout", exactRoleCancellation: true });
+    assert.equal(deferred.result.status, "time_budget_reached", "Exact role cancellation of read-only storage remains a normal deferral");
+    assert.equal(deferred.result.failureCategory, null);
+    assert.equal(deferred.result.storageFailureObserved, false);
+    assert.equal(deferred.result.requestFailures, 0);
+    if (mode === "budget_read_cancel") assert.equal(deferred.result.requests, 0);
+    assert.equal(deferred.row.error, "company_profile_time_budget_deferred");
+    assert.equal(deferred.row.nextAttemptAt, "2026-10-04T05:32:17.443Z");
+    assert.equal(deferred.profileWrites, 2, "Initial backoff and one bounded cleanup, without a retry");
+    assert.equal(deferred.sourceWrites, 0);
+  }
+  const uncertainPut = await run({ mode: "source_fault", operation: "write", kind: "timeout", exactRoleCancellation: true });
+  assert.equal(uncertainPut.result.status, "failed", "A cancelled PUT remains an uncertain storage failure");
+  assert.equal(uncertainPut.result.failureCategory, "storage");
+  assert.equal(uncertainPut.result.storageFailureObserved, true);
+  assert.equal(uncertainPut.sourceWrites, 1);
 
   const sourceTransport = await run({ mode: "source_transport" });
   assert.equal(sourceTransport.result.status, "completed");

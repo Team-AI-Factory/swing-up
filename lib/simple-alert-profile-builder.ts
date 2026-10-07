@@ -14,15 +14,17 @@ const object = (value: unknown): Row => value && typeof value === "object" && !A
 export const PROFILE_DAILY_TARGET = 500;
 const MAX_ATTEMPTS_PER_DAY = 2500;
 const MAX_ATTEMPTS_PER_RUN = 100;
-const PROFILE_ROLE_TIMEOUT_MS = 175_000;
-// Stop admitting source/storage work before the outer role deadline. This
-// leaves bounded time for both workers to settle, one cache reconciliation
-// read, lease release and the durable run summary. It does not extend the
-// Railway request or source limits.
-const PROFILE_DRAIN_RESERVE_MS = 35_000;
+// Reserve the end of the existing profile window for settled-worker counts:
+// source/admission stops first; already-started storage has a separate
+// bounded persistence window before the authoritative count read. Summary
+// persistence must finish before the caller's 240s HTTP timeout.
+const PROFILE_WORK_BUDGET_MS = 140_000;
+const PROFILE_PERSISTENCE_DEADLINE_MS = 160_000;
+const PROFILE_COUNT_DEADLINE_MS = 175_000;
+const PROFILE_SUMMARY_DEADLINE_MS = 235_000;
 const profilesKey = () => pr262StorageKey("research-evidence/company-profiles-v1.json");
-async function read(key: string) {
-  const saved = await readVersionedTextFromR2(key);
+async function read(key: string, signal?: AbortSignal) {
+  const saved = await readVersionedTextFromR2(key, { signal });
   return { saved, value: saved.found && saved.text ? object(JSON.parse(saved.text)) : {} };
 }
 const dayOf = (date: Date) => new Date(date.getTime() + 7 * 3600_000).toISOString().slice(0, 10);
@@ -150,16 +152,19 @@ export function profileBatchPlan(listings: Row[], entries: Row[], now: Date, lim
 export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: typeof fetch = fetch) {
   if (!isSimpleAlertPilot() || process.env.SWING_UP_SIMPLE_PILOT_ROLE !== "profiles") throw new Error("simple_pilot_profile_role_required");
   const startedAt = Date.now();
-  const signal = AbortSignal.timeout(PROFILE_ROLE_TIMEOUT_MS - PROFILE_DRAIN_RESERVE_MS);
+  const signal = AbortSignal.timeout(PROFILE_WORK_BUDGET_MS);
+  const persistenceSignal = AbortSignal.timeout(PROFILE_PERSISTENCE_DEADLINE_MS);
+  const countSignal = AbortSignal.timeout(PROFILE_COUNT_DEADLINE_MS);
+  const summarySignal = AbortSignal.timeout(PROFILE_SUMMARY_DEADLINE_MS);
   const day = dayOf(now), key = pr262StorageKey(`pilot/profile-builder/${day}.json`), owner = crypto.randomUUID();
-  const loaded = await read(key);
+  const loaded = await read(key, signal);
   if (Date.parse(String(loaded.value.leaseUntil ?? "")) > now.getTime()) return { ok: true, status: "busy", target: PROFILE_DAILY_TARGET };
   const alreadyReserved = Number(loaded.value.attemptsReserved) || 0;
   const count = Math.max(0, Math.min(MAX_ATTEMPTS_PER_RUN, MAX_ATTEMPTS_PER_DAY - alreadyReserved));
   if (!count) return { ok: true, status: "daily_attempt_limit", target: PROFILE_DAILY_TARGET, attemptsReserved: alreadyReserved };
   const state: Row = { ...loaded.value, version: 1, day, owner, leaseUntil: new Date(now.getTime() + 5 * 60000).toISOString(),
     attemptsReserved: alreadyReserved + count, target: PROFILE_DAILY_TARGET, updatedAt: now.toISOString() };
-  const claim = await writeVersionedJsonToR2(key, state, loaded.saved.etag ? { expectedEtag: loaded.saved.etag } : { createOnly: true });
+  const claim = await writeVersionedJsonToR2(key, state, { ...(loaded.saved.etag ? { expectedEtag: loaded.saved.etag } : { createOnly: true }), signal });
   if (!claim.written || claim.conflict) return { ok: true, status: "busy", target: PROFILE_DAILY_TARGET };
   let nextRequest = 0, requests = 0, requestFailures = 0, responseBodyFailures = 0, circuitOpen = false;
   let pacingTail: Promise<void> = Promise.resolve();
@@ -190,8 +195,8 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
   let reconcileCounts: (() => Promise<void>) | null = null;
   const isStorageFailure = (error: unknown) => object(error).storageDomain === "r2_state"
     || /^(?:r2_|R2 |company_profile_cache_|simple_profile_(?:lease_lost|summary_not_saved))/.test(error instanceof Error ? error.message : String(error));
-  const readProfileCache = async () => {
-    try { return await read(profilesKey()); }
+  const readProfileCache = async (readSignal = signal) => {
+    try { return await read(profilesKey(), readSignal); }
     catch (error) { storageFailureObserved = true; throw error; }
   };
   let eligibility: Row = {}, retryAttempts = 0;
@@ -209,7 +214,11 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
     // Counts describe durable cache rows, never merely completed attempts.
     // Keep this read reusable after workers settle with a storage error.
     reconcileCounts = async () => {
-      const fresh = await readProfileCache();
+      if (countSignal.aborted || Date.now() - startedAt >= PROFILE_COUNT_DEADLINE_MS) throw new Error("profile_count_reconciliation_deadline");
+      // Count reconciliation cannot inherit the already-aborted work signal.
+      // This is read-only: an uncertain PUT still fails the run, even when
+      // the authoritative cache later establishes truthful production counts.
+      const fresh = await readProfileCache(countSignal);
       if ((!fresh.saved.found && (entries.length > 0 || verified > 0 || status === "failed"))
         || (fresh.saved.found && !Array.isArray(fresh.value.entries))) throw new Error("r2_profile_reconciliation_cache_unavailable");
       const freshEntries = Array.isArray(fresh.value.entries) ? fresh.value.entries.map(object) : [];
@@ -240,7 +249,7 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
         attempted++; attemptedIssuers.add(identity.cik);
         if (identity.lastAttempt) retryAttempts++;
         try {
-          if (await ensureCompanyProfile(identity, provider.fetchImpl, new Date(), { signal,
+          if (await ensureCompanyProfile(identity, provider.fetchImpl, new Date(), { signal, persistenceSignal,
             // Headers/connect errors are counted by paced fetch; body failures
             // belong to that same request, not an invented additional attempt.
             onResponseBodyFailure: () => { requestFailures++; responseBodyFailures++; },
@@ -268,8 +277,8 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
     // One ordinary bounded R2 read, not a source/write retry. A transient PUT
     // failure cannot turn already saved profiles into zero reported production.
     // The failed run stays failed even if its durable counts can be reconciled.
-    // Leave the existing role budget and HTTP/cleanup reserves intact.
-    if (Date.now() - startedAt >= PROFILE_ROLE_TIMEOUT_MS) countReconciliationFailure = "profile_count_reconciliation_deadline";
+    // Both successful and failed workers share the reserved count deadline.
+    if (countSignal.aborted || Date.now() - startedAt >= PROFILE_COUNT_DEADLINE_MS) countReconciliationFailure = "profile_count_reconciliation_deadline";
     else try { await reconcileCounts(); }
     catch (error) {
       after = null; firstVerifiedThisRun = null;
@@ -285,14 +294,14 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
     requests, requestFailures, responseBodyFailures, failureRatePercent: requests ? requestFailures / requests * 100 : null,
     ...eligibility, cohortProfiles, retryAttempts, pendingReasons, durationMs: Date.now() - startedAt, concurrency: 2,
     modelCalls: 0, failure, guarantees500: false };
-  const current = await read(key);
+  const current = await read(key, summarySignal);
   if (current.value.owner !== owner) throw new Error("simple_profile_lease_lost");
   const saved = await writeVersionedJsonToR2(key, { ...state, ...summary, leaseUntil: null,
     // Unused reserved slots can be safely returned once this process settles.
     attemptsReserved: alreadyReserved + attempted, totalAttempts: (Number(state.totalAttempts) || 0) + attempted,
     // Preserve the last known count when this run could not reconcile it.
     // Admission still uses a fresh issuer-level cache plan on the next run.
-    totalVerified: after ?? before ?? state.totalVerified ?? null }, { expectedEtag: current.saved.etag! });
+    totalVerified: after ?? before ?? state.totalVerified ?? null }, { expectedEtag: current.saved.etag!, signal: summarySignal });
   if (!saved.written || saved.conflict) throw new Error("simple_profile_summary_not_saved");
   console.info(`[simple-profile-builder] ${JSON.stringify(summary)}`);
   return summary;

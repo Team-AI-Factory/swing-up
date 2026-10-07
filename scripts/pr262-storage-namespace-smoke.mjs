@@ -1,4 +1,5 @@
 import { loadTsModule } from "./helpers/load-typescript-module.mjs";
+import { simpleAlertPilotEnvironment } from "./helpers/simple-alert-pilot-fixture.mjs";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
@@ -82,6 +83,21 @@ for (const invalidEnvironment of [
   );
 }
 assert.throws(() => pr262StorageKey("../state.json", {}), /pr262_storage_key_invalid/);
+
+for (const cohortId of ["cohort-one", "cohort-two"]) {
+  const storage = loadTsModule("@/lib/opportunity-engine/pr262-storage", {
+    "@/config/simple-alert-pilot.json": { cohortId },
+  });
+  for (const relative of ["terminal-reviews-v1", "terminal-reviews-v1/companies/0000000001.json",
+    "serious-signal/evidence-delivery-v1", "serious-signal/evidence-delivery-v1/key.json"]) {
+    assert.equal(storage.pr262StorageKey(relative, simpleAlertPilotEnvironment), `branch-labs/simple-alerts/${relative}`,
+      "Completed-review and delivery identity survive cohort changes");
+    assert.equal(storage.pr262StorageKey(relative, {}), `branch-labs/pr-262/${relative}`,
+      "Preview/test state cannot read the live pilot journal");
+  }
+  assert.equal(storage.pr262StorageKey("research-evidence/alerts-v1.json", simpleAlertPilotEnvironment),
+    `branch-labs/simple-alerts/cohorts/${cohortId}/research-evidence/alerts-v1.json`);
+}
 
 console.log(JSON.stringify({
   ok: true,

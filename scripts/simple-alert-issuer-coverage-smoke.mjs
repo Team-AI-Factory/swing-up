@@ -31,7 +31,7 @@ class TestDate extends realDate {
 }
 globalThis.Date = TestDate;
 let objects = new Map(), revision = 0, network = [];
-let storageDelayMs = 0, sourceDelayMs = 0;
+let storageDelayMs = 0, sourceDelayMs = 0, registryFault = null;
 const prefix = "branch-labs/simple-alerts/cohorts/test/";
 const overrides = {
   "@/lib/simple-alert-pilot-runtime": { isSimpleAlertPilot: () => true },
@@ -42,11 +42,13 @@ const overrides = {
   "@/lib/r2-warehouse": {
     readVersionedTextFromR2: async key => {
       clock += storageDelayMs;
+      if (registryFault === "read" && key.endsWith("direct-company-feeds-v1.json")) throw new Error("r2_state_read_http_502");
       const saved = objects.get(key);
       return { found: Boolean(saved), text: saved ? JSON.stringify(saved.value) : null, etag: saved?.etag ?? null };
     },
     writeVersionedJsonToR2: async (key, value, options) => {
       clock += storageDelayMs;
+      if (registryFault === "write" && key.endsWith("direct-company-feeds-v1.json")) throw new Error("r2_state_write_http_502");
       const prior = objects.get(key);
       if ((options?.createOnly && prior) || (options?.expectedEtag && options.expectedEtag !== prior?.etag)) return { written: false, conflict: true, etag: null };
       const etag = `test-${++revision}`;
@@ -112,7 +114,7 @@ try {
 
   objects = new Map(); network = []; clock = realDate.parse("2026-10-03T16:45:00.000Z");
   const exposure = cohort.map(row => ({ ...row, currentPrice: null, strongBuyBelowPrice: null, buyBelowPrice: null, trimAbovePrice: null, businessQuality: 70, marketCap: null }));
-  const registeredOnly = await direct.runPr262DirectAnnouncementMonitor({ exposure, now: new Date(), deadlineAtMs: clock - 1,
+  const registeredOnly = await direct.runPr262DirectAnnouncementMonitor({ exposure, now: new Date(), deadlineAtMs: clock + 4999,
     fetchImpl: async () => { throw new Error("Registration must not invent a source read."); } });
   assert.equal(registeredOnly.issuerSourceCoverage.length, 25);
   assert.ok(registeredOnly.issuerSourceCoverage.every(row => row.sec.status === "not_checked"
@@ -183,7 +185,7 @@ try {
   assert.equal(new Set(firstRead.events.map(row => row.id)).size, 2);
   assert.ok(firstRead.events.every(row => row.observedAt === publishedAt && row.reason.includes("Initial source catch-up")));
   assert.equal(firstRead.initialCatchupEvents, 2);
-  const expired = await direct.runPr262DirectAnnouncementMonitor({ exposure: [exposure[0]], now: new Date(), deadlineAtMs: clock - 1, fetchImpl: async () => { throw new Error("deadline bypass"); } });
+  const expired = await direct.runPr262DirectAnnouncementMonitor({ exposure: [exposure[0]], now: new Date(), deadlineAtMs: clock + 4999, fetchImpl: async () => { throw new Error("deadline bypass"); } });
   assert.equal(expired.attemptCount, 0);
   assert.equal(expired.sourceCollectionDeadlineReached, true);
   assert.equal(expired.issuerSourceCoverage[0].sec.snapshotFetchedAt, firstRead.issuerSourceCoverage[0].sec.snapshotFetchedAt);
@@ -259,7 +261,7 @@ try {
   } });
   await sharedBudget.fetchImpl(rootUrl(cohort[0]));
   assert.equal(consumerRequests, 1);
-  await direct.runPr262DirectAnnouncementMonitor({ exposure: exposure.slice(0, 2), now: new Date(), deadlineAtMs: clock - 1 });
+  await direct.runPr262DirectAnnouncementMonitor({ exposure: exposure.slice(0, 2), now: new Date(), deadlineAtMs: clock + 4999 });
   const cachedRegistry = objects.get(prefix + "sensor/direct-company-feeds-v1.json").value;
   cachedRegistry.lastDiscoveryCycleAt = new Date().toISOString();
   for (const row of cachedRegistry.entries) row.nextCheckAt = new Date(clock + 86400_000).toISOString();
@@ -317,6 +319,39 @@ try {
   const laterQueue = objects.get(prefix + "sensor/state-v1.json").value.pending;
   assert.equal(laterQueue.filter(event => event.observedAt === publishedAt).length, 2);
   assert.equal(laterQueue.filter(event => event.observedAt === laterPublished).length, 1);
+
+  // Exercise real V3 classification and queue persistence across both registry
+  // failure boundaries, not just a stubbed monitor result.
+  for (const stage of ["read", "write"]) {
+    objects = new Map(); registryFault = stage;
+    let sourceCalls = 0;
+    const failedRegistry = await sensorRuntime.runPr262LightweightSensorV3({ now: new Date(), fetchImpl: async request => {
+      sourceCalls++;
+      return sensorFetch(request);
+    } });
+    const summary = failedRegistry.sourceSummary.find(row => row.provider === "direct_issuer_feeds");
+    assert.equal(summary.status, "storage_or_preparation_failed");
+    assert.equal(summary.attempted, stage === "write");
+    assert.equal(summary.attemptCount, sourceCalls);
+    assert.equal(summary.successCount, sourceCalls);
+    assert.equal(summary.failureCount, 0, "Private registry errors must not inflate source-network failures");
+    assert.equal(failedRegistry.directAnnouncementMonitoring.sourcePreparationFailures, 1);
+    assert.equal(failedRegistry.directAnnouncementMonitoring.registryPersistence.failureStage, stage === "read" ? "load" : "write");
+    if (stage === "read") {
+      assert.equal(sourceCalls, 0);
+      assert.equal(failedRegistry.directAnnouncementMonitoring.registeredFeeds, null);
+      assert.equal(failedRegistry.directAnnouncementMonitoring.issuerSourceCoverage[0].sec.status, "registry_unavailable");
+      assert.equal(failedRegistry.queueAdmissions, 0);
+    } else {
+      assert.equal(sourceCalls, 2);
+      assert.equal(failedRegistry.queueAdmissions, 3, "Actual issuer events survive registry publication failure");
+      assert.equal(failedRegistry.newEvents, 0, "First-read catch-up must still remain distinct from new live cases");
+      assert.equal(objects.get(prefix + "sensor/state-v1.json").value.pending.length, 3);
+      assert.equal(failedRegistry.directAnnouncementMonitoring.registryPersistence.telemetryBasis, "unpersisted_observation");
+    }
+    assert.equal(objects.has(prefix + "sensor/direct-company-feeds-v1.json"), false);
+  }
+  registryFault = null;
 
   console.log(JSON.stringify({ ok: true, cohort25: true, independentSecPolling: true, unchangedProviderGuards: true,
     datedPrivateCache: true, identityAndArchiveIsolation: true, initializationWithinTwoCycles: true,

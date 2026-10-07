@@ -20,7 +20,7 @@ function harness({ seed = [], onWrite, onRead, source } = {}) {
   const objects = new Map();
   let etag = 1, reads = 0, requests = 0;
   if (seed.length) objects.set(key, { version: 1, entries: clone(seed) });
-  const writes = [], waits = [];
+  const writes = [], waits = [], stageAttempts = new Map();
   const current = () => objects.get(key)?.entries.find(row => row.ticker === identity.ticker && row.cik === identity.cik);
   const replace = rows => { objects.set(key, { version: 1, entries: clone(rows) }); etag++; };
   const storage = {
@@ -28,7 +28,7 @@ function harness({ seed = [], onWrite, onRead, source } = {}) {
       options.signal?.throwIfAborted();
       if (path === key) {
         reads++;
-        const alternate = await onRead?.({ reads, writes, objects, current, replace, options });
+        const alternate = await onRead?.({ reads, writes, objects, current, replace, options, requests });
         if (alternate) return alternate;
       }
       return objects.has(path) ? { found: true, text: JSON.stringify(objects.get(path)), etag: String(etag) }
@@ -41,9 +41,13 @@ function harness({ seed = [], onWrite, onRead, source } = {}) {
       assert.ok(options.signal, "Every profile PUT has a bounded cancellation signal");
       assert.equal(options.maxAttempts, 1, "Profile row retries must not nest transport retries");
       assert.ok(options.expectedEtag || options.createOnly, "Every profile PUT retains its CAS condition");
-      writes.push({ value: clone(value), options });
+      const row = value.entries[0];
+      const stage = row.profile ? "verified" : row.error ? "failed" : "admission";
+      const stageAttempt = (stageAttempts.get(stage) ?? 0) + 1;
+      stageAttempts.set(stage, stageAttempt);
+      writes.push({ value: clone(value), options, stage, stageAttempt });
       if ((options.createOnly && objects.has(path)) || (options.expectedEtag && options.expectedEtag !== String(etag))) return { written: false, conflict: true };
-      const result = await onWrite?.({ index: writes.length, row: value.entries[0], value, options, commit, current, replace, writes, objects });
+      const result = await onWrite?.({ stage, stageAttempt, row, value, options, commit, current, replace, writes, objects });
       return result ?? commit();
     },
   };
@@ -70,10 +74,11 @@ function harness({ seed = [], onWrite, onRead, source } = {}) {
 const info = console.info;
 console.info = () => {};
 try {
-  // Every per-entry phase can recover an unapplied PUT or a lost acknowledgment.
-  for (const stage of [1, 2, 3]) for (const applied of [false, true]) {
-    const h = harness({ onWrite: ({ index, commit, objects }) => {
-      if (index !== stage) return;
+  // Both retained per-entry phases recover an unapplied PUT or a lost
+  // acknowledgment. The selected-filing checkpoint no longer exists.
+  for (const faultStage of ["admission", "verified"]) for (const applied of [false, true]) {
+    const h = harness({ onWrite: ({ stage, stageAttempt, commit, objects }) => {
+      if (stage !== faultStage || stageAttempt !== 1) return;
       if (applied) {
         commit();
         // A different property's order is still exactly the same JSON intent.
@@ -83,31 +88,31 @@ try {
     } });
     assert.ok(await h.ensure());
     assert.equal(h.requests, 2, "A storage retry never repeats source work");
-    assert.equal(h.writes.length, applied ? 3 : 4, "Applied intents are acknowledged without another PUT");
+    assert.equal(h.writes.length, applied ? 2 : 3, "Applied intents are acknowledged without another PUT");
     assert.deepEqual(h.counts(), { daily: 1, run: 1 });
     assert.equal(h.current().firstVerifiedAt, now.toISOString());
     assert.equal(h.current().verificationHistoryKnown, true);
   }
 
   // An applied target remains acknowledged after an unrelated issuer writes.
-  const appliedWithOther = harness({ onWrite: ({ index, commit, replace, value }) => {
-    if (index === 3) { commit(); replace([...value.entries, other]); throw failure(); }
+  const appliedWithOther = harness({ onWrite: ({ stage, commit, replace, value }) => {
+    if (stage === "verified") { commit(); replace([...value.entries, other]); throw failure(); }
   } });
   assert.ok(await appliedWithOther.ensure());
-  assert.equal(appliedWithOther.writes.length, 3);
+  assert.equal(appliedWithOther.writes.length, 2);
   assert.deepEqual(appliedWithOther.objects.get(key).entries.find(row => row.ticker === "OTHER"), other);
 
   // Unapplied writes and CAS conflicts rebase only when their own baseline survives.
   for (const mode of ["transient", "conflict"]) {
-    const h = harness({ onWrite: ({ index, replace, objects }) => {
-      if (index !== 3) return;
+    const h = harness({ onWrite: ({ stage, stageAttempt, replace, objects }) => {
+      if (stage !== "verified" || stageAttempt !== 1) return;
       replace([...objects.get(key).entries, other]);
       if (mode === "transient") throw failure();
       return { written: false, conflict: true };
     } });
     assert.ok(await h.ensure());
-    assert.equal(h.writes.length, 4);
-    assert.notEqual(h.writes[2].options.expectedEtag, h.writes[3].options.expectedEtag, "Retry uses the newly read ETag");
+    assert.equal(h.writes.length, 3);
+    assert.notEqual(h.writes[1].options.expectedEtag, h.writes[2].options.expectedEtag, "Retry uses the newly read ETag");
     assert.deepEqual(h.objects.get(key).entries.find(row => row.ticker === "OTHER"), other);
     assert.equal(h.requests, 2);
   }
@@ -117,8 +122,8 @@ try {
   for (const mode of ["same_time", "newer", "older", "deleted", "history_only"]) {
     for (const response of ["transient", "conflict"]) {
       let concurrent;
-      const h = harness({ onWrite: ({ index, current, replace }) => {
-        if (index !== 3) return;
+      const h = harness({ onWrite: ({ stage, current, replace }) => {
+        if (stage !== "verified") return;
         concurrent = mode === "deleted" ? undefined : {
           ...current(),
           ...(mode === "history_only" ? { firstVerifiedAt: "2026-10-01T00:00:00Z", verificationHistoryKnown: true }
@@ -130,7 +135,7 @@ try {
         return { written: false, conflict: true };
       } });
       await assert.rejects(h.ensure, error => failClosed(error) && error.message === "company_profile_cache_superseded");
-      assert.equal(h.writes.length, 3, "No cleanup handler may overwrite a superseded target");
+      assert.equal(h.writes.length, 2, "No cleanup handler may overwrite a superseded target");
       assert.deepEqual(h.current(), concurrent);
       assert.equal(h.requests, 2);
     }
@@ -141,7 +146,7 @@ try {
     const old = { ...identity, updatedAt: "2026-10-02T12:00:00Z", nextAttemptAt: now.toISOString(),
       profile: { ...fixture, customers: "Unknown", description: "Invalid old profile" },
       verificationHistoryKnown: true, ...(knownDate ? { firstVerifiedAt: "2026-10-01T00:00:00Z" } : {}) };
-    const h = harness({ seed: [old], onWrite: ({ index, commit }) => { if (index === 3) { commit(); throw failure(); } } });
+    const h = harness({ seed: [old], onWrite: ({ stage, commit }) => { if (stage === "verified") { commit(); throw failure(); } } });
     assert.ok(await h.ensure());
     assert.equal(h.current().firstVerifiedAt, old.firstVerifiedAt);
     assert.equal(h.current().verificationHistoryKnown, true);
@@ -160,35 +165,35 @@ try {
 
   // Exact intent means the redacted JSON sent to R2, not the unencoded object.
   const redacted = harness({ source: async () => { throw new Error("failed https://provider.invalid/?api_key=synthetic-example"); },
-    onWrite: ({ index, commit }) => { if (index === 2) { commit(); throw failure(); } } });
+    onWrite: ({ stage, commit }) => { if (stage === "failed") { commit(); throw failure(); } } });
   assert.equal(await redacted.ensure(), null);
   assert.equal(redacted.writes.length, 2);
   assert.match(redacted.current().error, /api_key=\[REDACTED_SECRET\]/);
 
   for (const error of [new TypeError("fetch failed"), new Error("r2_state_write_missing_etag"), new Error("r2_state_read_http_502")]) {
-    const h = harness({ onWrite: ({ index, commit }) => { if (index === 3) { commit(); throw error; } } });
+    const h = harness({ onWrite: ({ stage, commit }) => { if (stage === "verified") { commit(); throw error; } } });
     assert.ok(await h.ensure());
-    assert.equal(h.writes.length, 3, "Transport/acknowledgment errors also reconcile before any repeat");
+    assert.equal(h.writes.length, 2, "Transport/acknowledgment errors also reconcile before any repeat");
   }
 
   // Permanent failure is not retried. Persistent transient failures are bounded
   // to four PUTs; the final one still gets a readback to avoid false failure.
   for (const appliedOnLast of [false, true]) {
-    const h = harness({ onWrite: ({ index, commit }) => {
-      if (index < 3) return;
-      if (appliedOnLast && index === 6) commit();
+    const h = harness({ onWrite: ({ stage, stageAttempt, commit }) => {
+      if (stage !== "verified") return;
+      if (appliedOnLast && stageAttempt === 4) commit();
       throw failure();
     } });
     if (appliedOnLast) assert.ok(await h.ensure());
     else await assert.rejects(h.ensure, error => failClosed(error) && error.message === "r2_state_write_http_502");
-    assert.equal(h.writes.length, 6);
+    assert.equal(h.writes.length, 5);
     assert.deepEqual(h.waits, [100, 200, 400]);
     assert.equal(h.requests, 2);
     assert.deepEqual(h.counts(), appliedOnLast ? { daily: 1, run: 1 } : { daily: 0, run: 0 });
   }
-  const conflict = harness({ onWrite: ({ index }) => index >= 3 ? { written: false, conflict: true } : undefined });
+  const conflict = harness({ onWrite: ({ stage }) => stage === "verified" ? { written: false, conflict: true } : undefined });
   await assert.rejects(conflict.ensure, error => failClosed(error) && error.message === "company_profile_cache_conflict");
-  assert.equal(conflict.writes.length, 6);
+  assert.equal(conflict.writes.length, 5);
   for (const message of ["r2_state_write_http_403", "r2_state_write_http_429", "r2_mutation_outside_write_prefix", "r2_state_invalid_write_condition"]) {
     const h = harness({ onWrite: () => { throw new Error(message); } });
     await assert.rejects(h.ensure, error => failClosed(error) && error.message === message);
@@ -226,9 +231,9 @@ try {
     assert.equal(h.requests, 0);
   }
   const beforeFinalPut = new AbortController();
-  const deferredFinal = harness({ onRead: ({ reads }) => { if (reads === 4) beforeFinalPut.abort(); } });
+  const deferredFinal = harness({ onRead: ({ writes, requests }) => { if (requests === 2 && writes.length === 1) beforeFinalPut.abort(); } });
   assert.equal(await deferredFinal.ensure({ signal: beforeFinalPut.signal }), null);
-  assert.equal(deferredFinal.writes.length, 2, "Prior acknowledged writes do not make an unstarted final PUT ambiguous");
+  assert.equal(deferredFinal.writes.length, 1, "The acknowledged admission does not make an unstarted final PUT ambiguous");
   assert.equal(deferredFinal.requests, 2);
   assert.deepEqual(deferredFinal.counts(), { daily: 0, run: 0 });
 
@@ -239,8 +244,8 @@ try {
     const h = harness({ source: async (_url, init) => {
       controller.abort(new DOMException("source_deadline", "TimeoutError"));
       init.signal.throwIfAborted();
-    }, onWrite: ({ index, row, options, commit }) => {
-      if (index !== 2) return;
+    }, onWrite: ({ stage, row, options, commit }) => {
+      if (stage !== "failed") return;
       assert.equal(controller.signal.aborted, true);
       assert.equal(options.signal.aborted, false, "The one cleanup write has its own bounded signal");
       assert.equal(row.error, "company_profile_time_budget_deferred");
@@ -277,8 +282,8 @@ try {
   try {
     const controller = new AbortController();
     const h = harness({ source: async (_url, init) => { controller.abort(); init.signal.throwIfAborted(); },
-      onWrite: async ({ index, options }) => {
-        if (index !== 2) return;
+      onWrite: async ({ stage, options }) => {
+        if (stage !== "failed") return;
         await new Promise((resolve, reject) => {
           const keepAlive = setTimeout(resolve, 1000);
           options.signal.addEventListener("abort", () => { clearTimeout(keepAlive); reject(options.signal.reason); }, { once: true });
@@ -301,7 +306,7 @@ try {
       const storeDeadline = new AbortController();
       const abort = () => controller.abort(new DOMException("Role time window ended", "TimeoutError"));
       const wrap = cause => Object.assign(new Error(cause.message, { cause }), { name: cause.name, storageDomain: "r2_state", storageOperation: "read" });
-      AbortSignal.timeout = milliseconds => milliseconds === 175_000 ? controller.signal
+      AbortSignal.timeout = milliseconds => milliseconds === 140_000 || (milliseconds === 160_000 && mode.startsWith("uncertain_")) ? controller.signal
         : milliseconds === 15_000 && mode === "local_timeout_store" ? storeDeadline.signal : originalTimeout(milliseconds);
       const h = harness({ onRead: ({ reads, options, replace }) => {
         // The builder reads the profile plan before ensureCompanyProfile does.

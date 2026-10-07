@@ -1,4 +1,5 @@
 import { readOpenAiBillingAudit } from "@/lib/ai-committee/billing-audit";
+import { committeeRequestsRejectedWithoutUsage, committeeRoleProvesNoUsage } from "@/lib/ai-committee/review-policy";
 import { AI_COMMITTEE_MODEL_PRICES, AI_COMMITTEE_REVIEW_MAX_PROMPT_BYTES, AI_COMMITTEE_REASONING_MAX_OUTPUT_TOKENS, AI_COMMITTEE_REVIEW_MAX_CALLS, AI_COMMITTEE_REVIEW_MAX_COST_USD } from "@/lib/ai-committee/model-policy";
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
@@ -374,8 +375,9 @@ function actualCostFromReport(report: Json): { costUsd: number; inputPendingUppe
   const actual = object(usageSummary.actualOpenAiUsage);
   // Each response's actual token receipt counts, including a partial review.
   if (actual.responsesWithUsage === undefined || actual.responsesWithUsage === 0) {
-    const roles = Array.isArray(usageSummary.roleDiagnostics) ? usageSummary.roleDiagnostics.map(object) : [];
-    return roles.some(role => role.usageReported === true) ? null : { costUsd: 0, inputPendingUpperBoundUsd: 0 };
+    // Missing or contradictory usage is not a verified zero-dollar rejection.
+    // Share the admission-release proof so neither durable guard loses a hold.
+    return committeeRequestsRejectedWithoutUsage(report.committee) ? { costUsd: 0, inputPendingUpperBoundUsd: 0 } : null;
   }
   const count = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
   const responses = count(actual.responsesWithUsage);
@@ -446,10 +448,8 @@ export async function recordPr262AiCommitteeCost(reportValue: unknown, now = new
   const candidate = object(report.selectedCandidate);
   const summary = object(object(object(report.committee).output).modelUsageSummary);
   const roles = Array.isArray(summary.roleDiagnostics) ? summary.roleDiagnostics.map(object) : [];
-  const rejected = (role: Json) => [400, 401, 403, 404, 422, 429].includes(Number(object(role.providerFailure).httpStatus))
-    || ["not_configured", "disabled", "confirmation_required", "model_not_configured", "model_not_allowed", "prompt_too_large"].includes(String(role.error));
   const unobservedCalls = (roles.length === 0 && !(Number(object(summary.actualOpenAiUsage).responsesWithUsage) > 0))
-    || roles.some(role => role.status !== "blocked" && role.status !== "planned" && role.usageReported !== true && !rejected(role));
+    || roles.some(role => role.usageReported !== true && !committeeRoleProvesNoUsage(role));
   const uncertain = actual === null || actual.inputPendingUpperBoundUsd > 0 || unobservedCalls;
   // The provider was never called for an oversized packet. Keep that case's
   // retry hold without opening a shared outage stop for unrelated companies.

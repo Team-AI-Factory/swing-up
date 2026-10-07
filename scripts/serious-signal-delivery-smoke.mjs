@@ -13,6 +13,8 @@ const output = ts.transpileModule(source, {
 
 const prefix = "production/fundamental-signal-v2/";
 const objects = new Map();
+const terminalDecisions = new Map();
+const terminalApi = loadTsModule("@/lib/equity-signal/terminal-review-evidence");
 let etagCounter = 0;
 function stored(key) {
   const value = objects.get(key);
@@ -46,9 +48,16 @@ function storageKey(relative) {
 
 const loaded = { exports: {} };
 new Function("require", "module", "exports", output)((specifier) => {
+  if (specifier === "@/lib/equity-signal/terminal-review-evidence") return terminalApi;
+  if (specifier === "@/lib/opportunity-engine/pr262-terminal-reviews") return { readTerminalDecision: async ({ cik, decisionKey, signal }) => { signal?.throwIfAborted(); return terminalDecisions.get(`${cik}:${decisionKey}`) ?? null; } };
   if (specifier === "@/lib/opportunity-engine/company-profile-cache") return { readCompanyProfiles: async () => new Map() };
   if (specifier === "node:crypto") return crypto;
-  if (specifier === "@/lib/simple-alert-pilot-scope") return loadTsModule(specifier);
+  if (specifier === "node:util") return loadTsModule(specifier);
+  if (["@/lib/simple-alert-pilot-scope", "@/lib/simple-alert-pilot-runtime"].includes(specifier)) return loadTsModule(specifier);
+  if (specifier === "@/lib/notifications/serious-signal-evidence-binding") return loadTsModule(specifier, {
+    "@/lib/opportunity-engine/pr262-storage": { pr262StorageKey: storageKey },
+    "@/lib/r2-warehouse": { readVersionedTextFromR2: async key => stored(key), writeVersionedJsonToR2: write },
+  });
   if (specifier === "@/lib/r2-warehouse") {
     return {
       listR2ObjectKeys: list,
@@ -119,6 +128,19 @@ function validOutbox(ticker, createdAt, overrides = {}) {
     },
     ...overrides,
   };
+}
+
+function approveTerminal(outbox, evidenceTag = outbox.candidateFingerprint) {
+  const evidence = terminalApi.terminalReviewEvidence({ cik: outbox.cik, ticker: outbox.ticker, scope: "event",
+    evidence: { source: [{ rawEventType: "8-K", summary: `Exact source evidence ${evidenceTag}` }], facts: [],
+      financialDocuments: [], outlookRange: { currency: "USD", base: 55 }, priceReady: true, haltKnown: true, halted: false },
+    analysis: {}, price: outbox.candidate.quote.price });
+  outbox.candidate.terminalEvidence = evidence;
+  outbox.candidate.terminalDecisionKey = evidence.decisionKey;
+  terminalDecisions.set(`${outbox.cik}:${evidence.decisionKey}`, { version: 1, cik: outbox.cik, ticker: outbox.ticker,
+    direction: outbox.candidate.direction, decisionKey: evidence.decisionKey, outcome: "approved",
+    fingerprint: outbox.candidateFingerprint, evidence: structuredClone(evidence), publicationPacketKey: terminalApi.terminalPublicationPacketKey(outbox.candidate), decidedAt: outbox.createdAt, eventId: "fixture-event" });
+  return outbox;
 }
 
 const originalEnvironment = { ...process.env };
@@ -489,9 +511,72 @@ try {
     await write(key, rekr, { createOnly: true });
     await assert.rejects(() => deliverSeriousSignalOutbox(key, { now: wallNow }), /pilot_upside_quarantined/,
       "Even a previously approved durable outbox cannot publish a quarantined Buy");
+    // Different daily outbox IDs with the same validated evidence must share
+    // one durable delivery owner, even when racing or replayed much later.
+    process.env.SWING_UP_PR262_EXTERNAL_NOTIFICATIONS_ENABLED = "false";
+    const legacyKey = `${prefix}serious-signal/outbox/event-job/buy/LEGACY/unmigrated.json`;
+    const legacyOutbox = validOutbox("LEGACY", wallNow.toISOString());
+    legacyOutbox.candidate.quote.observedAt = observedAt;
+    await write(legacyKey, legacyOutbox, { createOnly: true });
+    const objectCount = objects.size;
+    await assert.rejects(() => deliverSeriousSignalOutbox(legacyKey, { now: wallNow }), /legacy_evidence_requires_migration/);
+    assert.equal(objects.size, objectCount, "Missing legacy evidence cannot create a fresh job, binding or receipt");
+    const legacyDelivered = await deliverSeriousSignalOutbox(webOnlyOutboxKey, { now: wallNow });
+    assert.equal(legacyDelivered.deliveryStatus, "delivered", "An actual existing legacy receipt remains reusable");
+    for (const fault of ["missing", "rejected", "wrong_direction", "wrong_fingerprint", "wrong_issuer", "mutated_descriptor", "altered_reference", "altered_range", "altered_forecast", "missing_key"]) {
+      const badKey = `${prefix}serious-signal/outbox/event-job/buy/BADPROOF/${fault}.json`;
+      const bad = approveTerminal(validOutbox("BADPROOF", wallNow.toISOString()), `proof-${fault}`);
+      bad.candidate.quote.observedAt = observedAt;
+      const journalKey = `${bad.cik}:${bad.candidate.terminalDecisionKey}`;
+      const journal = terminalDecisions.get(journalKey);
+      if (fault === "missing") terminalDecisions.delete(journalKey);
+      if (fault === "rejected") journal.outcome = "rejected";
+      if (fault === "wrong_direction") journal.direction = "downside";
+      if (fault === "wrong_fingerprint") journal.fingerprint = "different-original-fingerprint";
+      if (fault === "wrong_issuer") journal.cik = "0000000099";
+      if (fault === "mutated_descriptor") bad.candidate.terminalEvidence.comparison.market.price += 1;
+      if (fault === "altered_reference") bad.candidate.terminalEvidence.comparison.reference.base = 500;
+      if (fault === "altered_range") bad.candidate.valuationRange.baseValue = 56;
+      if (fault === "altered_forecast") bad.candidate.priceForecast = { status: "ready", probability: 99, sampleSize: 999 };
+      if (fault === "missing_key") delete bad.candidate.terminalDecisionKey;
+      await write(badKey, bad, { createOnly: true });
+      const before = objects.size;
+      await assert.rejects(() => deliverSeriousSignalOutbox(badKey, { now: wallNow }), /terminal_(?:evidence_invalid|approval_missing_or_mismatched)/, fault);
+      assert.equal(objects.size, before, "An invalid durable approval cannot create a delivery job or receipt");
+    }
+    const duplicateA = `${prefix}serious-signal/outbox/event-job/buy/DUPL/day-a.json`;
+    const duplicateB = `${prefix}serious-signal/outbox/event-job/buy/DUPL/day-b.json`;
+    const duplicatePayload = validOutbox("DUPL", wallNow.toISOString());
+    duplicatePayload.candidate.quote.observedAt = observedAt;
+    approveTerminal(duplicatePayload);
+    await write(duplicateA, duplicatePayload, { createOnly: true });
+    await write(duplicateB, duplicatePayload, { createOnly: true });
+    const raced = await Promise.all([
+      deliverSeriousSignalOutbox(duplicateA, { now: wallNow, ownerId: "evidence-a" }),
+      deliverSeriousSignalOutbox(duplicateB, { now: wallNow, ownerId: "evidence-b" }),
+    ]);
+    assert.equal(raced.filter(row => row.duplicateSuppressed).length, 1);
+    const owner = raced.find(row => row.duplicateSuppressed).canonicalOutboxKey;
+    const alias = owner === duplicateA ? duplicateB : duplicateA;
+    const replay = await deliverSeriousSignalOutbox(alias, { now: new Date(wallNow.getTime() + 36 * 3600000) });
+    assert.equal(replay.duplicateSuppressed, true);
+    assert.equal(replay.canonicalOutboxKey, owner);
+    assert.equal(replay.canonicalDeliveryStatus, "delivered");
+    assert.equal(replay.seriousSignal, false, "Suppression cannot claim a new serious delivery");
+    assert.equal([...objects].filter(([key, row]) => key.includes("/receipts/web_feed/") && [duplicateA, duplicateB].includes(row.payload.outboxKey)).length, 1);
+    assert.equal([...objects].filter(([key, row]) => key.includes("/feed/") && [duplicateA, duplicateB].includes(row.payload.outboxKey)).length, 1);
+    const duplicateStatus = await getSeriousSignalStatus({ now: wallNow, hours: 48 });
+    assert.equal(duplicateStatus.alerts.filter(row => row.ticker === "DUPL").length, 1);
+    const newKey = `${prefix}serious-signal/outbox/event-job/buy/DUPL/new-evidence.json`;
+    const newPayload = structuredClone(duplicatePayload);
+    newPayload.candidateFingerprint = newPayload.candidate.evidenceFingerprint = "dupl-genuinely-new-evidence";
+    approveTerminal(newPayload);
+    await write(newKey, newPayload, { createOnly: true });
+    assert.equal((await deliverSeriousSignalOutbox(newKey, { now: wallNow })).deliveryStatus, "delivered", "Distinct approved evidence remains deliverable");
     const riskKey = `${prefix}serious-signal/outbox/event-job/sell/REKR/quarantine-risk.json`;
     rekr.alertType = "sell";
     rekr.candidate.direction = "downside";
+    approveTerminal(rekr);
     await write(riskKey, rekr, { createOnly: true });
     assert.equal((await deliverSeriousSignalOutbox(riskKey, { now: wallNow })).ok, true,
       "Quarantine preserves fully sourced and approved downside/risk delivery");

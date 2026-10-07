@@ -47,6 +47,12 @@ assert.equal(compressedQueue.contentType, "application/gzip");
 assert.ok(compressedQueue.body.length < compressedQueue.uncompressedBytes / 4);
 assert.deepEqual(JSON.parse(decodeVersionedR2Text(compressedQueue.body)), largeQueue);
 
+const compressedProfiles = encodeVersionedJsonForR2("production/pr262/research-evidence/company-profiles-v1.json", largeQueue);
+assert.equal(compressedProfiles.compressed, true, "The large private profile cache uses the existing transparent gzip codec");
+assert.equal(compressedProfiles.contentType, "application/gzip");
+assert.deepEqual(JSON.parse(decodeVersionedR2Text(compressedProfiles.body)), largeQueue);
+assert.equal(encodeVersionedJsonForR2("production/pr262/research-evidence/company-profiles-v1.json", { version: 1, entries: [] }).compressed, false);
+
 const externalFinding = encodeVersionedJsonForR2("production/pr262/serious-signal/delivery-v2/feed/example.json", largeQueue);
 assert.equal(externalFinding.compressed, false, "User-facing finding objects must remain ordinary JSON.");
 assert.equal(externalFinding.contentType, "application/json");

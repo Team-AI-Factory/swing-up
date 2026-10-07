@@ -1,4 +1,8 @@
 import { pilotUpsideBlocker } from "@/lib/simple-alert-pilot-scope";
+import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
+import { bindSeriousSignalEvidence } from "@/lib/notifications/serious-signal-evidence-binding";
+import { terminalPublicationPacketKey, validatedTerminalEvidence } from "@/lib/equity-signal/terminal-review-evidence";
+import { readTerminalDecision } from "@/lib/opportunity-engine/pr262-terminal-reviews";
 import { NEGATIVE_EARNINGS_NOTICE } from "@/lib/valuation-availability";
 import { readCompanyProfiles } from "@/lib/opportunity-engine/company-profile-cache";
 import { verifiedCompanyProfile } from "@/lib/company-profile";
@@ -8,6 +12,7 @@ import { usQuoteFreshness } from "@/lib/equity-signal/us-market-calendar";
 import { explainCandidate } from "@/lib/signal-explanation";
 import { candidatePriceOutlook, compareSignalPotential } from "@/lib/signal-outlook";
 import crypto from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import {
   listR2ObjectKeys,
   readVersionedTextFromR2,
@@ -50,6 +55,7 @@ type DeliveryJobStatus =
   | "blocked_no_channel"
   | "preview_blocked"
   | "expired"
+  | "duplicate_suppressed"
   | "dead_letter";
 type ChannelStatus = "pending" | "not_configured" | "already_delivered" | "sent" | "failed" | "preview_blocked";
 
@@ -82,6 +88,7 @@ type DeliveryJob = {
   nextAttemptAt: string | null;
   lastError: string | null;
   lease: { ownerId: string; expiresAt: string } | null;
+  canonicalOutboxKey?: string;
   channels: Record<DeliveryChannel, DeliveryChannelState>;
   guarantee: "at_least_once_with_claim_receipt_and_webhook_idempotency_key";
 };
@@ -144,6 +151,18 @@ function deliveryPrefix() {
   return pr262StorageKey(DELIVERY_RELATIVE_PREFIX);
 }
 
+function deliveryPrefixForOutbox(outboxKey: string) {
+  if (isSimpleAlertPilot()) {
+    const sharedRelative = "serious-signal/evidence-delivery-v1";
+    const sharedRoot = pr262StorageKey(`${sharedRelative}/_scope.json`).slice(0, -`${sharedRelative}/_scope.json`.length);
+    if (!outboxKey.startsWith(sharedRoot)) return deliveryPrefix();
+    const relative = outboxKey.slice(sharedRoot.length);
+    const origin = /^(cohorts\/[a-z0-9][a-z0-9-]{2,63}\/)?serious-signal\/outbox\/(?:event-job|watch-out-v2)\//.exec(relative);
+    if (origin) return `${sharedRoot}${origin[1] ?? ""}${DELIVERY_RELATIVE_PREFIX}`;
+  }
+  return deliveryPrefix();
+}
+
 function deliveryTestPrefix() {
   return pr262StorageKey(DELIVERY_TEST_RELATIVE_PREFIX);
 }
@@ -153,12 +172,12 @@ function isDeliveryTestOutboxKey(outboxKey: string) {
 }
 
 function jobKey(outboxKey: string) {
-  const prefix = isDeliveryTestOutboxKey(outboxKey) ? deliveryTestPrefix() : deliveryPrefix();
+  const prefix = isDeliveryTestOutboxKey(outboxKey) ? deliveryTestPrefix() : deliveryPrefixForOutbox(outboxKey);
   return `${prefix}/jobs/${digest(outboxKey)}.json`;
 }
 
 function receiptKey(outboxKey: string, channel: DeliveryChannel) {
-  const prefix = isDeliveryTestOutboxKey(outboxKey) ? deliveryTestPrefix() : deliveryPrefix();
+  const prefix = isDeliveryTestOutboxKey(outboxKey) ? deliveryTestPrefix() : deliveryPrefixForOutbox(outboxKey);
   return `${prefix}/receipts/${channel}/${digest(outboxKey)}.json`;
 }
 
@@ -171,11 +190,11 @@ function feedKey(outboxKey: string, createdAt: string) {
   const timestamp = new Date(parsed).toISOString();
   const date = timestamp.slice(0, 10);
   const sortable = timestamp.replace(/[-:.]/g, "");
-  return `${deliveryPrefix()}/feed/${date}/${sortable}-${digest(outboxKey)}.json`;
+  return `${deliveryPrefixForOutbox(outboxKey)}/feed/${date}/${sortable}-${digest(outboxKey)}.json`;
 }
 
-function feedIndexKey() {
-  return `${deliveryPrefix()}/feed-index-v1.json`;
+function feedIndexKey(outboxKey?: string) {
+  return `${outboxKey ? deliveryPrefixForOutbox(outboxKey) : deliveryPrefix()}/feed-index-v1.json`;
 }
 
 function sensorStateKey() {
@@ -368,7 +387,7 @@ function parseJob(value: unknown, expectedOutboxKey: string): DeliveryJob {
     : null;
   const rawStatus = text(raw.status);
   const validStatuses: DeliveryJobStatus[] = [
-    "pending", "sending", "retry_scheduled", "delivered", "blocked_no_channel", "preview_blocked", "expired", "dead_letter",
+    "pending", "sending", "retry_scheduled", "delivered", "blocked_no_channel", "preview_blocked", "expired", "dead_letter", "duplicate_suppressed",
   ];
   return {
     version: 2,
@@ -381,6 +400,7 @@ function parseJob(value: unknown, expectedOutboxKey: string): DeliveryJob {
     nextAttemptAt: text(raw.nextAttemptAt),
     lastError: text(raw.lastError),
     lease,
+    ...(text(raw.canonicalOutboxKey, 1_000) ? { canonicalOutboxKey: text(raw.canonicalOutboxKey, 1_000)! } : {}),
     channels: {
       web_feed: channel("web_feed"),
       telegram: channel("telegram"),
@@ -406,7 +426,7 @@ function parseFeedPointer(value: unknown): StatusFeedPointer | null {
 }
 
 async function updateFeedIndex(pointer: StatusFeedPointer) {
-  const key = feedIndexKey();
+  const key = feedIndexKey(pointer.outboxKey);
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const stored = await readVersionedTextFromR2(key);
     let prior: Json = {};
@@ -459,10 +479,14 @@ async function writeFeedPointer(validated: ReturnType<typeof validatedOutbox>, k
   await updateFeedIndex(pointer);
 }
 
-async function ensureDeliveryJob(validated: ReturnType<typeof validatedOutbox>, now: Date) {
+async function ensureDeliveryJob(validated: ReturnType<typeof validatedOutbox>, now: Date, signal?: AbortSignal) {
   const key = jobKey(validated.outboxKey);
   const existing = await loadJob(key, validated.outboxKey);
   if (existing) return existing;
+  if (isSimpleAlertPilot() && !validated.testOnly) {
+    if (validated.candidate.terminalEvidence == null) throw new Error("serious_signal_legacy_evidence_requires_migration");
+    await deliveryEvidenceKey(validated, signal);
+  }
   const initial: DeliveryJob = {
     version: 2,
     kind: "serious_signal_delivery_job",
@@ -488,7 +512,7 @@ async function ensureDeliveryJob(validated: ReturnType<typeof validatedOutbox>, 
 }
 
 function terminalStatus(status: DeliveryJobStatus) {
-  return ["delivered", "preview_blocked", "expired", "dead_letter"].includes(status);
+  return ["delivered", "preview_blocked", "expired", "dead_letter", "duplicate_suppressed"].includes(status);
 }
 
 async function claimDeliveryJob(loaded: LoadedJob, now: Date, ownerId: string) {
@@ -717,8 +741,8 @@ function responseFromJob(
 async function processDeliveryJobKey(
   key: string,
   outboxKey: string,
-  options: { now?: Date; ownerId?: string } & DeliveryControl = {},
-) {
+  options: { now?: Date; ownerId?: string; canonicalResolved?: boolean } & DeliveryControl = {},
+): Promise<ReturnType<typeof responseFromJob> & { duplicateSuppressed?: boolean; canonicalOutboxKey?: string; canonicalDeliveryStatus?: DeliveryJobStatus }> {
   assertDeliveryActive(options, 2_000);
   const now = options.now ?? new Date();
   const ownerId = options.ownerId ?? `delivery-${crypto.randomUUID()}`;
@@ -726,7 +750,41 @@ async function processDeliveryJobKey(
   if (!storedOutbox.found || !storedOutbox.text) throw new Error("serious_signal_delivery_outbox_missing");
   const validated = validatedOutbox(await withCachedCompanyProfile(JSON.parse(storedOutbox.text)), outboxKey);
   const message = messageFor(validated);
-  const current = await loadJob(key, outboxKey) ?? await ensureDeliveryJob(validated, now);
+  const current = await loadJob(key, outboxKey) ?? await ensureDeliveryJob(validated, now, options.signal);
+  if (isSimpleAlertPilot() && !validated.testOnly) {
+    const evidenceKey = await deliveryEvidenceKey(validated, options.signal);
+    const legacy = validated.candidate.terminalEvidence == null;
+    const legacyReceipt = legacy && await alreadyDelivered(receiptKey(outboxKey, "web_feed"));
+    const binding = await bindSeriousSignalEvidence({ cik: normalizedCik(validated.candidate.cik)!.padStart(10, "0"),
+      evidenceKey, direction: validated.candidate.direction as "upside" | "downside", outboxKey,
+      now, signal: options.signal, existingOnly: legacy && !legacyReceipt });
+    if (binding.duplicate) {
+      if (options.canonicalResolved) throw new Error("serious_signal_evidence_binding_cycle");
+      const canonical = await readAndValidateOutbox(binding.outboxKey);
+      if (canonical.testOnly || await deliveryEvidenceKey(canonical, options.signal) !== evidenceKey
+        || normalizedCik(canonical.candidate.cik) !== normalizedCik(validated.candidate.cik)
+        || canonical.candidate.direction !== validated.candidate.direction) {
+        throw new Error("serious_signal_evidence_binding_target_mismatch");
+      }
+      const canonicalJob = await ensureDeliveryJob(canonical, now, options.signal);
+      const result = await processDeliveryJobKey(canonicalJob.key, binding.outboxKey, { ...options, canonicalResolved: true });
+      // A new cohort does not scan the old cohort's jobs. Keep its alias as an
+      // unpaid recovery pointer until the canonical job settles, without ever
+      // issuing a channel send or fabricating a receipt under the alias.
+      const aliasStatus: DeliveryJobStatus = result.deliveryStatus === "delivered" ? "duplicate_suppressed"
+        : terminalStatus(result.deliveryStatus) ? result.deliveryStatus : "retry_scheduled";
+      const nextAttemptAt = terminalStatus(aliasStatus) ? null
+        : result.nextAttemptAt ?? new Date(now.getTime() + NO_CHANNEL_RECHECK_MS).toISOString();
+      if (current.job.status !== aliasStatus || current.job.nextAttemptAt !== nextAttemptAt
+        || current.job.canonicalOutboxKey !== binding.outboxKey) {
+        await persistClaimedJob(current, { ...current.job, status: aliasStatus,
+          canonicalOutboxKey: binding.outboxKey, updatedAt: now.toISOString(), nextAttemptAt,
+          lastError: result.lastError, lease: null });
+      }
+      return { ...result, outboxKey, seriousSignal: false, deliveryStatus: aliasStatus,
+        duplicateSuppressed: true, canonicalOutboxKey: binding.outboxKey, canonicalDeliveryStatus: result.deliveryStatus };
+    }
+  }
   const claimed = await claimDeliveryJob(current, now, ownerId);
   if (!claimed) return responseFromJob(current.job, validated, message);
 
@@ -872,6 +930,27 @@ async function processDeliveryJobKey(
   return responseFromJob(persisted.job, validated, message, results);
 }
 
+async function deliveryEvidenceKey(validated: ReturnType<typeof validatedOutbox>, signal?: AbortSignal) {
+  if (validated.candidate.terminalEvidence != null || validated.candidate.terminalDecisionKey != null) {
+    const cik = normalizedCik(validated.candidate.cik)!.padStart(10, "0");
+    const descriptor = validatedTerminalEvidence(validated.candidate.terminalEvidence, { cik, ticker: validated.ticker });
+    if (!descriptor || validated.candidate.terminalDecisionKey !== descriptor.decisionKey) {
+      throw new Error("serious_signal_terminal_evidence_invalid");
+    }
+    const decision = await readTerminalDecision({ cik, decisionKey: descriptor.decisionKey, signal });
+    if (!decision || decision.outcome !== "approved" || decision.cik !== cik || decision.ticker !== validated.ticker
+      || decision.direction !== validated.candidate.direction || decision.fingerprint !== validated.outbox.candidateFingerprint
+      || decision.evidence.decisionKey !== descriptor.decisionKey || !isDeepStrictEqual(decision.evidence, descriptor)
+      || decision.publicationPacketKey !== terminalPublicationPacketKey(validated.candidate)) {
+      throw new Error("serious_signal_terminal_approval_missing_or_mismatched");
+    }
+    return descriptor.decisionKey;
+  }
+  // Legacy outboxes can only prove exact fingerprint equality. They cannot
+  // acquire a fabricated semantic comparison baseline during migration.
+  return crypto.createHash("sha256").update(String(validated.outbox.candidateFingerprint)).digest("hex");
+}
+
 async function listKeysBounded(prefix: string, maximum: number) {
   const keys: string[] = [];
   let continuationToken: string | null = null;
@@ -971,7 +1050,7 @@ export async function discoverSeriousSignalDeliveries(options: { now?: Date } & 
     assertDeliveryActive(options, 5_000);
     try {
       const validated = await readAndValidateOutbox(outboxKey);
-      await ensureDeliveryJob(validated, now);
+      await ensureDeliveryJob(validated, now, options.signal);
       jobsCreatedOrConfirmed += 1;
     } catch (error) {
       errors.push(error instanceof Error ? error.message.slice(0, 160) : "serious_signal_delivery_discovery_failed");
@@ -1087,7 +1166,7 @@ export async function deliverSeriousSignalOutbox(
   assertDeliveryActive(options, 12_000);
   const now = options.now ?? new Date();
   const validated = await readAndValidateOutbox(outboxKey);
-  const job = await ensureDeliveryJob(validated, now);
+  const job = await ensureDeliveryJob(validated, now, options.signal);
   return processDeliveryJobKey(job.key, outboxKey, {
     now,
     ownerId: options.ownerId,

@@ -1,3 +1,5 @@
+import { createCompleteSourceRecord, readCompleteSourceRecord, type CompleteSourceBinding, type CompleteSourceRecord } from "@/lib/company-profile-complete-source";
+import { inspectAnnualDocumentIdentity } from "@/lib/company-profile-financial-customer-source";
 import { isAnnualInformationFormDocument, resolve40FAnnualInformationForm, secAnnualFilingIndexUrl } from "@/lib/company-profile-annual-source";
 import { setTimeout as pause } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
@@ -68,68 +70,94 @@ function transientProfileWrite(error: unknown) {
 }
 // Match the JSON representation actually persisted by the R2 encoder.
 const snapshotEntry = (entry: Entry): Entry => JSON.parse(JSON.stringify(redactSecrets(entry)));
-// The profile cache is one shared JSON object. The profile role deliberately
-// overlaps two independent issuers, but letting both local workers run a full
-// read/modify/CAS loop at once makes them contend with each other and can burn
-// every bounded conflict retry without any external writer. Serialize only
-// this process's cache mutations; source requests and issuer extraction remain
-// concurrent, and R2 CAS still protects against other processes.
-let profileStoreTail: Promise<void> = Promise.resolve();
-async function serializedProfileStore<T>(operation: () => Promise<T>) {
-  const previous = profileStoreTail.catch(() => undefined);
-  let release!: () => void;
-  const turn = new Promise<void>(resolve => { release = resolve; });
-  profileStoreTail = previous.then(() => turn);
-  try {
-    await previous;
-    return await operation();
-  } finally {
-    release();
-  }
+// All issuer rows share one object. Serialize local read/CAS/reconciliation
+// transactions, while retaining CAS against writers in other processes.
+// A cancelled waiter leaves the FIFO immediately and never inherits the lock.
+const profileCacheWriteQueue: Array<() => void> = [];
+let profileCacheWriteHeld = false;
+function acquireProfileCacheWrite(signal: AbortSignal): Promise<() => void> {
+  return new Promise((resolve, reject) => {
+    signal.throwIfAborted();
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      const next = profileCacheWriteQueue.shift();
+      if (next) next();
+      else profileCacheWriteHeld = false;
+    };
+    const enter = () => {
+      signal.removeEventListener("abort", cancel);
+      resolve(release);
+    };
+    const cancel = () => {
+      const index = profileCacheWriteQueue.indexOf(enter);
+      if (index >= 0) profileCacheWriteQueue.splice(index, 1);
+      reject(signal.reason);
+    };
+    if (profileCacheWriteHeld) {
+      profileCacheWriteQueue.push(enter);
+      signal.addEventListener("abort", cancel, { once: true });
+    } else {
+      profileCacheWriteHeld = true;
+      enter();
+    }
+  });
 }
-async function store(entry: Entry, previous: Entry | undefined, roleSignal?: AbortSignal, deadlineCleanup = false) {
+async function store(entry: Entry, previous: Entry | undefined, roleSignal?: AbortSignal, deadlineCleanup = false, persistenceSignal?: AbortSignal, admission = false) {
   const intended = snapshotEntry(entry);
   // A normal source-deadline deferral gets one short cleanup PUT so its
   // five-minute backoff survives. It must never start another source or retry.
-  const signal = AbortSignal.any([...(roleSignal && !deadlineCleanup ? [roleSignal] : []), AbortSignal.timeout(deadlineCleanup ? 5_000 : 15_000)]);
-  return serializedProfileStore(async () => {
-    let writes = 0;
-    let failure: unknown = new Error("company_profile_cache_conflict");
-    try {
-      while (true) {
-        signal.throwIfAborted();
-        // This read also resolves an ambiguous response from the preceding PUT.
-        // Never retry from the old ETag or a guessed outcome.
-        const { saved, entries } = await load({ signal, forWrite: true });
-        const targets = entries.filter(row => row.cik === intended.cik && row.ticker === intended.ticker);
-        if (targets.length > 1) throw new Error("company_profile_cache_state_invalid");
-        if (isDeepStrictEqual(targets[0], intended)) return intended;
-        // Timestamps alone are not sufficient: a same-time concurrent change,
-        // including historical metadata, must not be overwritten either.
-        if (!isDeepStrictEqual(targets[0], previous)) throw new Error("company_profile_cache_superseded");
-        signal.throwIfAborted();
-        if (writes >= (deadlineCleanup ? 1 : 4)) throw failure;
-        if (writes) await pause(100 * 2 ** (writes - 1), undefined, { signal });
-        signal.throwIfAborted();
-        try {
-          writes++;
-          const result = await writeVersionedJsonToR2(KEY, { version: 1, updatedAt: intended.updatedAt,
-            entries: [intended, ...entries.filter(row => row.cik !== intended.cik || row.ticker !== intended.ticker)] },
-          { ...(saved.etag ? { expectedEtag: saved.etag } : { createOnly: true }), signal, maxAttempts: 1 });
-          if (result.conflict) { failure = new Error("company_profile_cache_conflict"); continue; }
-          if (!result.written) throw new Error("company_profile_cache_write_failed");
-          return intended;
-        } catch (error) {
-          if (!transientProfileWrite(error)) throw error;
-          failure = error;
-        }
+  // The builder may stop source/admission work before storage finalization.
+  // A healthy in-flight CAS must not be cancelled merely by that work cutoff.
+  // Cleanup still has one PUT/5s and may not escape the persistence deadline.
+  const parentSignal = persistenceSignal ?? (deadlineCleanup ? undefined : roleSignal);
+  const signal = AbortSignal.any([...(parentSignal ? [parentSignal] : []), AbortSignal.timeout(deadlineCleanup ? 5_000 : 15_000)]);
+  let writes = 0;
+  let failure: unknown = new Error("company_profile_cache_conflict");
+  let release: (() => void) | undefined;
+  try {
+    // Queue time consumes the same transaction deadline. Admission also stops
+    // at the work cutoff; finalization and cleanup retain their storage reserve.
+    release = await acquireProfileCacheWrite(admission && roleSignal ? AbortSignal.any([signal, roleSignal]) : signal);
+    while (true) {
+      signal.throwIfAborted();
+      if (admission && writes === 0) roleSignal?.throwIfAborted();
+      // This read also resolves an ambiguous response from the preceding PUT.
+      // Never retry from the old ETag or a guessed outcome.
+      const readSignal = admission && writes === 0 && roleSignal ? AbortSignal.any([signal, roleSignal]) : signal;
+      const { saved, entries } = await load({ signal: readSignal, forWrite: true });
+      const targets = entries.filter(row => row.cik === intended.cik && row.ticker === intended.ticker);
+      if (targets.length > 1) throw new Error("company_profile_cache_state_invalid");
+      if (isDeepStrictEqual(targets[0], intended)) return intended;
+      // Timestamps alone are not sufficient: a same-time concurrent change,
+      // including historical metadata, must not be overwritten either.
+      if (!isDeepStrictEqual(targets[0], previous)) throw new Error("company_profile_cache_superseded");
+      signal.throwIfAborted();
+      if (writes >= (deadlineCleanup ? 1 : 4)) throw failure;
+      if (writes) await pause(100 * 2 ** (writes - 1), undefined, { signal });
+      signal.throwIfAborted();
+      if (admission) roleSignal?.throwIfAborted();
+      try {
+        writes++;
+        const result = await writeVersionedJsonToR2(KEY, { version: 1, updatedAt: intended.updatedAt,
+          entries: [intended, ...entries.filter(row => row.cik !== intended.cik || row.ticker !== intended.ticker)] },
+        { ...(saved.etag ? { expectedEtag: saved.etag } : { createOnly: true }), signal, maxAttempts: 1 });
+        if (result.conflict) { failure = new Error("company_profile_cache_conflict"); continue; }
+        if (!result.written) throw new Error("company_profile_cache_write_failed");
+        return intended;
+      } catch (error) {
+        if (!transientProfileWrite(error)) throw error;
+        failure = error;
       }
-    } catch (error) {
-      // In particular, do not let ensureCompanyProfile's source-error handler
-      // issue a different write after this outcome could not be established.
-      throw new ProfileCacheWriteError(error, !deadlineCleanup && writes === 0 && causedByRoleAbort(error, roleSignal));
     }
-  });
+  } catch (error) {
+    // In particular, do not let ensureCompanyProfile's source-error handler
+    // issue a different write after this outcome could not be established.
+    throw new ProfileCacheWriteError(error, !deadlineCleanup && writes === 0 && (admission || !persistenceSignal) && causedByRoleAbort(error, roleSignal));
+  } finally {
+    release?.();
+  }
 }
 
 /** Cache-only read. Re-check the current authoritative ticker/CIK mapping before public use. */
@@ -155,7 +183,7 @@ export async function readCompanyProfiles(identities: CompanyIdentity[], now = n
   return result;
 }
 
-async function boundedText(response: Response, complete?: (text: string) => boolean, onResponseBodyFailure?: () => void) {
+async function boundedText(response: Response, complete?: (text: string) => boolean, onResponseBodyFailure?: () => void, onEof?: (bytes: Uint8Array) => void) {
   const maximumBytes = complete ? 12_000_000 : 2_000_000;
   if (!response.ok) throw new Error(`company_profile_http_${response.status}`);
   if (!complete && Number(response.headers.get("content-length") ?? 0) > maximumBytes) throw new Error("company_profile_document_too_large");
@@ -163,6 +191,7 @@ async function boundedText(response: Response, complete?: (text: string) => bool
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let size = 0, body = "", lastChecked = 0;
+  const chunks: Uint8Array[] = [];
   try {
     while (true) {
       let chunk: Awaited<ReturnType<typeof reader.read>>;
@@ -173,9 +202,15 @@ async function boundedText(response: Response, complete?: (text: string) => bool
         onResponseBodyFailure?.();
         throw error;
       }
-      if (chunk.done) return body + decoder.decode();
+      if (chunk.done) {
+        // Only the native reader's done flag attests transport completion. An
+        // early business match or a closing HTML tag must never mint this cache.
+        if (onEof) onEof(Buffer.concat(chunks, size));
+        return body + decoder.decode();
+      }
       size += chunk.value.byteLength;
       if (size > maximumBytes) throw new Error("company_profile_document_too_large");
+      if (onEof) chunks.push(chunk.value.slice()); // retain the original bytes, not re-encoded text
       body += decoder.decode(chunk.value, { stream: true });
       // Annual reports may have large financial exhibits after the business section.
       // Cancel the stream as soon as enough exact source text is verified.
@@ -185,6 +220,23 @@ async function boundedText(response: Response, complete?: (text: string) => bool
       }
     }
   } finally { await reader.cancel().catch(() => undefined); }
+}
+function completeSourceBinding(filing: Filing, cik: string): CompleteSourceBinding {
+  return { cik, form: filing.form as CompleteSourceBinding["form"], url: filing.url, filedAt: filing.filedAt,
+    ...(filing.annualFilingUrl ? { annualFilingUrl: filing.annualFilingUrl } : {}),
+    ...(filing.annualFilingIndexUrl ? { annualFilingIndexUrl: filing.annualFilingIndexUrl } : {}) };
+}
+function completeAnnualDocument(html: string, filing: Filing, identity: CompanyIdentity, now: Date) {
+  // A 40-F AIF has already been resolved against its authenticated cover and
+  // same-accession index above. Regular annuals must carry matching strict DEI.
+  return filing.form === "40-F" ? isAnnualInformationFormDocument(html)
+    : Boolean(inspectAnnualDocumentIdentity({ html, identity: { cik: String(identity.cik) }, form: filing.form,
+      sourceUrl: filing.url, filedAt: filing.filedAt, now }));
+}
+function completeSource(source: Json, filing: Filing, identity: CompanyIdentity, now: Date) {
+  const decoded = readCompleteSourceRecord(source.completeSource, completeSourceBinding(filing, String(identity.cik)), now);
+  if (decoded.status === "valid" && !completeAnnualDocument(decoded.html, filing, identity, now)) return { status: "invalid" as const };
+  return decoded;
 }
 function annualFiling(body: Json, identity: CompanyIdentity, now: Date): Filing | null {
   if (profileCik(body.cik) !== profileCik(identity.cik) || !Array.isArray(body.tickers)
@@ -207,7 +259,7 @@ function annualFiling(body: Json, identity: CompanyIdentity, now: Date): Filing 
 
 /** Exact issuer metadata, at most two historical indexes, and an annual filing.
  * A 40-F additionally requires its same-accession index and declared AIF exhibit. */
-export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl: typeof fetch, now = new Date(), options: { signal?: AbortSignal; onResponseBodyFailure?: () => void } = {}) {
+export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl: typeof fetch, now = new Date(), options: { signal?: AbortSignal; persistenceSignal?: AbortSignal; onResponseBodyFailure?: () => void } = {}) {
   const exact = { ticker: text(identity.ticker).toUpperCase(), company: text(identity.company), cik: profileCik(identity.cik) };
   if (!exact.cik || !exact.company || !/^[A-Z0-9.-]{1,12}$/.test(exact.ticker)) return null;
   if (options.signal?.aborted) return null;
@@ -228,14 +280,17 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
     verificationHistoryKnown: prior?.verificationHistoryKnown === true || Boolean(prior?.profile) || Boolean(prior?.firstVerifiedAt) ? true : undefined,
     filing: prior?.filing, cachedParserRevision: prior?.cachedParserRevision, parserRevision: COMPANY_PROFILE_PARSER_REVISION };
   let acknowledged = prior ? snapshotEntry(prior) : undefined;
-  const persistEntry = async (deadlineCleanup = false) => { acknowledged = await store(entry, acknowledged, options.signal, deadlineCleanup); };
+  const persistEntry = async (deadlineCleanup = false, admission = false) => { acknowledged = await store(entry, acknowledged, options.signal, deadlineCleanup, options.persistenceSignal, admission); };
   // Persist backoff before network; budget wrappers still make their own durable reservations.
-  try { await persistEntry(); }
+  try { await persistEntry(false, true); }
   catch (error) {
     if (error instanceof ProfileCacheWriteError && error.safeRoleDeferral) return cached;
     throw error;
   }
-  const request = async (url: string, complete?: (text: string) => boolean) => boundedText(await fetchImpl(url, { headers: { Accept: "text/html,application/json", "User-Agent": "SwingUp/1.0 support@swingup.app" }, cache: "no-store", redirect: "error", signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(12000)]) : AbortSignal.timeout(12000) }), complete, options.onResponseBodyFailure);
+  const request = async (url: string, complete?: (text: string) => boolean, onEof?: (bytes: Uint8Array, response: Response) => void) => {
+    const response = await fetchImpl(url, { headers: { Accept: "text/html,application/json", "User-Agent": "SwingUp/1.0 support@swingup.app" }, cache: "no-store", redirect: "error", signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(12000)]) : AbortSignal.timeout(12000) });
+    return boundedText(response, complete, options.onResponseBodyFailure, onEof ? bytes => onEof(bytes, response) : undefined);
+  };
   let phase = "issuer_submissions";
   try {
     const priorFilingAge = now.getTime() - Date.parse(prior?.filing?.filedAt ?? "");
@@ -281,7 +336,9 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
     if (filing.url !== prior?.filing?.url) entry.cachedParserRevision = undefined;
     entry.filing = filing;
     phase = "annual_filing";
-    await persistEntry();
+    // Admission/backoff is already durable. Save selected filing metadata with
+    // the final outcome, avoiding a redundant full-cache read/PUT here. A crash
+    // may rediscover metadata on the next guarded retry; it cannot verify a row.
     const extract = (html: string, customerEvidence?: unknown) => {
       const result = inspectCompanyProfileExtraction({ identity: exact, html, form: filing.form, sourceUrl: filing.url, filedAt: filing.filedAt, now, customerEvidence, annualFilingUrl: filing.annualFilingUrl, annualFilingIndexUrl: filing.annualFilingIndexUrl });
       entry.extractionFailure = result.reason ?? undefined;
@@ -290,25 +347,36 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
     // Reuse the exact annual business section across parser retries. It is
     // issuer/accession-specific and never substitutes another company's text.
     const sourceKey = pr262StorageKey(`research-evidence/company-profile-sources/${exact.cik}/${filing.url.split("/").slice(-2).join("-")}.json`);
-    const sourceSaved = await readVersionedTextFromR2(sourceKey);
+    const sourceSaved = await readVersionedTextFromR2(sourceKey, { signal: options.signal });
     const source = sourceSaved.found && sourceSaved.text ? object(JSON.parse(sourceSaved.text)) : {};
-    const cachedSection = source.layoutRevision === SOURCE_LAYOUT_REVISION && source.url === filing.url && source.filedAt === filing.filedAt ? text(source.businessText) : "";
+    const completeSaved = completeSource(source, filing, exact, now);
+    const cachedSection = completeSaved.status !== "invalid" && source.layoutRevision === SOURCE_LAYOUT_REVISION && source.url === filing.url && source.filedAt === filing.filedAt ? text(source.businessText) : "";
     const sectionHeading = filing.form === "40-F" ? "DESCRIPTION OF THE BUSINESS" : filing.form === "20-F" ? "Item 4. Information on the Company" : "Item 1. Business";
-    let profile = cached?.sourceUrl === filing.url ? cached : cachedSection ? extract(`${sectionHeading}\n${String(source.businessText)}`, source.financialCustomerEvidence) : null;
-    // Earlier parsers could stop the stream at an incomplete list introduction.
-    // If that old excerpt no longer verifies, permit one longer source read.
-    if (!profile && (!cachedSection || source.parserRevision !== COMPANY_PROFILE_PARSER_REVISION)) {
+    // Complete original bytes can be re-parsed after grammar or note-extraction
+    // changes without another SEC request. Their original observation never moves.
+    let profile = cached?.sourceUrl === filing.url ? cached : completeSaved.status === "valid" ? extract(completeSaved.html)
+      : cachedSection ? extract(`${sectionHeading}\n${String(source.businessText)}`, source.financialCustomerEvidence) : null;
+    // Legacy excerpts still allow positive recovery, but never claim EOF. A
+    // failed old excerpt gets at most the existing one read after a parser repair.
+    if (!profile && completeSaved.status !== "valid" && (!cachedSection || source.parserRevision !== COMPANY_PROFILE_PARSER_REVISION)) {
+      let receipt: { bytes: Uint8Array; response: Response } | undefined;
       const html = await request(filing.url, body => {
         if (filing.form === "40-F" && !isAnnualInformationFormDocument(body)) return false;
         const candidate = extract(body);
         // Financial-note proof requires EOF, not merely a closing HTML tag in
         // an early chunk. A later body failure must still fail this request.
         return Boolean(candidate && !candidate.customerEvidence);
-      });
+      }, (bytes, response) => { receipt = { bytes, response }; });
       if (filing.form === "40-F" && !isAnnualInformationFormDocument(html)) throw new Error("company_profile_aif_document_unverified");
       const extracted = extract(html);
       const businessText = annualBusinessText(html, filing.form);
-      if (businessText) await writeVersionedJsonToR2(sourceKey, { version: 1, layoutRevision: SOURCE_LAYOUT_REVISION, parserRevision: COMPANY_PROFILE_PARSER_REVISION, url: filing.url, filedAt: filing.filedAt, businessText, financialCustomerEvidence: extracted?.customerEvidence, collectedAt: now.toISOString() }, sourceSaved.etag ? { expectedEtag: sourceSaved.etag } : { createOnly: true });
+      let completeRecord: CompleteSourceRecord | null = null;
+      if (receipt && completeAnnualDocument(html, filing, exact, now)) {
+        completeRecord = createCompleteSourceRecord({ binding: completeSourceBinding(filing, exact.cik), bytes: receipt.bytes,
+          requestUrl: filing.url, finalUrl: receipt.response.url, status: receipt.response.status, eof: true, observedAt: now.toISOString() }, now);
+      }
+      if (businessText || completeRecord) await writeVersionedJsonToR2(sourceKey, { version: 1, layoutRevision: SOURCE_LAYOUT_REVISION, parserRevision: COMPANY_PROFILE_PARSER_REVISION, url: filing.url, filedAt: filing.filedAt, businessText, financialCustomerEvidence: extracted?.customerEvidence,
+        ...(completeRecord ? { completeSource: completeRecord } : {}), collectedAt: now.toISOString() }, { ...(sourceSaved.etag ? { expectedEtag: sourceSaved.etag } : { createOnly: true }), signal: options.persistenceSignal ?? options.signal });
       profile = extracted;
     }
     if (!profile) throw new Error("company_profile_products_and_customers_not_extracted");
@@ -372,10 +440,12 @@ async function recoverCachedProfiles(entries: Entry[], listings: Json[], now: Da
       const saved = await readVersionedTextFromR2(key);
       const source = saved.found && saved.text ? object(JSON.parse(saved.text)) : {};
       checked.push({ ...entry, cachedParserRevision: COMPANY_PROFILE_PARSER_REVISION });
-      if (source.layoutRevision !== SOURCE_LAYOUT_REVISION || source.url !== filing.url || source.filedAt !== filing.filedAt || !text(source.businessText)) return;
+      const completeSaved = completeSource(source, filing, entry, now);
+      if (completeSaved.status === "invalid") return;
+      if (completeSaved.status !== "valid" && (source.layoutRevision !== SOURCE_LAYOUT_REVISION || source.url !== filing.url || source.filedAt !== filing.filedAt || !text(source.businessText))) return;
       const heading = filing.form === "40-F" ? "DESCRIPTION OF THE BUSINESS" : filing.form === "20-F" ? "Item 4. Information on the Company" : "Item 1. Business";
-      const profile = extractCompanyProfile({ identity: entry, html: `${heading}\n${String(source.businessText)}`,
-        form: filing.form, sourceUrl: filing.url, filedAt: filing.filedAt, now, customerEvidence: source.financialCustomerEvidence, annualFilingUrl: filing.annualFilingUrl, annualFilingIndexUrl: filing.annualFilingIndexUrl });
+      const profile = extractCompanyProfile({ identity: entry, html: completeSaved.status === "valid" ? completeSaved.html : `${heading}\n${String(source.businessText)}`,
+        form: filing.form, sourceUrl: filing.url, filedAt: filing.filedAt, now, customerEvidence: completeSaved.status === "valid" ? undefined : source.financialCustomerEvidence, annualFilingUrl: filing.annualFilingUrl, annualFilingIndexUrl: filing.annualFilingIndexUrl });
       if (!profile) return;
       if (filing.industry) Object.assign(profile, { industry: filing.industry, industrySourceUrl: `https://data.sec.gov/submissions/CIK${entry.cik}.json` });
       recovered.push({ ...entry, profile, verificationHistoryKnown: true, error: undefined, parserRevision: COMPANY_PROFILE_PARSER_REVISION,

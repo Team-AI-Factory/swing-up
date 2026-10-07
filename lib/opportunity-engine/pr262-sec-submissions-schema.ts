@@ -1,7 +1,24 @@
+/** Parse only an actual SEC acceptance timestamp, never a filing-date fallback. */
+export function pr262SecAcceptanceTime(value: unknown): number | null {
+  if (typeof value !== "string") return null;
+  // SEC compact acceptance-header clocks are not declared UTC. Preserve only
+  // explicit-zone JSON timestamps here; never append a guessed timezone.
+  // https://www.sec.gov/about/webmaster-frequently-asked-questions
+  const timestamp = value;
+  const parts = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.exec(timestamp);
+  if (!parts || Number(parts[2]) > 23 || Number(parts[3]) > 59 || Number(parts[4]) > 59) return null;
+  const calendarDay = Date.parse(parts[1]);
+  const milliseconds = Date.parse(timestamp);
+  return Number.isFinite(calendarDay) && new Date(calendarDay).toISOString().slice(0, 10) === parts[1]
+    && Number.isFinite(milliseconds) ? milliseconds : null;
+}
+
 /** A complete root index is required before reusing it or certifying a check.
  * Annual-profile excerpts and partial HTTP representations cannot satisfy this.
  * Non-empty rows require actual acceptance timestamps; filing dates alone do
- * not establish an intraday event time. Empty aligned indexes are valid. */
+ * not establish an intraday event time. Empty aligned indexes are valid.
+ * Official historical rows may have primaryDocument="". Those rows remain
+ * part of the complete index, but are not eligible for filing events. */
 export function completePr262SecSubmissionsRoot(value: unknown, identity: { cik: string; ticker: string }) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const body = value as Record<string, unknown>;
@@ -25,13 +42,10 @@ export function completePr262SecSubmissionsRoot(value: unknown, identity: { cik:
     const accepted = acceptance[index];
     if (typeof accession !== "string" || !/^\d{10}-\d{2}-\d{6}$/.test(accession)
       || typeof form !== "string" || !form.trim()
-      || typeof document !== "string" || !document.trim()
+      || typeof document !== "string" || (document !== "" && !document.trim())
       || typeof filingDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(filingDate)
       || !Number.isFinite(Date.parse(filingDate)) || new Date(filingDate).toISOString().slice(0, 10) !== filingDate
-      || typeof accepted !== "string") return false;
-    const compact = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/.exec(accepted);
-    const timestamp = compact ? `${compact[1]}-${compact[2]}-${compact[3]}T${compact[4]}:${compact[5]}:${compact[6]}Z` : accepted;
-    return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(timestamp)
-      && Number.isFinite(Date.parse(timestamp));
+      || pr262SecAcceptanceTime(accepted) === null) return false;
+    return true;
   });
 }

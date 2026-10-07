@@ -1,5 +1,18 @@
 import { spawnSync } from "node:child_process";
 const checks = [
+  "company-profile-storage-retry-isolated.mjs",
+  "pr262-storage-namespace",
+  "company-profile-contention",
+  "serious-signal-cross-cohort",
+  "pr262-sec-submissions-schema",
+  "simple-alert-registry-finalization", "serious-signal-evidence-binding",
+  "r2-prefix-list",
+  "terminal-review-journal", "terminal-review-runner", "terminal-review-event-job", "research-alert-read-dedupe",
+  "committee-usage-retention", "review-evidence-revision-diagnostics",
+  "pilot-review-evidence-snapshot", "company-profile-advertising-fees",
+  "company-profile-sales-grammar", "company-profile-write-reduction",
+  "company-profile-complete-source-codec", "company-profile-complete-source-identity",
+  "company-profile-complete-source-cache", "company-profile-operating-quality",
   "simple-alert-source-storage-deadline",
   "company-profile-r2-integration",
   "company-profile-storage-provenance",
@@ -7,7 +20,9 @@ const checks = [
   "simple-alert-issuer-coverage",
   "company-profile-cache-invalidation",
   "company-profile-storage-retry", "r2-state-abort-signal",
-  "simple-alert-profile-storage-reporting", "r2-state-error-provenance",
+  "simple-alert-profile-storage-reporting", "simple-alert-profile-finalization", "simple-alert-profile-persistence-r2", "r2-state-error-provenance",
+  "ai-committee-financial-facts-prompt",
+  "financial-debt-period-completeness",
   "company-profile-financial-note-source", "company-profile-financial-note-cache",
   "company-profile-revenue-note-source", "company-profile-revenue-note-cache",
   "company-profile-sec-name",
@@ -29,12 +44,14 @@ const checks = [
   "pr262-profile-recovery-capacity",
   "reliable-alert-recovery", "ai-committee-failure-diagnostics", "ai-committee-provider-guardrails",
   "pr262-ai-daily-cost-fuse", "pr262-event-job", "pr262-committee-authority", "pr262-serious-watch-out-authority",
+  "valuation-review-materiality", "valuation-review-admission", "valuation-committee-followup",
   "serious-signal-delivery", "equity-event-first-runner", "equity-event-sources", "equity-sec-filing-details",
   "pr262-evidence-quality", "company-profile", "signal-presentation", "inclusive-committee-quality",
   "pr262-analysis-only-orchestrator", "pr262-production-foundation", "us-serious-signal-consistency",
 ];
 for (const check of checks) {
-  const result = spawnSync(process.execPath, [`scripts/${check}-smoke.mjs`], { encoding: "utf8", timeout: 60000 });
+  const filename = check.endsWith(".mjs") ? check : `${check}-smoke.mjs`;
+  const result = spawnSync(process.execPath, [`scripts/${filename}`], { encoding: "utf8", timeout: 60000 });
   if (result.status !== 0) {
     console.error(`FAIL ${check}\n${result.stdout.slice(-3000)}\n${result.stderr.slice(-5000)}`);
     process.exit(1);

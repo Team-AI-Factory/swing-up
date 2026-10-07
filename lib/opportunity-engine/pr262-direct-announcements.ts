@@ -1,4 +1,4 @@
-import { completePr262SecSubmissionsRoot } from "@/lib/opportunity-engine/pr262-sec-submissions-schema";
+import { completePr262SecSubmissionsRoot, pr262SecAcceptanceTime } from "@/lib/opportunity-engine/pr262-sec-submissions-schema";
 import net from "node:net";
 import { createHash } from "node:crypto";
 import pilotIssuerSources from "@/config/simple-alert-issuer-sources.json";
@@ -32,6 +32,7 @@ const MAX_FEEDS_POLLED_PER_CYCLE = 20;
 const PILOT_MAX_SEC_CHECKS_PER_CYCLE = 13;
 const PILOT_DIRECT_WORK_MS = 35_000;
 const PILOT_SEC_WORK_MS = 28_000;
+const PILOT_REGISTRY_RESERVE_MS = 5_000;
 const SEC_POLL_CADENCE_MS = 29 * 60_000;
 const SEC_AGENT = "SwingUp/1.0 support@swingup.app";
 
@@ -247,15 +248,6 @@ function indexedText(value: unknown, index: number) {
   return Array.isArray(value) ? text(value[index]) : null;
 }
 
-function secObservedAt(acceptance: string | null, filingDate: string | null) {
-  const compact = acceptance?.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/);
-  const candidate = compact
-    ? `${compact[1]}-${compact[2]}-${compact[3]}T${compact[4]}:${compact[5]}:${compact[6]}.000Z`
-    : acceptance ?? (filingDate ? `${filingDate}T12:00:00.000Z` : "");
-  const milliseconds = Date.parse(candidate);
-  return Number.isFinite(milliseconds) ? milliseconds : null;
-}
-
 function secFormPriority(form: string) {
   if (/^(?:8-K|6-K|424B5)$/.test(form)) return 98;
   if (/^(?:S-1|S-3)$/.test(form)) return 95;
@@ -280,10 +272,10 @@ function recentSecFilingEvents(
     const form = rawForm.toUpperCase().replace(/\s+/g, " ").trim();
     const normalizedForm = form.replace(/\/A$/, "");
     if (!DECISION_GRADE_SEC_FORMS.has(normalizedForm)) return [];
-    const observedMs = secObservedAt(
-      indexedText(recent.acceptanceDateTime, index),
-      indexedText(recent.filingDate, index),
-    );
+    // Historical index rows with no primary document are valid coverage, but
+    // cannot become events. Never synthesize an event time from filingDate.
+    if (!indexedText(recent.primaryDocument, index)) return [];
+    const observedMs = pr262SecAcceptanceTime(indexedText(recent.acceptanceDateTime, index));
     if (observedMs === null || observedMs > now.getTime() + 5 * 60_000 || now.getTime() - observedMs > 48 * 60 * 60_000) return [];
     const accessionCompact = accession.replace(/-/g, "");
     const canonicalSecIndexUrl = `https://www.sec.gov/Archives/edgar/data/${cik}/${accessionCompact}/${accession}-index.html`;
@@ -487,6 +479,7 @@ function parseFeed(feed: string, entry: RegistryEntry, now: Date): Pr262SensorEv
 }
 
 async function loadRegistry(signal?: AbortSignal) {
+  signal?.throwIfAborted();
   const current = await readVersionedTextFromR2(REGISTRY_KEY, { signal });
   if (!current.found || !current.text) return { registry: emptyRegistry(), etag: current.etag, found: false };
   let parsed: Partial<Registry>;
@@ -702,11 +695,27 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
   const now = input.now ?? new Date();
   const pilot = isSimpleAlertPilot();
   const startedAtMs = Date.now();
-  const deadlineAtMs = pilot ? Math.min(input.deadlineAtMs ?? Infinity, startedAtMs + PILOT_DIRECT_WORK_MS) : Infinity;
-  // Registry I/O gets a small finalization reserve inside the outer source
-  // cutoff. The shared R2 recovery helper must not add its own 45s past it.
-  const registryDeadlineAtMs = pilot ? Math.min(input.deadlineAtMs ?? Infinity, startedAtMs + PILOT_DIRECT_WORK_MS + 5_000) : Infinity;
-  const registrySignal = () => pilot ? AbortSignal.timeout(Math.max(1, registryDeadlineAtMs - Date.now())) : undefined;
+  // Reserve finalization time from the actual remaining outer window, even
+  // when preceding source work delays this monitor's start.
+  const registryDeadlineAtMs = pilot ? Math.min(input.deadlineAtMs ?? Infinity,
+    startedAtMs + PILOT_DIRECT_WORK_MS + PILOT_REGISTRY_RESERVE_MS) : Infinity;
+  const deadlineAtMs = pilot ? registryDeadlineAtMs - PILOT_REGISTRY_RESERVE_MS : Infinity;
+  const registrySignal = () => {
+    if (!pilot) return undefined;
+    const remainingMs = registryDeadlineAtMs - Date.now();
+    return remainingMs <= 0 ? AbortSignal.abort(new Error("direct_registry_deadline")) : AbortSignal.timeout(remainingMs);
+  };
+  const preparationErrors: string[] = [];
+  let sourcePreparationFailures = 0;
+  type RegistryFailureStage = "load" | "write" | "conflict_winner_read";
+  let registryFailureStage: RegistryFailureStage | null = null;
+  let registryError: string | null = null;
+  const registryFailed = (stage: RegistryFailureStage, error: unknown) => {
+    registryFailureStage = stage;
+    registryError = `direct_registry_${stage}:${discoveryFailureMessage(error)}`;
+    sourcePreparationFailures += 1;
+    preparationErrors.push(registryError);
+  };
   const rawFetch = input.fetchImpl ?? fetch;
   let nextRequestAtMs = 0;
   const fetchImpl: typeof fetch = pilot ? async (request, init) => {
@@ -720,13 +729,15 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
     nextRequestAtMs = Date.now() + 1000;
     return rawFetch(request, { ...init, signal });
   } : rawFetch;
-  const loaded = await loadRegistry(registrySignal());
-  const registry = loaded.registry;
-  await seedEnv(registry, input.exposure, now);
+  const loaded = await loadRegistry(registrySignal()).catch(error => { registryFailed("load", error); return null; });
+  // An unavailable registry is not an empty durable registry. Keep work closed
+  // and report unknown registry state, without source calls or a replacement PUT.
+  const registry = loaded?.registry ?? emptyRegistry();
+  if (loaded) await seedEnv(registry, input.exposure, now);
   const byTicker = new Map(registry.entries.map((entry) => [entry.ticker, entry]));
   const eligibleCompanies = input.exposure.filter((company) => company.cik
     && (!pilot || pilotCompanies().some(row => row.ticker === company.ticker && row.cik === company.cik)));
-  if (pilot) for (const company of eligibleCompanies) {
+  if (pilot && loaded) for (const company of eligibleCompanies) {
     if (byTicker.get(company.ticker)?.cik === company.cik) continue;
     // Identity registration alone is explicitly not a source check.
     byTicker.set(company.ticker, { ticker: company.ticker, company: company.company, cik: company.cik!,
@@ -744,8 +755,6 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
   let deferredAfterSourceAttempt = 0;
   const deferrals: Array<{ reason: string; nextRetryAt: string }> = [];
   const attemptErrors: string[] = [];
-  const preparationErrors: string[] = [];
-  let sourcePreparationFailures = 0;
   const initialCatchupEventIds = new Set<string>();
   const labelInitialCatchup = (found: Pr262SensorEvent[], firstSuccessfulRead: boolean) => {
     if (pilot && firstSuccessfulRead) for (const event of found) {
@@ -765,7 +774,7 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
 
   // Repeat SEC polling is not governed by the optional RSS retry ladder. A
   // recent shared snapshot can satisfy this check without another reservation.
-  if (pilot) {
+  if (pilot && loaded) {
     const secDeadline = Math.min(deadlineAtMs, startedAtMs + PILOT_SEC_WORK_MS);
     const secDue = eligibleCompanies.filter(company => {
       const next = Date.parse(byTicker.get(company.ticker)?.sec?.nextCheckAt ?? "");
@@ -820,7 +829,7 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
 
   const lastDiscoveryMs = registry.lastDiscoveryCycleAt ? Date.parse(registry.lastDiscoveryCycleAt) : 0;
   let discovered = 0;
-  if (Date.now() < deadlineAtMs && (!Number.isFinite(lastDiscoveryMs) || now.getTime() - lastDiscoveryMs >= DISCOVERY_CADENCE_MS)) {
+  if (loaded && Date.now() < deadlineAtMs && (!Number.isFinite(lastDiscoveryMs) || now.getTime() - lastDiscoveryMs >= DISCOVERY_CADENCE_MS)) {
     if (eligibleCompanies.length) {
       const prioritized = eligibleCompanies
         .map((company) => {
@@ -965,13 +974,28 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
   }
 
   registry.updatedAt = now.toISOString();
-  const written = await writeVersionedJsonToR2(REGISTRY_KEY, registry, { ...(loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true }), signal: registrySignal() });
-  // Another monitor may finish first. Re-read its committed winner exactly once
-  // for truthful registry/backlog telemetry; never repeat provider work or issue
-  // a second write from the stale loser.
-  const winner = written.conflict ? await loadRegistry(registrySignal()) : null;
-  if (winner && !winner.found) throw new Error("pr262_direct_feed_registry_conflict_winner_missing");
-  const persistedRegistry = winner?.registry ?? registry;
+  let written = { written: false, conflict: false };
+  let winner: Awaited<ReturnType<typeof loadRegistry>> | null = null;
+  if (loaded) {
+    let stage: RegistryFailureStage = "write";
+    try {
+      const signal = registrySignal();
+      signal?.throwIfAborted();
+      written = await writeVersionedJsonToR2(REGISTRY_KEY, registry, { ...(loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true }), signal });
+      if (!written.written && !written.conflict) throw new Error("pr262_direct_feed_registry_write_unacknowledged");
+      // Read a CAS winner once; never replay provider work or a stale PUT.
+      stage = "conflict_winner_read";
+      winner = written.conflict ? await loadRegistry(registrySignal()) : null;
+      if (winner && !winner.found) throw new Error("pr262_direct_feed_registry_conflict_winner_missing");
+    } catch (error) { registryFailed(stage, error); }
+  }
+  // Actual source observations survive failed finalization, but are explicitly
+  // labelled unpersisted; only an acknowledged PUT or loaded winner is durable.
+  const persistedRegistry = !registryError && winner ? winner.registry : registry;
+  const registryTelemetryBasis = !loaded ? "unavailable" : registryError
+    ? "unpersisted_observation" : "persisted_registry";
+  const countEntries = (entries: RegistryEntry[], predicate: (entry: RegistryEntry) => unknown) =>
+    loaded ? entries.filter(predicate).length : null;
   const currentEntries = persistedRegistry.entries.filter((entry) => eligibleIdentities.get(entry.ticker) === entry.cik);
   const retainedHistoricalEntries = persistedRegistry.entries.filter((entry) => eligibleIdentities.get(entry.ticker) !== entry.cik);
   const persistedByTicker = new Map(persistedRegistry.entries.map((entry) => [entry.ticker, entry]));
@@ -983,10 +1007,10 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
     // alone does not prove fresh issuer coverage. See issuerSourceCoverage for
     // actual dated exact-CIK snapshots and independently checked IR feeds.
     officialSecIdentityMappedCompanies: eligibleCompanies.length,
-    directIrRssFeeds: currentEntries.filter((entry) => entry.feedUrl).length,
+    directIrRssFeeds: countEntries(currentEntries, (entry) => entry.feedUrl),
     rssIsOptionalEnrichment: true as const,
     seriousSignalCoverageDependsOnRss: false as const,
-    registeredFeeds: persistedRegistry.entries.filter((entry) => entry.feedUrl).length,
+    registeredFeeds: countEntries(persistedRegistry.entries, (entry) => entry.feedUrl),
     feedsPolled,
     feedPollsSelected: due.length,
     feedSuccesses,
@@ -1022,61 +1046,64 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
       const snapshotAgeMs = Date.now() - Date.parse(sec?.snapshotFetchedAt ?? "");
       return { ticker: company.ticker, cik: company.cik,
         sec: { sourceUrl: `https://data.sec.gov/submissions/CIK${company.cik}.json`,
-          status: sec?.error ? "deferred_or_failed" : Number.isFinite(snapshotAgeMs) && snapshotAgeMs >= 0 && snapshotAgeMs < SEC_POLL_CADENCE_MS ? "current_snapshot" : sec?.snapshotFetchedAt ? "stale_snapshot" : "not_checked",
+          status: !loaded ? "registry_unavailable" : sec?.error ? "deferred_or_failed" : Number.isFinite(snapshotAgeMs) && snapshotAgeMs >= 0 && snapshotAgeMs < SEC_POLL_CADENCE_MS ? "current_snapshot" : sec?.snapshotFetchedAt ? "stale_snapshot" : "not_checked",
           lastCheckedAt: sec?.lastCheckedAt ?? null, snapshotFetchedAt: sec?.snapshotFetchedAt ?? null,
           snapshotOrigin: sec?.snapshotOrigin ?? null, nextCheckAt: sec?.nextCheckAt ?? null, error: sec?.error ?? null },
         ir: { investorWebsite: entry?.investorWebsite ?? null, feedUrl: entry?.feedUrl ?? null,
           seedSourcePageUrl: registeredSource?.sourcePageUrl ?? null,
           seedVerifiedAt: registeredSource?.verifiedAt ?? null,
           seedRegistrationIsSuccessfulPoll: false as const,
-          status: entry?.feedUrl ? entry.error ? "poll_deferred_or_failed" : entry.lastSuccessAt ? "feed_checked" : "registered_not_checked"
+          status: !loaded ? "registry_unavailable" : entry?.feedUrl ? entry.error ? "poll_deferred_or_failed" : entry.lastSuccessAt ? "feed_checked" : "registered_not_checked"
             : confirmedNoFeedError(entry?.error ?? null) ? "no_feed_discovered" : entry?.investorWebsite ? "discovery_pending" : "website_unregistered",
           lastDiscoveryAt: entry?.lastDiscoveryAt && Date.parse(entry.lastDiscoveryAt) > 0 ? entry.lastDiscoveryAt : null,
           lastCheckedAt: entry?.lastCheckedAt ?? null, lastSuccessAt: entry?.lastSuccessAt ?? null,
           nextCheckAt: entry?.nextCheckAt ?? null, error: entry?.error ?? null } };
     }),
     eligibleCompanies: eligibleCompanies.length,
-    companiesKnown: persistedRegistry.entries.length,
-    currentEligibleCompaniesKnown: currentEntries.length,
-    retainedHistoricalCompanies: retainedHistoricalEntries.length,
-    retainedHistoricalFeedlessCompanies: retainedHistoricalEntries.filter((entry) => !entry.feedUrl).length,
-    unseenCompanies: eligibleCompanies.filter((company) => persistedByTicker.get(company.ticker)?.cik !== company.cik).length,
-    investorWebsitesFound: persistedRegistry.entries.filter((entry) => entry.investorWebsite).length,
-    feedlessCompanies: persistedRegistry.entries.filter((entry) => !entry.feedUrl).length,
-    transientDiscoveryBacklog: currentEntries.filter((entry) => !entry.feedUrl && transientDiscoveryError(entry.error)).length,
-    transientDiscoveryDueNow: currentEntries.filter((entry) => {
+    companiesKnown: loaded ? persistedRegistry.entries.length : null,
+    currentEligibleCompaniesKnown: loaded ? currentEntries.length : null,
+    retainedHistoricalCompanies: loaded ? retainedHistoricalEntries.length : null,
+    retainedHistoricalFeedlessCompanies: countEntries(retainedHistoricalEntries, (entry) => !entry.feedUrl),
+    unseenCompanies: loaded ? eligibleCompanies.filter((company) => persistedByTicker.get(company.ticker)?.cik !== company.cik).length : null,
+    investorWebsitesFound: countEntries(persistedRegistry.entries, (entry) => entry.investorWebsite),
+    feedlessCompanies: countEntries(persistedRegistry.entries, (entry) => !entry.feedUrl),
+    transientDiscoveryBacklog: countEntries(currentEntries, (entry) => !entry.feedUrl && transientDiscoveryError(entry.error)),
+    transientDiscoveryDueNow: countEntries(currentEntries, (entry) => {
       if (entry.feedUrl || !transientDiscoveryError(entry.error)) return false;
       return effectiveDiscoveryRetryAt(entry) <= now.getTime();
-    }).length,
-    transientDiscoveryWaiting: currentEntries.filter((entry) => {
+    }),
+    transientDiscoveryWaiting: countEntries(currentEntries, (entry) => {
       if (entry.feedUrl || !transientDiscoveryError(entry.error)) return false;
       return effectiveDiscoveryRetryAt(entry) > now.getTime();
-    }).length,
-    confirmedNoFeedBacklog: currentEntries.filter((entry) => !entry.feedUrl && confirmedNoFeedError(entry.error)).length,
-    confirmedNoFeedDueNow: currentEntries.filter((entry) => !entry.feedUrl
+    }),
+    confirmedNoFeedBacklog: countEntries(currentEntries, (entry) => !entry.feedUrl && confirmedNoFeedError(entry.error)),
+    confirmedNoFeedDueNow: countEntries(currentEntries, (entry) => !entry.feedUrl
       && confirmedNoFeedError(entry.error)
-      && effectiveDiscoveryRetryAt(entry) <= now.getTime()).length,
-    confirmedNoFeedWaiting: currentEntries.filter((entry) => !entry.feedUrl
+      && effectiveDiscoveryRetryAt(entry) <= now.getTime()),
+    confirmedNoFeedWaiting: countEntries(currentEntries, (entry) => !entry.feedUrl
       && confirmedNoFeedError(entry.error)
-      && effectiveDiscoveryRetryAt(entry) > now.getTime()).length,
-    otherDiscoveryFailureBacklog: currentEntries.filter((entry) => !entry.feedUrl
+      && effectiveDiscoveryRetryAt(entry) > now.getTime()),
+    otherDiscoveryFailureBacklog: countEntries(currentEntries, (entry) => !entry.feedUrl
       && !transientDiscoveryError(entry.error)
-      && !confirmedNoFeedError(entry.error)).length,
-    otherDiscoveryFailureDueNow: currentEntries.filter((entry) => !entry.feedUrl
+      && !confirmedNoFeedError(entry.error)),
+    otherDiscoveryFailureDueNow: countEntries(currentEntries, (entry) => !entry.feedUrl
       && !transientDiscoveryError(entry.error)
       && !confirmedNoFeedError(entry.error)
-      && effectiveDiscoveryRetryAt(entry) <= now.getTime()).length,
-    otherDiscoveryFailureWaiting: currentEntries.filter((entry) => !entry.feedUrl
+      && effectiveDiscoveryRetryAt(entry) <= now.getTime()),
+    otherDiscoveryFailureWaiting: countEntries(currentEntries, (entry) => !entry.feedUrl
       && !transientDiscoveryError(entry.error)
       && !confirmedNoFeedError(entry.error)
-      && effectiveDiscoveryRetryAt(entry) > now.getTime()).length,
+      && effectiveDiscoveryRetryAt(entry) > now.getTime()),
     discoverySelection,
-    failedFeedsInBackoff: persistedRegistry.entries.filter((entry) => Boolean(entry.feedUrl && entry.error && (entry.consecutiveFailures ?? 0) > 0 && Date.parse(entry.nextCheckAt ?? "") > now.getTime())).length,
-    discoveryErrors: [...new Set(currentEntries.map((entry) => entry.error).filter((value): value is string => Boolean(value)))].slice(0, 8),
+    failedFeedsInBackoff: countEntries(persistedRegistry.entries, (entry) => Boolean(entry.feedUrl && entry.error && (entry.consecutiveFailures ?? 0) > 0 && Date.parse(entry.nextCheckAt ?? "") > now.getTime())),
+    discoveryErrors: loaded ? [...new Set(currentEntries.map((entry) => entry.error).filter((value): value is string => Boolean(value)))].slice(0, 8) : null,
     registryPersistence: {
       written: written.written,
       conflict: written.conflict,
-      winnerLoaded: Boolean(winner),
+      winnerLoaded: Boolean(winner?.found),
+      failureStage: registryFailureStage,
+      error: registryError,
+      telemetryBasis: registryTelemetryBasis,
     },
     registryKey: REGISTRY_KEY,
   };

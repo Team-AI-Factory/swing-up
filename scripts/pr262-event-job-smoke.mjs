@@ -592,6 +592,8 @@ const stubs = {
 
 const cjsModule = { exports: {} };
 new Function("require", "module", "exports", output)((name) => {
+  if (["@/lib/opportunity-engine/pr262-terminal-reviews", "@/lib/equity-signal/terminal-review-evidence"].includes(name)) return loadTsModule(name, stubs);
+  if (name === "@/lib/equity-signal/valuation-review-materiality") return loadTsModule(name);
   if (["@/lib/simple-alert-pilot-runtime", "@/lib/simple-alert-pilot-scope"].includes(name)) return loadTsModule(name);
   if (name in stubs) return stubs[name];
   if (["@/lib/company-profile", "@/lib/opportunity-engine/company-profile-cache"].includes(name)) return loadTsModule(name, stubs);

@@ -136,7 +136,7 @@ const localRequire = (name) => {
   if (name === "node:crypto") return awaitImportCrypto;
   if (name in stubs) return stubs[name];
   if (name === "@/lib/simple-alert-pilot-scope") return loadTsModule(name);
-  if (["@/lib/alert-details", "@/lib/company-profile", "@/lib/signal-explanation", "@/lib/valuation-availability", "@/lib/equity-signal/valuation-candidate", "@/lib/equity-signal/review-evidence-revision"].includes(name)) return loadTsModule(name);
+  if (["@/lib/alert-details", "@/lib/company-profile", "@/lib/signal-explanation", "@/lib/valuation-availability", "@/lib/equity-signal/valuation-candidate", "@/lib/equity-signal/review-evidence-revision", "@/lib/equity-signal/valuation-review-materiality", "@/lib/equity-signal/terminal-review-evidence"].includes(name)) return loadTsModule(name);
   if (["@/lib/ai-committee/review-policy", "@/lib/equity-signal/us-market-calendar"].includes(name)) return loadTsModule(name);
   if (name === "@/lib/opportunity-engine/pr262-ai-daily-cost") return loadTsModule(name, { "@/lib/r2-warehouse": {} });
   if (["@/lib/ai-committee/model-policy", "@/lib/equity-signal/financial-evidence"].includes(name)) return loadTsModule(name);

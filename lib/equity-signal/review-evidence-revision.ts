@@ -6,8 +6,8 @@ const object = (value: unknown): Json => value && typeof value === "object" && !
 const stable = (value: unknown): unknown => Array.isArray(value) ? value.map(stable)
   : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, stable(item)])) : value;
 
-/** A new retrieval time or quote tick is not a new financial fact. */
-export function reviewEvidenceRevision(evidence: Json, diagnostics = true) {
+/** Shared canonical evidence; keep the established exact revision unchanged. */
+export function normalizeReviewEvidence(evidence: Json) {
   const normalized: Json = {
     ...evidence,
     source: (Array.isArray(evidence.source) ? evidence.source : []).map(value => {
@@ -21,6 +21,12 @@ export function reviewEvidenceRevision(evidence: Json, diagnostics = true) {
       return [fact.metric, fact.value, fact.unit, fact.periodStart, fact.periodEnd, fact.filedAt, fact.form, fact.concept, fact.accession, fact.sourceUrl];
     }).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
   };
+  return stable(normalized) as Json;
+}
+
+/** A new retrieval time or quote tick is not a new financial fact. */
+export function reviewEvidenceRevision(evidence: Json, diagnostics = true) {
+  const normalized = normalizeReviewEvidence(evidence);
   const revision = crypto.createHash("sha256").update(JSON.stringify(stable(normalized))).digest("hex").slice(0, 16);
   if (diagnostics && isSimpleAlertPilot()) {
     // Diagnostic only: preserve the existing revision and admission locks.

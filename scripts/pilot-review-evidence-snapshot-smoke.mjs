@@ -62,7 +62,7 @@ const committee = { ok: true, agentsCompleted: 4, agentsFailed: 0, output: { ove
 const report = { candidateFingerprint: identity.fingerprint, selectedCandidate: { ticker: "FIXTURE", cik: identity.cik, direction: identity.direction,
   eventFamily: "valuation_gap", reviewEvidenceSnapshot: snapshot }, openAiCalled: true, status: "candidate_needs_more_data", committee };
 const args = { event: { id: "fixture-valuation", ticker: "FIXTURE" }, report, sourceDecisionGrade: true, sourceFailureReason: null, now: new Date("2026-10-06T18:00:00Z") };
-assert.deepEqual(await api.readLastValuationReview(identity.cik), { fingerprint: legacy.fingerprint, outcome: legacy.outcome }, "Legacy reader and lock remain usable");
+assert.deepEqual(await api.readLastValuationReview(identity.cik), { fingerprint: legacy.fingerprint, outcome: legacy.outcome, reviewedAt: legacy.reviewedAt, admittedAt: null, valuationBaseline: undefined }, "Legacy reader and lock remain usable without inventing a materiality baseline");
 for (const changed of [ { ...report, openAiCalled: false }, { ...report, committee: { ...committee, ok: false, agentsFailed: 1 } },
   { ...report, committee: { ...committee, agentsCompleted: 3 } } ]) {
   await api.recordResearchEvidence({ ...args, report: changed });
@@ -73,7 +73,7 @@ const marker = structuredClone(stored.get(markerKey).value);
 assert.equal(marker.fingerprint, identity.fingerprint);
 assert.equal(marker.outcome, "needs_more_data");
 assert.deepEqual(marker.reviewEvidenceSnapshot, snapshot);
-assert.deepEqual(await api.readLastValuationReview(identity.cik), { fingerprint: identity.fingerprint, outcome: "needs_more_data" }, "Existing admission reader unchanged");
+assert.deepEqual(await api.readLastValuationReview(identity.cik), { fingerprint: identity.fingerprint, outcome: "needs_more_data", reviewedAt: args.now.toISOString(), admittedAt: null, valuationBaseline: undefined, reviewEvidenceSnapshot: snapshot }, "Completed provenance remains readable without fabricating missing materiality inputs");
 await api.recordResearchEvidence({ ...args, report: { ...report, openAiCalled: false, committee: null } });
 assert.deepEqual(stored.get(markerKey).value, marker, "No-paid collection cannot renew reviewed evidence");
 assert(writes.every(key => !/ledger|ai-daily|cost|reservation/.test(key)), "No accounting/allowance writes");

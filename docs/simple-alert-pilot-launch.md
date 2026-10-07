@@ -1,3 +1,15 @@
+## Repeated contention path reverified; source timeout still blocks scale — 7 October 2026, 20:52 Bangkok
+
+The deployed pilot remains exact runtime `86da747b3a156dba0282db93d057fc250c85d35a` on all four active services; documentation-only head `76e64b0a410520559b075b34da0774ccb5c8baea` was correctly skipped. Main scanning remains stopped, the fixed cohort remains 25, and the unrelated staged telemetry patch `97789f67-b0f5-4cb3-b689-bd46c2b4c63f` remains untouched.
+
+A later independent profile pass started at 13:39 UTC and again observed HELP's exact pre-admission `company_profile_cache_superseded` condition with zero writes. The repaired worker deferred that stale attempt and continued. The batch completed HTTP200 at 13:41:34 UTC with 18 attempts, 18 source requests, zero request/body/storage/count failures, zero model calls, **26/500 newly verified today**, 474 remaining, and all 25 cohort profiles verified. This is a second live reproduction of the repaired contention path after the initial 12:10 proof. It strengthens the repair evidence but does not establish upstream contention removal or the 500/day target.
+
+The contemporaneous sensor cycle started at 13:47:56 UTC and completed HTTP200 at 13:50:29 UTC. Four processing attempts were all nontechnical deferrals; there were zero processing or Committee failures in the cycle, zero Committee calls, approvals, live outboxes or deliveries. One direct-source preparation operation still timed out, and the collection deadline was reached after 11/11 SEC checks succeeded. Daily source reliability is **43/743 (5.79%)**, processing reliability **5/129 (3.88%)**, and technical Committee reliability **5/10 (50%)**. The queue holds four profile-ready cases with no fresh-authoritative ready case and an oldest reported wait of 1,998 minutes; repeated needs-more-data checks are not completed new assessments.
+
+The shared ledger remains **$4.612023 recorded/exposure, $0 reserved, $0 pending unknown, and $5.387977 headroom under $10**. No Serious Buy/Sell/Watch Out exists and no live delivery receipt was created. No code change, rollback or redeploy is justified by this verification. Continue observing source-preparation timeouts and natural changed-evidence retries; remain at 25 until every existing gate passes.
+
+---
+
 ## Repeated profile admission contention repaired and live-verified — 7 October 2026, 19:11 Bangkok
 
 Fresh profile windows exposed a new repeatable storage-contention incident. Four consecutive passes completed HTTP503 at 10:53, 11:09, 11:25 and 11:40 UTC with `company_profile_cache_superseded`. The first still durably added one verified profile and reconciled **25/500** for the Bangkok day; the next three failed after two attempts. Controlled storage diagnostics identified the same issuer, HELP, at admission/read with **zero writes**. A different process had changed that issuer after the worker's initial read but before its serialized admission transaction. The existing compare-and-set guard correctly preserved the concurrent winner, but escalated this safe pre-source deferral into a whole-batch storage failure.

@@ -187,8 +187,9 @@ try {
     failureGate.resolve(); await failureResult; assert.ok(await survivor);
     assert.equal(failing.maxActivePuts, 1); assert.equal(failing.requests.filter(row => row.ticker === alpha.ticker).length, 0);
 
-    // A cross-process winner can change a queued caller's own row. Its stale
-    // acknowledged baseline must still fail closed after it obtains the lock.
+    // A cross-process winner can change a queued caller's own row. Admission
+    // must defer without failing the batch, issuing source I/O, or overwriting
+    // the winner. The next pass re-reads the winner and applies its backoff.
     const winnerEntered = deferred(), winnerGate = deferred();
     const winner = { ...bravo, updatedAt: now.toISOString(), profile: null, verificationHistoryKnown: true,
       firstVerifiedAt: "2026-08-01T00:00:00Z", error: "external_writer" };
@@ -198,8 +199,8 @@ try {
       const result = commit(); replace([...entries(), winner]); return result;
     } });
     const winnerFirst = external.ensure(alpha); await winnerEntered.promise;
-    const winnerSecond = assert.rejects(external.ensure(bravo), error => storageFailure(error) && error.message === "company_profile_cache_superseded");
-    await nextTurn(); winnerGate.resolve(); assert.ok(await winnerFirst); await winnerSecond;
+    const winnerSecond = external.ensure(bravo);
+    await nextTurn(); winnerGate.resolve(); assert.ok(await winnerFirst); assert.equal(await winnerSecond, null);
     assert.deepEqual(external.current(bravo), winner);
     assert.equal(external.writes.filter(write => write.row.ticker === bravo.ticker).length, 0);
     assert.equal(external.requests.filter(row => row.ticker === bravo.ticker).length, 0);
@@ -298,6 +299,6 @@ try {
       assert.equal(cleanup.writes.length, 2); assert.equal(cleanup.writes.filter(write => write.stage === "failed").length, 1);
       assert.equal(cleanup.requests.length, 1); assert.deepEqual(cleanup.waits, []);
     });
-    console.log("PASS: real profile writers serialize read/CAS/readback, preserve parallel sources/history/FIFO, cancel bounded waits, release failed writers, reject external winners, and retain four-PUT/15s and cleanup one-PUT/5s limits.");
+    console.log("PASS: real profile writers serialize read/CAS/readback, preserve parallel sources/history/FIFO, cancel bounded waits, release failed writers, defer to external winners, and retain four-PUT/15s and cleanup one-PUT/5s limits.");
   }
 } finally { console.info = savedInfo; }

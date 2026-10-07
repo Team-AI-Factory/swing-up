@@ -69,7 +69,12 @@ async function run(mode) {
         if (mode === "admission_read_abort" && initialProfileReads === 3) return fetchFailure(init, 140_000);
         if (verifiedPuts) {
           verifiedReadbacks++;
-          if (mode.startsWith("readback_")) return fetchFailure(init, profilePuts.at(-1).at + 15_000);
+          if (mode.startsWith("readback_")) {
+            if (verifiedReadbacks === 1) return fetchFailure(init, profilePuts.at(-1).at + 15_000);
+            // The one read-only settlement remains unavailable too. Counts
+            // may later recover, but cannot acknowledge the failed row intent.
+            throw new Error("independent_readback_unavailable");
+          }
           if (mode === "healthy_readback") assert.equal(workSignal.aborted, true, "Exact-intent CAS readback can acknowledge an applied PUT after work closes");
         }
       }
@@ -212,7 +217,7 @@ async function run(mode) {
     assert.equal(profilePuts.length, 2, "Uncertain final PUT gets neither a blind retry nor a cleanup overwrite");
     assert.equal(verifiedPuts, 1);
   }
-  if (mode.startsWith("readback_") || mode === "healthy_readback") assert.equal(verifiedReadbacks, 1);
+  if (mode.startsWith("readback_") || mode === "healthy_readback") assert.equal(verifiedReadbacks, mode.startsWith("readback_") ? 2 : 1);
   if (mode === "healthy_readback") { assert.equal(profilePuts.length, 2); assert.equal(verifiedPuts, 1); }
   if (mode === "persistent_502") assert.equal(verifiedPuts, 4, "Four actual PUTs is still the row-CAS ceiling");
   assert.ok(profilePuts.every(put => put.row.profile || put.row.error || put.at < 140_000));

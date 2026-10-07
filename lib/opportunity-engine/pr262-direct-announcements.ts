@@ -31,8 +31,13 @@ const MAX_FEEDS_POLLED_PER_CYCLE = 20;
 // 3500/day allowance and 29-minute per-CIK floor. Work remains sequential.
 const PILOT_MAX_SEC_CHECKS_PER_CYCLE = 13;
 const PILOT_DIRECT_WORK_MS = 45_000;
+const PILOT_MAX_CALLER_SOURCE_WINDOW_MS = 60_000;
 const PILOT_SEC_WORK_MS = 42_000;
 const PILOT_REGISTRY_RESERVE_MS = 5_000;
+const PILOT_FEED_SLICE_MS = 8_000;
+// One 8s root, two 5s linked pages, and at most two 1s pacing gaps.
+// Optional discovery may use only this complete slice after SEC and due feeds.
+const PILOT_DISCOVERY_SLICE_MS = 20_000;
 const SEC_POLL_CADENCE_MS = 29 * 60_000;
 const SEC_AGENT = "SwingUp/1.0 support@swingup.app";
 
@@ -559,7 +564,7 @@ async function discoverOne(
   company: Pr262ExposureEntry,
   now: Date,
   existing?: RegistryEntry,
-  options: { skipSubmissions?: boolean; deadlineAtMs?: number } = {},
+  options: { skipSubmissions?: boolean; deadlineAtMs?: number; beforePage?: (sliceMs: number) => Promise<void> } = {},
 ): Promise<{ entry: RegistryEntry; secEvents: Pr262SensorEvent[] }> {
   if (!company.cik) throw new Error("direct_feed_company_cik_missing");
   const submissionsUrl = `https://data.sec.gov/submissions/CIK${company.cik}.json`;
@@ -584,12 +589,14 @@ async function discoverOne(
   let error: string | null = null;
   if (investorWebsite) {
     try {
+      await options.beforePage?.(8_000);
       const page = await fetchBounded(fetchImpl, investorWebsite, "text/html,application/xhtml+xml", 8_000, options.deadlineAtMs);
       feedUrl = discoverFeedUrl(page.body, page.finalUrl);
       if (feedUrl) feedUrl = (await withinDeadline(safePublicHttps(feedUrl), options.deadlineAtMs ?? Date.now() + 8_000)).toString();
       if (!feedUrl) {
         for (const candidate of discoverInvestorPages(page.body, page.finalUrl)) {
           try {
+            await options.beforePage?.(5_000);
             const nested = await fetchBounded(fetchImpl, candidate, "text/html,application/xhtml+xml,application/rss+xml,application/atom+xml,text/xml", 5_000, options.deadlineAtMs);
             const directXml = /<(?:rss|feed)\b/i.test(nested.body) ? nested.finalUrl : null;
             const discovered = directXml ?? discoverFeedUrl(nested.body, nested.finalUrl);
@@ -623,7 +630,8 @@ async function discoverOne(
       lastDiscoveryAt: now.toISOString(),
       lastCheckedAt: existing?.lastCheckedAt ?? null,
       lastSuccessAt: existing?.lastSuccessAt ?? null,
-      nextCheckAt: feedUrl ? null : confirmedRetry?.nextCheckAt ?? discoveryRetryAt(finalError, now),
+      nextCheckAt: feedUrl ? null : scheduledSourceDeferral(finalError, now)?.nextRetryAt
+        ?? confirmedRetry?.nextCheckAt ?? discoveryRetryAt(finalError, now),
       error: finalError,
       consecutiveConfirmedNoFeedDiscoveries: feedUrl
         ? 0
@@ -695,10 +703,14 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
   const now = input.now ?? new Date();
   const pilot = isSimpleAlertPilot();
   const startedAtMs = Date.now();
-  // Reserve finalization time from the actual remaining outer window, even
-  // when preceding source work delays this monitor's start.
-  const registryDeadlineAtMs = pilot ? Math.min(input.deadlineAtMs ?? Infinity,
-    startedAtMs + PILOT_DIRECT_WORK_MS + PILOT_REGISTRY_RESERVE_MS) : Infinity;
+  // Use only an explicit caller's remaining source envelope, reserving 5s
+  // for registry finalization. The sensor already clamps that envelope to 60s
+  // from its earlier start; this defensive cap cannot extend its deadline.
+  // Standalone callers without a finite deadline retain 45s work plus reserve.
+  const callerSourceDeadlineAtMs = input.deadlineAtMs !== undefined && Number.isFinite(input.deadlineAtMs)
+    ? Math.min(input.deadlineAtMs, startedAtMs + PILOT_MAX_CALLER_SOURCE_WINDOW_MS)
+    : startedAtMs + PILOT_DIRECT_WORK_MS + PILOT_REGISTRY_RESERVE_MS;
+  const registryDeadlineAtMs = pilot ? callerSourceDeadlineAtMs : Infinity;
   const deadlineAtMs = pilot ? registryDeadlineAtMs - PILOT_REGISTRY_RESERVE_MS : Infinity;
   const registrySignal = () => {
     if (!pilot) return undefined;
@@ -729,6 +741,19 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
     nextRequestAtMs = Date.now() + 1000;
     return rawFetch(request, { ...init, signal });
   } : rawFetch;
+  const waitForOptionalPacing = async (operationDeadlineAtMs: number) => {
+    const remaining = operationDeadlineAtMs - Date.now();
+    if (remaining <= 0) throw new Error("direct_source_collection_deadline");
+    try { await pause(Math.max(0, nextRequestAtMs - Date.now()), undefined, { signal: AbortSignal.timeout(remaining) }); }
+    catch { throw new Error("direct_source_collection_deadline"); }
+  };
+  const admitOptionalSlice = async (sliceMs: number, operationDeadlineAtMs = deadlineAtMs) => {
+    if (!pilot) return true;
+    const pacingMs = Math.max(0, nextRequestAtMs - Date.now());
+    if (operationDeadlineAtMs - Date.now() < sliceMs + pacingMs) return false;
+    try { await waitForOptionalPacing(operationDeadlineAtMs); } catch { return false; }
+    return operationDeadlineAtMs - Date.now() >= sliceMs;
+  };
   const loaded = await loadRegistry(registrySignal()).catch(error => { registryFailed("load", error); return null; });
   // An unavailable registry is not an empty durable registry. Keep work closed
   // and report unknown registry state, without source calls or a replacement PUT.
@@ -827,9 +852,67 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
     }
   }
 
+  const eligibleIdentities = new Map(eligibleCompanies.map((company) => [company.ticker, company.cik]));
+  let due: RegistryEntry[] = [];
+  let feedSuccesses = 0, feedFailures = 0, feedsPolled = 0;
+  const pollDueFeeds = async () => {
+    due = [...byTicker.values()]
+      .filter((entry) => entry.feedUrl)
+      .filter((entry) => eligibleIdentities.get(entry.ticker) === entry.cik)
+      .filter((entry) => {
+        const next = entry.nextCheckAt ? Date.parse(entry.nextCheckAt) : 0;
+        return !Number.isFinite(next) || next <= now.getTime();
+      })
+      .sort((left, right) => Date.parse(left.lastCheckedAt ?? "1970-01-01") - Date.parse(right.lastCheckedAt ?? "1970-01-01"))
+      .slice(0, MAX_FEEDS_POLLED_PER_CYCLE);
+
+    for (const [index, entry] of due.entries()) {
+      if (pilot && !await admitOptionalSlice(PILOT_FEED_SLICE_MS)) {
+        feedDeferred += due.length - index;
+        deferrals.push(scheduledSourceDeferral("direct_source_collection_deadline", now)!);
+        break; // Leave unstarted rows and their failure/backoff history unchanged.
+      }
+      if (Date.now() >= deadlineAtMs) break;
+      const observed = observedSourceFetch(fetchImpl, now);
+      try {
+        const feed = await fetchBounded(observed.fetchImpl, entry.feedUrl!, "application/rss+xml,application/atom+xml,text/xml", PILOT_FEED_SLICE_MS, deadlineAtMs);
+        events.push(...labelInitialCatchup(parseFeed(feed.body, entry, now), !entry.lastSuccessAt));
+        entry.lastCheckedAt = now.toISOString();
+        entry.lastSuccessAt = now.toISOString();
+        entry.nextCheckAt = new Date(now.getTime() + FEED_POLL_CADENCE_MS).toISOString();
+        entry.error = null;
+        entry.consecutiveFailures = 0;
+        feedSuccesses += 1;
+      } catch (error) {
+        const message = discoveryFailureMessage(error);
+        entry.error = message === "direct_feed_discovery_failed" ? "direct_feed_poll_failed" : message;
+        const deferral = scheduledSourceDeferral(error, now);
+        if (deferral) {
+          entry.nextCheckAt = deferral.nextRetryAt;
+          if (observed.attempted()) { entry.lastCheckedAt = now.toISOString(); deferredAfterSourceAttempt += 1; }
+          feedDeferred += 1;
+          deferrals.push(deferral);
+        } else if (observed.preparationError()) {
+          sourcePreparationFailures++; preparationErrors.push(entry.error);
+          entry.nextCheckAt = new Date(now.getTime() + FEED_POLL_CADENCE_MS).toISOString();
+        } else {
+          const retry = failedFeedRetry(entry, now);
+          entry.lastCheckedAt = now.toISOString();
+          entry.nextCheckAt = retry.nextCheckAt;
+          entry.consecutiveFailures = retry.consecutiveFailures;
+          feedFailures += 1;
+          attemptErrors.push(entry.error);
+        }
+      }
+      // DNS/URL/read failures still represent a real attempted source operation.
+      if (observed.attempted() || (!observed.preparationError() && !scheduledSourceDeferral(entry.error, now))) feedsPolled += 1;
+    }
+  };
+  if (pilot) await pollDueFeeds();
+
   const lastDiscoveryMs = registry.lastDiscoveryCycleAt ? Date.parse(registry.lastDiscoveryCycleAt) : 0;
   let discovered = 0;
-  if (loaded && Date.now() < deadlineAtMs && (!Number.isFinite(lastDiscoveryMs) || now.getTime() - lastDiscoveryMs >= DISCOVERY_CADENCE_MS)) {
+  if (loaded && (pilot || Date.now() < deadlineAtMs) && (!Number.isFinite(lastDiscoveryMs) || now.getTime() - lastDiscoveryMs >= DISCOVERY_CADENCE_MS)) {
     if (eligibleCompanies.length) {
       const prioritized = eligibleCompanies
         .map((company) => {
@@ -856,17 +939,25 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
       discoverySelection.confirmedNoFeedRecheck = discoveryTargets.filter((target) => target.workClass === "confirmed_no_feed_recheck").length;
       discoverySelection.otherRecheck = discoveryTargets.filter((target) => target.workClass === "other_recheck").length;
       for (let start = 0; start < discoveryTargets.length; start += DISCOVERY_CONCURRENCY) {
-        if (Date.now() >= deadlineAtMs - (pilot ? 7_000 : 0)) break;
+        if (pilot && !await admitOptionalSlice(PILOT_DISCOVERY_SLICE_MS)) {
+          discoveryDeferred += discoveryTargets.length - start;
+          deferrals.push(scheduledSourceDeferral("direct_source_collection_deadline", now)!);
+          break; // No attempted discovery, timestamp update, or cooldown.
+        }
+        if (Date.now() >= deadlineAtMs) break;
         await Promise.all(discoveryTargets.slice(start, start + DISCOVERY_CONCURRENCY).map(async ({ company, existing }) => {
           const observed = observedSourceFetch(fetchImpl, now);
           try {
-            const discoveryDeadline = Math.min(deadlineAtMs - 7_000, Date.now() + 4_000);
+            const discoveryDeadline = Math.min(deadlineAtMs, Date.now() + PILOT_DISCOVERY_SLICE_MS);
             const discoveryFetch: typeof fetch = pilot ? (request, init) => {
               if (Date.now() >= discoveryDeadline) throw new Error("direct_source_collection_deadline");
               return observed.fetchImpl(request, { ...init,
                 signal: AbortSignal.any([...(init?.signal ? [init.signal] : []), AbortSignal.timeout(Math.max(1, discoveryDeadline - Date.now()))]) });
             } : observed.fetchImpl;
-            const result = await discoverOne(discoveryFetch, company, now, existing, { skipSubmissions: pilot, deadlineAtMs: pilot ? discoveryDeadline : undefined });
+            const result = await discoverOne(discoveryFetch, company, now, existing, { skipSubmissions: pilot, deadlineAtMs: pilot ? discoveryDeadline : undefined,
+              ...(pilot ? { beforePage: async (sliceMs: number) => {
+                if (!await admitOptionalSlice(sliceMs, discoveryDeadline)) throw new Error("direct_source_collection_deadline");
+              } } : {}) });
             byTicker.set(company.ticker, result.entry);
             events.push(...result.secEvents);
             if (!pilot) secSubmissionsChecked += 1;
@@ -917,61 +1008,12 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
           if (observed.attempted() || (!observed.preparationError() && !scheduledSourceDeferral(byTicker.get(company.ticker)?.error ?? null, now))) discovered += 1;
         }));
       }
-      registry.lastDiscoveryCycleAt = now.toISOString();
+      if (!pilot || discovered > 0) registry.lastDiscoveryCycleAt = now.toISOString();
     }
   }
 
+  if (!pilot) await pollDueFeeds();
   registry.entries = [...byTicker.values()];
-  const eligibleIdentities = new Map(eligibleCompanies.map((company) => [company.ticker, company.cik]));
-  const due = registry.entries
-    .filter((entry) => entry.feedUrl)
-    .filter((entry) => eligibleIdentities.get(entry.ticker) === entry.cik)
-    .filter((entry) => {
-      const next = entry.nextCheckAt ? Date.parse(entry.nextCheckAt) : 0;
-      return !Number.isFinite(next) || next <= now.getTime();
-    })
-    .sort((left, right) => Date.parse(left.lastCheckedAt ?? "1970-01-01") - Date.parse(right.lastCheckedAt ?? "1970-01-01"))
-    .slice(0, MAX_FEEDS_POLLED_PER_CYCLE);
-
-  let feedSuccesses = 0;
-  let feedFailures = 0;
-  let feedsPolled = 0;
-  for (const entry of due) {
-    if (Date.now() >= deadlineAtMs) break;
-    const observed = observedSourceFetch(fetchImpl, now);
-    try {
-      const feed = await fetchBounded(observed.fetchImpl, entry.feedUrl!, "application/rss+xml,application/atom+xml,text/xml", 8_000, deadlineAtMs);
-      events.push(...labelInitialCatchup(parseFeed(feed.body, entry, now), !entry.lastSuccessAt));
-      entry.lastCheckedAt = now.toISOString();
-      entry.lastSuccessAt = now.toISOString();
-      entry.nextCheckAt = new Date(now.getTime() + FEED_POLL_CADENCE_MS).toISOString();
-      entry.error = null;
-      entry.consecutiveFailures = 0;
-      feedSuccesses += 1;
-    } catch (error) {
-      const message = discoveryFailureMessage(error);
-      entry.error = message === "direct_feed_discovery_failed" ? "direct_feed_poll_failed" : message;
-      const deferral = scheduledSourceDeferral(error, now);
-      if (deferral) {
-        entry.nextCheckAt = deferral.nextRetryAt;
-        if (observed.attempted()) { entry.lastCheckedAt = now.toISOString(); deferredAfterSourceAttempt += 1; }
-        feedDeferred += 1;
-        deferrals.push(deferral);
-      } else if (observed.preparationError()) {
-        sourcePreparationFailures++; preparationErrors.push(entry.error);
-        entry.nextCheckAt = new Date(now.getTime() + FEED_POLL_CADENCE_MS).toISOString();
-      } else {
-        const retry = failedFeedRetry(entry, now);
-        entry.lastCheckedAt = now.toISOString();
-        entry.nextCheckAt = retry.nextCheckAt;
-        entry.consecutiveFailures = retry.consecutiveFailures;
-        feedFailures += 1;
-        attemptErrors.push(entry.error);
-      }
-    }
-    // DNS/URL/read failures still represent a real attempted source operation.
-    if (observed.attempted() || (!observed.preparationError() && !scheduledSourceDeferral(entry.error, now))) feedsPolled += 1;
-  }
 
   registry.updatedAt = now.toISOString();
   let written = { written: false, conflict: false };

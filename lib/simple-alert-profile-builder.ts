@@ -195,6 +195,9 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
     } catch (error) { requestFailures++; throw error; }
   };
   let attempted = 0, verified = 0, status = "completed", failure: string | null = null;
+  type OperationFamily = "provider_initialization" | "universe" | "profile_plan" | "profile_workers" | "count_reconciliation" | "provider_flush";
+  let operationFamily: OperationFamily = "provider_initialization";
+  let failureOperationFamily: OperationFamily | null = null;
   let before: number | null = null, after: number | null = null, firstVerifiedThisRun: number | null = null;
   let failureCategory: "storage" | "source" | "runtime" | null = null;
   let storageFailureObserved = false, countReconciliationFailure: string | null = null;
@@ -211,8 +214,10 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
   const attemptedIssuers = new Set<string>(), acknowledgedVerifiedIssuers = new Set<string>();
   try {
     const provider = await createPr262SensorBudgetedFetch({ now, fetchImpl: paced, signal, persistenceSignal });
+    operationFamily = "universe";
     const universe = await loadEquityUniverse(provider.fetchImpl, now);
     if (now.getTime() - Date.parse(universe.snapshot.refreshedAt) > 86400_000) throw new Error("simple_profile_universe_stale");
+    operationFamily = "profile_plan";
     const cache = await readProfileCache();
     const entries = Array.isArray(cache.value.entries) ? cache.value.entries.map(object) : [];
     const plan = profileBatchPlan(universe.snapshot.entries, entries, now, count);
@@ -265,16 +270,20 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
     };
     // Overlap only independent issuer work. Provider reservations and network
     // starts stay serialized; global quotas and 1 request/second are unchanged.
+    operationFamily = "profile_workers";
     const results = await Promise.allSettled([worker(), worker()]);
     const rejected = results.find(result => result.status === "rejected");
     if (rejected?.status === "rejected") throw rejected.reason;
+    operationFamily = "count_reconciliation";
     await reconcileCounts();
     if (circuitOpen) status = "source_cooldown";
     else if (admissionSignal.aborted || signal.aborted) status = "time_budget_reached";
     else if (after !== null && after >= PROFILE_DAILY_TARGET) status = "target_reached";
+    operationFamily = "provider_flush";
     await provider.flush();
   } catch (error) {
     status = "failed"; failure = error instanceof Error ? error.message.slice(0, 250) : "profile_builder_failed";
+    failureOperationFamily = operationFamily;
     failureCategory = storageFailureObserved || isStorageFailure(error) ? "storage"
       : /^(?:official_equity_universe_|simple_profile_universe_stale)/.test(failure) ? "source" : "runtime";
     storageFailureObserved = failureCategory === "storage";
@@ -296,7 +305,7 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
     attempted, unverifiedThisRun: attempted - verified, verificationYieldPercent: attempted ? verified / attempted * 100 : null, verifiedThisRun: verified, newlyVerifiedThisRun: firstVerifiedThisRun, newlyVerifiedToday: after, remaining: after === null ? null : Math.max(0, PROFILE_DAILY_TARGET - after),
     verificationCountsStatus: firstVerifiedThisRun === null ? "unreconciled" : "cache_reconciled",
     lastReconciledNewlyVerifiedToday: after ?? before, countReconciliationFailure,
-    failureCategory, storageFailureObserved, failureRateBasis: "source_requests_only",
+    failureCategory, failureOperationFamily, storageFailureObserved, failureRateBasis: "source_requests_only",
     requests, requestFailures, responseBodyFailures, failureRatePercent: requests ? requestFailures / requests * 100 : null,
     ...eligibility, cohortProfiles, retryAttempts, pendingReasons, durationMs: Date.now() - startedAt, concurrency: 2,
     modelCalls: 0, failure, guarantees500: false };

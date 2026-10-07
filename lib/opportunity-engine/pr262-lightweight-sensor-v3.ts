@@ -498,7 +498,7 @@ async function marketWatch(fetchImpl: typeof fetch, exposure: Pr262ExposureEntry
 
 export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl?: typeof fetch;
   deadlineAtMs?: number } = {}) {
-  // 480s cycle - 335s paid review - 45s delivery - 15s reporting leaves 85s.
+  // 540s cycle - 335s paid review - 45s delivery - 15s reporting leaves 145s.
   // The orchestrator may reclaim unused early recovery time, up to 60s here,
   // while retaining 10s preparation and the full paid-admission minimum.
   // Standalone callers keep the conservative 45s window. Prior source/storage

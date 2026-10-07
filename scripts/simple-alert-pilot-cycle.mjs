@@ -84,7 +84,7 @@ try {
   }
   const response = await fetch(`${base}/api/internal/combined-opportunity-engine/cron-v3`, {
     method: "POST", headers: { "content-type": "application/json", "x-swing-up-pr262-cron-token": token },
-    body: JSON.stringify({ mode: profileOnly ? "profiles_only" : "sensor_and_analysis" }), signal: AbortSignal.timeout(profileOnly ? 240_000 : 520_000),
+    body: JSON.stringify({ mode: profileOnly ? "profiles_only" : "sensor_and_analysis" }), signal: AbortSignal.timeout(profileOnly ? 240_000 : 580_000),
   });
   const body = await response.text();
   console.log(`[simple-alerts-summary] ${JSON.stringify(simpleAlertCycleSummary(body))}`);

@@ -68,6 +68,25 @@ function transientProfileWrite(error: unknown) {
     || error.message === "r2_state_write_missing_etag" || error.message === "r2_state_write_transport_failed" || error.name === "TimeoutError"
     || (error.name === "TypeError" && error.message === "fetch failed"));
 }
+function transientProfileSettlement(error: unknown, transactionDeadline: AbortSignal) {
+  if (causedByRoleAbort(error, transactionDeadline) || transientProfileWrite(error)) return true;
+  // The lower helper deliberately forbids replay after unavailable readback.
+  // Inspect only this known wrapper's current cause, never a historical fault.
+  if (!(error instanceof Error) || error.message !== "r2_state_write_reconciliation_failed") return false;
+  let cause: unknown = error;
+  for (let depth = 0; depth < 4 && cause instanceof Error && cause.message === "r2_state_write_reconciliation_failed"; depth++) cause = cause.cause;
+  return causedByRoleAbort(cause, transactionDeadline) || transientProfileWrite(cause);
+}
+function profileStorageCause(error: unknown): string {
+  if (!(error instanceof Error)) return "other";
+  if (error.name === "TimeoutError") return "timeout";
+  if (error.name === "AbortError") return "abort";
+  const http = error.message.match(/^r2_state_(?:read|write)_http_(\d{3})$/)?.[1];
+  if (http) return `http_${http}`;
+  if (["r2_state_write_reconciliation_failed", "r2_state_write_transport_failed", "r2_state_write_missing_etag",
+    "company_profile_cache_superseded", "company_profile_cache_conflict", "company_profile_cache_state_invalid"].includes(error.message)) return error.message;
+  return error instanceof SyntaxError ? "invalid_json" : "other";
+}
 // Match the JSON representation actually persisted by the R2 encoder.
 const snapshotEntry = (entry: Entry): Entry => JSON.parse(JSON.stringify(redactSecrets(entry)));
 // All issuer rows share one object. Serialize local read/CAS/reconciliation
@@ -106,26 +125,43 @@ function acquireProfileCacheWrite(signal: AbortSignal): Promise<() => void> {
 }
 async function store(entry: Entry, previous: Entry | undefined, roleSignal?: AbortSignal, deadlineCleanup = false, persistenceSignal?: AbortSignal, admission = false) {
   const intended = snapshotEntry(entry);
+  const startedAt = Date.now();
   // A normal source-deadline deferral gets one short cleanup PUT so its
   // five-minute backoff survives. It must never start another source or retry.
   // The builder may stop source/admission work before storage finalization.
   // A healthy in-flight CAS must not be cancelled merely by that work cutoff.
   // Cleanup still has one PUT/5s and may not escape the persistence deadline.
   const parentSignal = persistenceSignal ?? (deadlineCleanup ? undefined : roleSignal);
-  const signal = AbortSignal.any([...(parentSignal ? [parentSignal] : []), AbortSignal.timeout(deadlineCleanup ? 5_000 : 15_000)]);
+  const transactionDeadline = AbortSignal.timeout(deadlineCleanup ? 5_000 : 15_000);
+  const signal = AbortSignal.any([...(parentSignal ? [parentSignal] : []), transactionDeadline]);
   let writes = 0;
+  let unresolvedPut = false;
+  let phase: "queue" | "read" | "backoff" | "put" = "queue";
+  let queueMs: number | null = null;
   let failure: unknown = new Error("company_profile_cache_conflict");
   let release: (() => void) | undefined;
+  const observe = (error: unknown, settlement: "not_attempted" | "exact_intent" | "different_intent" | "unavailable") => {
+    // Controlled operation-family diagnostics only; no contents or raw errors.
+    console.warn(`[company-profile-storage] ${JSON.stringify({
+      stage: admission ? "admission" : deadlineCleanup ? "deadline_cleanup" : intended.profile ? "verified" : "pending",
+      phase, ticker: /^[A-Z0-9.-]{1,12}$/.test(intended.ticker) ? intended.ticker : "invalid",
+      writes, queueMs, durationMs: Date.now() - startedAt, cause: profileStorageCause(error),
+      transactionDeadline: transactionDeadline.aborted, workDeadline: roleSignal?.aborted === true,
+      persistenceDeadline: persistenceSignal?.aborted === true, settlement,
+    })}`);
+  };
   try {
     // Queue time consumes the same transaction deadline. Admission also stops
     // at the work cutoff; finalization and cleanup retain their storage reserve.
     release = await acquireProfileCacheWrite(admission && roleSignal ? AbortSignal.any([signal, roleSignal]) : signal);
+    queueMs = Date.now() - startedAt;
     while (true) {
       signal.throwIfAborted();
       if (admission && writes === 0) roleSignal?.throwIfAborted();
       // This read also resolves an ambiguous response from the preceding PUT.
       // Never retry from the old ETag or a guessed outcome.
       const readSignal = admission && writes === 0 && roleSignal ? AbortSignal.any([signal, roleSignal]) : signal;
+      phase = "read";
       const { saved, entries } = await load({ signal: readSignal, forWrite: true });
       const targets = entries.filter(row => row.cik === intended.cik && row.ticker === intended.ticker);
       if (targets.length > 1) throw new Error("company_profile_cache_state_invalid");
@@ -135,15 +171,17 @@ async function store(entry: Entry, previous: Entry | undefined, roleSignal?: Abo
       if (!isDeepStrictEqual(targets[0], previous)) throw new Error("company_profile_cache_superseded");
       signal.throwIfAborted();
       if (writes >= (deadlineCleanup ? 1 : 4)) throw failure;
-      if (writes) await pause(100 * 2 ** (writes - 1), undefined, { signal });
+      if (writes) { phase = "backoff"; await pause(100 * 2 ** (writes - 1), undefined, { signal }); }
       signal.throwIfAborted();
       if (admission) roleSignal?.throwIfAborted();
       try {
+        phase = "put";
         writes++;
+        unresolvedPut = true;
         const result = await writeVersionedJsonToR2(KEY, { version: 1, updatedAt: intended.updatedAt,
           entries: [intended, ...entries.filter(row => row.cik !== intended.cik || row.ticker !== intended.ticker)] },
         { ...(saved.etag ? { expectedEtag: saved.etag } : { createOnly: true }), signal, maxAttempts: 1 });
-        if (result.conflict) { failure = new Error("company_profile_cache_conflict"); continue; }
+        if (result.conflict) { unresolvedPut = false; failure = new Error("company_profile_cache_conflict"); continue; }
         if (!result.written) throw new Error("company_profile_cache_write_failed");
         return intended;
       } catch (error) {
@@ -152,6 +190,29 @@ async function store(entry: Entry, previous: Entry | undefined, roleSignal?: Abo
       }
     }
   } catch (error) {
+    let settlement: "not_attempted" | "exact_intent" | "different_intent" | "unavailable" = "not_attempted";
+    // A short read-only settlement may outlive this transaction's own clock,
+    // but never its caller's explicit persistence reserve. It owns no PUT or
+    // source allowance and cannot rescue pre-PUT/permanent/schema failures.
+    // Deadline cleanup retains its original complete 1-PUT/5s bound.
+    if (!deadlineCleanup && unresolvedPut && persistenceSignal && !persistenceSignal.aborted
+      && transientProfileSettlement(error, transactionDeadline)) {
+      settlement = "unavailable";
+      const settleSignal = AbortSignal.any([persistenceSignal, AbortSignal.timeout(5_000)]);
+      try {
+        const { entries } = await load({ signal: settleSignal, forWrite: true });
+        settleSignal.throwIfAborted();
+        const targets = entries.filter(row => row.cik === intended.cik && row.ticker === intended.ticker);
+        if (targets.length <= 1) {
+          settlement = "different_intent";
+          if (isDeepStrictEqual(targets[0], intended)) {
+            observe(error, "exact_intent");
+            return intended;
+          }
+        }
+      } catch { /* Unknown stays failed; no replay, cleanup overwrite or new source. */ }
+    }
+    observe(error, settlement);
     // In particular, do not let ensureCompanyProfile's source-error handler
     // issue a different write after this outcome could not be established.
     throw new ProfileCacheWriteError(error, !deadlineCleanup && writes === 0 && (admission || !persistenceSignal) && causedByRoleAbort(error, roleSignal));
@@ -265,6 +326,9 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
   if (options.signal?.aborted) return null;
   const loaded = await load({ signal: options.signal }).catch(error => {
     if (causedByRoleAbort(error, options.signal)) return null;
+    console.warn(`[company-profile-storage] ${JSON.stringify({ stage: "initial", phase: "read", ticker: exact.ticker,
+      writes: 0, cause: profileStorageCause(error), workDeadline: options.signal?.aborted === true,
+      persistenceDeadline: options.persistenceSignal?.aborted === true, settlement: "not_attempted" })}`);
     throw error;
   });
   if (!loaded || options.signal?.aborted) return null;

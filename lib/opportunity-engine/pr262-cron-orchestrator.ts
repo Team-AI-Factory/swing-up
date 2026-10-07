@@ -35,7 +35,7 @@ import { pr262ProcessingReliability } from "@/lib/opportunity-engine/pr262-proce
 import { isPr262ApprovedPremergeProductionRollout } from "@/lib/opportunity-engine/pr262-runtime";
 
 const MAX_CYCLE_MS = 210_000;
-const PILOT_MAX_CYCLE_MS = 480_000;
+const PILOT_MAX_CYCLE_MS = 540_000;
 // Focused policy has at most five sequential roles: 5 * 60s, plus a 5s
 // compatibility read and 30s for reservation/reconciliation persistence.
 const PILOT_MIN_PAID_REVIEW_BUDGET_MS = 335_000;

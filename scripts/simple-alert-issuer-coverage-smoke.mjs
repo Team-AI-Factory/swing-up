@@ -14,12 +14,12 @@ for (const seed of seeds) {
 }
 const orchestrator = readFileSync(new URL("../lib/opportunity-engine/pr262-cron-orchestrator.ts", import.meta.url), "utf8");
 const sensor = readFileSync(new URL("../lib/opportunity-engine/pr262-lightweight-sensor-v3.ts", import.meta.url), "utf8");
-assert.match(orchestrator, /PILOT_MAX_CYCLE_MS = 480_000/);
+assert.match(orchestrator, /PILOT_MAX_CYCLE_MS = 540_000/);
 assert.match(orchestrator, /PILOT_MIN_PAID_REVIEW_BUDGET_MS = 335_000/);
 assert.match(orchestrator, /PILOT_DELIVERY_RESERVE_MS = 45_000/);
 assert.match(orchestrator, /REPORTING_RESERVE_MS = 15_000/);
 assert.match(sensor, /Math.min\(startedAtMs \+ 60_000, input.deadlineAtMs \?\? startedAtMs \+ 45_000\)/);
-assert.equal(480_000 - 30_000 - 45_000 - 10_000 - 45_000 - 15_000, 335_000,
+assert.equal(540_000 - 30_000 - 60_000 - 55_000 - 45_000 - 15_000, 335_000,
   "Early recovery, source window and pre-admission overhead preserve paid and delivery reserves.");
 assert.match(sensor, /newEvents: direct.events.length - \(direct.initialCatchupEvents \?\? 0\)/,
   "First-read catch-up cannot count as newly monitored live events.");
@@ -163,6 +163,11 @@ try {
   assert.ok(clock - delayedStart < 35_000, "Bounded simulated overhead must preserve the absolute sensor window.");
   assert.ok(delayed.issuerSourceCoverage.every(row => row.sec.status === "current_snapshot"));
   storageDelayMs = 0; sourceDelayMs = 0;
+  // Busy SEC/feed cycles can truthfully defer discovery. Give a current SEC
+  // issuer a separate complete optional slice before asserting no-feed backoff.
+  const pendingFeedless = objects.get(prefix + "sensor/direct-company-feeds-v1.json").value.entries.find(row => !row.feedUrl);
+  await direct.runPr262DirectAnnouncementMonitor({ exposure: exposure.filter(row => row.ticker === pendingFeedless.ticker),
+    now: new Date(), fetchImpl: (await makeMonitorBudget()).fetchImpl });
   const registry = objects.get(prefix + "sensor/direct-company-feeds-v1.json").value;
   const feedless = registry.entries.find(row => !row.feedUrl && row.error === "issuer_rss_feed_not_discovered");
   assert.ok(Date.parse(feedless.nextCheckAt) > clock + 20 * 86400_000);
@@ -299,6 +304,7 @@ try {
     ? new Response(JSON.stringify(body(cohort[0]))) : new Response(sensorFeed);
   const firstSensor = await sensorRuntime.runPr262LightweightSensorV3({ now: new Date(), fetchImpl: sensorFetch });
   assert.equal(firstSensor.sourceWindow.allocatedMs, 45_000, "Standalone sensor callers keep the conservative window");
+  assert.equal(firstSensor.directAnnouncementMonitoring.directWorkBudgetMs, 40_000, "The conservative standalone envelope still includes its 5s registry reserve");
   assert.equal(firstSensor.newEvents, 0, "First-read catch-up must not inflate top-level daily new-live-case totals.");
   assert.equal(firstSensor.initialCatchupEvents, 2);
   assert.equal(firstSensor.queueAdmissions, 2);
@@ -307,7 +313,7 @@ try {
   assert.ok(firstQueue.every(event => event.observedAt === publishedAt && event.reason.includes("Initial source catch-up")));
   const repeatedSensor = await sensorRuntime.runPr262LightweightSensorV3({ now: new Date(), fetchImpl: sensorFetch, deadlineAtMs: clock + 120_000 });
   assert.equal(repeatedSensor.sourceWindow.allocatedMs, 60_000, "An input deadline cannot exceed the source allocation cap");
-  assert.equal(repeatedSensor.directAnnouncementMonitoring.directWorkBudgetMs, 45_000);
+  assert.equal(repeatedSensor.directAnnouncementMonitoring.directWorkBudgetMs, 55_000, "An explicit 60s envelope may use its otherwise idle remainder while keeping 5s for registry");
   assert.equal(repeatedSensor.newEvents, 0);
   assert.equal(repeatedSensor.initialCatchupEvents, 0);
   assert.equal(repeatedSensor.queueAdmissions, 0);

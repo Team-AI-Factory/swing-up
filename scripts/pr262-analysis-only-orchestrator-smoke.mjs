@@ -36,6 +36,9 @@ let initialProviderLedgerMs = 0;
 let sensorWorkMs = 0;
 let evidencePreparationMs = 0;
 let expectedSourcePaidAdmission = null;
+let timedCandidates = [];
+let timedCandidateResults = [];
+let mappingWorkMs = 0;
 let accessDiagnosticCalls = 0;
 let unknownUsageReviews = 0;
 let accessDiagnostic = { status: "completed", readOnly: true, callsPaidModel: false, billingQuotaVerified: false, modelAvailable: { fast: true, deep: true, final: true } };
@@ -135,6 +138,7 @@ const stubs = {
   },
   "@/lib/opportunity-engine/pr262-company-directory": {
     enrichPr262SensorCompanyMappings: async () => {
+      advanceCycleClock(mappingWorkMs);
       mappingCalls += 1;
       if (mappingHealthy === "stale") {
         return { mapped: 0, directoryCompanies: 0, directoryUpdatedAt: null, error: "pr262_authoritative_equity_universe_stale; next_retry_at=2026-08-28T07:30:40.815Z" };
@@ -194,13 +198,32 @@ const stubs = {
       assert.ok(input.deadlineAtMs > Date.now());
       assert.equal(typeof input.beforeOpenAiCall, "function", "Railway must pass the durable dollar reservation hook before paid analysis.");
       assert.equal(typeof input.aiReservationRetryAt, "function", "The event job must be able to inherit the exact daily-cost retry boundary.");
+      if (eventMode === "pilot_timed_candidates") {
+        const candidate = timedCandidates.shift();
+        if (!candidate) return { ok: true, status: "idle", eventsProcessed: 0, openAiCalled: false };
+        advanceCycleClock(candidate.preparationMs);
+        const remainingMs = input.deadlineAtMs - Date.now();
+        const reservationsBefore = paidReservationCalls;
+        const allowed = await input.beforeOpenAiCall({ candidateFingerprint: candidate.fingerprint, ticker: "INOD", direction: "upside" });
+        const result = { remainingMs, allowed, reservations: paidReservationCalls - reservationsBefore, modelCalls: 0 };
+        if (allowed) {
+          // Models are simulated only after the actual orchestrator hook admits
+          // this candidate. Every later candidate must pass that hook again.
+          result.modelCalls++;
+          advanceCycleClock(candidate.modelMs);
+        }
+        timedCandidateResults.push(result);
+        return { ok: true, status: allowed ? "completed" : "event_job_deferred", nonterminal: !allowed,
+          eventsProcessed: allowed ? 1 : 0, openAiCalled: allowed,
+          resultKey: allowed ? `test/${candidate.fingerprint}.json` : null };
+      }
       if (aiBudgetMode === "read_timeout") {
         assert.equal(input.allowOpenAi, false, "An unreadable shared ledger must stop paid reviews even if its fallback spend is zero.");
         return { ok: true, status: "idle", eventsProcessed: 0, openAiCalled: false };
       }
       if (eventMode === "pilot_time_budget_wait") {
         eventMode = "idle";
-        advanceCycleClock(100_000);
+        advanceCycleClock(160_000);
         const before = paidReservationCalls;
         assert.equal(await input.beforeOpenAiCall({ candidateFingerprint: "time-budget-test", ticker: "TEST", direction: "upside" }), false);
         assert.equal(input.aiReservationBlockedReason(), "cycle_time_budget");
@@ -429,7 +452,13 @@ new Function("require", "module", "exports", output)((name) => {
   throw new Error(`Unexpected analysis-only orchestrator import: ${name}`);
 }, loaded, loaded.exports);
 
-const result = await loaded.exports.runPr262AnalysisOnlyCycle({ maxCycleMs: 300_000 });
+const firstCycleDateNow = Date.now;
+const firstCycleStartedAt = Date.now();
+Date.now = () => firstCycleStartedAt;
+let result;
+try { result = await loaded.exports.runPr262AnalysisOnlyCycle({ maxCycleMs: 300_000 }); }
+finally { Date.now = firstCycleDateNow; }
+assert.equal(result.processing.deadlineMs, 210000, "Nonpilot callers retain the existing 210s maximum");
 assert.equal(result.ok, true);
 assert.equal(result.mode, "pr262_railway_analysis_recovery");
 assert.equal(result.sensor.skipped, true);
@@ -788,9 +817,9 @@ try {
   assert.equal(pilotBusy.processing.reportingReserveMs, 15000);
   eventMode = "idle";
   const pilotDefault = await loaded.exports.runPr262AnalysisOnlyCycle();
-  assert.equal(pilotDefault.processing.deadlineMs, 480000);
+  assert.equal(pilotDefault.processing.deadlineMs, 540000);
   const pilotClamped = await loaded.exports.runPr262AnalysisOnlyCycle({ maxCycleMs: 900000 });
-  assert.equal(pilotClamped.processing.deadlineMs, 480000, "Caller cannot exceed eight-minute pilot bound");
+  assert.equal(pilotClamped.processing.deadlineMs, 540000, "Caller cannot exceed nine-minute pilot bound");
   accessDiagnostic = { ...successfulDiagnostic, modelAvailable: { fast: false, deep: true, final: true } };
   unknownUsageReviews = 1;
   const optionalFastMissing = await loaded.exports.runPr262AnalysisOnlyCycle();
@@ -810,22 +839,23 @@ try {
   assert.equal(timeWait.processing.paidAdmissionMinimumMs, 335000);
   eventMode = "idle";
   for (const [recoveryMs, ledgerMs, expectedSourceMs] of [[3800, 0, 60000], [15000, 0, 60000],
-    [20000, 0, 55000], [30000, 0, 45000], [30000, 45000, 0], [30000, 50000, -5000]]) {
+    [20000, 0, 60000], [30000, 0, 60000], [30000, 45000, 60000], [30000, 50000, 55000],
+    [30000, 105000, 0], [30000, 110000, -5000]]) {
     simulatedNow = realDateNow();
     const startedAtMs = simulatedNow;
     earlyDeliveryMs = recoveryMs;
     initialProviderLedgerMs = ledgerMs;
     const sensorCycle = await loaded.exports.runPr262CronCycle();
     assert.equal(lastSensorInput.deadlineAtMs - lastSensorInput.startedAtMs, expectedSourceMs);
-    assert.ok(lastSensorInput.deadlineAtMs + 10000 + 335000 <= startedAtMs + 480000 - 45000 - 15000);
+    assert.ok(lastSensorInput.deadlineAtMs + 10000 + 335000 <= startedAtMs + 540000 - 45000 - 15000);
     assert.equal(sensorCycle.processing.paidAdmissionMinimumMs, 335000);
     assert.equal(sensorCycle.processing.deliveryReserveMs, 45000);
     assert.equal(sensorCycle.processing.reportingReserveMs, 15000);
   }
   initialProviderLedgerMs = 0;
   earlyDeliveryMs = 30000;
-  sensorWorkMs = 45000;
-  for (const [preparationMs, expectedAdmission] of [[10000, true], [10001, false]]) {
+  sensorWorkMs = 60000;
+  for (const [preparationMs, expectedAdmission] of [[55000, true], [55001, false]]) {
     simulatedNow = realDateNow();
     evidencePreparationMs = preparationMs;
     expectedSourcePaidAdmission = expectedAdmission;
@@ -840,6 +870,62 @@ try {
       assert.equal(denied.minimumRequiredMs, 335000);
     }
   }
+  // Exact observed INOD admission times from f9: the extra minute changes
+  // available time, never the minimum or the reserve-before-model ordering.
+  earlyDeliveryMs = 3800;
+  sensorWorkMs = 60000;
+  evidencePreparationMs = 0;
+  const receiptComparisons = [];
+  for (const oldRemainingMs of [315978, 284815]) {
+    for (const cycleMs of [480000, 540000]) {
+      simulatedNow = realDateNow();
+      timedCandidates = [{ fingerprint: `inod-${oldRemainingMs}-${cycleMs}`,
+        preparationMs: 420000 - oldRemainingMs - earlyDeliveryMs - sensorWorkMs, modelMs: 0 }];
+      timedCandidateResults = [];
+      eventMode = "pilot_timed_candidates";
+      const receiptCycle = await loaded.exports.runPr262CronCycle({ maxCycleMs: cycleMs });
+      const allowed = cycleMs === 540000;
+      assert.deepEqual(timedCandidateResults, [{ remainingMs: oldRemainingMs + cycleMs - 480000,
+        allowed, reservations: Number(allowed), modelCalls: Number(allowed) }]);
+      assert.equal(receiptCycle.processing.paidAdmissionMinimumMs, 335000);
+      assert.equal(receiptCycle.processing.paidTimeBudgetDeferrals, Number(!allowed));
+      receiptComparisons.push({ cycleMs, ...timedCandidateResults[0] });
+    }
+  }
+  simulatedNow = realDateNow();
+  timedCandidates = [
+    { fingerprint: "inod-first-admitted", preparationMs: 40222, modelMs: 60000 },
+    { fingerprint: "later-candidate-denied", preparationMs: 0, modelMs: 60000 },
+  ];
+  timedCandidateResults = [];
+  eventMode = "pilot_timed_candidates";
+  const successive = await loaded.exports.runPr262CronCycle();
+  assert.deepEqual(timedCandidateResults, [
+    { remainingMs: 375978, allowed: true, reservations: 1, modelCalls: 1 },
+    { remainingMs: 315978, allowed: false, reservations: 0, modelCalls: 0 },
+  ], "Prior processing consumes headroom; later work cannot reserve or start a model below the unchanged floor");
+  assert.equal(successive.processing.aiCalls, 1);
+  assert.equal(successive.processing.paidTimeBudgetDeferrals, 1);
+  console.log(JSON.stringify({ sensorTimingReceipts: receiptComparisons, successivePaidCandidates: timedCandidateResults }));
+
+  // Initial work can exhaust either boundary. The event loop and hard cycle
+  // deadline remain independent of the higher default and caller clamp.
+  earlyDeliveryMs = 0;
+  sensorWorkMs = 0;
+  eventMode = "idle";
+  for (const workMs of [300001, 539999, 540000, 540001]) {
+    simulatedNow = realDateNow();
+    mappingWorkMs = workMs;
+    const before = { events: eventCalls, reservations: paidReservationCalls };
+    if (workMs >= 540000) {
+      await assert.rejects(() => loaded.exports.runPr262CronCycle(), /pr262_cycle_deadline_exceeded/);
+    } else {
+      const deadlineCycle = await loaded.exports.runPr262CronCycle();
+      assert.equal(deadlineCycle.processing.deadlineStoppedAdmissions, true);
+    }
+    assert.equal(eventCalls, before.events, "No event starts with less than the existing 180s event-start budget");
+    assert.equal(paidReservationCalls, before.reservations);
+  }
 } finally {
   Date.now = realDateNow;
   state.pending = beforePilotState;
@@ -850,6 +936,9 @@ try {
   sensorWorkMs = 0;
   evidencePreparationMs = 0;
   expectedSourcePaidAdmission = null;
+  mappingWorkMs = 0;
+  timedCandidates = [];
+  timedCandidateResults = [];
   for (const key of Object.keys(process.env)) if (!(key in savedPilotEnvironment)) delete process.env[key];
   Object.assign(process.env, savedPilotEnvironment);
 }

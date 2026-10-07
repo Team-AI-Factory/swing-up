@@ -46,7 +46,7 @@ async function scenario({ intervalMs = 2745, storageMs = 500, recoveryMs = 3800,
   const sensorStart = cycleAt + recoveryMs;
   clock = sensorStart;
   const window = pr262PilotSourceWindow({ startedAtMs: sensorStart,
-    processingDeadlineAtMs: cycleAt + 480_000 - 45_000 - 15_000, paidAdmissionMinimumMs: 335_000 });
+    processingDeadlineAtMs: cycleAt + 540_000 - 45_000 - 15_000, paidAdmissionMinimumMs: 335_000 });
   const registryKey = prefix + "sensor/direct-company-feeds-v1.json";
   if (!objects.has(registryKey)) objects.set(registryKey, { etag: "initial", value: {
     version: 1, updatedAt: new Date().toISOString(), discoveryCursor: 0, lastDiscoveryCycleAt: new Date().toISOString(),
@@ -116,15 +116,15 @@ async function scenario({ intervalMs = 2745, storageMs = 500, recoveryMs = 3800,
 
 try {
   const normal = pr262PilotSourceWindow({ startedAtMs: cycleStart + 3800,
-    processingDeadlineAtMs: cycleStart + 420_000, paidAdmissionMinimumMs: 335_000 });
+    processingDeadlineAtMs: cycleStart + 480_000, paidAdmissionMinimumMs: 335_000 });
   assert.equal(normal.allocatedMs, 60_000);
   assert.equal(normal.preparationReserveMs, 10_000);
   assert.ok(normal.latestPaidAdmissionAtMs - normal.deadlineAtMs >= normal.preparationReserveMs);
   const fullRecovery = pr262PilotSourceWindow({ startedAtMs: cycleStart + 30_000,
-    processingDeadlineAtMs: cycleStart + 420_000, paidAdmissionMinimumMs: 335_000 });
-  assert.equal(fullRecovery.allocatedMs, 45_000);
-  assert.equal(cycleStart + 420_000 - fullRecovery.latestPaidAdmissionAtMs, 335_000);
-  assert.equal(fullRecovery.latestPaidAdmissionAtMs - fullRecovery.deadlineAtMs, 10_000);
+    processingDeadlineAtMs: cycleStart + 480_000, paidAdmissionMinimumMs: 335_000 });
+  assert.equal(fullRecovery.allocatedMs, 60_000);
+  assert.equal(cycleStart + 480_000 - fullRecovery.latestPaidAdmissionAtMs, 335_000);
+  assert.equal(fullRecovery.latestPaidAdmissionAtMs - fullRecovery.deadlineAtMs, 55_000);
 
   const results = [];
   for (const [intervalMs, baselineCount] of [[2745, 10], [3104.375, 9]]) {
@@ -142,11 +142,11 @@ try {
       results.push({ intervalMs, storageMs, baselineCount, repaired: 13, elapsedMs: repaired.elapsedMs });
     }
     const constrained = await scenario({ intervalMs, recoveryMs: 30_000 });
-    assert.equal(constrained.window.allocatedMs, 45_000);
-    assert.ok(constrained.result.secCheckSuccesses < 13, "Full early-recovery time is not silently borrowed from paid review");
-    assert.ok(constrained.elapsedMs <= 45_000);
+    assert.equal(constrained.window.allocatedMs, 60_000);
+    assert.equal(constrained.result.secCheckSuccesses, 13, "The additional cycle headroom preserves the same source cap after full recovery");
+    assert.ok(constrained.elapsedMs <= 60_000);
   }
-  for (const recoveryMs of [75_000, 80_000]) {
+  for (const recoveryMs of [135_000, 140_000]) {
     const expired = await scenario({ recoveryMs, priorWorkMs: 0 });
     assert.equal(expired.window.allocatedMs, 0);
     assert.equal(expired.result.attemptCount, 0);

@@ -91,29 +91,23 @@ try {
     captured = []; transport = [];
     const compact = committee(textModule);
     const after = await compact.runAiCommittee({ ...input, [compact.TRUSTED_IN_MEMORY_EVIDENCE]: pack });
-    assert.equal(after.ok, true);
+    assert.equal(after.ok, false);
     assert.deepEqual(after.plannedAgents, ["analyst_agent", "industry_agent", "accountant_agent", "skeptic_agent", "final_judge"]);
-    assert.equal(transport.length, 5);
-    assert.deepEqual(transport.map(request => request.model), ["gpt-6.1-sol", "gpt-6.1-sol", "gpt-6.1-sol", "gpt-6.1-sol", "gpt-6-astra"]);
+    assert.equal(transport.length, 0);
+    assert.equal(fetchCalls, 0, "Reserved later-role growth must block before any paid request");
+    assert.equal(after.committeeOutput.modelUsageSummary.actualOpenAiUsage.responsesWithUsage, 0);
     assert.equal(after.committeeOutput.overallRecommendation, "needs_more_data");
     assert.equal(after.compatibility.publishes, false);
     assert.equal(after.compatibility.sendsTelegram, false);
-    assert.deepEqual(captured[0].responseSchema, beforeRequest.responseSchema);
-    assert.equal(transport[0].response_format.type, "json_schema");
-    assert.equal(transport[0].response_format.json_schema.strict, true);
-    assert.equal(captured[0].messages[0].content.replace(` ${textModule.SHARED_EVIDENCE_TEXT_PARTS_INSTRUCTIONS}`, ""), beforeRequest.messages[0].content);
     const sizes = captured.map(bytes);
-    for (const [index, request] of captured.entries()) {
-      const payload = JSON.parse(request.messages[1].content);
-      const restored = restore(payload.evidencePack, payload.sharedEvidenceTexts);
-      assert.equal(JSON.stringify(restored), JSON.stringify(restore(beforePayload.evidencePack, beforePayload.sharedEvidenceTexts)),
-        "Every role receives byte-identical reconstructed evidence, including facts, dates, units, sources, flags and literals");
-      assert.deepEqual(restored.evidenceSections.fundamentals.items, pack.fundamentalsEvidence.items);
-      assert.deepEqual(restored.financialDiligence, pack.financialDiligence);
-      const previous = after.agentResults.slice(0, index).map(result => Object.fromEntries(Object.entries(result).filter(([key]) => key !== "tokenUsage")));
-      assert.equal(JSON.stringify(payload.previousResults), JSON.stringify(previous), "All substantive prior-role outputs stay unchanged");
-      assert.ok(sizes[index] <= 60_000);
-    }
+    const afterPayload = JSON.parse(captured[0].messages[1].content);
+    const restored = restore(afterPayload.evidencePack, afterPayload.sharedEvidenceTexts);
+    assert.equal(JSON.stringify(restored), JSON.stringify(restore(beforePayload.evidencePack, beforePayload.sharedEvidenceTexts)),
+      "The zero-call hold retains byte-identical reconstructed evidence, including facts, dates, units, sources, flags and literals");
+    assert.deepEqual(restored.evidenceSections.fundamentals.items, pack.fundamentalsEvidence.items);
+    assert.deepEqual(restored.financialDiligence, pack.financialDiligence);
+    const reservedFailure = after.agentResults.find(result => result.status === "failed").providerFailure;
+    assert.ok(reservedFailure.promptSectionBytes.reservedPriorResults > 0);
     // Deliberately engineered boundary test, NOT the missing 71,331-byte live
     // packet. Extra unique bytes test the same overflow magnitude with every
     // role and its accumulated outputs under the unchanged reservation.
@@ -130,8 +124,8 @@ try {
       JSON.parse(captured[0].messages[1].content).sharedEvidenceTexts);
     captured = []; transport = [];
     const boundaryAfter = await compact.runAiCommittee({ ...input, [compact.TRUSTED_IN_MEMORY_EVIDENCE]: boundaryPack });
-    assert.equal(boundaryAfter.ok, true);
-    assert.equal(transport.length, 5);
+    assert.equal(boundaryAfter.ok, false);
+    assert.equal(transport.length, 0);
     assert.equal(boundaryAfter.committeeOutput.overallRecommendation, "needs_more_data");
     const boundarySizes = captured.map(bytes);
     for (const request of captured) {
@@ -151,7 +145,7 @@ try {
     console.log(JSON.stringify({ historicalReplay: false, reconstructedPublicSecInputs: true, actualOrchestratorCapture: true,
       networkModelCalls: 0, before: bytes(beforeRequest), after: sizes,
       engineeredBoundaryNotHistorical: { before: 71_331, after: boundarySizes }, exactEvidenceRoundTrip: true,
-      priorRoleOutputsPreserved: true, strictJsonSchemaUnchanged: true, uniqueOversizeBlocked: true }));
+      reservedWholeReviewPreflight: true, uniqueOversizeBlocked: true }));
   });
 } finally {
   globalThis.fetch = oldFetch; console.info = oldInfo;

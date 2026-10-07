@@ -125,20 +125,22 @@ try {
     const policy = loadTsModule("@/lib/ai-committee/model-policy");
     const fullPack = { ...pack, financialDiligence: { ...pack.financialDiligence,
       documents: { cik: "0000000001", documents, failures: [], checkedAt: now.toISOString() } } };
+    const fullOriginal = structuredClone(fullPack);
     const result = await committee.runAiCommittee({ ...input, maxCostUsd: policy.AI_COMMITTEE_REVIEW_MAX_COST_USD,
       allowedModels: policy.COMMITTEE_ALLOWED_MODELS, [committee.TRUSTED_IN_MEMORY_EVIDENCE]: fullPack });
-    assert.equal(result.ok, true, "A representative full financial packet must fit without dropping facts or filing text");
-    assert.deepEqual(transport.map(request => request.model), ["gpt-6.1-sol", "gpt-6.1-sol", "gpt-6.1-sol", "gpt-6-astra"]);
-    for (const [index, prompt] of captured.entries()) {
-      assert.deepEqual(prompt.evidencePack.evidenceSections.fundamentals.items, fullPack.fundamentalsEvidence.items);
-      assert.deepEqual(prompt.evidencePack.financialDiligence, fullPack.financialDiligence);
-      assert.equal(prompt.previousResults.length, index);
-    }
+    assert.equal(result.ok, false, "A packet without room for later reviewer JSON must stop before paid transport");
+    assert.equal(transport.length, 0);
+    assert.equal(captured.length, 0);
+    assert.equal(result.committeeOutput.modelUsageSummary.actualOpenAiUsage.responsesWithUsage, 0);
+    const failure = result.agentResults.find(role => role.status === "failed").providerFailure;
+    assert.equal(failure.category, "input_limit");
+    assert.ok(failure.promptSectionBytes.reservedPriorResults > 0);
+    assert.deepEqual(fullPack, fullOriginal);
     assert.equal(result.committeeOutput.overallRecommendation, "needs_more_data");
   });
   console.log(JSON.stringify({ syntheticOnly: true, historicalReplay: false, factsPreservedPerRole: financialFacts.length,
     roleCount: 4, missingFactsNotInvented: true, oversizedBlockedBeforeNetwork: true, hardLimitBytes: 60_000,
-    fullDocumentsPromptBytes: transport }));
+    fullDocumentsReservedBeforeNetwork: true }));
 } finally {
   globalThis.fetch = originalFetch; console.info = originalInfo;
   for (const key of Object.keys(process.env)) if (!(key in savedEnvironment)) delete process.env[key];

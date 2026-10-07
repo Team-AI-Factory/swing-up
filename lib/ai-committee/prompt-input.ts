@@ -3,7 +3,7 @@ import { AI_COMMITTEE_REVIEW_MAX_PROMPT_BYTES, reasoningCommitteeModel } from "@
 
 // Advance only when the actual prompt transport or limit policy changes.
 // This version applies to proven-zero technical input holds, never completed reviews.
-export const AI_COMMITTEE_INPUT_POLICY_REVISION = "utf8-schema-framing-60000-lossless-records-v2";
+export const AI_COMMITTEE_INPUT_POLICY_REVISION = "utf8-schema-framing-60000-reserved-review-v3";
 
 /** Bound the text the model receives, including role/schema framing. JSON's
  * transport escaping is decoded before tokenization and is not extra input. */
@@ -55,14 +55,22 @@ function promptSectionBytes(messages: Array<{ role: string; content: string }>, 
 }
 
 /** Same pure gate for whole-review admission and each actual provider call. */
-export function committeePromptPreflight(options: Pick<AiCommitteeRunOptions, "messages" | "maximumPromptBytes" | "responseSchema"> & { model: string }): AiCommitteeProviderFailure | undefined {
+export function committeePromptPreflight(options: Pick<AiCommitteeRunOptions, "messages" | "maximumPromptBytes" | "responseSchema"> & {
+  model: string;
+  /** Whole-review admission reserve for prior visible reviewer JSON that will
+   * be appended to a later role. Actual provider calls always leave this zero. */
+  reservedPromptBytes?: number;
+}): AiCommitteeProviderFailure | undefined {
   const reasoning = reasoningCommitteeModel(options.model);
   const configuredPromptLimit = options.maximumPromptBytes ?? (reasoning ? AI_COMMITTEE_REVIEW_MAX_PROMPT_BYTES : undefined);
   if (!Number.isFinite(configuredPromptLimit)) return undefined;
   const maximumPromptBytes = Math.max(1_000, Math.min(reasoning ? AI_COMMITTEE_REVIEW_MAX_PROMPT_BYTES : Infinity, Math.floor(Number(configuredPromptLimit))));
   const messages = options.messages.map(message => reasoning && message.role === "system" ? { ...message, role: "developer" } : message);
   const responseFormat = options.responseSchema ? { type: "json_schema", json_schema: { ...options.responseSchema, strict: true } } : undefined;
-  const promptBytes = committeePromptInputBytes(messages, responseFormat);
+  const reservedPromptBytes = Number.isFinite(options.reservedPromptBytes)
+    ? Math.max(0, Math.floor(Number(options.reservedPromptBytes)))
+    : 0;
+  const promptBytes = committeePromptInputBytes(messages, responseFormat) + reservedPromptBytes;
   return promptBytes > maximumPromptBytes ? { category: "input_limit", stopRemainingAgents: true, promptBytes, maximumPromptBytes,
-    promptSectionBytes: promptSectionBytes(messages, responseFormat) } : undefined;
+    promptSectionBytes: { ...promptSectionBytes(messages, responseFormat), reservedPriorResults: reservedPromptBytes } } : undefined;
 }

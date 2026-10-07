@@ -169,6 +169,45 @@ try {
     const input = { persistResult: false, mode: "preview", dryRun: false, confirmRun: true, reviewPolicy: "focused_v1",
       maximumPromptBytes: 60_000, maxCostUsd: policy.AI_COMMITTEE_REVIEW_MAX_COST_USD, allowedModels: policy.COMMITTEE_ALLOWED_MODELS };
     const baseline = committee(false), compact = committee(true);
+    const roomyPack = structuredClone(fullPack);
+    for (const document of roomyPack.financialDiligence.documents.documents) {
+      for (const excerpt of document.excerpts) excerpt.text = excerpt.text.slice(0, 400);
+    }
+    const roomyOriginal = structuredClone(roomyPack);
+    const roomy = await compact.runAiCommittee({ ...input, [compact.TRUSTED_IN_MEMORY_EVIDENCE]: roomyPack });
+    assert.equal(roomy.ok, true);
+    assert.deepEqual(captured.map(request => JSON.parse(request.messages[1].content).agent.id),
+      ["analyst_agent", "valuation_dcf_agent", "skeptic_agent", "final_judge"]);
+    const roomyPromptBytes = captured.map(bytes);
+    const roomyPromptPack = restore(JSON.parse(captured[0].messages[1].content).evidencePack,
+      JSON.parse(captured[0].messages[1].content));
+    for (const [index, request] of captured.entries()) {
+      const payload = JSON.parse(request.messages[1].content);
+      const restored = restore(payload.evidencePack, payload);
+      assert.equal(JSON.stringify(restored), JSON.stringify(roomyPromptPack));
+      assert.deepEqual(restored.evidenceSections.fundamentals.items, roomyPack.fundamentalsEvidence.items);
+      assert.deepEqual(restored.financialDiligence, roomyPack.financialDiligence);
+      assert.equal(JSON.stringify(payload.previousResults), JSON.stringify(roomy.agentResults.slice(0, index)
+        .map(result => Object.fromEntries(Object.entries(result).filter(([key]) => key !== "tokenUsage")))));
+      assert.ok(roomyPromptBytes[index] <= 60_000);
+      if (payload.sharedEvidenceKeys) assert.ok(request.messages[0].content.endsWith(records.SHARED_EVIDENCE_RECORD_INSTRUCTIONS));
+      for (const fact of financialFacts) {
+        assert.ok(request.messages[1].content.includes(fact.sourceUrl));
+        assert.ok(request.messages[1].content.includes(fact.filedAt));
+      }
+    }
+    assert.deepEqual(roomyPack, roomyOriginal, "Never change fingerprinted evidence, audit storage or consensus input");
+    assert.ok(gateInputs.some(options => (options.reservedPromptBytes ?? 0) > 0),
+      "Whole-review admission must reserve prior-role growth for later prompts");
+    assert.ok(gateInputs.every(options => !promptInput.committeePromptPreflight(options)));
+    assert.equal(roomy.committeeOutput.overallRecommendation, "needs_more_data");
+    assert.equal(roomy.compatibility.publishes, false);
+    assert.equal(roomy.compatibility.sendsTelegram, false);
+    assert.equal(policy.AI_COMMITTEE_REVIEW_MAX_PROMPT_BYTES, 60_000);
+    assert.equal(policy.AI_COMMITTEE_REVIEW_MAX_COST_USD, 2.7538);
+    assert.ok(captured[0].responseSchema.schema.additionalProperties === false);
+
+    gateInputs = []; captured = []; fetches = 0;
     await baseline.runAiCommittee({ ...input, [baseline.TRUSTED_IN_MEMORY_EVIDENCE]: fullPack });
     // Engineered equality of size only. This fixture is NOT the missing INOD
     // packet, and contains synthetic source rows and explicit boundary padding.
@@ -184,32 +223,17 @@ try {
     const unchanged = structuredClone(fullPack);
     gateInputs = []; captured = []; fetches = 0;
     const after = await compact.runAiCommittee({ ...input, [compact.TRUSTED_IN_MEMORY_EVIDENCE]: fullPack });
-    assert.equal(after.ok, true);
-    assert.deepEqual(captured.map(request => JSON.parse(request.messages[1].content).agent.id),
-      ["analyst_agent", "valuation_dcf_agent", "skeptic_agent", "final_judge"]);
-    const promptBytes = captured.map(bytes);
-    for (const [index, request] of captured.entries()) {
-      const payload = JSON.parse(request.messages[1].content);
-      const restored = restore(payload.evidencePack, payload);
-      assert.equal(JSON.stringify(restored), JSON.stringify(originalPayload.evidencePack));
-      assert.deepEqual(restored.evidenceSections.fundamentals.items, fullPack.fundamentalsEvidence.items);
-      assert.deepEqual(restored.financialDiligence, fullPack.financialDiligence);
-      assert.equal(JSON.stringify(payload.previousResults), JSON.stringify(after.agentResults.slice(0, index)
-        .map(result => Object.fromEntries(Object.entries(result).filter(([key]) => key !== "tokenUsage")))));
-      assert.ok(promptBytes[index] <= 60_000);
-      if (payload.sharedEvidenceKeys) assert.ok(request.messages[0].content.endsWith(records.SHARED_EVIDENCE_RECORD_INSTRUCTIONS));
-      for (const fact of financialFacts) {
-        assert.ok(request.messages[1].content.includes(fact.sourceUrl));
-        assert.ok(request.messages[1].content.includes(fact.filedAt));
-      }
-    }
+    assert.equal(after.ok, false);
+    assert.equal(captured.length, 0, "Reserved later-role growth must block before the first paid request");
+    assert.equal(fetches, 0);
+    assert.equal(after.committeeOutput.modelUsageSummary.actualOpenAiUsage.responsesWithUsage, 0);
+    const reservedFailure = after.agentResults.find(result => result.status === "failed").providerFailure;
+    assert.equal(reservedFailure.category, "input_limit");
+    assert.equal(reservedFailure.maximumPromptBytes, 60_000);
+    assert.ok(reservedFailure.promptSectionBytes.reservedPriorResults > 0);
     assert.deepEqual(fullPack, unchanged, "Never change fingerprinted evidence, audit storage or consensus input");
-    assert.equal(after.committeeOutput.overallRecommendation, "needs_more_data");
     assert.equal(after.compatibility.publishes, false);
     assert.equal(after.compatibility.sendsTelegram, false);
-    assert.equal(policy.AI_COMMITTEE_REVIEW_MAX_PROMPT_BYTES, 60_000);
-    assert.equal(policy.AI_COMMITTEE_REVIEW_MAX_COST_USD, 2.7538);
-    assert.ok(captured[0].responseSchema.schema.additionalProperties === false);
 
     // Unique evidence remains too large after every lossless encoding attempt.
     captured = []; fetches = 0;
@@ -218,17 +242,17 @@ try {
     assert.equal(blocked.ok, false);
     assert.equal(captured.length, 0); assert.equal(fetches, 0);
     assert.equal(blocked.committeeOutput.modelUsageSummary.actualOpenAiUsage.responsesWithUsage, 0);
-    const failure = blocked.agentResults.find(result => result.status === "failed").providerFailure;
-    assert.equal(failure.category, "input_limit");
-    assert.equal(failure.maximumPromptBytes, 60_000);
-    assert.ok(failure.promptSectionBytes.financialDiligence > 0);
-    assert.ok(Object.values(failure.promptSectionBytes).every(value => Number.isInteger(value) && value >= 0));
-    assert.ok(!JSON.stringify(failure).includes("Unique synthetic evidence"));
+    const uniqueFailure = blocked.agentResults.find(result => result.status === "failed").providerFailure;
+    assert.equal(uniqueFailure.category, "input_limit");
+    assert.equal(uniqueFailure.maximumPromptBytes, 60_000);
+    assert.ok(uniqueFailure.promptSectionBytes.financialDiligence > 0);
+    assert.ok(Object.values(uniqueFailure.promptSectionBytes).every(value => Number.isInteger(value) && value >= 0));
+    assert.ok(!JSON.stringify(uniqueFailure).includes("Unique synthetic evidence"));
 
     // An unexpected long provider answer can still overflow the next prompt.
     // It must preserve the first usage receipt while stopping subsequent calls.
     captured = []; fetches = 0; responseExtension = "Synthetic long reviewer uncertainty. ".repeat(3000);
-    const dynamic = await compact.runAiCommittee({ ...input, [compact.TRUSTED_IN_MEMORY_EVIDENCE]: fullPack });
+    const dynamic = await compact.runAiCommittee({ ...input, [compact.TRUSTED_IN_MEMORY_EVIDENCE]: roomyPack });
     assert.equal(dynamic.ok, false);
     assert.equal(dynamic.agentResults[0].status, "completed");
     assert.equal(dynamic.agentResults[1].error, "prompt_too_large");
@@ -236,8 +260,9 @@ try {
     assert.equal(fetches, 1);
     assert.ok(dynamic.agentResults[1].providerFailure.promptSectionBytes.previousResults > 60_000);
     console.log(JSON.stringify({ syntheticOnly: true, exactHistoricalReplay: false, actualOrchestratorCapture: true,
-      before: 63_587, after: promptBytes, exactEvidenceRoundTrip: true, allPriorOutputsPreserved: true,
-      zeroNetworkForIntrinsicOverflow: true, laterDynamicOverflowRetainsKnownUsage: true, numericOnlyDiagnostics: true,
+      before: 63_587, roomyAfter: roomyPromptBytes, exactEvidenceRoundTrip: true, allPriorOutputsPreserved: true,
+      reservedWholeReviewPreflight: true, zeroNetworkForIntrinsicOverflow: true,
+      laterDynamicOverflowRetainsKnownUsage: true, numericOnlyDiagnostics: true,
       sourceDatesAndUrlsRemainLiteral: true, unchangedHardCap: 60_000, unchangedMaximumReservation: 2.7538 }));
   });
 } finally {

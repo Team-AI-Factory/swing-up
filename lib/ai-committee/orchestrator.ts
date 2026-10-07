@@ -625,14 +625,23 @@ export async function runAiCommittee(input: RunAiCommitteeInput) {
   }
 
   const agentResults: AiCommitteeAgentResult[] = [];
-  // Reject an intrinsically oversized role before any reviewer is charged.
-  // Unknown future reviewer output is still checked at each actual call below.
+  // Admit the whole review only if every later role has room for the preceding
+  // visible reviewer JSON. Reasoning tokens are not inserted into later
+  // prompts; reserve the unchanged visible-output limit plus JSON framing.
+  const bytesPerVisibleOutputToken = 4;
+  let reservedPriorResults = 0;
   const preflight = dryRun ? undefined : plannedRoles.map(agent => {
     const prompt = buildAgentPrompt(agent, evidence.evidencePack!, [], mode, input.maximumPromptBytes);
-    const failure = committeePromptPreflight({ model: modelForTier(agent.modelTierPreference), maximumPromptBytes: input.maximumPromptBytes,
+    const model = modelForTier(agent.modelTierPreference);
+    const failure = committeePromptPreflight({ model, maximumPromptBytes: input.maximumPromptBytes,
       messages: [{ role: "system", content: prompt.system }, { role: "user", content: prompt.user }],
-      responseSchema: agent.id === "analyst_agent" ? FOCUSED_ANALYST_RESPONSE_SCHEMA : undefined });
-    return { agentId: agent.id, failure };
+      responseSchema: agent.id === "analyst_agent" ? FOCUSED_ANALYST_RESPONSE_SCHEMA : undefined,
+      reservedPromptBytes: reasoningCommitteeModel(model) ? reservedPriorResults : 0 });
+    const result = { agentId: agent.id, failure };
+    // Four UTF-8 bytes per allowed visible token plus fixed JSON framing is a
+    // conservative planning bound. It changes neither model nor output limit.
+    reservedPriorResults += Math.max(0, agent.maxOutputTokens) * bytesPerVisibleOutputToken + 512;
+    return result;
   }).find(result => result.failure);
   let sharedFailure: AiCommitteeProviderFailure | undefined = preflight?.failure;
   const runAgent = async (agent: AiCommitteeAgentDefinition) => {

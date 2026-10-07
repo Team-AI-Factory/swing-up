@@ -86,10 +86,13 @@ try {
   assert.equal(result.ok, false);
   assert.deepEqual(result.plannedAgents, ["analyst_agent", "industry_agent", "accountant_agent", "skeptic_agent", "final_judge"]);
   assert.ok(gateInputs.filter(input => JSON.parse(input.messages[1].content).agent.id !== "final_judge")
-    .every(input => !promptInput.committeePromptPreflight(input)), "Every earlier empty-history role fits independently");
-  assert.equal(result.agentResults.at(-1).error, "prompt_too_large");
-  assert.equal(result.agentResults.at(-1).agentId, "final_judge");
-  assert.ok(result.agentResults.slice(0, -1).every(role => role.status === "blocked"));
+    .every(input => !promptInput.committeePromptPreflight({ ...input, reservedPromptBytes: 0 })),
+  "Every earlier empty-history role fits independently before prior-result growth is reserved");
+  assert.ok(gateInputs.some(input => (input.reservedPromptBytes ?? 0) > 0),
+    "Whole-review admission must reserve prior-role growth for later prompts");
+  const failedRole = result.agentResults.find(role => role.status === "failed");
+  assert.equal(failedRole.error, "prompt_too_large");
+  assert.ok(result.agentResults.filter(role => role !== failedRole).every(role => role.status === "blocked"));
   assert.ok(result.agentResults.every(role => role.providerFailure?.category === "input_limit" && !role.tokenUsage));
   assert.equal(providerCalls, 0, "Do not invoke any provider when a later base prompt cannot fit");
   assert.equal(networkCalls, 0, "No compatibility or completion request is allowed");
@@ -134,7 +137,7 @@ try {
   assert.deepEqual(objects.get(admissionKey).value.reservations, [otherEvent, otherFingerprint],
     "The strict actual receipt releases only the matching event and fingerprint");
   assert.equal(networkCalls, 0);
-  console.log(JSON.stringify({ syntheticOnly: true, historicalReplay: false, actualFailedRole: "final_judge",
+  console.log(JSON.stringify({ syntheticOnly: true, historicalReplay: false, actualFailedRole: failedRole.agentId,
     earlierBaseRolesFit: true, earlierRolesBlocked: 4, providerCalls, networkCalls, strictNoUsageProof: true,
     ledgerSource: entry.source, ledgerCostUsd: entry.costUsd, newPendingUncertainty: false,
     olderExposurePreservedUsd: budget.exposureUsd, matchingAdmissionReleasedOnly: true, sharedProviderCooldown: false }));

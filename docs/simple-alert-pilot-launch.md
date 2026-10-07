@@ -1,3 +1,19 @@
+## Profile admission/CAS repair published; live proof pending — 7 October 2026, 08:42 Bangkok
+
+Fresh logs after the 07:52 checkpoint show the profile incident continued. Passes at 01:13:06 and 01:26:47 UTC completed HTTP503: the first reached the old 175-second deadline after 34 attempts and one raw verification, leaving counts unreconciled; the second reconciled **9 newly verified today / 500**, 491 remaining and all 25 cohort profiles verified, but failed after 12 attempts with `company_profile_cache_conflict`. Source requests were 9 and 6 with zero request/body failures. This is storage/coordination failure, not a provider-source failure and not proof of successful profile production.
+
+The shared company-profile cache is one JSON object. Two intended local issuer workers could independently read and conditionally rewrite it, spending the entire bounded CAS-conflict allowance against each other even though no external process had changed either issuer. The role also admitted work until its 175-second signal, leaving no bounded time for both workers to settle, reconcile durable first-time counts, release the lease and persist the run summary.
+
+**Bounded repair:** serialize only this process's profile-cache mutations. SEC/source work and issuer extraction remain concurrent; R2 conditional writes, exact-intent readback, four-attempt transient/CAS bound, same-issuer supersession protection, source pacing, provider backoff and the two-worker limit remain. The profile work signal now closes at 140 seconds, reserving the existing final 35 seconds for drain, one authoritative count reconciliation, lease release and summary persistence. No timeout, request, daily-attempt, resource or spending cap was raised.
+
+The focused regression now runs two local issuer attempts concurrently and requires zero self-CAS conflicts. Existing tests still cover lost acknowledgments, external conflicts, exact-intent readback, superseded rows, partial saved work, role/store deadlines, one-shot cleanup, truthful unknown counts and later reconciliation. Both `company-profile-storage-retry-isolated.mjs` and `simple-alert-profile-storage-reporting-smoke.mjs` passed. Tests make no live source/model calls or storage writes. Production recovery is not yet claimed.
+
+A separate new Committee incident occurred after the prior SERV insufficient-evidence review: a later SERV retry had a 71,331-byte preflight packet against the unchanged 60,000-byte limit. All roles were stopped before provider use, a zero-cost rejected-request receipt was recorded, and the result remains a technical failure. Do not truncate financial evidence, raise the cap or classify it as insufficient evidence. The rolling ledger was **$4.912468 recorded/exposure, $0 reserved, $0 pending unknown, $5.087532 headroom**; no Serious Alert, outbox or delivery resulted. Diagnose the exact packet growth and add unchanged-evidence suppression before another retry; do not pay again for the same packet.
+
+Main remains stopped, cohort remains the authorized 25, and the unrelated staged telemetry patch remains untouched. This entry records the tested release; exact commit deployments and completed runtime passes must be verified separately before calling either profile issue recovered. Scale-up remains ineligible.
+
+---
+
 ## Source rollout verified; profile reconciliation incident — 7 October 2026, 07:52 Bangkok
 
 Fresh GitHub/Railway evidence supersedes the prior 06:48 entry. A separate operator published runtime **`8db0d12aef6b23770a69dec696bb808f9806d3da`**, tree `a2bcd8e561ca5a0c3f9b6ab7446adf54128db644`, after the earlier maintenance check. Read [the source/storage release](pilot-source-storage-recovery.md) alongside the five operating/recovery documents before verification. Preserve this release and the operator's work; no runtime edit, redeploy, rollback, resource increase or staged-patch acceptance was performed by this check.

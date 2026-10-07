@@ -68,47 +68,68 @@ function transientProfileWrite(error: unknown) {
 }
 // Match the JSON representation actually persisted by the R2 encoder.
 const snapshotEntry = (entry: Entry): Entry => JSON.parse(JSON.stringify(redactSecrets(entry)));
+// The profile cache is one shared JSON object. The profile role deliberately
+// overlaps two independent issuers, but letting both local workers run a full
+// read/modify/CAS loop at once makes them contend with each other and can burn
+// every bounded conflict retry without any external writer. Serialize only
+// this process's cache mutations; source requests and issuer extraction remain
+// concurrent, and R2 CAS still protects against other processes.
+let profileStoreTail: Promise<void> = Promise.resolve();
+async function serializedProfileStore<T>(operation: () => Promise<T>) {
+  const previous = profileStoreTail.catch(() => undefined);
+  let release!: () => void;
+  const turn = new Promise<void>(resolve => { release = resolve; });
+  profileStoreTail = previous.then(() => turn);
+  try {
+    await previous;
+    return await operation();
+  } finally {
+    release();
+  }
+}
 async function store(entry: Entry, previous: Entry | undefined, roleSignal?: AbortSignal, deadlineCleanup = false) {
   const intended = snapshotEntry(entry);
   // A normal source-deadline deferral gets one short cleanup PUT so its
   // five-minute backoff survives. It must never start another source or retry.
   const signal = AbortSignal.any([...(roleSignal && !deadlineCleanup ? [roleSignal] : []), AbortSignal.timeout(deadlineCleanup ? 5_000 : 15_000)]);
-  let writes = 0;
-  let failure: unknown = new Error("company_profile_cache_conflict");
-  try {
-    while (true) {
-      signal.throwIfAborted();
-      // This read also resolves an ambiguous response from the preceding PUT.
-      // Never retry from the old ETag or a guessed outcome.
-      const { saved, entries } = await load({ signal, forWrite: true });
-      const targets = entries.filter(row => row.cik === intended.cik && row.ticker === intended.ticker);
-      if (targets.length > 1) throw new Error("company_profile_cache_state_invalid");
-      if (isDeepStrictEqual(targets[0], intended)) return intended;
-      // Timestamps alone are not sufficient: a same-time concurrent change,
-      // including historical metadata, must not be overwritten either.
-      if (!isDeepStrictEqual(targets[0], previous)) throw new Error("company_profile_cache_superseded");
-      signal.throwIfAborted();
-      if (writes >= (deadlineCleanup ? 1 : 4)) throw failure;
-      if (writes) await pause(100 * 2 ** (writes - 1), undefined, { signal });
-      signal.throwIfAborted();
-      try {
-        writes++;
-        const result = await writeVersionedJsonToR2(KEY, { version: 1, updatedAt: intended.updatedAt,
-          entries: [intended, ...entries.filter(row => row.cik !== intended.cik || row.ticker !== intended.ticker)] },
-        { ...(saved.etag ? { expectedEtag: saved.etag } : { createOnly: true }), signal, maxAttempts: 1 });
-        if (result.conflict) { failure = new Error("company_profile_cache_conflict"); continue; }
-        if (!result.written) throw new Error("company_profile_cache_write_failed");
-        return intended;
-      } catch (error) {
-        if (!transientProfileWrite(error)) throw error;
-        failure = error;
+  return serializedProfileStore(async () => {
+    let writes = 0;
+    let failure: unknown = new Error("company_profile_cache_conflict");
+    try {
+      while (true) {
+        signal.throwIfAborted();
+        // This read also resolves an ambiguous response from the preceding PUT.
+        // Never retry from the old ETag or a guessed outcome.
+        const { saved, entries } = await load({ signal, forWrite: true });
+        const targets = entries.filter(row => row.cik === intended.cik && row.ticker === intended.ticker);
+        if (targets.length > 1) throw new Error("company_profile_cache_state_invalid");
+        if (isDeepStrictEqual(targets[0], intended)) return intended;
+        // Timestamps alone are not sufficient: a same-time concurrent change,
+        // including historical metadata, must not be overwritten either.
+        if (!isDeepStrictEqual(targets[0], previous)) throw new Error("company_profile_cache_superseded");
+        signal.throwIfAborted();
+        if (writes >= (deadlineCleanup ? 1 : 4)) throw failure;
+        if (writes) await pause(100 * 2 ** (writes - 1), undefined, { signal });
+        signal.throwIfAborted();
+        try {
+          writes++;
+          const result = await writeVersionedJsonToR2(KEY, { version: 1, updatedAt: intended.updatedAt,
+            entries: [intended, ...entries.filter(row => row.cik !== intended.cik || row.ticker !== intended.ticker)] },
+          { ...(saved.etag ? { expectedEtag: saved.etag } : { createOnly: true }), signal, maxAttempts: 1 });
+          if (result.conflict) { failure = new Error("company_profile_cache_conflict"); continue; }
+          if (!result.written) throw new Error("company_profile_cache_write_failed");
+          return intended;
+        } catch (error) {
+          if (!transientProfileWrite(error)) throw error;
+          failure = error;
+        }
       }
+    } catch (error) {
+      // In particular, do not let ensureCompanyProfile's source-error handler
+      // issue a different write after this outcome could not be established.
+      throw new ProfileCacheWriteError(error, !deadlineCleanup && writes === 0 && causedByRoleAbort(error, roleSignal));
     }
-  } catch (error) {
-    // In particular, do not let ensureCompanyProfile's source-error handler
-    // issue a different write after this outcome could not be established.
-    throw new ProfileCacheWriteError(error, !deadlineCleanup && writes === 0 && causedByRoleAbort(error, roleSignal));
-  }
+  });
 }
 
 /** Cache-only read. Re-check the current authoritative ticker/CIK mapping before public use. */

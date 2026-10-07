@@ -14,6 +14,12 @@ const object = (value: unknown): Row => value && typeof value === "object" && !A
 export const PROFILE_DAILY_TARGET = 500;
 const MAX_ATTEMPTS_PER_DAY = 2500;
 const MAX_ATTEMPTS_PER_RUN = 100;
+const PROFILE_ROLE_TIMEOUT_MS = 175_000;
+// Stop admitting source/storage work before the outer role deadline. This
+// leaves bounded time for both workers to settle, one cache reconciliation
+// read, lease release and the durable run summary. It does not extend the
+// Railway request or source limits.
+const PROFILE_DRAIN_RESERVE_MS = 35_000;
 const profilesKey = () => pr262StorageKey("research-evidence/company-profiles-v1.json");
 async function read(key: string) {
   const saved = await readVersionedTextFromR2(key);
@@ -144,7 +150,7 @@ export function profileBatchPlan(listings: Row[], entries: Row[], now: Date, lim
 export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: typeof fetch = fetch) {
   if (!isSimpleAlertPilot() || process.env.SWING_UP_SIMPLE_PILOT_ROLE !== "profiles") throw new Error("simple_pilot_profile_role_required");
   const startedAt = Date.now();
-  const signal = AbortSignal.timeout(175_000);
+  const signal = AbortSignal.timeout(PROFILE_ROLE_TIMEOUT_MS - PROFILE_DRAIN_RESERVE_MS);
   const day = dayOf(now), key = pr262StorageKey(`pilot/profile-builder/${day}.json`), owner = crypto.randomUUID();
   const loaded = await read(key);
   if (Date.parse(String(loaded.value.leaseUntil ?? "")) > now.getTime()) return { ok: true, status: "busy", target: PROFILE_DAILY_TARGET };
@@ -263,7 +269,7 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
     // failure cannot turn already saved profiles into zero reported production.
     // The failed run stays failed even if its durable counts can be reconciled.
     // Leave the existing role budget and HTTP/cleanup reserves intact.
-    if (Date.now() - startedAt >= 175_000) countReconciliationFailure = "profile_count_reconciliation_deadline";
+    if (Date.now() - startedAt >= PROFILE_ROLE_TIMEOUT_MS) countReconciliationFailure = "profile_count_reconciliation_deadline";
     else try { await reconcileCounts(); }
     catch (error) {
       after = null; firstVerifiedThisRun = null;

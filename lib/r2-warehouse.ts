@@ -485,7 +485,7 @@ export function parseR2ObjectKeyPage(xml: string): R2ObjectKeyPage {
  */
 export async function listR2ObjectKeys(
   prefix: string,
-  options: { limit?: number; continuationToken?: string | null } = {},
+  options: { limit?: number; continuationToken?: string | null; signal?: AbortSignal } = {},
 ): Promise<R2ObjectKeyPage> {
   const normalizedPrefix = prefix.trim();
   if (!normalizedPrefix
@@ -504,7 +504,7 @@ export async function listR2ObjectKeys(
     "max-keys": String(limit),
   };
   if (options.continuationToken?.trim()) query["continuation-token"] = options.continuationToken.trim();
-  const response = await signedFetch("GET", "", undefined, "application/octet-stream", undefined, {}, query);
+  const response = await signedFetch("GET", "", undefined, "application/octet-stream", undefined, {}, query, options.signal);
   if (!response.ok) throw new Error(`r2_list_http_${response.status}`);
   return parseR2ObjectKeyPage(await response.text());
 }

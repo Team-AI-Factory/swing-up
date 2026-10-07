@@ -24,6 +24,8 @@ The migration reads the retained research-alert indexes (at most 100 rows each) 
 
 For a retained old SEC-event card, matching event accession, CIK-bound SEC source URL, and original event date provide a sparse primary-source baseline. A different later original SEC accession can establish novelty. A changed retrieval date, generated queue ID, summary, or old accession cannot do so. Records without such provenance keep a conservative unknown-evidence hold. This is a bounded migration of retained records, not a claim to have scanned every historical archive object.
 
+When a later technical attempt erased a legacy card's completed counts, its retained first-completion timestamp is a history lookup hint only. Recovery reads the exact event's immutable result and up to 100 audit objects on each of the completion day and previous day (for reviews crossing midnight). The authenticated stored report must prove the original completion time, exact issuer/event/fingerprint, full versioned role completion and, for audits, matching content identity and object key. Only original report evidence becomes the baseline. Missing, damaged, truncated or timed-out history stops before paid admission; a timestamp, failed receipt, or refreshed card cannot fabricate a decision. Listing and reads share the caller's cancellation/deadline. Historical objects remain unchanged.
+
 The public research-alert read projection collapses only exact CIK plus proven same fingerprints. It selects an intact row, preserves rejection priority, does not transfer approval to new quotes, and leaves stored histories and distinct evidence untouched.
 
 ## Local verification
@@ -31,6 +33,7 @@ The public research-alert read projection collapses only exact CIK plus proven s
 - `node scripts/terminal-review-journal-smoke.mjs`
 - `node scripts/terminal-review-runner-smoke.mjs`
 - `node scripts/terminal-review-event-job-smoke.mjs`
+- `node scripts/terminal-review-legacy-overwrite-smoke.mjs`
 - `node scripts/research-alert-read-dedupe-smoke.mjs`
 - `node scripts/pr262-storage-namespace-smoke.mjs`
 - `node scripts/valuation-review-admission-smoke.mjs`

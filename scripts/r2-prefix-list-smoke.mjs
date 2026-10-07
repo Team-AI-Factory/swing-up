@@ -74,7 +74,8 @@ globalThis.fetch = async (url, init) => {
   return new Response(`<?xml version="1.0"?><ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>production/fundamental-signal-v2/a.json</Key></Contents></ListBucketResult>`, { status: 200 });
 };
 try {
-  const page = await listR2ObjectKeys("production/fundamental-signal-v2/", { limit: 25, continuationToken: "opaque/token+value" });
+  const controller = new AbortController();
+  const page = await listR2ObjectKeys("production/fundamental-signal-v2/", { limit: 25, continuationToken: "opaque/token+value", signal: controller.signal });
   assert.deepEqual(page.keys, ["production/fundamental-signal-v2/a.json"]);
   assert.equal(requestedInit.method, "GET");
   assert.equal(requestedInit.body, undefined);
@@ -83,6 +84,8 @@ try {
   assert.equal(requestedUrl.searchParams.get("max-keys"), "25");
   assert.equal(requestedUrl.searchParams.get("continuation-token"), "opaque/token+value");
   assert.match(String(requestedInit.headers.authorization), /^AWS4-HMAC-SHA256 /);
+  controller.abort();
+  assert.equal(requestedInit.signal.aborted, true, "Private history listing must obey its caller's cancellation/deadline");
   await assert.rejects(() => listR2ObjectKeys("../outside/"), /r2_list_prefix_invalid/);
   await assert.rejects(() => listR2ObjectKeys("/absolute/outside/"), /r2_list_prefix_invalid/);
   await assert.rejects(() => listR2ObjectKeys("production//outside/"), /r2_list_prefix_invalid/);

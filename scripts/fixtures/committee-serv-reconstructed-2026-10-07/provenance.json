@@ -1,0 +1,70 @@
+{
+  "historicalReplay": false,
+  "noHistoricalPaidPromptAvailable": true,
+  "reconstructionAsOf": "2026-10-07T01:17:00.000Z",
+  "actualPublicSecSources": [
+    {
+      "url": "https://data.sec.gov/submissions/CIK0001832483.json",
+      "path": "SERV-submissions.json",
+      "bytes": 94839,
+      "sha256": "938d213a8ac9d050fef05df2dc56f602b989467f521cbd5f17c66456d9722833"
+    },
+    {
+      "url": "https://data.sec.gov/api/xbrl/companyfacts/CIK0001832483.json",
+      "path": "SERV-companyfacts.json",
+      "bytes": 742907,
+      "sha256": "eab6f1acc777d9b232ae4d284b20a71e7f187ec8de7e383056b201e0df483018"
+    },
+    {
+      "url": "https://www.sec.gov/Archives/edgar/data/1832483/000183248326000040/0001832483-26-000040-index.html",
+      "path": "SERV-event-index.htm",
+      "bytes": 18658,
+      "sha256": "5a27eb079b1ed446ce5b11f862caede5fdf1f763e1c2762f0deec17efbb6e137"
+    },
+    {
+      "url": "https://www.sec.gov/Archives/edgar/data/1832483/000183248326000040/serv-20261005.htm",
+      "path": "SERV-event.htm",
+      "bytes": 30506,
+      "sha256": "85381bd41d944c5209f636a5b34c28ec698040f0e31dd9b57ed30645a1566c63"
+    },
+    {
+      "url": "https://www.sec.gov/Archives/edgar/data/1832483/000183248326000040/serve_investorxdeckx05oc.htm",
+      "path": "SERV-event-exhibit.htm",
+      "bytes": 23745,
+      "sha256": "d0089c6280d53d48731d25d22fc4c9c5ded29a870311df0623b9b4302451fdfc"
+    },
+    {
+      "url": "https://www.sec.gov/Archives/edgar/data/1832483/000183248326000010/patr-20251231.htm",
+      "path": "SERV-10-K.htm",
+      "bytes": 1675313,
+      "sha256": "b4c30f614ab88113473d188da5bdda4c667b294389c036e3fe71b042174db836"
+    },
+    {
+      "url": "https://www.sec.gov/Archives/edgar/data/1832483/000183248326000035/serv-20260630.htm",
+      "path": "SERV-10-Q.htm",
+      "bytes": 1768025,
+      "sha256": "735e3c6273cf31b4bb0a992b93eb298d3f17a4945c60bc20c6677887dfc81b23"
+    }
+  ],
+  "missingHistoricalInputs": [
+    "original sensor title and reason",
+    "stored valuation analysis",
+    "original profile",
+    "quote",
+    "macro context",
+    "original gaps and reviewer results"
+  ],
+  "frozenTree": "516d9e8a555f169995e2cb6699ab3f1ab8d5471c",
+  "fixtureSha256": "dbf6c2bfec0c55952847e545378135f89236e9bce050f1d3d058a3aeafc2646c",
+  "capturedBetweenUtc": [
+    "2026-10-07T01:29:54Z",
+    "2026-10-07T01:32:22Z"
+  ],
+  "providerResponses": "Synthetic local responses only; no model API calls.",
+  "historicalIncident": {
+    "eventId": "sec:0001832483-26-000040",
+    "diagnosticPromptBytes": 71331,
+    "paidPromptPersisted": false,
+    "isExactReplay": false
+  }
+}

@@ -7,6 +7,9 @@ const bytes = value => Buffer.byteLength(JSON.stringify(value));
 function restore(value, dictionary) {
   if (Array.isArray(value)) return value.map(item => restore(item, dictionary));
   if (value && typeof value === "object") {
+    if (Object.keys(value).length === 1 && Array.isArray(value.verbatimTextParts)) {
+      return value.verbatimTextParts.map(part => restore(part, dictionary)).join("");
+    }
     if (Object.keys(value).length === 1 && typeof value.verbatimTextRef === "string") {
       assert.ok(Object.hasOwn(dictionary, value.verbatimTextRef), "Every reference must resolve inside the same prompt");
       return dictionary[value.verbatimTextRef];
@@ -21,10 +24,11 @@ const original = { filing: { summary: exact, url: "https://example.invalid/filin
   array: [exact, "", null, false, 0], unique: exact + "A unique and material condition." };
 const unchanged = structuredClone(original);
 const encoded = encode(original);
-assert.equal(encoded.references, 3);
+assert.equal(encoded.references, 4);
 assert.deepEqual(restore(encoded.evidencePack, encoded.sharedEvidenceTexts), original);
 assert.deepEqual(original, unchanged, "Encoding cannot mutate evidence used by approval gates");
-assert.equal(encoded.evidencePack.unique, original.unique, "Near duplicates and unique conditions cannot be merged");
+assert.equal(restore(encoded.evidencePack.unique, encoded.sharedEvidenceTexts), original.unique,
+  "An embedded duplicate may be referenced only while preserving every unique condition verbatim");
 assert.ok(bytes(encoded.evidencePack) + bytes(encoded.sharedEvidenceTexts) + bytes(instructions) < bytes(original));
 assert.equal(encode({ first: "short", second: "short" }).references, 0);
 assert.equal(encode({ unique: exact }).references, 0);
@@ -33,6 +37,22 @@ assert.equal(encode({ sourceUrl: longUrl, repeatedSourceUrl: longUrl }).referenc
 const collision = { ...original, sourceObject: { verbatimTextRef: "verbatim_1" } };
 assert.equal(encode(collision).references, 0, "Existing source keys cannot be confused with generated references");
 assert.deepEqual(encode(collision).evidencePack, collision);
+const partsCollision = { ...original, sourceObject: { verbatimTextParts: ["literal source value"] } };
+assert.equal(encode(partsCollision).references, 0, "Source-authored part markers must also fail closed");
+assert.deepEqual(encode(partsCollision).evidencePack, partsCollision);
+const overlap = "αβγ quoted text\n".repeat(80);
+const smaller = overlap.slice(30, -30);
+const wrapped = { one: overlap, two: overlap, three: smaller, four: smaller,
+  wrapper: `Issuer prefix. ${overlap} Unique condition. ${smaller} Exact suffix.`,
+  near: overlap.replaceAll("quoted", "disputed"),
+  url: `https://example.invalid/${overlap}` };
+const wrappedCopy = structuredClone(wrapped), wrappedEncoded = encode(wrapped);
+assert.deepEqual(restore(wrappedEncoded.evidencePack, wrappedEncoded.sharedEvidenceTexts), wrapped);
+assert.deepEqual(wrapped, wrappedCopy);
+assert.equal(wrappedEncoded.evidencePack.near, wrapped.near, "A near duplicate without a complete shared substring remains verbatim");
+assert.equal(wrappedEncoded.evidencePack.url, wrapped.url, "Embedded text cannot alter a source URL");
+assert.equal(encode({ first: `One ${exact}`, second: `Two ${exact}` }).references, 0,
+  "Do not infer fragments shared only inside unique strings");
 const prototypeKey = JSON.parse(`{"__proto__":{"summary":${JSON.stringify(exact)}},"other":${JSON.stringify(exact)}}`);
 assert.deepEqual(restore(encode(prototypeKey).evidencePack, encode(prototypeKey).sharedEvidenceTexts), prototypeKey);
 assert.equal({}.summary, undefined);

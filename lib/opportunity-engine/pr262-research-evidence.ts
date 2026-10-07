@@ -7,7 +7,7 @@ import { readCompanyProfiles } from "@/lib/opportunity-engine/company-profile-ca
 import { verifiedCompanyProfile, profileCik } from "@/lib/company-profile";
 import crypto from "node:crypto";
 import { evidenceTiming, summarizeEvidenceQuality } from "@/lib/opportunity-engine/pr262-evidence-metrics";
-import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
+import { listR2ObjectKeys, readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 import { explainCandidate, plainEvidenceGaps } from "@/lib/signal-explanation";
 import { alertDetails, completePriceOutlook, industryLabel } from "@/lib/alert-details";
@@ -123,6 +123,85 @@ export async function readLastValuationReview(cik: string) {
       valuationBaseline: row.valuationBaseline };
 }
 
+/** Recover an overwritten pre-journal review only from its original immutable
+ * report. A retained completion timestamp locates history; it does not prove
+ * an outcome or supply a baseline. Never borrow the refreshed card's evidence. */
+async function recoverLegacyCompletedReviews(root: string, row: Json, signal?: AbortSignal): Promise<LegacyTerminalReview[]> {
+  const completedAt = object(object(row.quality).timing).firstCompletedCommitteeAt;
+  const completedMs = typeof completedAt === "string" ? Date.parse(completedAt) : NaN;
+  const eventId = row.eventId;
+  if (!Number.isFinite(completedMs) || typeof eventId !== "string" || !eventId
+    || typeof row.ticker !== "string" || typeof row.eventObservedAt !== "string" || !Number.isFinite(Date.parse(row.eventObservedAt))) {
+    throw new Error("terminal_review_legacy_completion_unresolved");
+  }
+  const sha = (value: string) => crypto.createHash("sha256").update(value).digest("hex");
+  const segment = eventId.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 100) || "event";
+  const eventRoot = root.replace(/\/research-evidence$/, "/event-job");
+  const resultKey = `${eventRoot}/runs/${row.eventObservedAt.slice(0, 10)}/${segment}-${sha(eventId).slice(0, 16)}.json`;
+  const recovered: LegacyTerminalReview[] = [];
+  let originalCompletionFound = false;
+  const inspect = (value: unknown, key: string, audit: boolean) => {
+    const payload = object(value), event = object(payload.event), pointer = object(payload.companyPointer);
+    const report = object(payload.report), candidate = object(report.selectedCandidate), committee = object(report.committee);
+    if (payload.version !== 1 || payload.kind !== (audit ? "pr262_targeted_event_job_nonterminal_audit" : "pr262_targeted_event_job_result")
+      || event.id !== eventId || event.cik !== row.cik || pointer.cik !== row.cik || candidate.cik !== row.cik
+      || event.ticker !== row.ticker || pointer.ticker !== row.ticker || candidate.ticker !== row.ticker
+      || typeof report.checkedAt !== "string" || !Number.isFinite(Date.parse(report.checkedAt))) {
+      throw new Error("terminal_review_legacy_audit_invalid");
+    }
+    if (audit) {
+      const auditId = sha(JSON.stringify({ eventId, attemptCheckedAt: payload.attemptCheckedAt, report }));
+      if (payload.terminal !== false || payload.attemptCheckedAt !== report.checkedAt || payload.auditId !== auditId
+        || key !== `${eventRoot}/nonterminal-audits/${report.checkedAt.slice(0, 10)}/${segment}-${auditId.slice(0, 24)}.json`) {
+        throw new Error("terminal_review_legacy_audit_invalid");
+      }
+    }
+    // Partial and zero-usage failures never become completed review evidence.
+    if (report.openAiCalled !== true || !completeCommitteeReview(committee)) return;
+    const recommendation = object(committee.output).overallRecommendation;
+    const fingerprint = report.candidateFingerprint;
+    if (!["approve", "reject", "needs_more_data"].includes(String(recommendation))
+      || typeof fingerprint !== "string" || !fingerprint || candidate.evidenceFingerprint !== fingerprint
+      || typeof committee.finishedAt !== "string" || !Number.isFinite(Date.parse(committee.finishedAt))) {
+      throw new Error("terminal_review_legacy_audit_invalid");
+    }
+    if (Date.parse(committee.finishedAt) === completedMs) originalCompletionFound = true;
+    recovered.push({ cik: String(row.cik), fingerprint,
+      outcome: recommendation === "approve" ? "approved" : recommendation === "reject" ? "rejected" : "needs_more_data",
+      completionProven: true, reviewEvidenceSnapshot: candidate.reviewEvidenceSnapshot,
+      // Audit identity covers the report and event ID, not the surrounding
+      // event envelope. Publication timing must come from that original report.
+      primarySourceProvenance: { cik: candidate.cik, eventId, eventObservedAt: candidate.eventObservedAt,
+        sources: Array.isArray(candidate.receipts) ? candidate.receipts : [] } });
+  };
+  const result = await readVersionedTextFromR2(resultKey, { signal });
+  if (result.found) {
+    if (!result.text || !result.etag) throw new Error("terminal_review_legacy_audit_invalid");
+    inspect(JSON.parse(result.text), resultKey, false);
+  }
+  // A review may begin before midnight. Listing is tightly scoped to the exact
+  // event and these two dates; truncation cannot be mistaken for clean history.
+  const days = [0, 1].map(offset => new Date(completedMs - offset * 86400000).toISOString().slice(0, 10));
+  for (const day of days) {
+    signal?.throwIfAborted();
+    const prefix = `${eventRoot}/nonterminal-audits/${day}/${segment}-`;
+    const page = await listR2ObjectKeys(prefix, { limit: 100, signal });
+    signal?.throwIfAborted();
+    if (page.isTruncated || page.nextContinuationToken || page.keys.length > 100
+      || new Set(page.keys).size !== page.keys.length || page.keys.some(key => !key.startsWith(prefix)
+        || !/^[a-f0-9]{24}\.json$/.test(key.slice(prefix.length)))) throw new Error("terminal_review_legacy_audit_listing_incomplete");
+    for (const key of page.keys) {
+      const saved = await readVersionedTextFromR2(key, { signal });
+      if (!saved.found || !saved.text || !saved.etag) throw new Error("terminal_review_legacy_audit_invalid");
+      inspect(JSON.parse(saved.text), key, true);
+    }
+  }
+  // Missing or damaged historical proof is an unpaid hold, never permission to
+  // retry. A later repaired read can recover without rewriting old artifacts.
+  if (!originalCompletionFound) throw new Error("terminal_review_legacy_completion_unresolved");
+  return recovered;
+}
+
 /** Bounded migration of retained pre-journal event reviews. A reservation or a
  * provisional card alone is never proof that the Committee completed. */
 export async function readLegacyTerminalReviews(cik: string, signal?: AbortSignal): Promise<LegacyTerminalReview[]> {
@@ -144,10 +223,14 @@ export async function readLegacyTerminalReviews(cik: string, signal?: AbortSigna
       for (const row of value.alerts.map(object).filter(row => row.cik === cik)) {
         const prior = object(row.completedReview), committee = object(row.committee);
         const preserved = typeof prior.fingerprint === "string" && completeCommitteeReview(prior.committee);
-        const fingerprint = preserved ? prior.fingerprint : row.reviewEvidenceFingerprint;
-        if (typeof fingerprint !== "string" || !fingerprint) continue;
         const proved = preserved || object(row.quality).committeeCompleted === true && committee.failed === 0;
         const ambiguousPriorReview = committee.failed === 0 && typeof committee.completed === "number" && committee.completed >= 3;
+        if (!proved && !ambiguousPriorReview && object(object(row.quality).timing).firstCompletedCommitteeAt != null) {
+          reviews.push(...await recoverLegacyCompletedReviews(root, row, signal));
+          continue;
+        }
+        const fingerprint = preserved ? prior.fingerprint : row.reviewEvidenceFingerprint;
+        if (typeof fingerprint !== "string" || !fingerprint) continue;
         if (!proved && !ambiguousPriorReview) continue;
         const recommendation = preserved ? object(object(prior.committee).output).overallRecommendation : null;
         const status = recommendation === "approve" ? "approved" : recommendation === "reject" ? "rejected"

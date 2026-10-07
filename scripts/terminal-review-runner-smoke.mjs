@@ -6,26 +6,36 @@ import { inSimpleAlertPilot } from "./helpers/simple-alert-pilot-fixture.mjs";
 
 // Synthetic financial/source/provider responses. The runner, Committee
 // orchestration, evidence classifier, terminal journal and event job stay real.
-export function terminalHarness({ eventMode = "valuation" } = {}) {
+export function terminalHarness({ eventMode = "valuation", eventAliases = true } = {}) {
   const identity = { ticker: "AIOT", company: "Powerfleet, Inc.", cik: "0001774170" };
   const state = { now: new Date("2026-10-05T15:00:00Z"), price: 50, quoteReady: true,
     haltKnown: true, halted: false, profileReady: true, sourceComplete: true,
-    verdict: "positive", failRole: null, factsRevision: 0, documentRevision: 0,
+    verdict: "positive", failRole: null, failRoleStatus: "provider_error", factsRevision: 0, documentRevision: 0,
     policyRevision: "fixture-policy-A", model: "gpt-4.1-mini", baseValue: 100,
     confidence: 90, roleCalls: 0, moneyCalls: 0, runnerCalls: 0, sequence: 0,
     failJournalAppend: false, conflictJournalWrites: 0, documentsReady: true, documentsFail: false,
     documentsComplete: true, essentialFactsReady: true, debtReady: true, eventMode,
-    sourceRevision: 1, sourcePublishedAt: "2026-10-05T15:00:00.000Z" };
-  const objects = new Map(), writes = [], fetches = [], reports = [];
+    sourceRevision: 1, sourcePublishedAt: "2026-10-05T15:00:00.000Z", eventAliases, historyFault: null };
+  const objects = new Map(), writes = [], fetches = [], reports = [], reads = [];
   const prefix = "branch-labs/simple-alerts/terminal-integration";
   const key = relative => `${prefix}/${relative}`;
   const journalKey = key(`terminal-reviews-v1/companies/${identity.cik}.json`);
   let etagCounter = 0, modules;
   const storage = {
-    readVersionedTextFromR2: async objectKey => {
+    readVersionedTextFromR2: async (objectKey, options = {}) => {
+      reads.push({ operation: "read", key: objectKey, options });
+      options.signal?.throwIfAborted();
       const stored = objects.get(objectKey);
       return stored ? { found: true, text: JSON.stringify(stored.value), etag: stored.etag }
         : { found: false, text: null, etag: null };
+    },
+    listR2ObjectKeys: async (prefix, options = {}) => {
+      reads.push({ operation: "list", key: prefix, options });
+      options.signal?.throwIfAborted();
+      if (state.historyFault === "timeout") throw new Error("fixture_history_timeout");
+      const keys = [...objects.keys()].filter(key => key.startsWith(prefix));
+      return { keys: keys.slice(0, options.limit), isTruncated: state.historyFault === "truncated" || keys.length > options.limit,
+        nextContinuationToken: null };
     },
     writeVersionedJsonToR2: async (objectKey, value, options = {}) => {
       const prior = objects.get(objectKey);
@@ -78,7 +88,7 @@ export function terminalHarness({ eventMode = "valuation" } = {}) {
     if (state.eventMode === "sec") {
       const accession = `0001774170-26-${String(state.sourceRevision).padStart(6, "0")}`;
       const url = `https://www.sec.gov/Archives/edgar/data/1774170/${accession.replaceAll("-", "")}/${accession}-index.html`;
-      Object.assign(event, { id: `sec:${accession}:alias:${state.sequence}`, source: "sec", sourceProvider: "sec_broad", kind: "8-K", form: "8-K", accession,
+      Object.assign(event, { id: `sec:${accession}${state.eventAliases ? `:alias:${state.sequence}` : ""}`, source: "sec", sourceProvider: "sec_broad", kind: "8-K", form: "8-K", accession,
         observedAt: state.sourcePublishedAt,
         identityMethod: "official_sec_archive_link", url, sourceUrl: url, canonicalSecIndexUrl: url,
         title: "Powerfleet, Inc. wins $200 million contract", reason: "Powerfleet, Inc. signed a committed $200 million contract for one year of services." });
@@ -122,8 +132,8 @@ export function terminalHarness({ eventMode = "valuation" } = {}) {
       runOpenAiCommitteeProvider: async input => {
         state.roleCalls++;
         const data = JSON.parse(input.messages[1].content), agentId = data.agent.id;
-        if (agentId === state.failRole) return { ok: false, status: "provider_error", model: state.model,
-          failure: { category: "server_error", httpStatus: 500, code: "fixture_uncertain_usage" } };
+        if (agentId === state.failRole) return { ok: false, status: state.failRoleStatus, model: state.model,
+          ...(state.failRoleStatus === "provider_error" ? { failure: { category: "server_error", httpStatus: 500, code: "fixture_uncertain_usage" } } : {}) };
         return { ok: true, finishReason: "stop", model: state.model,
           tokenUsage: { promptTokens: 100, completionTokens: 50, totalTokens: 150, cachedPromptTokens: 0 },
           content: JSON.stringify({ agentId, verdict: state.verdict, confidence: 95,
@@ -163,6 +173,7 @@ export function terminalHarness({ eventMode = "valuation" } = {}) {
       journal: loadTsModule("@/lib/opportunity-engine/pr262-terminal-reviews", overrides),
       eventJob: loadTsModule("@/lib/opportunity-engine/pr262-event-job", overrides),
       money: loadTsModule("@/lib/opportunity-engine/pr262-ai-daily-cost", overrides),
+      research: loadTsModule("@/lib/opportunity-engine/pr262-research-evidence", overrides),
     };
   };
   reload();
@@ -193,7 +204,7 @@ export function terminalHarness({ eventMode = "valuation" } = {}) {
     if (report) { reports.push(report); await modules.money.recordPr262AiCommitteeCost(report, state.now); }
     return { result, report };
   };
-  return { state, objects, writes, fetches, reports, key, journalKey, identity, newEvent, reload, runRunner, runJob,
+  return { state, objects, writes, reads, fetches, reports, key, journalKey, identity, newEvent, reload, runRunner, runJob,
     get journal() { return objects.get(journalKey)?.value; }, get modules() { return modules; },
     advance: ms => { state.now = new Date(state.now.getTime() + ms); newEvent(); } };
 }

@@ -1,4 +1,4 @@
-## Exact-build profile crash recovered on bounded redeploy; scale remains blocked — 7 October 2026, 12:00 Bangkok
+## Exact-build profile crash recovered on bounded redeploy; scale remains blocked — 7 October 2026, 11:45 Bangkok
 
 Fresh GitHub and Railway reads found concurrent pilot runtime **`f9f418fa95ee1984d1773efb4c020bdd195c1534`** after the 10:27 checkpoint. The change reclaims bounded sensor source time while retaining the 335-second paid-admission minimum, and lets already-admitted profile provider/cache writes settle inside the existing 160-second persistence deadline. It does not raise the 100/140/160/175/235-second profile boundaries, source/provider quotas, prompt or spending caps. Web `4833ac0c-43a1-4d2c-b313-e9b4ecb2e362`, sensor `7907cbb0-5a39-4710-aa00-7e476d9135db` and inert foundation `02dfab61-ca70-4d05-a92f-fe1af8a43786` deployed successfully. Main remains stopped; the fixed cohort remains 25 and staged telemetry patch `97789f67-b0f5-4cb3-b689-bd46c2b4c63f` remains untouched.
 

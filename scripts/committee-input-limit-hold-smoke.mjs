@@ -15,6 +15,7 @@ const warehouse = {
   listR2ObjectKeys: async () => ({ keys: [], isTruncated: false, nextContinuationToken: null }),
 };
 const policy = loadTsModule("@/lib/ai-committee/review-policy");
+const blockers = loadTsModule("@/lib/opportunity-engine/pr262-review-blockers");
 const evidence = loadTsModule("@/lib/opportunity-engine/pr262-research-evidence", {
   "@/lib/simple-alert-pilot-scope": { applyPilotResearchAlertPolicy: value => value },
   "@/lib/equity-signal/review-evidence-revision": { validatedReviewEvidenceSnapshot: value => value },
@@ -52,6 +53,8 @@ assert.equal(await evidence.unchangedCommitteeInputLimitHeld("valuation:issuer:d
   "Exact unchanged evidence must be held across different event IDs");
 assert.equal(await evidence.unchangedCommitteeInputLimitHeld("valuation:issuer:downside:changed"), false,
   "Changed evidence must remain eligible");
+assert.equal(blockers.pr262ReservationBlocker("unchanged_prompt_input_limit"), "same_evidence",
+  "An exact unchanged input-limit hold must not be reported as budget or unclassified capacity");
 
 const partialUsage = structuredClone(promptLimitCommittee);
 partialUsage.output.modelUsageSummary.actualOpenAiUsage.responsesWithUsage = 1;

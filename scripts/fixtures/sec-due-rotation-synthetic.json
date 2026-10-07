@@ -1,0 +1,317 @@
+{
+  "provenance": {
+    "synthetic": true,
+    "description": "Synthetic calendar origin. Every timestamp is shifted by the same amount to preserve the measured elapsed intervals and due relationships; no operational identifiers are included. Individual storage durations remain a modeling assumption."
+  },
+  "sensorStartedAt": "2026-01-01T00:00:00.000Z",
+  "directStartedAt": "2026-01-01T00:00:12.553Z",
+  "sourceDeadlineAt": "2026-01-01T00:00:59.998Z",
+  "sourceElapsedMs": 41215,
+  "prior": [
+    {
+      "ticker": "AIOT",
+      "sec": {
+        "status": "current_snapshot",
+        "lastCheckedAt": "2025-12-31T23:30:53.178Z",
+        "snapshotFetchedAt": "2025-12-31T23:31:06.632Z",
+        "snapshotOrigin": "network",
+        "nextCheckAt": "2026-01-01T00:00:06.632Z",
+        "error": null
+      }
+    },
+    {
+      "ticker": "PGY",
+      "sec": {
+        "status": "current_snapshot",
+        "lastCheckedAt": "2025-12-31T23:45:03.896Z",
+        "snapshotFetchedAt": "2025-12-31T23:45:36.254Z",
+        "snapshotOrigin": "network",
+        "nextCheckAt": "2026-01-01T00:14:36.254Z",
+        "error": null
+      }
+    },
+    {
+      "ticker": "CRNC",
+      "sec": {
+        "status": "current_snapshot",
+        "lastCheckedAt": "2025-12-31T23:45:03.896Z",
+        "snapshotFetchedAt": "2025-12-31T23:45:41.911Z",
+        "snapshotOrigin": "network",
+        "nextCheckAt": "2026-01-01T00:14:41.911Z",
+        "error": null
+      }
+    },
+    {
+      "ticker": "INOD",
+      "sec": {
+        "status": "current_snapshot",
+        "lastCheckedAt": "2025-12-31T23:45:03.896Z",
+        "snapshotFetchedAt": "2025-12-31T23:45:46.978Z",
+        "snapshotOrigin": "network",
+        "nextCheckAt": "2026-01-01T00:14:46.978Z",
+        "error": null
+      }
+    },
+    {
+      "ticker": "UPST",
+      "sec": {
+        "status": "current_snapshot",
+        "lastCheckedAt": "2025-12-31T23:45:03.896Z",
+        "snapshotFetchedAt": "2025-12-31T23:45:52.911Z",
+        "snapshotOrigin": "network",
+        "nextCheckAt": "2026-01-01T00:14:52.911Z",
+        "error": null
+      }
+    },
+    {
+      "ticker": "LTRX",
+      "sec": {
+        "status": "current_snapshot",
+        "lastCheckedAt": "2025-12-31T23:30:53.178Z",
+        "snapshotFetchedAt": "2025-12-31T23:31:30.470Z",
+        "snapshotOrigin": "network",
+        "nextCheckAt": "2026-01-01T00:00:30.470Z",
+        "error": null
+      }
+    },
+    {
+      "ticker": "AIP",
+      "sec": {
+        "status": "current_snapshot",
+        "lastCheckedAt": "2025-12-31T23:30:53.178Z",
+        "snapshotFetchedAt": "2025-12-31T23:31:33.286Z",
+        "snapshotOrigin": "network",
+        "nextCheckAt": "2026-01-01T00:00:33.286Z",
+        "error": null
+      }
+    },
+    {
+      "ticker": "AMBQ",
+      "sec": {
+        "status": "current_snapshot",
+        "lastCheckedAt": "2025-12-31T23:30:53.178Z",
+        "snapshotFetchedAt": "2025-12-31T23:31:35.766Z",
+        "snapshotOrigin": "network",
+        "nextCheckAt": "2026-01-01T00:00:35.766Z",
+        "error": null
+      }
+    },
+    {
+      "ticker": "AISP",
+      "sec": {
+        "status": "current_snapshot",
+        "lastCheckedAt": "2025-12-31T23:30:53.178Z",
+        "snapshotFetchedAt": "2025-12-31T23:31:38.216Z",
+        "snapshotOrigin": "network",
+        "nextCheckAt": "2026-01-01T00:00:38.216Z",
+        "error": null
+      }
+    },
+    {
+      "ticker": "BKSY",
+      "sec": {
+        "status": "current_snapshot",
+        "lastCheckedAt": "2025-12-31T23:45:03.896Z",
+        "snapshotFetchedAt": "2025-12-31T23:45:58.412Z",
+        "snapshotOrigin": "network",
+        "nextCheckAt": "2026-01-01T00:14:58.412Z",
+        "error": null
+      }
+    },
+    {
+      "ticker": "CEVA",
+      "sec": {
+        "status": "stale_snapshot",
+        "lastCheckedAt": "2025-12-31T23:13:05.018Z",
+        "snapshotFetchedAt": "2025-12-31T23:13:31.210Z",
+        "snapshotOrigin": "network",
+        "nextCheckAt": "2025-12-31T23:42:31.210Z",
+        "error": null
+      }
+    },
+    {
+      "ticker": "SDGR",
+      "sec": {
+        "status": "current_snapshot",
+        "lastCheckedAt": "2025-12-31T23:45:03.896Z",
+        "snapshotFetchedAt": "2025-12-31T23:45:20.504Z",
+        "snapshotOrigin": "network",
+        "nextCheckAt": "2026-01-01T00:14:20.504Z",
+        "error": null
+      }
+    },
+    {
+      "ticker": "SOUN",
+      "sec": {
+        "status": "stale_snapshot",
+        "lastCheckedAt": "2025-12-31T23:13:05.018Z",
+        "snapshotFetchedAt": "2025-12-31T23:13:34.072Z",
+        "snapshotOrigin": "network",
+        "nextCheckAt": "2025-12-31T23:42:34.072Z",
+        "error": null
+      }
+    },
+    {
+      "ticker": "HSAI",
+      "sec": {
+        "status": "stale_snapshot",
+        "lastCheckedAt": "2025-12-31T23:13:05.018Z",
+        "snapshotFetchedAt": "2025-12-31T23:13:36.799Z",
+        "snapshotOrigin": "network",
+        "nextCheckAt": "2025-12-31T23:42:36.799Z",
+        "error": null
+      }
+    },
+    {
+      "ticker": "TSSI",
+      "sec": {
+        "status": "stale_snapshot",
+        "lastCheckedAt": "2025-12-31T23:13:05.018Z",
+        "snapshotFetchedAt": "2025-12-31T23:13:39.523Z",
+        "snapshotOrigin": "network",
+        "nextCheckAt": "2025-12-31T23:42:39.523Z",
+        "error": null
+      }
+    },
+    {
+      "ticker": "AMBA",
+      "sec": {
+        "status": "current_snapshot",
+        "lastCheckedAt": "2025-12-31T23:45:03.896Z",
+        "snapshotFetchedAt": "2025-12-31T23:45:25.886Z",
+        "snapshotOrigin": "network",
+        "nextCheckAt": "2026-01-01T00:14:25.886Z",
+        "error": null
+      }
+    },
+    {
+      "ticker": "OUST",
+      "sec": {
+        "status": "current_snapshot",
+        "lastCheckedAt": "2025-12-31T23:30:53.178Z",
+        "snapshotFetchedAt": "2025-12-31T23:31:09.415Z",
+        "snapshotOrigin": "network",
+        "nextCheckAt": "2026-01-01T00:00:09.415Z",
+        "error": null
+      }
+    },
+    {
+      "ticker": "AI",
+      "sec": {
+        "status": "current_snapshot",
+        "lastCheckedAt": "2025-12-31T23:45:03.896Z",
+        "snapshotFetchedAt": "2025-12-31T23:45:30.671Z",
+        "snapshotOrigin": "network",
+        "nextCheckAt": "2026-01-01T00:14:30.671Z",
+        "error": null
+      }
+    },
+    {
+      "ticker": "LMND",
+      "sec": {
+        "status": "current_snapshot",
+        "lastCheckedAt": "2025-12-31T23:30:53.178Z",
+        "snapshotFetchedAt": "2025-12-31T23:31:12.408Z",
+        "snapshotOrigin": "network",
+        "nextCheckAt": "2026-01-01T00:00:12.408Z",
+        "error": null
+      }
+    },
+    {
+      "ticker": "RXRX",
+      "sec": {
+        "status": "current_snapshot",
+        "lastCheckedAt": "2025-12-31T23:30:53.178Z",
+        "snapshotFetchedAt": "2025-12-31T23:31:15.465Z",
+        "snapshotOrigin": "network",
+        "nextCheckAt": "2026-01-01T00:00:15.465Z",
+        "error": null
+      }
+    },
+    {
+      "ticker": "PDYN",
+      "sec": {
+        "status": "current_snapshot",
+        "lastCheckedAt": "2025-12-31T23:30:53.178Z",
+        "snapshotFetchedAt": "2025-12-31T23:31:18.540Z",
+        "snapshotOrigin": "network",
+        "nextCheckAt": "2026-01-01T00:00:18.540Z",
+        "error": null
+      }
+    },
+    {
+      "ticker": "SERV",
+      "sec": {
+        "status": "current_snapshot",
+        "lastCheckedAt": "2025-12-31T23:30:53.178Z",
+        "snapshotFetchedAt": "2025-12-31T23:31:21.456Z",
+        "snapshotOrigin": "network",
+        "nextCheckAt": "2026-01-01T00:00:21.456Z",
+        "error": null
+      }
+    },
+    {
+      "ticker": "BBAI",
+      "sec": {
+        "status": "current_snapshot",
+        "lastCheckedAt": "2025-12-31T23:30:53.178Z",
+        "snapshotFetchedAt": "2025-12-31T23:31:03.565Z",
+        "snapshotOrigin": "network",
+        "nextCheckAt": "2026-01-01T00:00:03.565Z",
+        "error": null
+      }
+    },
+    {
+      "ticker": "RDNT",
+      "sec": {
+        "status": "current_snapshot",
+        "lastCheckedAt": "2025-12-31T23:30:53.178Z",
+        "snapshotFetchedAt": "2025-12-31T23:31:24.779Z",
+        "snapshotOrigin": "network",
+        "nextCheckAt": "2026-01-01T00:00:24.779Z",
+        "error": null
+      }
+    },
+    {
+      "ticker": "REKR",
+      "sec": {
+        "status": "current_snapshot",
+        "lastCheckedAt": "2025-12-31T23:30:53.178Z",
+        "snapshotFetchedAt": "2025-12-31T23:31:28.031Z",
+        "snapshotOrigin": "network",
+        "nextCheckAt": "2026-01-01T00:00:28.031Z",
+        "error": null
+      }
+    }
+  ],
+  "referenceRefreshes": [
+    {
+      "ticker": "CEVA",
+      "status": "current_snapshot",
+      "fetchedAt": "2026-01-01T00:00:15.712Z",
+      "nextCheckAt": "2026-01-01T00:29:15.712Z",
+      "error": null
+    },
+    {
+      "ticker": "SOUN",
+      "status": "current_snapshot",
+      "fetchedAt": "2026-01-01T00:00:19.634Z",
+      "nextCheckAt": "2026-01-01T00:29:19.634Z",
+      "error": null
+    },
+    {
+      "ticker": "HSAI",
+      "status": "current_snapshot",
+      "fetchedAt": "2026-01-01T00:00:23.598Z",
+      "nextCheckAt": "2026-01-01T00:29:23.598Z",
+      "error": null
+    },
+    {
+      "ticker": "TSSI",
+      "status": "current_snapshot",
+      "fetchedAt": "2026-01-01T00:00:27.212Z",
+      "nextCheckAt": "2026-01-01T00:29:27.212Z",
+      "error": null
+    }
+  ]
+}

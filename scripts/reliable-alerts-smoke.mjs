@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 const checks = [
+  "simple-alert-sec-due-rotation",
   "simple-alert-feed-scheduling", "simple-alert-sensor-timing",
   "simple-alert-source-capacity", "simple-alert-profile-provider-persistence", "simple-alert-profile-row-settlement",
   "company-profile-storage-retry-isolated.mjs",

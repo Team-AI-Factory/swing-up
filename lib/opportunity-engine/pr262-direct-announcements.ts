@@ -801,17 +801,28 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
   // recent shared snapshot can satisfy this check without another reservation.
   if (pilot && loaded) {
     const secDeadline = Math.min(deadlineAtMs, startedAtMs + PILOT_SEC_WORK_MS);
-    const secDue = eligibleCompanies.filter(company => {
-      const next = Date.parse(byTicker.get(company.ticker)?.sec?.nextCheckAt ?? "");
-      return !Number.isFinite(next) || next <= now.getTime();
-    }).sort((left, right) =>
-      Date.parse(byTicker.get(left.ticker)?.sec?.lastCheckedAt ?? "1970-01-01")
-      - Date.parse(byTicker.get(right.ticker)?.sec?.lastCheckedAt ?? "1970-01-01"));
-    for (const company of secDue.slice(0, PILOT_MAX_SEC_CHECKS_PER_CYCLE)) {
-      if (Date.now() >= secDeadline) break;
+    const selectedCiks = new Set<string>();
+    const lastSecCheckMs = (ticker: string) => {
+      const checked = Date.parse(byTicker.get(ticker)?.sec?.lastCheckedAt ?? "");
+      return Number.isFinite(checked) ? checked : 0;
+    };
+    while (selectedCiks.size < PILOT_MAX_SEC_CHECKS_PER_CYCLE) {
+      const selectionAtMs = Date.now();
+      if (selectionAtMs >= secDeadline) break;
+      // Storage and earlier reads advance time beyond the sensor's fixed now.
+      // Reconsider newly due issuers, but never wait for future eligibility or
+      // revisit a selected CIK, including cache hits and local deferrals.
+      const company = eligibleCompanies.filter(company => {
+        if (selectedCiks.has(company.cik!)) return false;
+        const next = Date.parse(byTicker.get(company.ticker)?.sec?.nextCheckAt ?? "");
+        return !Number.isFinite(next) || next <= selectionAtMs;
+      }).sort((left, right) => lastSecCheckMs(left.ticker) - lastSecCheckMs(right.ticker))[0];
+      if (!company) break;
+      selectedCiks.add(company.cik!);
+      const checkedAt = new Date(selectionAtMs);
       const entry = byTicker.get(company.ticker)!;
       const sourceUrl = `https://data.sec.gov/submissions/CIK${company.cik}.json`;
-      const observed = observedSourceFetch(fetchImpl, now);
+      const observed = observedSourceFetch(fetchImpl, checkedAt);
       const prior = entry.sec;
       try {
         const response = await observed.fetchImpl(sourceUrl, { headers: { Accept: "application/json", "user-agent": SEC_AGENT },
@@ -831,16 +842,16 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
         events.push(...found); secFilingsFound += found.length; secSubmissionsChecked += 1;
         if (cached) secCacheHits += 1; else secCheckSuccesses += 1;
         if (observed.preparationError()) { sourcePreparationFailures++; preparationErrors.push(observed.preparationError()!); }
-        entry.sec = { sourceUrl, lastCheckedAt: now.toISOString(), lastSuccessAt: fetchedAt,
+        entry.sec = { sourceUrl, lastCheckedAt: checkedAt.toISOString(), lastSuccessAt: fetchedAt,
           snapshotFetchedAt: fetchedAt, snapshotOrigin: cached ? "shared_cache" : "network",
           nextCheckAt: new Date(fetchedMs + SEC_POLL_CADENCE_MS).toISOString(), error: null };
         entry.investorWebsite ??= text(body.investorWebsite) ?? text(body.website);
       } catch (error) {
-        const message = discoveryFailureMessage(error), deferral = scheduledSourceDeferral(error, now);
-        entry.sec = { sourceUrl, lastCheckedAt: observed.attempted() ? now.toISOString() : prior?.lastCheckedAt ?? null,
+        const message = discoveryFailureMessage(error), deferral = scheduledSourceDeferral(error, checkedAt);
+        entry.sec = { sourceUrl, lastCheckedAt: observed.attempted() ? checkedAt.toISOString() : prior?.lastCheckedAt ?? null,
           lastSuccessAt: prior?.lastSuccessAt ?? null, snapshotFetchedAt: prior?.snapshotFetchedAt ?? null,
           snapshotOrigin: prior?.snapshotOrigin ?? null, error: message,
-          nextCheckAt: deferral?.nextRetryAt ?? new Date(now.getTime() + FEED_POLL_CADENCE_MS).toISOString() };
+          nextCheckAt: deferral?.nextRetryAt ?? new Date(checkedAt.getTime() + FEED_POLL_CADENCE_MS).toISOString() };
         if (deferral) { secCheckDeferred += 1; deferrals.push(deferral); }
         else if (observed.preparationError()) { sourcePreparationFailures++; preparationErrors.push(message); }
         else { secCheckFailures += 1; attemptErrors.push(message); }

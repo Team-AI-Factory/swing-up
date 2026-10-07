@@ -40,9 +40,11 @@ const cache = loadTsModule("@/lib/opportunity-engine/company-profile-cache", {
 });
 try {
   console.info = line => lines.push(JSON.parse(line));
-  const controller = new AbortController(); controller.abort(new DOMException("Role time window ended", "TimeoutError"));
+  const controller = new AbortController();
   let networkStarts = 0, bodyFailures = 0;
-  await cache.ensureCompanyProfile(identity, async (_url, init) => { init.signal.throwIfAborted(); networkStarts++; return new Response(""); }, now, { signal: controller.signal, onResponseBodyFailure: () => { bodyFailures++; } });
+  // End the source window after its durable reservation, as a role deadline
+  // does in flight. Already-aborted pre-write work is covered by retry smoke.
+  await cache.ensureCompanyProfile(identity, async (_url, init) => { controller.abort(new DOMException("Role time window ended", "TimeoutError")); init.signal.throwIfAborted(); networkStarts++; return new Response(""); }, now, { signal: controller.signal, onResponseBodyFailure: () => { bodyFailures++; } });
   const pending = objects.get("research-evidence/company-profiles-v1.json").entries[0];
   assert.equal(lines.at(-1).reason, "company_profile_time_budget_deferred");
   assert.equal(pending.error, "company_profile_time_budget_deferred");

@@ -29,6 +29,9 @@ const cache = loadTsModule("@/lib/opportunity-engine/company-profile-cache", {
   "@/lib/r2-warehouse": storage,
   "@/lib/opportunity-engine/pr262-storage": { pr262StorageKey: path => path },
 });
+const builder = loadTsModule("@/lib/simple-alert-profile-builder", { "@/lib/r2-warehouse": storage });
+const listing = { ...identity, name: identity.company, exchange: "Nasdaq", securityType: "common_stock", sourceNames: ["SEC company_tickers_exchange"] };
+const dailyCount = at => builder.profileBatchPlan([listing], objects.get(key).entries, at, 100).newlyVerifiedToday;
 const currentEntry = () => objects.get(key).entries[0];
 function seed(profile, nextAttemptAt = new Date(now.getTime() + 30 * 86400000).toISOString()) {
   objects.clear(); writes = 0; requests = 0;
@@ -59,6 +62,9 @@ seed(invalidProfile);
 assert.equal((await cache.readCompanyProfiles([identity], now)).size, 0, "Public reads reject previously cached incidental customer text");
 assert.equal(requests, 0, "Public reads remain cache-only");
 assert.ok(await cache.ensureCompanyProfile(identity, fetcher, now), "An invalid prior success refreshes before its thirty-day refresh date");
+assert.equal(currentEntry().verificationHistoryKnown, true);
+assert.equal(currentEntry().firstVerifiedAt, undefined, "A direct legacy repair cannot invent the unknown first date");
+assert.equal(dailyCount(now), 0);
 assert.equal(requests, 2);
 assert.equal(currentEntry().profile.customers, fixture.customers);
 assert.equal((await cache.readCompanyProfiles([identity], now)).size, 1);
@@ -72,16 +78,50 @@ assert.deepEqual(profileCounts(await cache.warmFoundationCompanyProfiles(fetcher
 assert.equal(requests, 2, "The fifteen-minute maintenance cadence still applies");
 
 seed(invalidProfile);
-const broken = async () => { requests++; throw new Error("synthetic_source_failure"); };
+const broken = async () => {
+  requests++;
+  assert.equal(currentEntry().verificationHistoryKnown, true, "Legacy success history is durable before the failing network request");
+  throw new Error("synthetic_source_failure");
+};
 assert.equal(await cache.ensureCompanyProfile(identity, broken, now), null);
 assert.equal(requests, 1, "The invalid prior success is attempted immediately even when retrieval fails");
 assert.equal(currentEntry().profile, null);
+assert.equal(currentEntry().verificationHistoryKnown, true);
+assert.equal(currentEntry().firstVerifiedAt, undefined);
 assert.equal(currentEntry().nextAttemptAt, new Date(now.getTime() + 3600000).toISOString());
 assert.equal(await cache.ensureCompanyProfile(identity, broken, new Date(now.getTime() + 60000)), null);
 assert.deepEqual(profileCounts(await cache.warmFoundationCompanyProfiles(broken, new Date(now.getTime() + 15 * 60000))), { attempted: 0, verified: 0 });
 assert.equal(requests, 1, "Both direct retrieval and maintenance honor a real failure's backoff");
-assert.ok(await cache.ensureCompanyProfile(identity, fetcher, new Date(now.getTime() + 3600000)));
+const beforeLegacyRetry = structuredClone(objects.get(key).entries);
+const retryAt = new Date(now.getTime() + 3600000);
+assert.ok(await cache.ensureCompanyProfile(identity, fetcher, retryAt));
 assert.equal(requests, 3, "Retrieval resumes when the failure backoff expires");
+assert.equal(currentEntry().verificationHistoryKnown, true);
+assert.equal(currentEntry().firstVerifiedAt, undefined, "A later successful retry cannot rewrite unknown historical success as new");
+assert.equal(builder.firstVerifiedCompaniesThisRun(beforeLegacyRetry, objects.get(key).entries, retryAt), 0);
+assert.equal(dailyCount(retryAt), 0);
+
+// Known dates survive the same failure path, including genuine new-today dates.
+for (const firstAt of [new Date(now.getTime() - 86400000), new Date(now.getTime() - 3600000)]) {
+  seed(invalidProfile);
+  currentEntry().firstVerifiedAt = firstAt.toISOString();
+  assert.equal(await cache.ensureCompanyProfile(identity, broken, now), null);
+  assert.equal(currentEntry().firstVerifiedAt, firstAt.toISOString());
+  const beforeKnownRetry = structuredClone(objects.get(key).entries);
+  assert.ok(await cache.ensureCompanyProfile(identity, fetcher, retryAt));
+  assert.equal(currentEntry().firstVerifiedAt, firstAt.toISOString());
+  assert.equal(builder.firstVerifiedCompaniesThisRun(beforeKnownRetry, objects.get(key).entries, retryAt), 0);
+  assert.equal(dailyCount(retryAt), firstAt.getTime() > now.getTime() - 86400000 ? 1 : 0,
+    "Refreshing a known new-today profile preserves that day's production count");
+}
+
+seed(null, now.toISOString());
+const beforeFirstSuccess = structuredClone(objects.get(key).entries);
+assert.ok(await cache.ensureCompanyProfile(identity, fetcher, now));
+assert.equal(currentEntry().verificationHistoryKnown, true);
+assert.equal(currentEntry().firstVerifiedAt, now.toISOString(), "A genuinely first success still records its actual date");
+assert.equal(builder.firstVerifiedCompaniesThisRun(beforeFirstSuccess, objects.get(key).entries, now), 1);
+assert.equal(dailyCount(now), 1);
 
 seed(invalidProfile);
 const providerRetry = new Date(now.getTime() + 3 * 3600000).toISOString();
@@ -113,7 +153,7 @@ assert.equal(requests, 0, "An unchanged current parser must not bypass failed-ex
 // A quota failure before refreshed metadata arrives must retain the exact
 // report reference. Its saved text can recover without another provider call.
 seed(null, now.toISOString());
-Object.assign(currentEntry(), { error: "company_profile_products_and_customers_not_extracted", filing, parserRevision: 1 });
+Object.assign(currentEntry(), { error: "company_profile_products_and_customers_not_extracted", filing, parserRevision: 1, verificationHistoryKnown: true });
 objects.set(sourceKey, { version: 1, layoutRevision: 1, url: filing.url, filedAt: filing.filedAt, businessText: profiles.annualBusinessText(html, "10-K") });
 assert.equal(await cache.ensureCompanyProfile(identity, budgetDeferred, now), null);
 assert.deepEqual(currentEntry().filing, filing, "Network failure cannot erase the saved source's filing metadata");
@@ -121,6 +161,9 @@ assert.equal(currentEntry().nextAttemptAt, providerRetry);
 const recoveredDuringBackoff = await cache.warmFoundationCompanyProfiles(budgetDeferred, now);
 assert.equal(recoveredDuringBackoff.recoveredFromSavedSources, 1, "A provider pause must not block verification from an existing exact report");
 assert.equal(currentEntry().profile.customers, fixture.customers);
+assert.equal(currentEntry().verificationHistoryKnown, true, "Cache-only recovery preserves legacy verification history");
+assert.equal(currentEntry().firstVerifiedAt, undefined, "Cache-only recovery cannot date an unknown historical first success");
+assert.equal(dailyCount(now), 0);
 assert.equal(requests, 1, "Saved-source recovery makes no second provider request during backoff");
 
 console.log("PASS: valid cache reuse, invalid-success immediate refresh, parser-revision recovery, cache-only read validation, maintenance selection, durable failed-attempt and provider backoff");

@@ -52,7 +52,7 @@ export function pilotProfileCoverage(entries: Row[], now: Date) {
 export function firstVerifiedCompaniesThisRun(before: Row[], after: Row[], now: Date, startedAt = now.getTime()) {
   const knownRows = before.filter(row => {
     const firstAt = row.firstVerifiedAt ?? object(row.profile).verifiedAt;
-    return Number.isFinite(Date.parse(String(firstAt ?? "")));
+    return row.verificationHistoryKnown === true || Number.isFinite(Date.parse(String(firstAt ?? "")));
   });
   const priorIssuers = new Set(knownRows.map(row => profileCik(row.cik)));
   return new Set(after.filter(row => typeof row.firstVerifiedAt === "string" && Number.isFinite(Date.parse(row.firstVerifiedAt))
@@ -69,12 +69,16 @@ export function profileBatchPlan(listings: Row[], entries: Row[], now: Date, lim
   // Keep the earliest known verification across every alias, including expired
   // profiles. A newly profiled second listing must not reset a company's age.
   const firstByIssuer = new Map<string, number>();
+  // A historical success without its first date cannot become new-today via
+  // another ticker. Known first dates remain countable after later refreshes.
+  const unknownFirstDateIssuers = new Set<string>();
   for (const row of entries) {
     const cik = profileCik(row.cik);
     const at = Date.parse(String(row.firstVerifiedAt ?? object(row.profile).verifiedAt ?? ""));
+    if (cik && row.verificationHistoryKnown === true && !Number.isFinite(Date.parse(String(row.firstVerifiedAt ?? "")))) unknownFirstDateIssuers.add(cik);
     if (cik && Number.isFinite(at) && at <= now.getTime()) firstByIssuer.set(cik, Math.min(firstByIssuer.get(cik) ?? Infinity, at));
   }
-  const newlyVerifiedToday = [...validIssuers].filter(cik => cik && firstByIssuer.has(cik)
+  const newlyVerifiedToday = [...validIssuers].filter(cik => cik && !unknownFirstDateIssuers.has(cik) && firstByIssuer.has(cik)
     && dayOf(new Date(firstByIssuer.get(cik)!)) === day
     && valid.some(row => profileCik(row.cik) === cik && typeof row.firstVerifiedAt === "string")).length;
   const cohort = new Set(pilotCompanies().map(row => row.ticker));
@@ -173,19 +177,53 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
       return response;
     } catch (error) { requestFailures++; throw error; }
   };
-  let attempted = 0, verified = 0, before = 0, after = 0, firstVerifiedThisRun = 0, status = "completed", failure: string | null = null;
+  let attempted = 0, verified = 0, status = "completed", failure: string | null = null;
+  let before: number | null = null, after: number | null = null, firstVerifiedThisRun: number | null = null;
+  let failureCategory: "storage" | "source" | "runtime" | null = null;
+  let storageFailureObserved = false, countReconciliationFailure: string | null = null;
+  let reconcileCounts: (() => Promise<void>) | null = null;
+  const isStorageFailure = (error: unknown) => object(error).storageDomain === "r2_state"
+    || /^(?:r2_|R2 |company_profile_cache_|simple_profile_(?:lease_lost|summary_not_saved))/.test(error instanceof Error ? error.message : String(error));
+  const readProfileCache = async () => {
+    try { return await read(profilesKey()); }
+    catch (error) { storageFailureObserved = true; throw error; }
+  };
   let eligibility: Row = {}, retryAttempts = 0;
   let cohortProfiles: ReturnType<typeof pilotProfileCoverage> | null = null;
   const pendingReasons: Record<string, number> = {};
-  const attemptedIssuers = new Set<string>();
+  const attemptedIssuers = new Set<string>(), acknowledgedVerifiedIssuers = new Set<string>();
   try {
     const provider = await createPr262SensorBudgetedFetch({ now, fetchImpl: paced, signal });
     const universe = await loadEquityUniverse(provider.fetchImpl, now);
     if (now.getTime() - Date.parse(universe.snapshot.refreshedAt) > 86400_000) throw new Error("simple_profile_universe_stale");
-    const cache = await read(profilesKey());
+    const cache = await readProfileCache();
     const entries = Array.isArray(cache.value.entries) ? cache.value.entries.map(object) : [];
     const plan = profileBatchPlan(universe.snapshot.entries, entries, now, count);
     before = plan.newlyVerifiedToday;
+    // Counts describe durable cache rows, never merely completed attempts.
+    // Keep this read reusable after workers settle with a storage error.
+    reconcileCounts = async () => {
+      const fresh = await readProfileCache();
+      if ((!fresh.saved.found && (entries.length > 0 || verified > 0 || status === "failed"))
+        || (fresh.saved.found && !Array.isArray(fresh.value.entries))) throw new Error("r2_profile_reconciliation_cache_unavailable");
+      const freshEntries = Array.isArray(fresh.value.entries) ? fresh.value.entries.map(object) : [];
+      const validIssuers = new Set(freshEntries.filter(row => verifiedCompanyProfile(row.profile, row, new Date())).map(row => profileCik(row.cik)));
+      if ([...acknowledgedVerifiedIssuers].some(cik => !validIssuers.has(cik))) throw new Error("r2_profile_reconciliation_verified_rows_missing");
+      after = profileBatchPlan(universe.snapshot.entries, freshEntries, new Date(), 0).newlyVerifiedToday;
+      cohortProfiles = pilotProfileCoverage(freshEntries, new Date());
+      firstVerifiedThisRun = firstVerifiedCompaniesThisRun(entries, freshEntries, new Date(), startedAt);
+      for (const row of freshEntries) {
+        const cik = profileCik(row.cik);
+        if (!cik || !attemptedIssuers.has(cik) || Date.parse(String(row.updatedAt ?? "")) < startedAt
+          || verifiedCompanyProfile(row.profile, row, new Date())) continue;
+        const error = String(row.error ?? "");
+        const reason = typeof row.extractionFailure === "string" ? row.extractionFailure
+          : /^company_profile_time_budget_deferred\b/i.test(error) ? "company_profile_time_budget_deferred"
+          : /budget|quota|cadence/i.test(error) ? "provider_budget_deferred"
+          : error.match(/^company_profile_[a-z0-9_]+/i)?.[0] ?? "source_request_failed";
+        pendingReasons[reason] = (pendingReasons[reason] ?? 0) + 1;
+      }
+    };
     eligibility = { eligibleCompanies: plan.eligible, ineligibleListings: plan.ineligibleListings,
       duplicateIssuerListings: plan.duplicateIssuerListings, dueRetries: plan.dueRetries };
     status = before >= PROFILE_DAILY_TARGET ? "target_reached" : plan.due.length ? "completed" : "no_due_profiles";
@@ -200,7 +238,7 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
             // Headers/connect errors are counted by paced fetch; body failures
             // belong to that same request, not an invented additional attempt.
             onResponseBodyFailure: () => { requestFailures++; responseBodyFailures++; },
-          })) verified++;
+          })) { verified++; acknowledgedVerifiedIssuers.add(identity.cik); }
         } catch (error) { workerFailed = true; throw error; }
       }
     };
@@ -208,39 +246,36 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
     // starts stay serialized; global quotas and 1 request/second are unchanged.
     const results = await Promise.allSettled([worker(), worker()]);
     const rejected = results.find(result => result.status === "rejected");
-    if (rejected?.status === "rejected") {
-      status = "failed";
-      failure = rejected.reason instanceof Error ? rejected.reason.message.slice(0, 250) : "profile_builder_failed";
-    }
-    // A failed peer may have persisted partial progress. Reconcile the actual
-    // cache after both workers settle, without calling a failed pass successful.
-    const fresh = await read(profilesKey());
-    const freshEntries = Array.isArray(fresh.value.entries) ? fresh.value.entries.map(object) : [];
-    after = profileBatchPlan(universe.snapshot.entries, freshEntries, new Date(), 0).newlyVerifiedToday;
-    cohortProfiles = pilotProfileCoverage(freshEntries, new Date());
-    firstVerifiedThisRun = firstVerifiedCompaniesThisRun(entries, freshEntries, new Date(), startedAt);
-    for (const row of freshEntries) {
-      const cik = profileCik(row.cik);
-      if (!cik || !attemptedIssuers.has(cik) || Date.parse(String(row.updatedAt ?? "")) < startedAt
-        || verifiedCompanyProfile(row.profile, row, new Date())) continue;
-      const error = String(row.error ?? "");
-      const reason = typeof row.extractionFailure === "string" ? row.extractionFailure
-        : /^company_profile_time_budget_deferred\b/i.test(error) ? "company_profile_time_budget_deferred"
-        : /budget|quota|cadence/i.test(error) ? "provider_budget_deferred"
-        : error.match(/^company_profile_[a-z0-9_]+/i)?.[0] ?? "source_request_failed";
-      pendingReasons[reason] = (pendingReasons[reason] ?? 0) + 1;
-    }
-    if (status !== "failed") {
-      if (circuitOpen) status = "source_cooldown";
-      else if (signal.aborted) status = "time_budget_reached";
-      else if (after >= PROFILE_DAILY_TARGET) status = "target_reached";
-    }
+    if (rejected?.status === "rejected") throw rejected.reason;
+    await reconcileCounts();
+    if (circuitOpen) status = "source_cooldown";
+    else if (signal.aborted) status = "time_budget_reached";
+    else if (after !== null && after >= PROFILE_DAILY_TARGET) status = "target_reached";
     await provider.flush();
   } catch (error) {
-    status = "failed"; failure ??= error instanceof Error ? error.message.slice(0, 250) : "profile_builder_failed";
+    status = "failed"; failure = error instanceof Error ? error.message.slice(0, 250) : "profile_builder_failed";
+    failureCategory = storageFailureObserved || isStorageFailure(error) ? "storage"
+      : /^(?:official_equity_universe_|simple_profile_universe_stale)/.test(failure) ? "source" : "runtime";
+    storageFailureObserved = failureCategory === "storage";
+  }
+  if (firstVerifiedThisRun === null && reconcileCounts) {
+    // One ordinary bounded R2 read, not a source/write retry. A transient PUT
+    // failure cannot turn already saved profiles into zero reported production.
+    // The failed run stays failed even if its durable counts can be reconciled.
+    // Leave the existing role budget and HTTP/cleanup reserves intact.
+    if (Date.now() - startedAt >= 175_000) countReconciliationFailure = "profile_count_reconciliation_deadline";
+    else try { await reconcileCounts(); }
+    catch (error) {
+      after = null; firstVerifiedThisRun = null;
+      countReconciliationFailure = error instanceof Error ? error.message.slice(0, 250) : "profile_count_reconciliation_failed";
+      storageFailureObserved ||= isStorageFailure(error);
+    }
   }
   const summary = { ok: status !== "failed", checkedAt: new Date().toISOString(), status, target: PROFILE_DAILY_TARGET,
-    attempted, unverifiedThisRun: attempted - verified, verificationYieldPercent: attempted ? verified / attempted * 100 : null, verifiedThisRun: verified, newlyVerifiedThisRun: firstVerifiedThisRun, newlyVerifiedToday: after || before, remaining: Math.max(0, PROFILE_DAILY_TARGET - (after || before)),
+    attempted, unverifiedThisRun: attempted - verified, verificationYieldPercent: attempted ? verified / attempted * 100 : null, verifiedThisRun: verified, newlyVerifiedThisRun: firstVerifiedThisRun, newlyVerifiedToday: after, remaining: after === null ? null : Math.max(0, PROFILE_DAILY_TARGET - after),
+    verificationCountsStatus: firstVerifiedThisRun === null ? "unreconciled" : "cache_reconciled",
+    lastReconciledNewlyVerifiedToday: after ?? before, countReconciliationFailure,
+    failureCategory, storageFailureObserved, failureRateBasis: "source_requests_only",
     requests, requestFailures, responseBodyFailures, failureRatePercent: requests ? requestFailures / requests * 100 : null,
     ...eligibility, cohortProfiles, retryAttempts, pendingReasons, durationMs: Date.now() - startedAt, concurrency: 2,
     modelCalls: 0, failure, guarantees500: false };
@@ -249,7 +284,9 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
   const saved = await writeVersionedJsonToR2(key, { ...state, ...summary, leaseUntil: null,
     // Unused reserved slots can be safely returned once this process settles.
     attemptsReserved: alreadyReserved + attempted, totalAttempts: (Number(state.totalAttempts) || 0) + attempted,
-    totalVerified: after || before }, { expectedEtag: current.saved.etag! });
+    // Preserve the last known count when this run could not reconcile it.
+    // Admission still uses a fresh issuer-level cache plan on the next run.
+    totalVerified: after ?? before ?? state.totalVerified ?? null }, { expectedEtag: current.saved.etag! });
   if (!saved.written || saved.conflict) throw new Error("simple_profile_summary_not_saved");
   console.info(`[simple-profile-builder] ${JSON.stringify(summary)}`);
   return summary;

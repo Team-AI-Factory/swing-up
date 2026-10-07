@@ -1,5 +1,13 @@
 import { spawnSync } from "node:child_process";
 const checks = [
+  "simple-alert-source-storage-deadline",
+  "company-profile-r2-integration",
+  "company-profile-storage-provenance",
+  "r2-state-write-recovery", "simple-alert-profile-deferral-labels", "ai-committee-prompt-budget", "evidence-model-upgrade",
+  "simple-alert-issuer-coverage",
+  "company-profile-cache-invalidation",
+  "company-profile-storage-retry", "r2-state-abort-signal",
+  "simple-alert-profile-storage-reporting", "r2-state-error-provenance",
   "company-profile-financial-note-source", "company-profile-financial-note-cache",
   "company-profile-revenue-note-source", "company-profile-revenue-note-cache",
   "company-profile-sec-name",

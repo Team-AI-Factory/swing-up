@@ -13,6 +13,8 @@ export function simpleAlertCycleSummary(body) {
   try { result = JSON.parse(body); } catch { return { summaryStatus: "unparseable_response" }; }
   if (!result || typeof result !== "object" || Array.isArray(result)) return { summaryStatus: "invalid_response" };
   const recovery = result.notifications?.durableRecoveryConsumer;
+  const direct = result.sensor?.directAnnouncementMonitoring;
+  const issuerRows = Array.isArray(direct?.issuerSourceCoverage) ? direct.issuerSourceCoverage.slice(0, 25) : null;
   return {
     summaryStatus: "parsed",
     pilot: pick(result.pilot, ["name", "branch", "cohortId", "companies"]),
@@ -25,10 +27,21 @@ export function simpleAlertCycleSummary(body) {
     notifications: pick(result.notifications, ["healthy", "directFailures"]),
     recovery: pick(recovery, ["ok", "skipped", "reason", "dueJobs", "jobsAttempted", "delivered", "retryScheduled", "blockedNoChannel", "queuePageTruncated"]),
     discovery: pick(recovery?.discovery, ["outboxesFound", "jobsCreatedOrConfirmed", "truncated"]),
+    issuerSources: {
+      ...pick(direct, ["eligibleCompanies", "officialSecIdentityMappedCompanies", "currentEligibleCompaniesKnown", "registeredFeeds", "feedsPolled", "feedSuccesses", "feedFailures", "secSubmissionsChecked", "secCheckAttempts", "secCheckSuccesses", "secCheckFailures", "secCheckDeferred", "secCacheHits", "sourcePreparationFailures", "initialCatchupEvents", "sourceCollectionDeadlineReached"]),
+      liveNewEvents: pick(result.sensor, ["newEvents"]).newEvents,
+      queuedCatchupEvents: pick(result.sensor, ["initialCatchupEvents"]).initialCatchupEvents,
+      currentSecSnapshots: issuerRows ? issuerRows.filter(row => row?.sec?.status === "current_snapshot").length : null,
+      issuerRowsTruncated: issuerRows ? direct.issuerSourceCoverage.length > 25 : null,
+      issuers: issuerRows?.map(row => ({ ticker: pick(row, ["ticker"]).ticker,
+        sec: pick(row?.sec, ["status", "snapshotFetchedAt", "nextCheckAt"]),
+        ir: pick(row?.ir, ["status", "lastSuccessAt"]) })) ?? null,
+    },
     sourceDaily: pick(result.cost?.daily, ["date", "sourceAttempts", "sourceFailures", "sourceAccountingVersion", "sourceAccountingStartedAt", "sourceMeasuredCycles", "sourceMeasuredAttempts", "sourceMeasuredFailures"]),
     processingDaily: pick(result.cost?.daily, ["date", "processingAttempts", "processingFailures", "committeeReviewAttempts", "committeeTechnicalFailures", "committeeOutcomeUnknown", "processingMeasuredCycles", "processingMeasurementStartedAt"]),
     profiles: pick(result.companyProfiles, ["attempted", "verified", "status"]),
-    profileProduction: pick(result, ["status", "target", "attempted", "newlyVerifiedThisRun", "newlyVerifiedToday", "remaining", "requests", "requestFailures", "responseBodyFailures", "failureRatePercent"]),
+    profileProduction: pick(result, ["status", "target", "attempted", "verifiedThisRun", "newlyVerifiedThisRun", "newlyVerifiedToday", "remaining", "verificationCountsStatus", "lastReconciledNewlyVerifiedToday", "countReconciliationFailure", "failureCategory", "storageFailureObserved", "failureRateBasis", "failure", "requests", "requestFailures", "responseBodyFailures", "failureRatePercent"]),
+    cohortProfiles: pick(result.cohortProfiles, ["configuredCompanies", "verifiedCompanies", "currentVerificationApplied"]),
     // This is a diagnostic summary, never an approval or delivery receipt.
     receiptVerifiedBySummary: false,
   };

@@ -77,6 +77,14 @@ try {
   done();
   assert.equal(calls.length, 6, "At most three conditional writes and three reconciliation reads");
   assert.ok(delays[1] >= 2000 && delays[2] >= 4000, "Backoff increases on repeated failures");
+  done = sequence([["PUT", () => fail(502)], ["GET", old]]);
+  await assert.rejects(r2.writeVersionedJsonToR2(key, payload, { expectedEtag: "old", maxAttempts: 1 }), /r2_state_write_http_502/);
+  done();
+  assert.equal(calls.filter(x => x.method === "PUT").length, 1, "Row-level profile recovery cannot multiply transport PUT retries");
+  done = sequence([["PUT", () => fail(502)], ["GET", exact]]);
+  assert.equal((await r2.writeVersionedJsonToR2(key, payload, { expectedEtag: "old", maxAttempts: 1 })).written, true);
+  done();
+  assert.equal(calls.filter(x => x.method === "PUT").length, 1, "Single-attempt profile mode still reconciles a committed ambiguous response");
   for (const status of [400, 401, 403, 409]) {
     done = sequence([["PUT", () => fail(status)]]);
     await assert.rejects(r2.writeVersionedJsonToR2(key, payload, { expectedEtag: "old" }), new RegExp(`r2_state_write_http_${status}`));

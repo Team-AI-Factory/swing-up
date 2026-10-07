@@ -1,0 +1,574 @@
+{
+  "schema": "swingup.simple_alert_issuer_sources.v1",
+  "verifiedAt": "2026-10-03T16:39:07.349104+00:00",
+  "companies": [
+    {
+      "ticker": "AIOT",
+      "cik": "0001774170",
+      "company": "Powerfleet, Inc.",
+      "investorWebsite": "https://ir.powerfleet.com/",
+      "feedUrl": "https://ir.powerfleet.com/press-releases/rss",
+      "sourcePageUrl": "https://ir.powerfleet.com/",
+      "verifiedAt": "2026-10-03T16:33:24.413194+00:00",
+      "validationOutcome": "official_root_and_feed_verified",
+      "responseStatus": 200,
+      "feedTitle": "Powerfleet, Inc. (AIOT) Press Releases",
+      "feedItemDates": [
+        {
+          "original": "Wed, 30 Sep 26 08:00:00 -0400",
+          "iso": "2026-09-30T08:00:00-04:00"
+        },
+        {
+          "original": "Tue, 22 Sep 26 08:00:00 -0400",
+          "iso": "2026-09-22T08:00:00-04:00"
+        },
+        {
+          "original": "Fri, 18 Sep 26 11:00:00 -0400",
+          "iso": "2026-09-18T11:00:00-04:00"
+        },
+        {
+          "original": "Mon, 10 Aug 26 07:00:00 -0400",
+          "iso": "2026-08-10T07:00:00-04:00"
+        },
+        {
+          "original": "Mon, 27 Jul 26 08:00:00 -0400",
+          "iso": "2026-07-27T08:00:00-04:00"
+        }
+      ],
+      "reason": null,
+      "announcementPageUrl": "https://ir.powerfleet.com/",
+      "announcementPageResponseStatus": 200
+    },
+    {
+      "ticker": "PGY",
+      "cik": "0001883085",
+      "company": "Pagaya Technologies Ltd.",
+      "investorWebsite": "https://investor.pagaya.com/",
+      "feedUrl": "https://investor.pagaya.com/rss/news-releases.xml",
+      "sourcePageUrl": "https://investor.pagaya.com/rss-feeds",
+      "verifiedAt": "2026-10-03T16:36:33.497477+00:00",
+      "validationOutcome": "official_root_and_feed_verified",
+      "responseStatus": 200,
+      "feedTitle": "Pagaya Technologies News Releases",
+      "feedItemDates": [
+        {
+          "original": "Tue, 29 Sep 2026 08:30:00 -0400",
+          "iso": "2026-09-29T08:30:00-04:00"
+        },
+        {
+          "original": "Tue, 22 Sep 2026 08:30:00 -0400",
+          "iso": "2026-09-22T08:30:00-04:00"
+        },
+        {
+          "original": "Thu, 17 Sep 2026 08:30:00 -0400",
+          "iso": "2026-09-17T08:30:00-04:00"
+        },
+        {
+          "original": "Wed, 16 Sep 2026 07:30:00 -0400",
+          "iso": "2026-09-16T07:30:00-04:00"
+        },
+        {
+          "original": "Tue, 18 Aug 2026 08:30:00 -0400",
+          "iso": "2026-08-18T08:30:00-04:00"
+        }
+      ],
+      "reason": null,
+      "announcementPageUrl": "https://investor.pagaya.com/news-events/news-releases",
+      "announcementPageResponseStatus": 200
+    },
+    {
+      "ticker": "CRNC",
+      "cik": "0001768267",
+      "company": "Cerence Inc.",
+      "investorWebsite": "https://investors.cerence.com/",
+      "feedUrl": "https://investors.cerence.com/news-events/press-releases/rss",
+      "sourcePageUrl": "https://investors.cerence.com/",
+      "verifiedAt": "2026-10-03T16:33:25.573759+00:00",
+      "validationOutcome": "official_root_and_feed_verified",
+      "responseStatus": 200,
+      "feedTitle": "Cerence Inc. (CRNC) Press Releases",
+      "feedItemDates": [
+        {
+          "original": "Wed, 26 Aug 2026 08:00:00 -0400",
+          "iso": "2026-08-26T08:00:00-04:00"
+        },
+        {
+          "original": "Tue, 25 Aug 2026 08:00:00 -0400",
+          "iso": "2026-08-25T08:00:00-04:00"
+        },
+        {
+          "original": "Thu, 06 Aug 2026 16:05:00 -0400",
+          "iso": "2026-08-06T16:05:00-04:00"
+        },
+        {
+          "original": "Mon, 27 Jul 2026 16:05:00 -0400",
+          "iso": "2026-07-27T16:05:00-04:00"
+        },
+        {
+          "original": "Wed, 13 May 2026 08:00:00 -0400",
+          "iso": "2026-05-13T08:00:00-04:00"
+        }
+      ],
+      "reason": null,
+      "announcementPageUrl": "https://investors.cerence.com/",
+      "announcementPageResponseStatus": 200
+    },
+    {
+      "ticker": "INOD",
+      "cik": "0000903651",
+      "company": "Innodata Inc.",
+      "investorWebsite": "https://investor.innodata.com/overview/default.aspx",
+      "feedUrl": null,
+      "sourcePageUrl": "https://investor.innodata.com/overview/default.aspx",
+      "verifiedAt": "2026-10-03T16:33:28.076079+00:00",
+      "validationOutcome": "official_root_verified_no_linked_feed_found",
+      "responseStatus": 200,
+      "feedTitle": null,
+      "feedItemDates": [],
+      "reason": "No publicly linked RSS/Atom announcement feed found in the inspected official investor root and linked news page.",
+      "announcementPageUrl": "https://investor.innodata.com/news/default.aspx",
+      "announcementPageResponseStatus": 200
+    },
+    {
+      "ticker": "UPST",
+      "cik": "0001647639",
+      "company": "Upstart Holdings, Inc.",
+      "investorWebsite": "https://ir.upstart.com/",
+      "feedUrl": null,
+      "sourcePageUrl": "https://ir.upstart.com/",
+      "verifiedAt": "2026-10-03T16:33:31.247648+00:00",
+      "validationOutcome": "official_root_verified_no_linked_feed_found",
+      "responseStatus": 200,
+      "feedTitle": null,
+      "feedItemDates": [],
+      "reason": "No publicly linked RSS/Atom announcement feed found in the inspected official investor root and linked news page.",
+      "announcementPageUrl": "https://ir.upstart.com/news-and-events/news-releases",
+      "announcementPageResponseStatus": 200
+    },
+    {
+      "ticker": "LTRX",
+      "cik": "0001114925",
+      "company": "Lantronix, Inc.",
+      "investorWebsite": "https://www.lantronix.com/investor-relations/",
+      "feedUrl": null,
+      "sourcePageUrl": "https://www.lantronix.com/investor-relations/",
+      "verifiedAt": "2026-10-03T16:33:34.855906+00:00",
+      "validationOutcome": "official_root_verified_no_linked_feed_found",
+      "responseStatus": 200,
+      "feedTitle": null,
+      "feedItemDates": [],
+      "reason": "No publicly linked RSS/Atom announcement feed found in the inspected official investor root and linked news page.",
+      "announcementPageUrl": "https://www.lantronix.com/newsroom/press-releases/",
+      "announcementPageResponseStatus": 200
+    },
+    {
+      "ticker": "AIP",
+      "cik": "0001667011",
+      "company": "Arteris, Inc.",
+      "investorWebsite": "https://ir.arteris.com/",
+      "feedUrl": "https://ir.arteris.com/rss/news-releases.xml",
+      "sourcePageUrl": "https://ir.arteris.com/shareholder-services/rss-feeds",
+      "verifiedAt": "2026-10-03T16:36:37.358352+00:00",
+      "validationOutcome": "official_root_and_feed_verified",
+      "responseStatus": 200,
+      "feedTitle": "Arteris, Inc. News Releases",
+      "feedItemDates": [
+        {
+          "original": "Tue, 15 Sep 2026 09:00:34 -0400",
+          "iso": "2026-09-15T09:00:34-04:00"
+        },
+        {
+          "original": "Fri, 11 Sep 2026 16:30:32 -0400",
+          "iso": "2026-09-11T16:30:32-04:00"
+        },
+        {
+          "original": "Thu, 06 Aug 2026 16:06:04 -0400",
+          "iso": "2026-08-06T16:06:04-04:00"
+        },
+        {
+          "original": "Thu, 06 Aug 2026 08:30:29 -0400",
+          "iso": "2026-08-06T08:30:29-04:00"
+        },
+        {
+          "original": "Tue, 21 Jul 2026 09:00:36 -0400",
+          "iso": "2026-07-21T09:00:36-04:00"
+        }
+      ],
+      "reason": null,
+      "announcementPageUrl": "https://ir.arteris.com/news-events/news-releases",
+      "announcementPageResponseStatus": 200
+    },
+    {
+      "ticker": "AMBQ",
+      "cik": "0001500412",
+      "company": "Ambiq Micro, Inc.",
+      "investorWebsite": "https://ir.ambiq.com/overview/default.aspx",
+      "feedUrl": null,
+      "sourcePageUrl": "https://ir.ambiq.com/overview/default.aspx",
+      "verifiedAt": "2026-10-03T16:33:38.787356+00:00",
+      "validationOutcome": "official_root_verified_no_linked_feed_found",
+      "responseStatus": 200,
+      "feedTitle": null,
+      "feedItemDates": [],
+      "reason": "No publicly linked RSS/Atom announcement feed found in the inspected official investor root and linked news page.",
+      "announcementPageUrl": "https://ir.ambiq.com/news/default.aspx",
+      "announcementPageResponseStatus": 200
+    },
+    {
+      "ticker": "AISP",
+      "cik": "0001842566",
+      "company": "Airship AI Holdings, Inc.",
+      "investorWebsite": "https://ir.airship.ai/",
+      "feedUrl": "https://ir.airship.ai/news-events/press-releases/rss",
+      "sourcePageUrl": "https://ir.airship.ai/",
+      "verifiedAt": "2026-10-03T16:33:46.519590+00:00",
+      "validationOutcome": "official_root_and_feed_verified",
+      "responseStatus": 200,
+      "feedTitle": "Airship AI Holdings, Inc. (AISP) Press Releases",
+      "feedItemDates": [
+        {
+          "original": "Thu, 01 Oct 26 09:00:00 -0400",
+          "iso": "2026-10-01T09:00:00-04:00"
+        },
+        {
+          "original": "Thu, 06 Aug 26 09:00:00 -0400",
+          "iso": "2026-08-06T09:00:00-04:00"
+        },
+        {
+          "original": "Tue, 23 Jun 26 08:00:00 -0400",
+          "iso": "2026-06-23T08:00:00-04:00"
+        },
+        {
+          "original": "Mon, 11 May 26 09:00:00 -0400",
+          "iso": "2026-05-11T09:00:00-04:00"
+        },
+        {
+          "original": "Wed, 29 Apr 26 08:31:00 -0400",
+          "iso": "2026-04-29T08:31:00-04:00"
+        }
+      ],
+      "reason": null,
+      "announcementPageUrl": "https://ir.airship.ai/",
+      "announcementPageResponseStatus": 200
+    },
+    {
+      "ticker": "BKSY",
+      "cik": "0001753539",
+      "company": "BlackSky Technology Inc.",
+      "investorWebsite": "https://ir.blacksky.com/overview/default.aspx",
+      "feedUrl": null,
+      "sourcePageUrl": "https://ir.blacksky.com/overview/default.aspx",
+      "verifiedAt": "2026-10-03T16:33:43.272156+00:00",
+      "validationOutcome": "official_root_verified_no_linked_feed_found",
+      "responseStatus": 200,
+      "feedTitle": null,
+      "feedItemDates": [],
+      "reason": "No publicly linked RSS/Atom announcement feed found in the inspected official investor root and linked news page.",
+      "announcementPageUrl": "https://ir.blacksky.com/news-events/press-releases/default.aspx",
+      "announcementPageResponseStatus": 200
+    },
+    {
+      "ticker": "CEVA",
+      "cik": "0001173489",
+      "company": "Ceva, Inc.",
+      "investorWebsite": "https://www.ceva-ip.com/investor-relations/",
+      "feedUrl": null,
+      "sourcePageUrl": "https://www.ceva-ip.com/investor-relations/",
+      "verifiedAt": "2026-10-03T16:33:46.404274+00:00",
+      "validationOutcome": "official_root_verified_no_linked_feed_found",
+      "responseStatus": 200,
+      "feedTitle": null,
+      "feedItemDates": [],
+      "reason": "No publicly linked RSS/Atom announcement feed found in the inspected official investor root and linked news page.",
+      "announcementPageUrl": "https://www.ceva-ip.com/press/",
+      "announcementPageResponseStatus": 200
+    },
+    {
+      "ticker": "SDGR",
+      "cik": "0001490978",
+      "company": "Schrodinger, Inc.",
+      "investorWebsite": "https://ir.schrodinger.com/overview/default.aspx",
+      "feedUrl": null,
+      "sourcePageUrl": "https://ir.schrodinger.com/overview/default.aspx",
+      "verifiedAt": "2026-10-03T16:33:50.529105+00:00",
+      "validationOutcome": "official_root_verified_no_linked_feed_found",
+      "responseStatus": 200,
+      "feedTitle": null,
+      "feedItemDates": [],
+      "reason": "No publicly linked RSS/Atom announcement feed found in the inspected official investor root and linked news page.",
+      "announcementPageUrl": "https://ir.schrodinger.com/press-releases/default.aspx",
+      "announcementPageResponseStatus": 200
+    },
+    {
+      "ticker": "SOUN",
+      "cik": "0001840856",
+      "company": "SoundHound AI, Inc.",
+      "investorWebsite": "https://investors.soundhound.com/",
+      "feedUrl": null,
+      "sourcePageUrl": "https://investors.soundhound.com/",
+      "verifiedAt": "2026-10-03T16:33:52.463201+00:00",
+      "validationOutcome": "official_root_verified_no_linked_feed_found",
+      "responseStatus": 200,
+      "feedTitle": null,
+      "feedItemDates": [],
+      "reason": "No publicly linked RSS/Atom announcement feed found in the inspected official investor root and linked news page.",
+      "announcementPageUrl": "https://investors.soundhound.com/news-releases",
+      "announcementPageResponseStatus": 200
+    },
+    {
+      "ticker": "HSAI",
+      "cik": "0001861737",
+      "company": "Hesai Group",
+      "investorWebsite": "https://investor.hesaitech.com/",
+      "feedUrl": null,
+      "sourcePageUrl": "https://investor.hesaitech.com/",
+      "verifiedAt": "2026-10-03T16:33:53.399312+00:00",
+      "validationOutcome": "official_root_verified_no_linked_feed_found",
+      "responseStatus": 200,
+      "feedTitle": null,
+      "feedItemDates": [],
+      "reason": "No publicly linked RSS/Atom announcement feed found in the inspected official investor root and linked news page.",
+      "announcementPageUrl": "https://investor.hesaitech.com/news-events/news-releases",
+      "announcementPageResponseStatus": 200
+    },
+    {
+      "ticker": "TSSI",
+      "cik": "0001320760",
+      "company": "TSS, Inc.",
+      "investorWebsite": "https://ir.tssiusa.com/",
+      "feedUrl": "https://ir.tssiusa.com/feed/",
+      "sourcePageUrl": "https://ir.tssiusa.com/",
+      "verifiedAt": "2026-10-03T16:34:01.737744+00:00",
+      "validationOutcome": "official_root_and_feed_verified",
+      "responseStatus": 200,
+      "feedTitle": "TSS, Inc.",
+      "feedItemDates": [
+        {
+          "original": "Mon, 21 Sep 2026 20:15:00 +0000",
+          "iso": "2026-09-21T20:15:00+00:00"
+        },
+        {
+          "original": "Mon, 17 Aug 2026 13:00:00 +0000",
+          "iso": "2026-08-17T13:00:00+00:00"
+        },
+        {
+          "original": "Thu, 13 Aug 2026 20:05:00 +0000",
+          "iso": "2026-08-13T20:05:00+00:00"
+        },
+        {
+          "original": "Thu, 30 Jul 2026 13:00:00 +0000",
+          "iso": "2026-07-30T13:00:00+00:00"
+        },
+        {
+          "original": "Thu, 04 Jun 2026 13:00:00 +0000",
+          "iso": "2026-06-04T13:00:00+00:00"
+        }
+      ],
+      "reason": null,
+      "announcementPageUrl": "https://ir.tssiusa.com/",
+      "announcementPageResponseStatus": 200
+    },
+    {
+      "ticker": "AMBA",
+      "cik": "0001280263",
+      "company": "Ambarella, Inc.",
+      "investorWebsite": "https://investor.ambarella.com/",
+      "feedUrl": "https://investor.ambarella.com/rss/news-releases.xml?items=15",
+      "sourcePageUrl": "https://investor.ambarella.com/rss-news-feeds",
+      "verifiedAt": "2026-10-03T16:36:57.873497+00:00",
+      "validationOutcome": "official_root_and_feed_verified",
+      "responseStatus": 200,
+      "feedTitle": "Ambarella Inc. News Releases",
+      "feedItemDates": [
+        {
+          "original": "Tue, 15 Sep 2026 09:00:00 -0400",
+          "iso": "2026-09-15T09:00:00-04:00"
+        },
+        {
+          "original": "Tue, 15 Sep 2026 09:00:00 -0400",
+          "iso": "2026-09-15T09:00:00-04:00"
+        },
+        {
+          "original": "Tue, 15 Sep 2026 09:00:00 -0400",
+          "iso": "2026-09-15T09:00:00-04:00"
+        },
+        {
+          "original": "Tue, 15 Sep 2026 09:00:00 -0400",
+          "iso": "2026-09-15T09:00:00-04:00"
+        },
+        {
+          "original": "Thu, 03 Sep 2026 16:05:00 -0400",
+          "iso": "2026-09-03T16:05:00-04:00"
+        }
+      ],
+      "reason": null,
+      "announcementPageUrl": "https://investor.ambarella.com/",
+      "announcementPageResponseStatus": 200
+    },
+    {
+      "ticker": "OUST",
+      "cik": "0001816581",
+      "company": "Ouster, Inc.",
+      "investorWebsite": "https://investors.ouster.com/",
+      "feedUrl": null,
+      "sourcePageUrl": "https://investors.ouster.com/",
+      "verifiedAt": "2026-10-03T16:34:00.150801+00:00",
+      "validationOutcome": "official_root_verified_no_linked_feed_found",
+      "responseStatus": 200,
+      "feedTitle": null,
+      "feedItemDates": [],
+      "reason": "No publicly linked RSS/Atom announcement feed found in the inspected official investor root and linked news page.",
+      "announcementPageUrl": "https://investors.ouster.com/news-events/news-releases",
+      "announcementPageResponseStatus": 200
+    },
+    {
+      "ticker": "AI",
+      "cik": "0001577526",
+      "company": "C3.ai, Inc.",
+      "investorWebsite": "https://ir.c3.ai/",
+      "feedUrl": null,
+      "sourcePageUrl": "https://ir.c3.ai/",
+      "verifiedAt": "2026-10-03T16:34:05.168917+00:00",
+      "validationOutcome": "official_root_verified_no_linked_feed_found",
+      "responseStatus": 200,
+      "feedTitle": null,
+      "feedItemDates": [],
+      "reason": "No publicly linked RSS/Atom announcement feed found in the inspected official investor root and linked news page.",
+      "announcementPageUrl": "https://ir.c3.ai/news",
+      "announcementPageResponseStatus": 200
+    },
+    {
+      "ticker": "LMND",
+      "cik": "0001691421",
+      "company": "Lemonade, Inc.",
+      "investorWebsite": "https://www.lemonade.com/investor",
+      "feedUrl": null,
+      "sourcePageUrl": "https://www.lemonade.com/investor",
+      "verifiedAt": "2026-10-03T16:34:07.324110+00:00",
+      "validationOutcome": "official_root_verified_no_linked_feed_found",
+      "responseStatus": 200,
+      "feedTitle": null,
+      "feedItemDates": [],
+      "reason": "No publicly linked RSS/Atom announcement feed found in the inspected official investor root and linked news page.",
+      "announcementPageUrl": "https://www.lemonade.com/investor/news",
+      "announcementPageResponseStatus": 200
+    },
+    {
+      "ticker": "RXRX",
+      "cik": "0001601830",
+      "company": "Recursion Pharmaceuticals, Inc.",
+      "investorWebsite": "https://ir.recursion.com/",
+      "feedUrl": null,
+      "sourcePageUrl": "https://ir.recursion.com/",
+      "verifiedAt": "2026-10-03T16:34:10.273941+00:00",
+      "validationOutcome": "official_root_verified_no_linked_feed_found",
+      "responseStatus": 200,
+      "feedTitle": null,
+      "feedItemDates": [],
+      "reason": "No publicly linked RSS/Atom announcement feed found in the inspected official investor root and linked news page.",
+      "announcementPageUrl": "https://ir.recursion.com/news-events/press-releases",
+      "announcementPageResponseStatus": 200
+    },
+    {
+      "ticker": "PDYN",
+      "cik": "0001826681",
+      "company": "Palladyne AI Corp.",
+      "investorWebsite": "https://investor.palladyneai.com/",
+      "feedUrl": null,
+      "sourcePageUrl": "https://investor.palladyneai.com/",
+      "verifiedAt": "2026-10-03T16:34:11.255842+00:00",
+      "validationOutcome": "official_root_verified_no_linked_feed_found",
+      "responseStatus": 200,
+      "feedTitle": null,
+      "feedItemDates": [],
+      "reason": "No publicly linked RSS/Atom announcement feed found in the inspected official investor root and linked news page.",
+      "announcementPageUrl": "https://investor.palladyneai.com/news-events/press-releases",
+      "announcementPageResponseStatus": 200
+    },
+    {
+      "ticker": "SERV",
+      "cik": "0001832483",
+      "company": "Serve Robotics Inc.",
+      "investorWebsite": "https://ir.serverobotics.com/",
+      "feedUrl": null,
+      "sourcePageUrl": "https://ir.serverobotics.com/",
+      "verifiedAt": "2026-10-03T16:34:12.492993+00:00",
+      "validationOutcome": "official_root_verified_no_linked_feed_found",
+      "responseStatus": 200,
+      "feedTitle": null,
+      "feedItemDates": [],
+      "reason": "No publicly linked RSS/Atom announcement feed found in the inspected official investor root and linked news page.",
+      "announcementPageUrl": "https://ir.serverobotics.com/news-events/news",
+      "announcementPageResponseStatus": 200
+    },
+    {
+      "ticker": "BBAI",
+      "cik": "0001836981",
+      "company": "BigBear.ai Holdings, Inc.",
+      "investorWebsite": "https://ir.bigbear.ai/",
+      "feedUrl": "https://ir.bigbear.ai/news-events/press-releases/rss",
+      "sourcePageUrl": "https://ir.bigbear.ai/",
+      "verifiedAt": "2026-10-03T16:34:18.809474+00:00",
+      "validationOutcome": "official_root_and_feed_verified",
+      "responseStatus": 200,
+      "feedTitle": "BigBear.ai Holdings, Inc. (BBAI) Press Releases",
+      "feedItemDates": [
+        {
+          "original": "Mon, 17 Aug 26 09:15:00 -0400",
+          "iso": "2026-08-17T09:15:00-04:00"
+        },
+        {
+          "original": "Thu, 30 Jul 26 16:15:00 -0400",
+          "iso": "2026-07-30T16:15:00-04:00"
+        },
+        {
+          "original": "Wed, 22 Jul 26 16:15:00 -0400",
+          "iso": "2026-07-22T16:15:00-04:00"
+        },
+        {
+          "original": "Wed, 15 Jul 26 09:15:00 -0400",
+          "iso": "2026-07-15T09:15:00-04:00"
+        },
+        {
+          "original": "Thu, 09 Jul 26 12:15:00 -0400",
+          "iso": "2026-07-09T12:15:00-04:00"
+        }
+      ],
+      "reason": null,
+      "announcementPageUrl": "https://ir.bigbear.ai/",
+      "announcementPageResponseStatus": 200
+    },
+    {
+      "ticker": "RDNT",
+      "cik": "0000790526",
+      "company": "RadNet, Inc.",
+      "investorWebsite": "https://www.radnet.com/about-radnet/investor-relations",
+      "feedUrl": null,
+      "sourcePageUrl": "https://www.radnet.com/about-radnet/investor-relations",
+      "verifiedAt": "2026-10-03T16:34:15.339312+00:00",
+      "validationOutcome": "official_root_verified_no_linked_feed_found",
+      "responseStatus": 200,
+      "feedTitle": null,
+      "feedItemDates": [],
+      "reason": "No publicly linked RSS/Atom announcement feed found in the inspected official investor root and linked news page.",
+      "announcementPageUrl": "https://www.radnet.com/about-radnet/news",
+      "announcementPageResponseStatus": 200
+    },
+    {
+      "ticker": "REKR",
+      "cik": "0001697851",
+      "company": "Rekor Systems, Inc.",
+      "investorWebsite": "https://www.rekor.ai/investors",
+      "feedUrl": null,
+      "sourcePageUrl": "https://www.rekor.ai/investors",
+      "verifiedAt": "2026-10-03T16:34:16.515408+00:00",
+      "validationOutcome": "official_root_verified_no_linked_feed_found",
+      "responseStatus": 200,
+      "feedTitle": null,
+      "feedItemDates": [],
+      "reason": "Official investor root already contains issuer press releases; no RSS/Atom announcement feed link found in that page. Embedded issuerdirect SEC-filings widget is not an announcement RSS feed.",
+      "announcementPageUrl": "https://www.rekor.ai/investors",
+      "announcementPageResponseStatus": 200
+    }
+  ]
+}

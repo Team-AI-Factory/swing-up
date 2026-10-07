@@ -96,6 +96,7 @@ type SourceSummary = {
   status: string;
   recordsRead: number;
   newEvents: number;
+  initialCatchupEvents?: number;
   error: string | null;
   nextRetryAt: string | null;
   attemptCount?: number | null;
@@ -496,6 +497,11 @@ async function marketWatch(fetchImpl: typeof fetch, exposure: Pr262ExposureEntry
 }
 
 export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl?: typeof fetch } = {}) {
+  // 480s cycle - 335s paid review - 45s delivery - 15s reporting leaves 85s.
+  // Keep source collection's additional direct work inside 45s from entry,
+  // leaving 30s early recovery and 10s mapping/admission overhead. Slow prior
+  // sources cause direct work to defer rather than consuming paid-review time.
+  const sourceDeadlineAtMs = isSimpleAlertPilot() ? Date.now() + 45_000 : undefined;
   const now = input.now ?? new Date();
   const fetchImpl = input.fetchImpl ?? fetch;
   let exposureError: string | null = null;
@@ -704,6 +710,19 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
     failureCount: null as number | null,
     secSubmissionsChecked: null as number | null,
     secFilingsFound: null as number | null,
+    sourcePreparationFailures: null as number | null,
+    preparationErrors: null as string[] | null,
+    secCheckAttempts: null as number | null,
+    secCheckSuccesses: null as number | null,
+    secCheckFailures: null as number | null,
+    secCheckDeferred: null as number | null,
+    secCacheHits: null as number | null,
+    initialCatchupEvents: null as number | null,
+    initialCatchupEventIds: null as string[] | null,
+    publicationTimestampsPreserved: true as const,
+    sourceCollectionDeadlineReached: null as boolean | null,
+    directWorkBudgetMs: null as number | null,
+    issuerSourceCoverage: null as Awaited<ReturnType<typeof runPr262DirectAnnouncementMonitor>>["issuerSourceCoverage"] | null,
     eligibleCompanies: null as number | null,
     companiesKnown: null as number | null,
     currentEligibleCompaniesKnown: null as number | null,
@@ -734,7 +753,7 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
     registryPersistence: null as { written: boolean; conflict: boolean; winnerLoaded: boolean } | null,
   };
   try {
-    const direct = await runPr262DirectAnnouncementMonitor({ exposure: exposure.entries, now, fetchImpl });
+    const direct = await runPr262DirectAnnouncementMonitor({ exposure: exposure.entries, now, fetchImpl, deadlineAtMs: sourceDeadlineAtMs });
     directAnnouncementMonitoring = {
       telemetryAvailable: true,
       telemetryError: null,
@@ -760,6 +779,19 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
       failureCount: direct.failureCount,
       secSubmissionsChecked: direct.secSubmissionsChecked,
       secFilingsFound: direct.secFilingsFound,
+      sourcePreparationFailures: direct.sourcePreparationFailures,
+      preparationErrors: direct.preparationErrors,
+      secCheckAttempts: direct.secCheckAttempts,
+      secCheckSuccesses: direct.secCheckSuccesses,
+      secCheckFailures: direct.secCheckFailures,
+      secCheckDeferred: direct.secCheckDeferred,
+      secCacheHits: direct.secCacheHits,
+      initialCatchupEvents: direct.initialCatchupEvents,
+      initialCatchupEventIds: direct.initialCatchupEventIds,
+      publicationTimestampsPreserved: direct.publicationTimestampsPreserved,
+      sourceCollectionDeadlineReached: direct.sourceCollectionDeadlineReached,
+      directWorkBudgetMs: direct.directWorkBudgetMs,
+      issuerSourceCoverage: direct.issuerSourceCoverage,
       eligibleCompanies: direct.eligibleCompanies,
       companiesKnown: direct.companiesKnown,
       currentEligibleCompaniesKnown: direct.currentEligibleCompaniesKnown,
@@ -783,7 +815,7 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
       registryPersistence: direct.registryPersistence,
     };
     events.push(...direct.events);
-    const directStatus = direct.attemptCount > 0
+    const directStatus = direct.sourcePreparationFailures > 0 ? "storage_or_preparation_failed" : direct.attemptCount > 0
       ? direct.successCount === 0
         ? direct.failureCount > 0 ? "temporarily_unavailable" : "budget_deferred"
         : direct.failureCount > 0 || direct.deferredCount > 0
@@ -798,8 +830,10 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
       attempted: direct.attemptCount > 0,
       status: directStatus,
       recordsRead: direct.feedsPolled + direct.secSubmissionsChecked,
-      newEvents: direct.events.length,
-      error: direct.failureCount > 0
+      newEvents: direct.events.length - (direct.initialCatchupEvents ?? 0),
+      initialCatchupEvents: direct.initialCatchupEvents ?? 0,
+      error: direct.sourcePreparationFailures > 0 ? direct.preparationErrors.join(" | ").slice(0, 300)
+        : direct.failureCount > 0
         ? direct.attemptErrors.join(" | ").slice(0, 300) || "direct_issuer_attempt_failed"
         : directStatus === "not_ready"
           ? "no_direct_issuer_evidence_available"
@@ -849,6 +883,11 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
       && !researchOnlyPriceEvent(event)
       && canEnterIssuerEvidenceQueue(event))
     .slice(0, MAX_FRESH);
+  // First successful source reads can legitimately enqueue dated catch-up.
+  // Keep those queue admissions, but never report them as newly observed live
+  // cases in the top-level counter consumed by the daily acceptance totals.
+  const initialCatchupIds = new Set(directAnnouncementMonitoring.initialCatchupEventIds ?? []);
+  const initialCatchup = fresh.filter(event => initialCatchupIds.has(event.id));
   const partitioned = partitionPr262PendingEventsWithTelemetry([...actionablePending, ...fresh.map(event => ({ ...event, firstQueuedAt: now.toISOString() }))], now);
   const pending = partitioned.pending;
   const retained = new Set(pending.map((event) => event.id));
@@ -921,7 +960,10 @@ export async function runPr262LightweightSensorV3(input: { now?: Date; fetchImpl
     exposureReady: exposureError === null,
     exposureError,
     exposureCompanies: exposure.entries.length,
-    newEvents: fresh.length,
+    newEvents: fresh.length - initialCatchup.length,
+    initialCatchupEvents: initialCatchup.length,
+    initialCatchupEventIds: initialCatchup.map(event => event.id),
+    queueAdmissions: fresh.length,
     priceResearchEvents: priceResearchEvents.length,
     nonActionableEventsDropped: new Set([
       ...legacyNonActionable.map((event) => event.id),

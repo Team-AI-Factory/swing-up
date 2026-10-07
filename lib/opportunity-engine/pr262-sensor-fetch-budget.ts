@@ -1,3 +1,5 @@
+import { completePr262SecSubmissionsRoot } from "@/lib/opportunity-engine/pr262-sec-submissions-schema";
+import { pilotCompanies } from "@/lib/simple-alert-pilot-scope";
 import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
@@ -143,17 +145,90 @@ function migrate(raw: unknown, nowMs: number): BudgetState {
   return state;
 }
 
-async function load(now: Date) {
-  const current = await readVersionedTextFromR2(STATE_KEY);
+async function load(now: Date, signal?: AbortSignal) {
+  const current = await readVersionedTextFromR2(STATE_KEY, { signal });
   if (!current.found || !current.text) return { state: emptyState(), etag: current.etag, corrupt: false };
   try { return { state: migrate(JSON.parse(current.text), now.getTime()), etag: current.etag, corrupt: false }; }
   catch { return { state: emptyState(), etag: current.etag, corrupt: true }; }
 }
 
+// Only complete, exact-issuer root submissions fetched through this durable
+// budget boundary may be reused. Profile summaries / annual excerpts are not
+// filings snapshots. This cache is private to the fixed pilot cohort; it adds
+// no production write exception and never refreshes an old source timestamp.
+const SUBMISSIONS_CACHE_MAX_AGE_MS = 29 * MINUTE_MS;
+const SUBMISSIONS_CACHE_MAX_BYTES = 2_000_000;
+type SubmissionSnapshot = { version: 1; cik: string; sourceUrl: string; fetchedAt: string; body: string };
+function pilotSubmissionTarget(request: RequestInfo | URL, init?: RequestInit) {
+  if (!isSimpleAlertPilot() || (init?.method ?? (request instanceof Request ? request.method : "GET")).toUpperCase() !== "GET") return null;
+  const url = request instanceof URL ? request : new URL(typeof request === "string" ? request : request.url);
+  const cik = /^\/submissions\/CIK(\d{10})\.json$/.exec(url.pathname)?.[1];
+  if (!cik || url.origin !== "https://data.sec.gov" || url.search || url.username || url.password) return null;
+  const company = pilotCompanies().find(row => row.cik === cik);
+  return company ? { cik, ticker: company.ticker, sourceUrl: url.toString(), key: pr262StorageKey(`sensor/submissions-cache/${cik}.json`) } : null;
+}
+function validSubmissionBody(body: string, target: NonNullable<ReturnType<typeof pilotSubmissionTarget>>) {
+  if (Buffer.byteLength(body) > SUBMISSIONS_CACHE_MAX_BYTES) return false;
+  try {
+    return completePr262SecSubmissionsRoot(JSON.parse(body), target);
+  } catch { return false; }
+}
+function snapshotResponse(snapshot: SubmissionSnapshot, cached: boolean) {
+  return new Response(snapshot.body, { status: 200, headers: {
+    "content-type": "application/json",
+    "x-swingup-submissions-fetched-at": snapshot.fetchedAt,
+    "x-swingup-submissions-source-url": snapshot.sourceUrl,
+    "x-swingup-submissions-cache": cached ? "hit" : "network",
+  } });
+}
+async function readSubmissionSnapshot(target: NonNullable<ReturnType<typeof pilotSubmissionTarget>>, signal?: AbortSignal) {
+  try {
+    const saved = await readVersionedTextFromR2(target.key, { signal });
+    const snapshot = saved.found && saved.text ? JSON.parse(saved.text) as SubmissionSnapshot : null;
+    const age = Date.now() - Date.parse(snapshot?.fetchedAt ?? "");
+    const valid = snapshot?.version === 1 && snapshot.cik === target.cik && snapshot.sourceUrl === target.sourceUrl
+      && age >= 0 && age < SUBMISSIONS_CACHE_MAX_AGE_MS && typeof snapshot.body === "string"
+      && validSubmissionBody(snapshot.body, target);
+    return { saved, snapshot: valid ? snapshot : null };
+  } catch { return null; } // Optional cache failure never weakens the budget guard.
+}
+async function cacheSubmissionResponse(response: Response, target: NonNullable<ReturnType<typeof pilotSubmissionTarget>>,
+  saved: { etag: string | null } | undefined, signal?: AbortSignal) {
+  if (response.status !== 200 || !response.clone || (response.url && response.url !== target.sourceUrl)
+    || Number(response.headers.get("content-length")) > SUBMISSIONS_CACHE_MAX_BYTES) return response;
+  const clone = response.clone();
+  const reader = clone.body?.getReader();
+  if (!reader) return response;
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    while (true) {
+      signal?.throwIfAborted();
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > SUBMISSIONS_CACHE_MAX_BYTES) { void reader.cancel().catch(() => undefined); return response; }
+      chunks.push(chunk.value);
+    }
+    const body = Buffer.concat(chunks).toString("utf8");
+    if (!validSubmissionBody(body, target)) return response;
+    const snapshot: SubmissionSnapshot = { version: 1, cik: target.cik, sourceUrl: target.sourceUrl,
+      fetchedAt: new Date().toISOString(), body };
+    let cacheWriteFailed = false;
+    try {
+      await writeVersionedJsonToR2(target.key, snapshot, { ...(saved?.etag ? { expectedEtag: saved.etag } : { createOnly: true }), signal });
+    } catch { cacheWriteFailed = true; }
+    void response.body?.cancel().catch(() => undefined);
+    const complete = snapshotResponse(snapshot, false);
+    if (cacheWriteFailed) complete.headers.set("x-swingup-submissions-cache-write-failed", "true");
+    return complete;
+  } catch { return response; }
+}
+
 export async function createPr262SensorBudgetedFetch(input: { now?: Date; fetchImpl?: typeof fetch; signal?: AbortSignal } = {}) {
   const now = input.now ?? new Date();
   const rawFetch = input.fetchImpl ?? fetch;
-  let loaded = await load(now);
+  let loaded = await load(now, input.signal);
   let state = loaded.state;
   const blocked: Array<{ provider: string; reason: string; nextEligibleAt: string | null }> = [];
   let reservationTail: Promise<void> = Promise.resolve();
@@ -161,7 +236,7 @@ export async function createPr262SensorBudgetedFetch(input: { now?: Date; fetchI
   const reserveBeforeNetwork = async (policy: Policy, currentMs: number, signal?: AbortSignal) => {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       signal?.throwIfAborted();
-      loaded = await load(new Date(currentMs));
+      loaded = await load(new Date(currentMs), signal);
       signal?.throwIfAborted();
       if (loaded.corrupt) throw new Error("pr262_sensor_provider_budget_state_invalid");
       const candidate = loaded.state;
@@ -188,7 +263,7 @@ export async function createPr262SensorBudgetedFetch(input: { now?: Date; fetchI
       const written = await writeVersionedJsonToR2(
         STATE_KEY,
         candidate,
-        loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true },
+        { ...(loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true }), signal },
       );
       if (!written.conflict) {
         state = candidate;
@@ -200,13 +275,19 @@ export async function createPr262SensorBudgetedFetch(input: { now?: Date; fetchI
   };
 
   const fetchImpl: typeof fetch = async (request, init) => {
+    let sourceNetworkAttempted = false;
+    try {
     const policy = policyFor(request);
+    const target = pilotSubmissionTarget(request, init);
     const requestSignal = init?.signal ?? undefined;
     const signal = input.signal
       ? requestSignal ? AbortSignal.any([input.signal, requestSignal]) : input.signal
       : requestSignal;
-    if (!policy) return rawFetch(request, { ...init, signal });
+    if (!policy) { signal?.throwIfAborted(); sourceNetworkAttempted = true; return await rawFetch(request, { ...init, signal }); }
     signal?.throwIfAborted();
+    const cache = target ? await readSubmissionSnapshot(target, signal) : null;
+    signal?.throwIfAborted();
+    if (cache?.snapshot) return snapshotResponse(cache.snapshot, true);
     // Source reads run concurrently, but their compact R2 budget ledger is one
     // shared document. Serialize only this short reservation step so parallel
     // providers do not exhaust CAS retries by colliding with one another.
@@ -214,7 +295,23 @@ export async function createPr262SensorBudgetedFetch(input: { now?: Date; fetchI
     reservationTail = reservation.then(() => undefined, () => undefined);
     await reservation;
     signal?.throwIfAborted();
-    return rawFetch(request, { ...init, signal });
+    sourceNetworkAttempted = true;
+    const response = await rawFetch(request, { ...init, signal });
+    const result = target ? await cacheSubmissionResponse(response, target, cache?.saved, signal) : response;
+    // A complete valid source response survives optional cache publication
+    // failure, including its deadline. Report that storage fault separately.
+    if (result.headers.get("x-swingup-submissions-cache-write-failed") !== "true") signal?.throwIfAborted();
+    return result;
+    } catch (cause) {
+      // The monitor must not report a source request that failed in private
+      // storage before network admission. Preserve the original error chain.
+      throw Object.assign(new Error(cause instanceof Error ? cause.message : "source_preparation_failed", { cause }), {
+        name: cause instanceof Error ? cause.name : "Error", sourceNetworkAttempted,
+        ...((cause as { storageDomain?: unknown })?.storageDomain === "r2_state" ? {
+          storageDomain: "r2_state", storageOperation: (cause as { storageOperation?: unknown }).storageOperation,
+        } : {}),
+      });
+    }
   };
 
   const flush = async () => {

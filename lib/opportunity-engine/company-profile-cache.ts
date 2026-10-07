@@ -1,5 +1,7 @@
 import { isAnnualInformationFormDocument, resolve40FAnnualInformationForm, secAnnualFilingIndexUrl } from "@/lib/company-profile-annual-source";
 import { setTimeout as pause } from "node:timers/promises";
+import { isDeepStrictEqual } from "node:util";
+import { redactSecrets } from "@/lib/redact-secrets";
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 import { COMPANY_PROFILE_PARSER_REVISION, annualBusinessText, extractCompanyProfile, inspectCompanyProfileExtraction, profileCik, sameCompanyName, verifiedCompanyProfile, type CompanyIdentity, type VerifiedCompanyProfile } from "@/lib/company-profile";
@@ -12,10 +14,16 @@ type Json = Record<string, unknown>;
 const object = (v: unknown): Json => v && typeof v === "object" && !Array.isArray(v) ? v as Json : {};
 const text = (v: unknown) => typeof v === "string" ? v.trim() : "";
 type Filing = { url: string; form: string; filedAt: string; industry?: string; checkedAt?: string; annualFilingUrl?: string; annualFilingIndexUrl?: string };
-type Entry = { ticker: string; company: string; cik: string; updatedAt: string; nextAttemptAt: string; profile: VerifiedCompanyProfile | null; firstVerifiedAt?: string; filing?: Filing; error?: string; extractionFailure?: string; parserRevision?: number; cachedParserRevision?: number };
-async function load() {
-  const saved = await readVersionedTextFromR2(KEY);
+type Entry = { ticker: string; company: string; cik: string; updatedAt: string; nextAttemptAt: string; profile: VerifiedCompanyProfile | null; firstVerifiedAt?: string; verificationHistoryKnown?: true; filing?: Filing; error?: string; extractionFailure?: string; parserRevision?: number; cachedParserRevision?: number };
+async function load(options: { signal?: AbortSignal; forWrite?: boolean } = {}) {
+  const saved = await readVersionedTextFromR2(KEY, { signal: options.signal });
   const body = saved.found && saved.text ? object(JSON.parse(saved.text)) : {};
+  // Legacy objects can omit version; unknown versions and unreadable rows
+  // cannot be safely rebased. Never turn them into an empty cache on retry.
+  if (options.forWrite && saved.found && (!saved.etag || (body.version !== undefined && body.version !== 1) || !Array.isArray(body.entries)
+    || body.entries.some(row => !row || typeof row !== "object" || Array.isArray(row)))) {
+    throw new Error("company_profile_cache_state_invalid");
+  }
   return { saved, entries: Array.isArray(body.entries) ? body.entries as Entry[] : [] };
 }
 function same(entry: CompanyIdentity, identity: CompanyIdentity) {
@@ -30,15 +38,77 @@ function retryDeferred(entry: Entry | undefined, now: Date) {
   // Pending and failed attempts persist a null profile and still retain their retrieval backoff.
   return !entry?.profile && Date.parse(entry?.nextAttemptAt ?? "") > now.getTime();
 }
-async function store(entry: Entry) {
-  for (let i = 0; i < 4; i++) {
-    const { saved, entries } = await load();
-    const result = await writeVersionedJsonToR2(KEY, { version: 1, updatedAt: entry.updatedAt,
-      entries: [entry, ...entries.filter(row => row.cik !== entry.cik || row.ticker !== entry.ticker)] },
-    saved.etag ? { expectedEtag: saved.etag } : { createOnly: true });
-    if (!result.conflict) { if (!result.written) throw new Error("company_profile_cache_write_failed"); return; }
+class ProfileCacheWriteError extends Error {
+  readonly storageDomain = "r2_state";
+  readonly storageOperation = "write";
+  constructor(cause: unknown, readonly safeRoleDeferral = false) {
+    super(cause instanceof Error ? cause.message : "company_profile_cache_write_failed", { cause });
   }
-  throw new Error("company_profile_cache_conflict");
+}
+function causedByRoleAbort(error: unknown, signal?: AbortSignal) {
+  if (!signal?.aborted) return false;
+  // A coincident abort is not the cause of an HTTP/schema/conflict failure.
+  // Preserve identity through native AbortError and R2 provenance wrappers;
+  // names/messages cannot distinguish the store's timeout from the role's.
+  const seen = new Set<unknown>();
+  let cause = error;
+  for (let depth = 0; depth < 16 && cause !== undefined && !seen.has(cause); depth++) {
+    if (cause === signal.reason) return true;
+    seen.add(cause);
+    cause = object(cause).cause;
+  }
+  return false;
+}
+function transientProfileWrite(error: unknown) {
+  // Only a failed profile PUT reaches here. Other stores and source fetches
+  // deliberately do not acquire retries from this helper.
+  return error instanceof Error && (/^r2_state_(?:write|read)_http_(?:408|500|502|503|504)$/.test(error.message)
+    || error.message === "r2_state_write_missing_etag" || error.message === "r2_state_write_transport_failed" || error.name === "TimeoutError"
+    || (error.name === "TypeError" && error.message === "fetch failed"));
+}
+// Match the JSON representation actually persisted by the R2 encoder.
+const snapshotEntry = (entry: Entry): Entry => JSON.parse(JSON.stringify(redactSecrets(entry)));
+async function store(entry: Entry, previous: Entry | undefined, roleSignal?: AbortSignal, deadlineCleanup = false) {
+  const intended = snapshotEntry(entry);
+  // A normal source-deadline deferral gets one short cleanup PUT so its
+  // five-minute backoff survives. It must never start another source or retry.
+  const signal = AbortSignal.any([...(roleSignal && !deadlineCleanup ? [roleSignal] : []), AbortSignal.timeout(deadlineCleanup ? 5_000 : 15_000)]);
+  let writes = 0;
+  let failure: unknown = new Error("company_profile_cache_conflict");
+  try {
+    while (true) {
+      signal.throwIfAborted();
+      // This read also resolves an ambiguous response from the preceding PUT.
+      // Never retry from the old ETag or a guessed outcome.
+      const { saved, entries } = await load({ signal, forWrite: true });
+      const targets = entries.filter(row => row.cik === intended.cik && row.ticker === intended.ticker);
+      if (targets.length > 1) throw new Error("company_profile_cache_state_invalid");
+      if (isDeepStrictEqual(targets[0], intended)) return intended;
+      // Timestamps alone are not sufficient: a same-time concurrent change,
+      // including historical metadata, must not be overwritten either.
+      if (!isDeepStrictEqual(targets[0], previous)) throw new Error("company_profile_cache_superseded");
+      signal.throwIfAborted();
+      if (writes >= (deadlineCleanup ? 1 : 4)) throw failure;
+      if (writes) await pause(100 * 2 ** (writes - 1), undefined, { signal });
+      signal.throwIfAborted();
+      try {
+        writes++;
+        const result = await writeVersionedJsonToR2(KEY, { version: 1, updatedAt: intended.updatedAt,
+          entries: [intended, ...entries.filter(row => row.cik !== intended.cik || row.ticker !== intended.ticker)] },
+        { ...(saved.etag ? { expectedEtag: saved.etag } : { createOnly: true }), signal, maxAttempts: 1 });
+        if (result.conflict) { failure = new Error("company_profile_cache_conflict"); continue; }
+        if (!result.written) throw new Error("company_profile_cache_write_failed");
+        return intended;
+      } catch (error) {
+        if (!transientProfileWrite(error)) throw error;
+        failure = error;
+      }
+    }
+  } catch (error) {
+    // In particular, do not let ensureCompanyProfile's source-error handler
+    // issue a different write after this outcome could not be established.
+    throw new ProfileCacheWriteError(error, !deadlineCleanup && writes === 0 && causedByRoleAbort(error, roleSignal));
+  }
 }
 
 /** Cache-only read. Re-check the current authoritative ticker/CIK mapping before public use. */
@@ -119,15 +189,31 @@ function annualFiling(body: Json, identity: CompanyIdentity, now: Date): Filing 
 export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl: typeof fetch, now = new Date(), options: { signal?: AbortSignal; onResponseBodyFailure?: () => void } = {}) {
   const exact = { ticker: text(identity.ticker).toUpperCase(), company: text(identity.company), cik: profileCik(identity.cik) };
   if (!exact.cik || !exact.company || !/^[A-Z0-9.-]{1,12}$/.test(exact.ticker)) return null;
-  const { entries } = await load();
+  if (options.signal?.aborted) return null;
+  const loaded = await load({ signal: options.signal }).catch(error => {
+    if (causedByRoleAbort(error, options.signal)) return null;
+    throw error;
+  });
+  if (!loaded || options.signal?.aborted) return null;
+  const { entries } = loaded;
   const prior = entries.find(entry => same(entry, exact));
   const cached = verifiedCompanyProfile(prior?.profile, exact, now);
   if (cached && (cached.industry || (prior?.parserRevision === COMPANY_PROFILE_PARSER_REVISION && Date.parse(prior.nextAttemptAt) > now.getTime()))) return cached;
   if (retryDeferred(prior, now)) return null;
   const entry: Entry = { ...exact, cik: exact.cik, updatedAt: now.toISOString(), nextAttemptAt: new Date(now.getTime() + 60 * 60000).toISOString(), profile: cached,
-    firstVerifiedAt: prior?.firstVerifiedAt, filing: prior?.filing, cachedParserRevision: prior?.cachedParserRevision, parserRevision: COMPANY_PROFILE_PARSER_REVISION };
+    firstVerifiedAt: prior?.firstVerifiedAt,
+    // Retain historical success even when a legacy row has no first date and
+    // this refresh must clear its now-invalid profile before source I/O.
+    verificationHistoryKnown: prior?.verificationHistoryKnown === true || Boolean(prior?.profile) || Boolean(prior?.firstVerifiedAt) ? true : undefined,
+    filing: prior?.filing, cachedParserRevision: prior?.cachedParserRevision, parserRevision: COMPANY_PROFILE_PARSER_REVISION };
+  let acknowledged = prior ? snapshotEntry(prior) : undefined;
+  const persistEntry = async (deadlineCleanup = false) => { acknowledged = await store(entry, acknowledged, options.signal, deadlineCleanup); };
   // Persist backoff before network; budget wrappers still make their own durable reservations.
-  await store(entry);
+  try { await persistEntry(); }
+  catch (error) {
+    if (error instanceof ProfileCacheWriteError && error.safeRoleDeferral) return cached;
+    throw error;
+  }
   const request = async (url: string, complete?: (text: string) => boolean) => boundedText(await fetchImpl(url, { headers: { Accept: "text/html,application/json", "User-Agent": "SwingUp/1.0 support@swingup.app" }, cache: "no-store", redirect: "error", signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(12000)]) : AbortSignal.timeout(12000) }), complete, options.onResponseBodyFailure);
   let phase = "issuer_submissions";
   try {
@@ -174,7 +260,7 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
     if (filing.url !== prior?.filing?.url) entry.cachedParserRevision = undefined;
     entry.filing = filing;
     phase = "annual_filing";
-    await store(entry);
+    await persistEntry();
     const extract = (html: string, customerEvidence?: unknown) => {
       const result = inspectCompanyProfileExtraction({ identity: exact, html, form: filing.form, sourceUrl: filing.url, filedAt: filing.filedAt, now, customerEvidence, annualFilingUrl: filing.annualFilingUrl, annualFilingIndexUrl: filing.annualFilingIndexUrl });
       entry.extractionFailure = result.reason ?? undefined;
@@ -207,25 +293,43 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
     if (!profile) throw new Error("company_profile_products_and_customers_not_extracted");
     if (filing.industry) profile = { ...profile, industry: filing.industry, industrySourceUrl: `https://data.sec.gov/submissions/CIK${exact.cik}.json` };
     entry.profile = profile;
-    if (!prior?.profile && !entry.firstVerifiedAt) entry.firstVerifiedAt = now.toISOString();
+    if (!entry.verificationHistoryKnown && !entry.firstVerifiedAt) entry.firstVerifiedAt = now.toISOString();
+    entry.verificationHistoryKnown = true;
     entry.nextAttemptAt = new Date(now.getTime() + 30 * 86400000).toISOString();
-    await store(entry);
+    await persistEntry();
     console.info(JSON.stringify({ kind: "pr262_company_profile_result", ticker: exact.ticker, status: "verified", sourceFiledAt: filing.filedAt }));
     return profile;
   } catch (error) {
+    if (error instanceof ProfileCacheWriteError) {
+      if (error.safeRoleDeferral) return cached;
+      throw error;
+    }
     entry.error = options.signal?.aborted ? "company_profile_time_budget_deferred"
       : error instanceof Error ? error.message.slice(0, 200) : "company_profile_fetch_failed";
+    const deadlineCleanup = entry.error === "company_profile_time_budget_deferred";
     // The role's shared deadline is not a provider outage. Retry in the next
     // scheduled pass; the durable source guard still enforces its own cadence.
     if (entry.error === "company_profile_time_budget_deferred") entry.nextAttemptAt = new Date(now.getTime() + 5 * 60000).toISOString();
     if (entry.error !== "company_profile_products_and_customers_not_extracted") delete entry.extractionFailure;
     if (/products_and_customers_not_extracted|annual_filing_unavailable/.test(entry.error)) entry.nextAttemptAt = new Date(now.getTime() + 86400000).toISOString();
+    const providerRetry = entry.error.match(/next_retry_at=([^;\s]+)/)?.[1];
+    if (providerRetry && Date.parse(providerRetry) > Date.parse(entry.nextAttemptAt)) entry.nextAttemptAt = providerRetry;
+    // A source-cache (or source-budget) R2 fault is not a failed SEC request.
+    // Preserve the existing durable backoff, but retain storage provenance in
+    // saved/logged reasons and rethrow the original cause after that store.
+    const taggedStorageOperation = object(error).storageDomain === "r2_state"
+      ? object(error).storageOperation === "read" ? "read" : "write" : null;
+    // Exact caller cancellation of a read has no ambiguous mutation. Let the
+    // normal bounded deadline cleanup persist backoff. Independent storage
+    // faults and every uncertain cancelled PUT must still fail truthfully.
+    const storageOperation = taggedStorageOperation === "read" && causedByRoleAbort(error, options.signal)
+      ? null : taggedStorageOperation;
+    if (storageOperation) entry.error = `company_profile_storage_${storageOperation}_failed:${error instanceof Error ? error.message : "r2_state_storage_failed"}`.slice(0, 200);
     const reason = entry.extractionFailure ?? entry.error.match(/^company_profile_[a-z0-9_]+/i)?.[0]
       ?? (/budget|quota|cadence/i.test(entry.error) ? "provider_budget_deferred" : error instanceof Error && error.name === "TimeoutError" ? "source_timeout" : "source_request_failed");
     console.info(JSON.stringify({ kind: "pr262_company_profile_result", ticker: exact.ticker, status: "pending", phase, reason }));
-    const providerRetry = entry.error.match(/next_retry_at=([^;\s]+)/)?.[1];
-    if (providerRetry && Date.parse(providerRetry) > Date.parse(entry.nextAttemptAt)) entry.nextAttemptAt = providerRetry;
-    await store(entry);
+    await persistEntry(deadlineCleanup);
+    if (storageOperation) throw error;
     return cached;
   }
 }
@@ -253,7 +357,7 @@ async function recoverCachedProfiles(entries: Entry[], listings: Json[], now: Da
         form: filing.form, sourceUrl: filing.url, filedAt: filing.filedAt, now, customerEvidence: source.financialCustomerEvidence, annualFilingUrl: filing.annualFilingUrl, annualFilingIndexUrl: filing.annualFilingIndexUrl });
       if (!profile) return;
       if (filing.industry) Object.assign(profile, { industry: filing.industry, industrySourceUrl: `https://data.sec.gov/submissions/CIK${entry.cik}.json` });
-      recovered.push({ ...entry, profile, error: undefined, parserRevision: COMPANY_PROFILE_PARSER_REVISION,
+      recovered.push({ ...entry, profile, verificationHistoryKnown: true, error: undefined, parserRevision: COMPANY_PROFILE_PARSER_REVISION,
         updatedAt: now.toISOString(), nextAttemptAt: new Date(now.getTime() + 30 * 86400000).toISOString() });
     }));
     for (const result of results) if (result.status === "rejected") {

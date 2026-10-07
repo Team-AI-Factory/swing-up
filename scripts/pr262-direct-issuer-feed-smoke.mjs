@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
@@ -35,7 +36,7 @@ assert.match(sensor, /transientDiscoveryBacklog: direct\.transientDiscoveryBackl
 assert.match(sensor, /unseenCompanies: direct\.unseenCompanies[\s\S]*?confirmedNoFeedBacklog: direct\.confirmedNoFeedBacklog[\s\S]*?discoverySelection: direct\.discoverySelection/, "Production telemetry must expose the real unseen, transient, confirmed-miss, and selected discovery work.");
 assert.match(sensor, /direct\.attemptCount > 0[\s\S]*?direct\.successCount === 0[\s\S]*?temporarily_unavailable[\s\S]*?direct\.failureCount > 0[\s\S]*?partial/, "Direct-source health must distinguish total failure from mixed success.");
 assert.match(sensor, /telemetryAvailable: false[\s\S]*?transientDiscoveryBacklog: null/, "Unavailable registry telemetry must remain explicitly unknown.");
-assert.match(monitor, /written\.conflict \? await loadRegistry\(\) : null/, "A CAS loser must read the committed registry winner once instead of retrying provider work.");
+assert.match(monitor, /written\.conflict \? await loadRegistry\(registrySignal\(\)\) : null/, "A CAS loser must read the committed registry winner once inside its deadline instead of retrying provider work.");
 
 const nodeRequire = createRequire(import.meta.url);
 const output = ts.transpileModule(monitor, {
@@ -71,6 +72,7 @@ new Function("require", "module", "exports", output)((name) => {
     },
   };
   if (name === "@/lib/opportunity-engine/pr262-storage") return { pr262StorageKey: (relative) => `production/pr262/${relative}` };
+  if (name.startsWith("@/")) return loadTsModule(name);
   return nodeRequire(name);
 }, loaded, loaded.exports);
 
@@ -685,7 +687,7 @@ await loaded.exports.runPr262DirectAnnouncementMonitor({ now: new Date("2026-09-
   exposure: [exposureCompany("AMD", "0000002488"), exposureCompany("TG", "0000850429")],
   fetchImpl: async request => {
     const url = String(request); verifiedFetches.push(url);
-    if (url.startsWith("https://data.sec.gov/")) return { ok: true, json: async () => ({ cik: 850429, website: "", investorWebsite: "" }) };
+    if (url.startsWith("https://data.sec.gov/")) return { ok: true, status: 200, json: async () => ({ cik: 850429, website: "", investorWebsite: "" }) };
     if (url === "https://ir.tredegar.com/") return response('<link type="application/rss+xml" href="/news.xml">');
     return response('<rss><channel></channel></rss>', "application/rss+xml");
   } });

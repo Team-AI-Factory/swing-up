@@ -1,4 +1,10 @@
+import { completePr262SecSubmissionsRoot } from "@/lib/opportunity-engine/pr262-sec-submissions-schema";
 import net from "node:net";
+import { createHash } from "node:crypto";
+import pilotIssuerSources from "@/config/simple-alert-issuer-sources.json";
+import { setTimeout as pause } from "node:timers/promises";
+import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
+import { pilotCompanies } from "@/lib/simple-alert-pilot-scope";
 import { lookup } from "node:dns/promises";
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
@@ -13,13 +19,20 @@ const CONFIRMED_NO_FEED_RETRY_DAYS = [30, 60, 90] as const;
 const TRANSIENT_DISCOVERY_RETRY_MS = 60 * 60_000;
 const FEED_POLL_CADENCE_MS = 15 * 60_000;
 const MAX_FAILED_FEED_BACKOFF_MS = 6 * 60 * 60_000;
-// SEC-submissions discovery has its own durable 190/day ledger. Three
+// Non-pilot SEC-submissions discovery retains its durable 190/day ledger. Three
 // sequential lookups every 30 minutes are at most 144/day, leaving 46 calls of
 // rolling-window headroom and remaining far below the SEC's 10 requests/second
 // fair-access ceiling. This clears transient discovery debt without bursts.
 const MAX_DISCOVERIES_PER_CYCLE = 3;
 const DISCOVERY_CONCURRENCY = 1;
 const MAX_FEEDS_POLLED_PER_CYCLE = 20;
+// Pilot exact-CIK checks are independent of optional IR discovery. Thirteen checks
+// per 15-minute cycle use at most 1248/day, still guarded by the unchanged shared
+// 3500/day allowance and 29-minute per-CIK floor. Work remains sequential.
+const PILOT_MAX_SEC_CHECKS_PER_CYCLE = 13;
+const PILOT_DIRECT_WORK_MS = 35_000;
+const PILOT_SEC_WORK_MS = 28_000;
+const SEC_POLL_CADENCE_MS = 29 * 60_000;
 const SEC_AGENT = "SwingUp/1.0 support@swingup.app";
 
 // Issuer-published IR roots/RSS links verified 2026-09-16 and 2026-09-18.
@@ -38,6 +51,16 @@ const VERIFIED_ISSUER_SOURCES = [
   { ticker: "KO", cik: "0000021344", investorWebsite: "https://investors.coca-colacompany.com/", feedUrl: "https://investors.coca-colacompany.com/news-events/press-releases/rss" },
 ];
 
+type IssuerSecCoverage = {
+  lastCheckedAt: string | null;
+  lastSuccessAt: string | null;
+  nextCheckAt: string | null;
+  error: string | null;
+  sourceUrl: string;
+  snapshotFetchedAt: string | null;
+  snapshotOrigin: "network" | "shared_cache" | null;
+};
+
 type RegistryEntry = {
   ticker: string;
   company: string;
@@ -52,6 +75,7 @@ type RegistryEntry = {
   error: string | null;
   consecutiveConfirmedNoFeedDiscoveries?: number;
   consecutiveFailures?: number;
+  sec?: IssuerSecCoverage;
 };
 
 type Registry = {
@@ -98,6 +122,7 @@ function embeddedProviderRetryAt(error: string | null) {
 
 function scheduledSourceDeferral(error: unknown, now: Date) {
   const message = typeof error === "string" ? error : error instanceof Error ? error.message : "";
+  if (message === "direct_source_collection_deadline") return { reason: message, nextRetryAt: new Date(now.getTime() + FEED_POLL_CADENCE_MS).toISOString() };
   const match = /^pr262_sensor_budget_guard:([a-z0-9_]+):(minimum_interval|rolling_24h_budget);next_retry_at=([^;\s]+)$/.exec(message);
   const retryAt = match ? Date.parse(match[3]) : NaN;
   return match && Number.isFinite(retryAt) && retryAt > now.getTime()
@@ -108,12 +133,23 @@ function scheduledSourceDeferral(error: unknown, now: Date) {
 // the same discovery/redirect chain did run, retain that source-operation
 // attempt even though a later step is deferred. Real transport errors count.
 function observedSourceFetch(fetchImpl: typeof fetch, now: Date) {
-  let attempted = false;
+  let attempted = false, preparationError: string | null = null;
   const observed: typeof fetch = async (request, init) => {
-    try { const response = await fetchImpl(request, init); attempted = true; return response; }
-    catch (error) { if (!scheduledSourceDeferral(error, now)) attempted = true; throw error; }
+    try {
+      const response = await fetchImpl(request, init);
+      if (response.headers?.get("x-swingup-submissions-cache") !== "hit") attempted = true;
+      if (response.headers?.get("x-swingup-submissions-cache-write-failed") === "true") preparationError = "sec_snapshot_cache_write_failed";
+      return response;
+    }
+    catch (error) {
+      if (!scheduledSourceDeferral(error, now)) {
+        if (record(error).sourceNetworkAttempted === false) preparationError = discoveryFailureMessage(error);
+        else attempted = true;
+      }
+      throw error;
+    }
   };
-  return { fetchImpl: observed, attempted: () => attempted };
+  return { fetchImpl: observed, attempted: () => attempted, preparationError: () => preparationError };
 }
 
 function discoveryRetryAt(error: string | null, now: Date) {
@@ -307,6 +343,13 @@ function localAddress(address: string) {
   return true;
 }
 
+async function withinDeadline<T>(work: Promise<T>, deadlineAtMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try { return await Promise.race([work, new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("direct_feed_timeout")), Math.max(1, deadlineAtMs - Date.now()));
+  })]); } finally { if (timer) clearTimeout(timer); }
+}
+
 async function safePublicHttps(raw: string) {
   const trimmed = raw.trim();
   const url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`);
@@ -325,18 +368,19 @@ async function safePublicHttps(raw: string) {
   return url;
 }
 
-async function fetchBounded(fetchImpl: typeof fetch, rawUrl: string, accept: string, timeoutMs = 10_000) {
+async function fetchBounded(fetchImpl: typeof fetch, rawUrl: string, accept: string, timeoutMs = 10_000, outerDeadlineAtMs = Infinity) {
   let current = rawUrl;
-  const deadlineAtMs = Date.now() + timeoutMs;
+  const deadlineAtMs = Math.min(Date.now() + timeoutMs, outerDeadlineAtMs);
   for (let redirect = 0; redirect <= 3; redirect += 1) {
     const remainingMs = deadlineAtMs - Date.now();
     if (remainingMs <= 0) throw new Error("direct_feed_timeout");
-    const url = await safePublicHttps(current);
+    const url = await withinDeadline(safePublicHttps(current), deadlineAtMs);
+    if (Date.now() >= deadlineAtMs) throw new Error("direct_feed_timeout");
     const response = await fetchImpl(url, {
       headers: { Accept: accept, "user-agent": SEC_AGENT },
       cache: "no-store",
       redirect: "manual",
-      signal: AbortSignal.timeout(remainingMs),
+      signal: AbortSignal.timeout(Math.max(1, deadlineAtMs - Date.now())),
     });
     if (response.status >= 300 && response.status < 400) {
       if (redirect >= 3) throw new Error("direct_feed_redirect_limit");
@@ -413,7 +457,7 @@ function parseFeed(feed: string, entry: RegistryEntry, now: Date): Pr262SensorEv
     let url = linkHref;
     try { url = new URL(linkHref, entry.feedUrl ?? entry.investorWebsite ?? undefined).toString(); } catch {}
     return [{
-      id: `issuer:${entry.ticker}:${Buffer.from(`${url}|${title}|${new Date(publishedMs).toISOString()}`).toString("base64url").slice(0, 32)}`,
+      id: `issuer:${entry.ticker}:${createHash("sha256").update(`${url}|${title}|${new Date(publishedMs).toISOString()}`).digest("hex").slice(0, 32)}`,
       source: "official",
       sourceProvider: `issuer_ir_${entry.ticker.toLowerCase()}`,
       sourceHealthStatus: "connected",
@@ -442,8 +486,8 @@ function parseFeed(feed: string, entry: RegistryEntry, now: Date): Pr262SensorEv
   });
 }
 
-async function loadRegistry() {
-  const current = await readVersionedTextFromR2(REGISTRY_KEY);
+async function loadRegistry(signal?: AbortSignal) {
+  const current = await readVersionedTextFromR2(REGISTRY_KEY, { signal });
   if (!current.found || !current.text) return { registry: emptyRegistry(), etag: current.etag, found: false };
   let parsed: Partial<Registry>;
   try {
@@ -465,13 +509,13 @@ async function loadRegistry() {
   return { registry, etag: current.etag, found: true };
 }
 
-async function seedEnv(registry: Registry, exposure: Pr262ExposureEntry[]) {
+async function seedEnv(registry: Registry, exposure: Pr262ExposureEntry[], now: Date) {
   const raw = process.env.SWING_UP_PR262_DIRECT_FEEDS_JSON?.trim();
-  let rows: unknown[] = [...VERIFIED_ISSUER_SOURCES];
+  let rows: unknown[] = [...VERIFIED_ISSUER_SOURCES, ...(isSimpleAlertPilot() ? pilotIssuerSources.companies : [])];
   try { if (raw) { const supplied = JSON.parse(raw); if (Array.isArray(supplied)) rows = [...rows, ...supplied]; } } catch { /* Keep verified defaults. */ }
   rows = [...new Map(rows.filter(row => row && typeof row === "object" && !Array.isArray(row)).map(row => [String((row as Record<string, unknown>).ticker).toUpperCase(), row])).values()];
   const exposureByTicker = new Map(exposure.map((item) => [item.ticker, item]));
-  const seededAt = new Date().toISOString();
+  const seededAt = now.toISOString();
   for (const value of rows) {
     if (!value || typeof value !== "object" || Array.isArray(value)) continue;
     const row = value as Record<string, unknown>;
@@ -485,8 +529,8 @@ async function seedEnv(registry: Registry, exposure: Pr262ExposureEntry[]) {
       const identityChanged = existing.cik !== company.cik;
       const feedChanged = Boolean(feedUrl && existing.feedUrl !== feedUrl);
       const websiteChanged = Boolean(investorWebsite && existing.investorWebsite !== investorWebsite);
-      existing.consecutiveConfirmedNoFeedDiscoveries = 0;
       if (!identityChanged && !feedChanged && !websiteChanged) continue;
+      existing.consecutiveConfirmedNoFeedDiscoveries = 0;
       existing.company = company.company;
       existing.cik = company.cik;
       if (feedUrl || identityChanged) existing.feedUrl = feedUrl;
@@ -522,39 +566,42 @@ async function discoverOne(
   company: Pr262ExposureEntry,
   now: Date,
   existing?: RegistryEntry,
+  options: { skipSubmissions?: boolean; deadlineAtMs?: number } = {},
 ): Promise<{ entry: RegistryEntry; secEvents: Pr262SensorEvent[] }> {
   if (!company.cik) throw new Error("direct_feed_company_cik_missing");
   const submissionsUrl = `https://data.sec.gov/submissions/CIK${company.cik}.json`;
-  const response = await fetchImpl(submissionsUrl, { headers: { Accept: "application/json", "user-agent": SEC_AGENT }, cache: "no-store", signal: AbortSignal.timeout(10_000) });
-  if (!response.ok) throw new Error(`direct_feed_sec_submissions_http_${response.status}`);
-  let body: Record<string, unknown>;
-  try {
-    const parsed = await response.json() as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid_shape");
-    body = parsed as Record<string, unknown>;
-  } catch {
-    // A truncated/corrupt SEC response is an upstream transport failure, not a
-    // confirmed statement that this issuer has no website or feed.
-    throw new Error("direct_feed_sec_submissions_invalid_json");
+  let body: Record<string, unknown> = {};
+  if (!options.skipSubmissions) {
+    const response = await fetchImpl(submissionsUrl, { headers: { Accept: "application/json", "user-agent": SEC_AGENT }, cache: "no-store", signal: AbortSignal.timeout(10_000) });
+    if (response.status !== 200) throw new Error(`direct_feed_sec_submissions_http_${response.status}`);
+    try {
+      const parsed = await response.json() as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid_shape");
+      body = parsed as Record<string, unknown>;
+    } catch {
+      // A truncated/corrupt SEC response is an upstream transport failure, not a
+      // confirmed statement that this issuer has no website or feed.
+      throw new Error("direct_feed_sec_submissions_invalid_json");
+    }
   }
-  const secEvents = recentSecFilingEvents(body, company, submissionsUrl, now);
-  const investorWebsite = text(body.investorWebsite) ?? text(body.website) ?? existing?.investorWebsite
+  const secEvents = options.skipSubmissions ? [] : recentSecFilingEvents(body, company, submissionsUrl, now);
+  const investorWebsite = existing?.investorWebsite ?? text(body.investorWebsite) ?? text(body.website)
     ?? VERIFIED_ISSUER_SOURCES.find(row => row.cik === company.cik && row.ticker === company.ticker)?.investorWebsite ?? null;
   let feedUrl: string | null = null;
   let error: string | null = null;
   if (investorWebsite) {
     try {
-      const page = await fetchBounded(fetchImpl, investorWebsite, "text/html,application/xhtml+xml", 8_000);
+      const page = await fetchBounded(fetchImpl, investorWebsite, "text/html,application/xhtml+xml", 8_000, options.deadlineAtMs);
       feedUrl = discoverFeedUrl(page.body, page.finalUrl);
-      if (feedUrl) feedUrl = (await safePublicHttps(feedUrl)).toString();
+      if (feedUrl) feedUrl = (await withinDeadline(safePublicHttps(feedUrl), options.deadlineAtMs ?? Date.now() + 8_000)).toString();
       if (!feedUrl) {
         for (const candidate of discoverInvestorPages(page.body, page.finalUrl)) {
           try {
-            const nested = await fetchBounded(fetchImpl, candidate, "text/html,application/xhtml+xml,application/rss+xml,application/atom+xml,text/xml", 5_000);
+            const nested = await fetchBounded(fetchImpl, candidate, "text/html,application/xhtml+xml,application/rss+xml,application/atom+xml,text/xml", 5_000, options.deadlineAtMs);
             const directXml = /<(?:rss|feed)\b/i.test(nested.body) ? nested.finalUrl : null;
             const discovered = directXml ?? discoverFeedUrl(nested.body, nested.finalUrl);
             if (!discovered) continue;
-            feedUrl = (await safePublicHttps(discovered)).toString();
+            feedUrl = (await withinDeadline(safePublicHttps(discovered), options.deadlineAtMs ?? Date.now() + 5_000)).toString();
             break;
           } catch (cause) {
             const message = discoveryFailureMessage(cause);
@@ -591,6 +638,7 @@ async function discoverOne(
           ?? existing?.consecutiveConfirmedNoFeedDiscoveries
           ?? 0,
       consecutiveFailures: existing?.consecutiveFailures ?? 0,
+      sec: existing?.sec,
     },
     secEvents,
   };
@@ -650,17 +698,45 @@ function compareDiscoveryTargets(left: DiscoveryTarget, right: DiscoveryTarget) 
     || left.company.ticker.localeCompare(right.company.ticker);
 }
 
-export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262ExposureEntry[]; now?: Date; fetchImpl?: typeof fetch }) {
+export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262ExposureEntry[]; now?: Date; fetchImpl?: typeof fetch; deadlineAtMs?: number }) {
   const now = input.now ?? new Date();
-  const fetchImpl = input.fetchImpl ?? fetch;
-  const loaded = await loadRegistry();
+  const pilot = isSimpleAlertPilot();
+  const startedAtMs = Date.now();
+  const deadlineAtMs = pilot ? Math.min(input.deadlineAtMs ?? Infinity, startedAtMs + PILOT_DIRECT_WORK_MS) : Infinity;
+  // Registry I/O gets a small finalization reserve inside the outer source
+  // cutoff. The shared R2 recovery helper must not add its own 45s past it.
+  const registryDeadlineAtMs = pilot ? Math.min(input.deadlineAtMs ?? Infinity, startedAtMs + PILOT_DIRECT_WORK_MS + 5_000) : Infinity;
+  const registrySignal = () => pilot ? AbortSignal.timeout(Math.max(1, registryDeadlineAtMs - Date.now())) : undefined;
+  const rawFetch = input.fetchImpl ?? fetch;
+  let nextRequestAtMs = 0;
+  const fetchImpl: typeof fetch = pilot ? async (request, init) => {
+    const remaining = deadlineAtMs - Date.now();
+    if (remaining <= 0) throw new Error("direct_source_collection_deadline");
+    const signal = init?.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(remaining)]) : AbortSignal.timeout(remaining);
+    try {
+      await pause(Math.max(0, nextRequestAtMs - Date.now()), undefined, { signal });
+      signal.throwIfAborted();
+    } catch { throw new Error("direct_source_collection_deadline"); }
+    nextRequestAtMs = Date.now() + 1000;
+    return rawFetch(request, { ...init, signal });
+  } : rawFetch;
+  const loaded = await loadRegistry(registrySignal());
   const registry = loaded.registry;
-  await seedEnv(registry, input.exposure);
+  await seedEnv(registry, input.exposure, now);
   const byTicker = new Map(registry.entries.map((entry) => [entry.ticker, entry]));
-  const eligibleCompanies = input.exposure.filter((company) => company.cik);
+  const eligibleCompanies = input.exposure.filter((company) => company.cik
+    && (!pilot || pilotCompanies().some(row => row.ticker === company.ticker && row.cik === company.cik)));
+  if (pilot) for (const company of eligibleCompanies) {
+    if (byTicker.get(company.ticker)?.cik === company.cik) continue;
+    // Identity registration alone is explicitly not a source check.
+    byTicker.set(company.ticker, { ticker: company.ticker, company: company.company, cik: company.cik!,
+      investorWebsite: null, feedUrl: null, discoveredAt: now.toISOString(), lastDiscoveryAt: new Date(0).toISOString(),
+      lastCheckedAt: null, lastSuccessAt: null, nextCheckAt: null, error: null });
+  }
   const events: Pr262SensorEvent[] = [];
   let secSubmissionsChecked = 0;
   let secFilingsFound = 0;
+  let secCheckAttempts = 0, secCheckSuccesses = 0, secCheckFailures = 0, secCheckDeferred = 0, secCacheHits = 0;
   let discoverySuccesses = 0;
   let discoveryFailures = 0;
   let discoveryDeferred = 0;
@@ -668,6 +744,16 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
   let deferredAfterSourceAttempt = 0;
   const deferrals: Array<{ reason: string; nextRetryAt: string }> = [];
   const attemptErrors: string[] = [];
+  const preparationErrors: string[] = [];
+  let sourcePreparationFailures = 0;
+  const initialCatchupEventIds = new Set<string>();
+  const labelInitialCatchup = (found: Pr262SensorEvent[], firstSuccessfulRead: boolean) => {
+    if (pilot && firstSuccessfulRead) for (const event of found) {
+      initialCatchupEventIds.add(event.id);
+      event.reason += " Initial source catch-up; the original publication time is retained and this is not a new-live-case latency observation.";
+    }
+    return found;
+  };
   const discoverySelection = {
     total: 0,
     highPriority: 0,
@@ -677,16 +763,71 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
     otherRecheck: 0,
   };
 
+  // Repeat SEC polling is not governed by the optional RSS retry ladder. A
+  // recent shared snapshot can satisfy this check without another reservation.
+  if (pilot) {
+    const secDeadline = Math.min(deadlineAtMs, startedAtMs + PILOT_SEC_WORK_MS);
+    const secDue = eligibleCompanies.filter(company => {
+      const next = Date.parse(byTicker.get(company.ticker)?.sec?.nextCheckAt ?? "");
+      return !Number.isFinite(next) || next <= now.getTime();
+    }).sort((left, right) =>
+      Date.parse(byTicker.get(left.ticker)?.sec?.lastCheckedAt ?? "1970-01-01")
+      - Date.parse(byTicker.get(right.ticker)?.sec?.lastCheckedAt ?? "1970-01-01"));
+    for (const company of secDue.slice(0, PILOT_MAX_SEC_CHECKS_PER_CYCLE)) {
+      if (Date.now() >= secDeadline) break;
+      const entry = byTicker.get(company.ticker)!;
+      const sourceUrl = `https://data.sec.gov/submissions/CIK${company.cik}.json`;
+      const observed = observedSourceFetch(fetchImpl, now);
+      const prior = entry.sec;
+      try {
+        const response = await observed.fetchImpl(sourceUrl, { headers: { Accept: "application/json", "user-agent": SEC_AGENT },
+          cache: "no-store", redirect: "error", signal: AbortSignal.timeout(Math.max(1, Math.min(10_000, secDeadline - Date.now()))) });
+        if (response.status !== 200) throw new Error(`direct_feed_sec_submissions_http_${response.status}`);
+        let body: Record<string, unknown>;
+        try { body = record(await response.json()); } catch { throw new Error("direct_feed_sec_submissions_invalid_json"); }
+        if (!completePr262SecSubmissionsRoot(body, { cik: company.cik!, ticker: company.ticker })) {
+          throw new Error("direct_feed_sec_submissions_identity_or_shape_mismatch");
+        }
+        const cached = response.headers?.get("x-swingup-submissions-cache") === "hit";
+        const fetchedAt = response.headers?.get("x-swingup-submissions-fetched-at") ?? new Date().toISOString();
+        const fetchedMs = Date.parse(fetchedAt);
+        if (!Number.isFinite(fetchedMs) || fetchedMs > Date.now() + 5_000
+          || Date.now() - fetchedMs >= SEC_POLL_CADENCE_MS) throw new Error("direct_feed_sec_submissions_snapshot_stale");
+        const found = labelInitialCatchup(recentSecFilingEvents(body, company, sourceUrl, now), !prior?.snapshotFetchedAt);
+        events.push(...found); secFilingsFound += found.length; secSubmissionsChecked += 1;
+        if (cached) secCacheHits += 1; else secCheckSuccesses += 1;
+        if (observed.preparationError()) { sourcePreparationFailures++; preparationErrors.push(observed.preparationError()!); }
+        entry.sec = { sourceUrl, lastCheckedAt: now.toISOString(), lastSuccessAt: fetchedAt,
+          snapshotFetchedAt: fetchedAt, snapshotOrigin: cached ? "shared_cache" : "network",
+          nextCheckAt: new Date(fetchedMs + SEC_POLL_CADENCE_MS).toISOString(), error: null };
+        entry.investorWebsite ??= text(body.investorWebsite) ?? text(body.website);
+      } catch (error) {
+        const message = discoveryFailureMessage(error), deferral = scheduledSourceDeferral(error, now);
+        entry.sec = { sourceUrl, lastCheckedAt: observed.attempted() ? now.toISOString() : prior?.lastCheckedAt ?? null,
+          lastSuccessAt: prior?.lastSuccessAt ?? null, snapshotFetchedAt: prior?.snapshotFetchedAt ?? null,
+          snapshotOrigin: prior?.snapshotOrigin ?? null, error: message,
+          nextCheckAt: deferral?.nextRetryAt ?? new Date(now.getTime() + FEED_POLL_CADENCE_MS).toISOString() };
+        if (deferral) { secCheckDeferred += 1; deferrals.push(deferral); }
+        else if (observed.preparationError()) { sourcePreparationFailures++; preparationErrors.push(message); }
+        else { secCheckFailures += 1; attemptErrors.push(message); }
+      }
+      if (observed.attempted()) secCheckAttempts += 1;
+      // Do not continue rotating issuers against an explicit SEC access/rate
+      // refusal. Other source families retain their own bounded work.
+      if (/direct_feed_sec_submissions_http_(?:403|429)$/.test(entry.sec?.error ?? "")) break;
+    }
+  }
+
   const lastDiscoveryMs = registry.lastDiscoveryCycleAt ? Date.parse(registry.lastDiscoveryCycleAt) : 0;
   let discovered = 0;
-  if (!Number.isFinite(lastDiscoveryMs) || now.getTime() - lastDiscoveryMs >= DISCOVERY_CADENCE_MS) {
+  if (Date.now() < deadlineAtMs && (!Number.isFinite(lastDiscoveryMs) || now.getTime() - lastDiscoveryMs >= DISCOVERY_CADENCE_MS)) {
     if (eligibleCompanies.length) {
       const prioritized = eligibleCompanies
         .map((company) => {
           const existing = byTicker.get(company.ticker);
           return discoveryTarget(company, existing?.cik === company.cik ? existing : undefined, now);
         })
-        .filter((target): target is DiscoveryTarget => target !== null)
+        .filter((target): target is DiscoveryTarget => target !== null && (!pilot || Boolean(target.existing?.investorWebsite)))
         .sort(compareDiscoveryTargets);
       const discoveryTargets: DiscoveryTarget[] = [];
       const selectedCiks = new Set<string>();
@@ -706,19 +847,28 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
       discoverySelection.confirmedNoFeedRecheck = discoveryTargets.filter((target) => target.workClass === "confirmed_no_feed_recheck").length;
       discoverySelection.otherRecheck = discoveryTargets.filter((target) => target.workClass === "other_recheck").length;
       for (let start = 0; start < discoveryTargets.length; start += DISCOVERY_CONCURRENCY) {
+        if (Date.now() >= deadlineAtMs - (pilot ? 7_000 : 0)) break;
         await Promise.all(discoveryTargets.slice(start, start + DISCOVERY_CONCURRENCY).map(async ({ company, existing }) => {
           const observed = observedSourceFetch(fetchImpl, now);
           try {
-            const result = await discoverOne(observed.fetchImpl, company, now, existing);
+            const discoveryDeadline = Math.min(deadlineAtMs - 7_000, Date.now() + 4_000);
+            const discoveryFetch: typeof fetch = pilot ? (request, init) => {
+              if (Date.now() >= discoveryDeadline) throw new Error("direct_source_collection_deadline");
+              return observed.fetchImpl(request, { ...init,
+                signal: AbortSignal.any([...(init?.signal ? [init.signal] : []), AbortSignal.timeout(Math.max(1, discoveryDeadline - Date.now()))]) });
+            } : observed.fetchImpl;
+            const result = await discoverOne(discoveryFetch, company, now, existing, { skipSubmissions: pilot, deadlineAtMs: pilot ? discoveryDeadline : undefined });
             byTicker.set(company.ticker, result.entry);
             events.push(...result.secEvents);
-            secSubmissionsChecked += 1;
+            if (!pilot) secSubmissionsChecked += 1;
             secFilingsFound += result.secEvents.length;
             const deferral = scheduledSourceDeferral(result.entry.error, now);
             if (deferral) {
               discoveryDeferred += 1;
-              deferredAfterSourceAttempt += 1;
+              if (observed.attempted()) deferredAfterSourceAttempt += 1;
               deferrals.push(deferral);
+            } else if (observed.preparationError()) {
+              sourcePreparationFailures++; preparationErrors.push(observed.preparationError()!);
             } else if (!result.entry.error || confirmedNoFeedError(result.entry.error)) {
               discoverySuccesses += 1;
             } else {
@@ -742,17 +892,20 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
               error: message,
               consecutiveConfirmedNoFeedDiscoveries: existing?.consecutiveConfirmedNoFeedDiscoveries ?? 0,
               consecutiveFailures: existing?.consecutiveFailures ?? 0,
+              sec: existing?.sec,
             });
             if (deferral) {
               discoveryDeferred += 1;
               if (observed.attempted()) deferredAfterSourceAttempt += 1;
               deferrals.push(deferral);
+            } else if (observed.preparationError()) {
+              sourcePreparationFailures++; preparationErrors.push(message);
             } else {
               discoveryFailures += 1;
               attemptErrors.push(message);
             }
           }
-          if (observed.attempted()) discovered += 1;
+          if (observed.attempted() || (!observed.preparationError() && !scheduledSourceDeferral(byTicker.get(company.ticker)?.error ?? null, now))) discovered += 1;
         }));
       }
       registry.lastDiscoveryCycleAt = now.toISOString();
@@ -775,10 +928,11 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
   let feedFailures = 0;
   let feedsPolled = 0;
   for (const entry of due) {
+    if (Date.now() >= deadlineAtMs) break;
     const observed = observedSourceFetch(fetchImpl, now);
     try {
-      const feed = await fetchBounded(observed.fetchImpl, entry.feedUrl!, "application/rss+xml,application/atom+xml,text/xml", 8_000);
-      events.push(...parseFeed(feed.body, entry, now));
+      const feed = await fetchBounded(observed.fetchImpl, entry.feedUrl!, "application/rss+xml,application/atom+xml,text/xml", 8_000, deadlineAtMs);
+      events.push(...labelInitialCatchup(parseFeed(feed.body, entry, now), !entry.lastSuccessAt));
       entry.lastCheckedAt = now.toISOString();
       entry.lastSuccessAt = now.toISOString();
       entry.nextCheckAt = new Date(now.getTime() + FEED_POLL_CADENCE_MS).toISOString();
@@ -794,6 +948,9 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
         if (observed.attempted()) { entry.lastCheckedAt = now.toISOString(); deferredAfterSourceAttempt += 1; }
         feedDeferred += 1;
         deferrals.push(deferral);
+      } else if (observed.preparationError()) {
+        sourcePreparationFailures++; preparationErrors.push(entry.error);
+        entry.nextCheckAt = new Date(now.getTime() + FEED_POLL_CADENCE_MS).toISOString();
       } else {
         const retry = failedFeedRetry(entry, now);
         entry.lastCheckedAt = now.toISOString();
@@ -804,15 +961,15 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
       }
     }
     // DNS/URL/read failures still represent a real attempted source operation.
-    if (observed.attempted() || !scheduledSourceDeferral(entry.error, now)) feedsPolled += 1;
+    if (observed.attempted() || (!observed.preparationError() && !scheduledSourceDeferral(entry.error, now))) feedsPolled += 1;
   }
 
   registry.updatedAt = now.toISOString();
-  const written = await writeVersionedJsonToR2(REGISTRY_KEY, registry, loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true });
+  const written = await writeVersionedJsonToR2(REGISTRY_KEY, registry, { ...(loaded.etag ? { expectedEtag: loaded.etag } : { createOnly: true }), signal: registrySignal() });
   // Another monitor may finish first. Re-read its committed winner exactly once
   // for truthful registry/backlog telemetry; never repeat provider work or issue
   // a second write from the stale loser.
-  const winner = written.conflict ? await loadRegistry() : null;
+  const winner = written.conflict ? await loadRegistry(registrySignal()) : null;
   if (winner && !winner.found) throw new Error("pr262_direct_feed_registry_conflict_winner_missing");
   const persistedRegistry = winner?.registry ?? registry;
   const currentEntries = persistedRegistry.entries.filter((entry) => eligibleIdentities.get(entry.ticker) === entry.cik);
@@ -822,8 +979,9 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
     events,
     // Most issuers do not publish an RSS/Atom investor-relations feed. That
     // optional count must never be mistaken for official issuer coverage:
-    // every eligible CIK remains covered by the broad SEC feed and can also be
-    // checked through its exact SEC submissions endpoint in this rotation.
+    // each eligible CIK can map broad SEC observations, but identity mapping
+    // alone does not prove fresh issuer coverage. See issuerSourceCoverage for
+    // actual dated exact-CIK snapshots and independently checked IR feeds.
     officialSecIdentityMappedCompanies: eligibleCompanies.length,
     directIrRssFeeds: currentEntries.filter((entry) => entry.feedUrl).length,
     rssIsOptionalEnrichment: true as const,
@@ -838,16 +996,45 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
     discoveryFailures,
     discoveryDeferred,
     feedDeferred,
-    deferredCount: discoveryDeferred + feedDeferred,
+    deferredCount: discoveryDeferred + feedDeferred + secCheckDeferred,
     deferredAfterSourceAttempt,
     deferredReasons: [...new Set(deferrals.map(row => row.reason))].slice(0, 8),
     nextRetryAt: deferrals.length ? deferrals.map(row => row.nextRetryAt).sort()[0] : null,
-    attemptCount: feedsPolled + discovered,
-    successCount: feedSuccesses + discoverySuccesses,
-    failureCount: feedFailures + discoveryFailures,
+    attemptCount: feedsPolled + discovered + secCheckAttempts,
+    successCount: feedSuccesses + discoverySuccesses + secCheckSuccesses,
+    failureCount: feedFailures + discoveryFailures + secCheckFailures,
     attemptErrors: [...new Set(attemptErrors)].slice(0, 8),
+    sourcePreparationFailures,
+    preparationErrors: [...new Set(preparationErrors)].slice(0, 8),
     secSubmissionsChecked,
     secFilingsFound,
+    secCheckAttempts, secCheckSuccesses, secCheckFailures, secCheckDeferred, secCacheHits,
+    initialCatchupEvents: initialCatchupEventIds.size,
+    initialCatchupEventIds: [...initialCatchupEventIds],
+    publicationTimestampsPreserved: true as const,
+    sourceCollectionDeadlineReached: pilot && Date.now() >= deadlineAtMs,
+    directWorkBudgetMs: pilot ? Math.max(0, deadlineAtMs - startedAtMs) : null,
+    issuerSourceCoverage: eligibleCompanies.map(company => {
+      const entry = persistedByTicker.get(company.ticker);
+      const sec = entry?.sec;
+      const registeredSource = pilot ? pilotIssuerSources.companies.find(row => row.ticker === company.ticker
+        && row.cik === company.cik && row.investorWebsite === entry?.investorWebsite) : null;
+      const snapshotAgeMs = Date.now() - Date.parse(sec?.snapshotFetchedAt ?? "");
+      return { ticker: company.ticker, cik: company.cik,
+        sec: { sourceUrl: `https://data.sec.gov/submissions/CIK${company.cik}.json`,
+          status: sec?.error ? "deferred_or_failed" : Number.isFinite(snapshotAgeMs) && snapshotAgeMs >= 0 && snapshotAgeMs < SEC_POLL_CADENCE_MS ? "current_snapshot" : sec?.snapshotFetchedAt ? "stale_snapshot" : "not_checked",
+          lastCheckedAt: sec?.lastCheckedAt ?? null, snapshotFetchedAt: sec?.snapshotFetchedAt ?? null,
+          snapshotOrigin: sec?.snapshotOrigin ?? null, nextCheckAt: sec?.nextCheckAt ?? null, error: sec?.error ?? null },
+        ir: { investorWebsite: entry?.investorWebsite ?? null, feedUrl: entry?.feedUrl ?? null,
+          seedSourcePageUrl: registeredSource?.sourcePageUrl ?? null,
+          seedVerifiedAt: registeredSource?.verifiedAt ?? null,
+          seedRegistrationIsSuccessfulPoll: false as const,
+          status: entry?.feedUrl ? entry.error ? "poll_deferred_or_failed" : entry.lastSuccessAt ? "feed_checked" : "registered_not_checked"
+            : confirmedNoFeedError(entry?.error ?? null) ? "no_feed_discovered" : entry?.investorWebsite ? "discovery_pending" : "website_unregistered",
+          lastDiscoveryAt: entry?.lastDiscoveryAt && Date.parse(entry.lastDiscoveryAt) > 0 ? entry.lastDiscoveryAt : null,
+          lastCheckedAt: entry?.lastCheckedAt ?? null, lastSuccessAt: entry?.lastSuccessAt ?? null,
+          nextCheckAt: entry?.nextCheckAt ?? null, error: entry?.error ?? null } };
+    }),
     eligibleCompanies: eligibleCompanies.length,
     companiesKnown: persistedRegistry.entries.length,
     currentEligibleCompaniesKnown: currentEntries.length,

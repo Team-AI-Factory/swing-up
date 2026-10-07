@@ -51,6 +51,15 @@ assert.equal(profileBuilder.firstVerifiedCompaniesThisRun([entry(unit)], [entry(
 assert.equal(profileBuilder.firstVerifiedCompaniesThisRun([], [entry(base, yesterday)], now), 0, "Imported prior-day verification cannot be claimed as new this run");
 assert.equal(profileBuilder.firstVerifiedCompaniesThisRun([], [entry(base), entry(unit)], now), 1, "New aliases count once by CIK");
 assert.equal(profileBuilder.firstVerifiedCompaniesThisRun([], [invalidLegacy], now), 0, "Invalid profiles cannot count as first-time verification");
+const legacyUnknownHistory = { ...unit, profile: null, verificationHistoryKnown: true };
+assert.equal(profileBuilder.firstVerifiedCompaniesThisRun([legacyUnknownHistory], [legacyUnknownHistory, entry(base)], now), 0,
+  "An unknown historical date under another ticker still prevents a first-time issuer claim");
+assert.equal(plan([listing(base)], [legacyUnknownHistory, entry(base)], now, 100).newlyVerifiedToday, 0,
+  "A new alias cannot invent today's first verification for an issuer with unknown prior history");
+assert.equal(plan([listing(base)], [{ ...entry(base), verificationHistoryKnown: true }], now, 100).newlyVerifiedToday, 1,
+  "The history flag with a genuinely known first date today preserves daily production");
+assert.equal(plan([listing(base)], [{ ...entry(base, yesterday), verificationHistoryKnown: true }, entry(unit)], now, 100).newlyVerifiedToday, 0,
+  "Known older history still governs a newly verified alias");
 const atLimit = Array.from({ length: 500 }, (_, i) => entry(identity(`T${i}`, i + 500)));
 assert.equal(plan([listing(base)], atLimit, now, 100).due.length, 0);
 assert.equal(plan([listing(base)], atLimit.slice(0, 499), now, 100).due.length, 1);
@@ -104,7 +113,11 @@ try {
     assert.equal(result.modelCalls, 0);
     if (mode === "parallel") { assert.equal(result.newlyVerifiedThisRun, 3); assert.equal(result.attempted, 3); }
     if (mode === "source_circuit") { assert.equal(starts.length, 1); assert.equal(result.status, "source_cooldown"); assert.equal(result.newlyVerifiedThisRun, 0); }
-    if (mode === "worker_failure") { assert.equal(result.status, "failed"); assert.equal(result.newlyVerifiedThisRun, 0); }
+    if (mode === "worker_failure") {
+      assert.equal(result.status, "failed");
+      assert.equal(result.newlyVerifiedThisRun, null, "A failed worker with no authoritative cache reread cannot prove zero new profiles");
+      assert.equal(result.verificationCountsStatus, "unreconciled");
+    }
     if (mode === "worker_partial") {
       assert.equal(result.status, "failed"); assert.equal(result.ok, false);
       assert.equal(result.failure, "synthetic_storage_failure");

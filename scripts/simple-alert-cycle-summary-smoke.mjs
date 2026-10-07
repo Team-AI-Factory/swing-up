@@ -23,6 +23,23 @@ const sourceAccounting = simpleAlertCycleSummary(JSON.stringify({ cost: { daily:
 assert.equal(sourceAccounting.sourceDaily.sourceFailures, 2);
 assert.equal(sourceAccounting.sourceDaily.sourceMeasuredFailures, 0);
 assert.equal(sourceAccounting.sourceDaily.sourceAccountingVersion, 2);
+assert.equal(summary.issuerSources.currentSecSnapshots, null);
+assert.equal(summary.issuerSources.issuers, null, "Legacy missing coverage cannot become a healthy zero");
+const sourceCoverage = simpleAlertCycleSummary(JSON.stringify({ sensor: { newEvents: 0, initialCatchupEvents: 1, directAnnouncementMonitoring: {
+  eligibleCompanies: 25, registeredFeeds: 8, secCheckAttempts: 13, secCheckSuccesses: 12, secCheckFailures: 1, initialCatchupEvents: 4,
+  issuerSourceCoverage: Array.from({ length: 25 }, (_, index) => ({ ticker: `C${index}`, sec: {
+    status: index < 12 ? "current_snapshot" : "not_checked", snapshotFetchedAt: index < 12 ? "2026-10-03T17:00:00Z" : null,
+    nextCheckAt: "2026-10-03T17:29:00Z", sourceUrl: "https://data.sec.gov/submissions/source" },
+  ir: { status: "registered_not_checked", lastSuccessAt: null, seedVerifiedAt: "2026-10-03T16:00:00Z" } }))
+} } }));
+assert.equal(sourceCoverage.issuerSources.currentSecSnapshots, 12);
+assert.equal(sourceCoverage.issuerSources.liveNewEvents, 0);
+assert.equal(sourceCoverage.issuerSources.initialCatchupEvents, 4);
+assert.equal(sourceCoverage.issuerSources.queuedCatchupEvents, 1, "Deduplicated queued catch-up is distinct from all source catch-up observations");
+assert.equal(sourceCoverage.issuerSources.issuers[0].ir.lastSuccessAt, null, "Registering a feed is not a successful poll");
+assert.equal(sourceCoverage.issuerSources.issuers[24].sec.snapshotFetchedAt, null);
+assert.equal(sourceCoverage.issuerSources.issuerRowsTruncated, false);
+assert.ok(JSON.stringify(sourceCoverage).length < 12000, "All25 bounded source rows must fit ahead of full-response truncation");
 assert.ok(JSON.stringify(summary).length < 8000);
 assert.ok(!JSON.stringify(summary).includes("private-evidence"));
 assert.equal(simpleAlertCycleSummary('{"ok":false}').accounting.accountingHealthy, null);
@@ -32,6 +49,24 @@ assert.equal(simpleAlertCycleSummary('null').summaryStatus, "invalid_response");
 const profiles = simpleAlertCycleSummary(JSON.stringify({ attempted: 100, newlyVerifiedThisRun: 7, newlyVerifiedToday: 12, remaining: 488 }));
 assert.equal(profiles.profileProduction.newlyVerifiedThisRun, 7);
 assert.equal(profiles.profileProduction.attempted, 100);
+const cohortProfiles = simpleAlertCycleSummary(JSON.stringify({ cohortProfiles: { configuredCompanies: 25, verifiedCompanies: 25, currentVerificationApplied: true } }));
+assert.equal(cohortProfiles.cohortProfiles.verifiedCompanies, 25);
+assert.equal(summary.cohortProfiles.verifiedCompanies, null);
+const storageFailure = simpleAlertCycleSummary(JSON.stringify({ ok: false, status: "failed", attempted: 21,
+  verifiedThisRun: 4, newlyVerifiedThisRun: null, newlyVerifiedToday: null, remaining: null,
+  verificationCountsStatus: "unreconciled", lastReconciledNewlyVerifiedToday: 36,
+  failureCategory: "storage", storageFailureObserved: true, failure: "r2_state_write_http_502",
+  failureRateBasis: "source_requests_only", requests: 42, requestFailures: 0, failureRatePercent: 0 }));
+assert.equal(storageFailure.cycle.ok, false);
+assert.equal(storageFailure.profileProduction.verifiedThisRun, 4);
+assert.equal(storageFailure.profileProduction.newlyVerifiedThisRun, null, "Missing post-failure count evidence cannot become zero");
+assert.equal(storageFailure.profileProduction.newlyVerifiedToday, null);
+assert.equal(storageFailure.profileProduction.remaining, null);
+assert.equal(storageFailure.profileProduction.lastReconciledNewlyVerifiedToday, 36);
+assert.equal(storageFailure.profileProduction.failureCategory, "storage");
+assert.equal(storageFailure.profileProduction.storageFailureObserved, true);
+assert.equal(storageFailure.profileProduction.failureRateBasis, "source_requests_only");
+assert.equal(storageFailure.profileProduction.failure, "r2_state_write_http_502");
 const launcher = readFileSync(new URL("./simple-alert-pilot-cycle.mjs", import.meta.url), "utf8");
 assert.ok(launcher.indexOf("[simple-alerts-summary]") < launcher.indexOf("body.slice(0, 80000)"));
 const runtime = simpleAlertCycleSummary(JSON.stringify({ pilot: { cohortId: "small-ai-25-20261003-v1", companies: 25 }, processing: { deadlineMs: 480000, deliveryReserveMs: 45000, reportingReserveMs: 15000 } }));

@@ -20,10 +20,47 @@ const text = (v: unknown) => typeof v === "string" ? v.slice(0, 1500) : "";
 const hash = (v: string) => crypto.createHash("sha256").update(v).digest("hex").slice(0, 24);
 const ROOT = pr262StorageKey("research-evidence");
 export const RESEARCH_ALERT_INDEX_KEY = `${ROOT}/alerts-v1.json`;
+export const COMMITTEE_INPUT_POLICY_REVISION = "utf8-schema-framing-60000-v1";
 
 export async function readEvidenceFollowup(eventId: string) {
   const saved = await readVersionedTextFromR2(`${ROOT}/followups/${hash(eventId)}.json`);
   return saved.found && saved.text ? object(JSON.parse(saved.text)) : {};
+}
+
+export async function unchangedCommitteeInputLimitHeld(candidateFingerprint: string) {
+  if (!candidateFingerprint) return false;
+  const saved = await readVersionedTextFromR2(`${ROOT}/committee-input-holds/${hash(candidateFingerprint)}.json`);
+  if (!saved.found || !saved.text) return false;
+  const row = object(JSON.parse(saved.text));
+  return row.version === 1 && row.candidateFingerprint === candidateFingerprint
+    && row.policyRevision === COMMITTEE_INPUT_POLICY_REVISION && row.reason === "prompt_input_limit";
+}
+
+export function committeeInputLimitRejectedWithoutUsage(value: unknown) {
+  if (!committeeRequestsRejectedWithoutUsage(value)) return false;
+  const committee = object(value);
+  const summary = object(object(committee.output).modelUsageSummary);
+  const diagnostics = [
+    ...(Array.isArray(committee.roleDiagnostics) ? committee.roleDiagnostics : []),
+    ...(Array.isArray(summary.roleDiagnostics) ? summary.roleDiagnostics : []),
+  ].map(object);
+  return diagnostics.some(row => row.error === "prompt_too_large"
+    || object(row.providerFailure).category === "input_limit"
+    || object(row.providerFailure).code === "prompt_too_large");
+}
+
+export async function recordCommitteeInputLimitHold(candidateFingerprint: string, committee: Json, now: Date) {
+  if (!candidateFingerprint || !committeeInputLimitRejectedWithoutUsage(committee)) return;
+  const key = `${ROOT}/committee-input-holds/${hash(candidateFingerprint)}.json`;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const current = await readVersionedTextFromR2(key);
+    const written = await writeVersionedJsonToR2(key, { version: 1, candidateFingerprint,
+      policyRevision: COMMITTEE_INPUT_POLICY_REVISION, reason: "prompt_input_limit", recordedAt: now.toISOString() },
+      current.etag ? { expectedEtag: current.etag } : { createOnly: true });
+    if (written.written) return;
+    if (!written.conflict) throw new Error("committee_input_hold_write_failed");
+  }
+  throw new Error("committee_input_hold_write_conflict");
 }
 
 export const verifiedFactsCache: VerifiedFactsCache = {
@@ -330,6 +367,9 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
   const output = object(committee.output);
   const screeningRejected = report.status === "candidate_valuation_risk_rejected";
   const paid = report.openAiCalled === true;
+  if (paid && typeof report.candidateFingerprint === "string") {
+    await recordCommitteeInputLimitHold(report.candidateFingerprint, committee, now);
+  }
   if (paid && candidate.eventFamily === "valuation_gap" && /^\d{10}$/.test(text(candidate.cik)) && completeCommitteeReview(committee)) {
     const key = `${ROOT}/valuation-reviews/${candidate.cik}.json`;
     const admittedAt = text(candidate.valuationAdmittedAt) || text(report.checkedAt) || null;

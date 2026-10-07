@@ -119,6 +119,11 @@ try {
   const large = { entries: ["sample-only".repeat(5000)] };
   const encoded = r2.encodeVersionedJsonForR2(compressedKey, large);
   assert.equal(encoded.compressed, true);
+  const pilotProfileKey = "branch-labs/simple-alerts/cohorts/small-ai-25-20261003-v1/research-evidence/company-profiles-v1.json";
+  const pilotProfileEncoded = r2.encodeVersionedJsonForR2(pilotProfileKey, large);
+  assert.equal(pilotProfileEncoded.compressed, true, "The live pilot profile cache uses the bounded gzip path");
+  assert.deepEqual(JSON.parse(r2.decodeVersionedR2Text(pilotProfileEncoded.body)), large,
+    "Pilot profile cache gzip remains transparently readable");
   done = sequence([["PUT", () => fail(502)], ["GET", () => new Response(encoded.body, { headers: { etag: '"compressed"' } })]]);
   assert.equal((await r2.writeVersionedJsonToR2(compressedKey, large, { createOnly: true })).etag, '"compressed"');
   done();

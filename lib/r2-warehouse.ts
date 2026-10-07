@@ -387,7 +387,10 @@ export function decodeVersionedR2Text(body: Buffer) {
 
 export function encodeVersionedJsonForR2(r2Key: string, payload: unknown) {
   const compactPr262State = r2Key.startsWith("production/pr262/")
-    || r2Key.startsWith("branch-labs/pr-262/");
+    || r2Key.startsWith("branch-labs/pr-262/")
+    // The isolated Simple Alerts pilot has its own namespace but uses the
+    // same private, versioned runtime-state codec and transparent gzip reader.
+    || r2Key.startsWith("branch-labs/simple-alerts/");
   const plain = Buffer.from(`${JSON.stringify(redactSecrets(payload), null, compactPr262State ? undefined : 2)}\n`);
   const internalRuntimeState = compactPr262State
     && PR262_COMPRESSED_VERSIONED_STATE_SUFFIXES.some((suffix) => r2Key.endsWith(suffix));
@@ -517,7 +520,8 @@ export async function writeVersionedJsonToR2(
     if (options.expectedEtag) condition["if-match"] = normalizeR2Etag(options.expectedEtag) ?? options.expectedEtag;
     else if (options.createOnly) condition["if-none-match"] = "*";
     const compactPr262State = r2Key.startsWith("production/pr262/")
-      || r2Key.startsWith("branch-labs/pr-262/");
+      || r2Key.startsWith("branch-labs/pr-262/")
+      || r2Key.startsWith("branch-labs/simple-alerts/");
     const encoded = encodeVersionedJsonForR2(r2Key, payload);
     const conditional = Object.keys(condition).length > 0;
     // Profile row merging owns its bounded retries. Keep ambiguity read-back

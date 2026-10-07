@@ -14,6 +14,11 @@ const object = (value: unknown): Row => value && typeof value === "object" && !A
 export const PROFILE_DAILY_TARGET = 500;
 const MAX_ATTEMPTS_PER_DAY = 2500;
 const MAX_ATTEMPTS_PER_RUN = 100;
+// Stop admitting a new issuer early enough that its admission record,
+// provider-budget reservation, bounded source request and final cache write can
+// settle before the existing source cutoff. This reduces capacity; it does not
+// raise a source, storage, request or role deadline.
+const PROFILE_ADMISSION_BUDGET_MS = 100_000;
 // Reserve the end of the existing profile window for settled-worker counts:
 // source/admission stops first; already-started storage has a separate
 // bounded persistence window before the authoritative count read. Summary
@@ -152,6 +157,7 @@ export function profileBatchPlan(listings: Row[], entries: Row[], now: Date, lim
 export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: typeof fetch = fetch) {
   if (!isSimpleAlertPilot() || process.env.SWING_UP_SIMPLE_PILOT_ROLE !== "profiles") throw new Error("simple_pilot_profile_role_required");
   const startedAt = Date.now();
+  const admissionSignal = AbortSignal.timeout(PROFILE_ADMISSION_BUDGET_MS);
   const signal = AbortSignal.timeout(PROFILE_WORK_BUDGET_MS);
   const persistenceSignal = AbortSignal.timeout(PROFILE_PERSISTENCE_DEADLINE_MS);
   const countSignal = AbortSignal.timeout(PROFILE_COUNT_DEADLINE_MS);
@@ -244,7 +250,7 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
     status = before >= PROFILE_DAILY_TARGET ? "target_reached" : plan.due.length ? "completed" : "no_due_profiles";
     let cursor = 0, workerFailed = false;
     const worker = async () => {
-      while (cursor < plan.due.length && !signal.aborted && !circuitOpen && !workerFailed) {
+      while (cursor < plan.due.length && !admissionSignal.aborted && !signal.aborted && !circuitOpen && !workerFailed) {
         const identity = plan.due[cursor++];
         attempted++; attemptedIssuers.add(identity.cik);
         if (identity.lastAttempt) retryAttempts++;
@@ -264,7 +270,7 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
     if (rejected?.status === "rejected") throw rejected.reason;
     await reconcileCounts();
     if (circuitOpen) status = "source_cooldown";
-    else if (signal.aborted) status = "time_budget_reached";
+    else if (admissionSignal.aborted || signal.aborted) status = "time_budget_reached";
     else if (after !== null && after >= PROFILE_DAILY_TARGET) status = "target_reached";
     await provider.flush();
   } catch (error) {

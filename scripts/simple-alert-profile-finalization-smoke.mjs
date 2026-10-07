@@ -15,7 +15,7 @@ const clone = value => JSON.parse(JSON.stringify(value));
 process.env.SWING_UP_SIMPLE_PILOT_ROLE = "profiles";
 
 async function run(mode) {
-  let elapsed = 0, workSignal, persistenceSignal, countSignal, summarySignal;
+  let elapsed = 0, admissionSignal, workSignal, persistenceSignal, countSignal, summarySignal;
   const timers = [], objects = new Map(), revisions = new Map(), writes = [], sourceStarts = [], printed = [];
   let countReads = 0, summaryReads = 0, summaryWrites = 0, cleanupWrites = 0;
   const advance = value => {
@@ -29,6 +29,7 @@ async function run(mode) {
   AbortSignal.timeout = duration => {
     const controller = new AbortController();
     timers.push({ controller, duration, at: elapsed + duration });
+    if (duration === 100_000) admissionSignal = controller.signal;
     if (duration === 140_000) workSignal = controller.signal;
     if (duration === 160_000) persistenceSignal = controller.signal;
     if (duration === 175_000) countSignal = controller.signal;
@@ -49,7 +50,12 @@ async function run(mode) {
       options.signal?.throwIfAborted();
       if (key === profileKey && options.signal === countSignal) {
         countReads++;
-        assert.equal(workSignal.aborted, true, "Count read is available after work cancellation");
+        if (mode === "late_admission_stop") {
+          assert.equal(admissionSignal.aborted, true, "Late admission is stopped by its own reserve");
+          assert.equal(workSignal.aborted, false, "Already-started work retains the original source cutoff");
+        } else {
+          assert.equal(workSignal.aborted, true, "Count read is available after work cancellation");
+        }
         assert.equal(options.signal.aborted, false, "Count read has its own unexpired deadline");
         if (mode === "count_timeout") { advance(175_000); throw wrap("read", options.signal.reason); }
         if (mode === "count_missing") return { found: false, text: null, etag: null };
@@ -123,7 +129,7 @@ async function run(mode) {
     "@/lib/simple-alert-pilot-runtime": { isSimpleAlertPilot: () => true },
     "@/lib/simple-alert-pilot-scope": { pilotCompanies: () => [] },
     "node:timers/promises": { setTimeout: async (_ms, value, options = {}) => { options.signal?.throwIfAborted(); return value; } },
-    "@/lib/equity-signal/universe": { loadEquityUniverse: async () => { advance(130_000); return { snapshot: { refreshedAt: now.toISOString(), entries: [identity].map(listing) } }; } },
+    "@/lib/equity-signal/universe": { loadEquityUniverse: async () => { advance(mode === "late_admission_stop" ? 130_000 : 100_000); return { snapshot: { refreshedAt: now.toISOString(), entries: [identity].map(listing) } }; } },
     "@/lib/opportunity-engine/pr262-sensor-fetch-budget": { createPr262SensorBudgetedFetch: async input => ({ fetchImpl: input.fetchImpl, flush: async () => {} }) },
   };
   const cache = loadTsModule("@/lib/opportunity-engine/company-profile-cache", overrides);
@@ -144,34 +150,37 @@ async function run(mode) {
     const result = await builder.runSimpleAlertProfileBuilder(now, fetcher);
     const uncertain = mode.startsWith("uncertain_") || mode === "past_count_deadline";
     const unavailable = ["count_timeout", "count_missing", "count_malformed", "past_count_deadline"].includes(mode);
-    assert.equal(result.attempted, 1);
-    assert.equal(result.verifiedThisRun, healthy && mode !== "healthy_admission_put" ? 1 : 0, `${mode}: Healthy persisted work gets an ACK; uncertain final PUTs do not; ${JSON.stringify(result)}; logs=${JSON.stringify(printed)}`);
+    const lateStop = mode === "late_admission_stop";
+    assert.equal(result.attempted, lateStop ? 0 : 1);
+    assert.equal(result.verifiedThisRun, !lateStop && healthy && mode !== "healthy_admission_put" ? 1 : 0, `${mode}: Healthy persisted work gets an ACK; uncertain final PUTs do not; ${JSON.stringify(result)}; logs=${JSON.stringify(printed)}`);
     assert.equal(result.requestFailures, 0, "Read-only finalization does not fabricate SEC failures");
     assert.equal(result.modelCalls, 0);
     assert.equal(result.status, uncertain || unavailable ? "failed" : "time_budget_reached", `${mode}: ${JSON.stringify(result)}`);
     assert.equal(result.failureCategory, uncertain || unavailable ? "storage" : null);
-    assert.equal(result.newlyVerifiedThisRun, unavailable ? null : mode === "uncertain_applied" || (healthy && mode !== "healthy_admission_put") ? 1 : 0);
-    assert.equal(result.newlyVerifiedToday, unavailable ? null : mode === "uncertain_applied" || (healthy && mode !== "healthy_admission_put") ? 2 : 1);
+    assert.equal(result.newlyVerifiedThisRun, unavailable ? null : mode === "uncertain_applied" || (!lateStop && healthy && mode !== "healthy_admission_put") ? 1 : 0);
+    assert.equal(result.newlyVerifiedToday, unavailable ? null : mode === "uncertain_applied" || (!lateStop && healthy && mode !== "healthy_admission_put") ? 2 : 1);
     assert.equal(result.verificationCountsStatus, unavailable ? "unreconciled" : "cache_reconciled");
     assert.equal(countReads, mode === "past_count_deadline" ? 0 : ["count_missing", "count_malformed"].includes(mode) ? 2 : 1);
     if (unavailable) { assert.ok(result.countReconciliationFailure); assert.equal(result.lastReconciledNewlyVerifiedToday, 1); }
     assert.equal(summaryWrites, 1);
     const saved = [...objects.entries()].find(([key]) => key.startsWith("pilot/profile-builder/"))[1];
-    assert.equal(saved.attemptsReserved, 1); assert.equal(saved.leaseUntil, null);
-    assert.equal(saved.totalVerified, unavailable ? 1 : mode === "uncertain_applied" || (healthy && mode !== "healthy_admission_put") ? 2 : 1);
+    assert.equal(saved.attemptsReserved, lateStop ? 0 : 1); assert.equal(saved.leaseUntil, null);
+    assert.equal(saved.totalVerified, unavailable ? 1 : mode === "uncertain_applied" || (!lateStop && healthy && mode !== "healthy_admission_put") ? 2 : 1);
   }
   assert.equal(summaryReads, 1);
   assert.ok(sourceStarts.every(at => at < 140_000));
-  assert.equal(sourceStarts.length, fullSource ? 2 : mode === "healthy_admission_put" ? 0 : 1);
-  assert.equal(cleanupWrites, fullSource ? 0 : 1, "Uncertain writes never get a cleanup overwrite");
-  assert.equal(writes.filter(row => row.key === profileKey).length, 2, "One admission and one result/cleanup only");
-  assert.ok(timers.some(timer => timer.duration === 15_000), "Per-store 15s cap retained");
+  assert.ok(timers.some(timer => timer.duration === 100_000), "Separate admission reserve is active");
+  const lateStop = mode === "late_admission_stop";
+  assert.equal(sourceStarts.length, lateStop ? 0 : fullSource ? 2 : mode === "healthy_admission_put" ? 0 : 1);
+  assert.equal(cleanupWrites, lateStop || fullSource ? 0 : 1, "Uncertain writes never get a cleanup overwrite");
+  assert.equal(writes.filter(row => row.key === profileKey).length, lateStop ? 0 : 2, "Late admission starts no profile transaction; ordinary work keeps one admission and one result/cleanup");
+  if (!lateStop) assert.ok(timers.some(timer => timer.duration === 15_000), "Per-store 15s cap retained");
   if (cleanupWrites) assert.ok(timers.some(timer => timer.duration === 5_000), "Cleanup 5s cap retained");
   if (mode === "slow_summary") assert.equal(elapsed, 234_999, "Even slow summary completes before235s, retaining HTTP headroom");
 }
 
 try {
-  for (const mode of ["healthy_profile_put", "healthy_source_put", "healthy_admission_put", "source_deadline", "uncertain_unapplied", "uncertain_applied", "count_timeout", "count_missing", "count_malformed", "past_count_deadline", "slow_summary", "summary_read_timeout", "summary_write_timeout"]) await run(mode);
+  for (const mode of ["late_admission_stop", "healthy_profile_put", "healthy_source_put", "healthy_admission_put", "source_deadline", "uncertain_unapplied", "uncertain_applied", "count_timeout", "count_missing", "count_malformed", "past_count_deadline", "slow_summary", "summary_read_timeout", "summary_write_timeout"]) await run(mode);
 } finally {
   globalThis.Date = NativeDate; AbortSignal.timeout = nativeTimeout; console.info = info;
   if (savedRole === undefined) delete process.env.SWING_UP_SIMPLE_PILOT_ROLE; else process.env.SWING_UP_SIMPLE_PILOT_ROLE = savedRole;

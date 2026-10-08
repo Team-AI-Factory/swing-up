@@ -1,3 +1,19 @@
+## Clean post-repair cycles; three direct-source timeouts remain — 8 October 2026, 17:39 Bangkok
+
+GitHub head `af294b423c59a221ae9717172553820e9e1580f5` is the launch-log-only successor to tested runtime `4e65659b73421e7afd9c763118588c5d3368ac6f`. Railway correctly skipped all four documentation-only builds and continues to run that exact runtime on the pilot services. Main scanning remains stopped, cohort `small-ai-25-20261003-v1` remains fixed at 25, and staged telemetry patch `97789f67-b0f5-4cb3-b689-bd46c2b4c63f` remains untouched.
+
+The next independent sensor cycle completed HTTP 200 at `10:31:18Z` in 44.7 seconds. It had zero processing or Committee attempts, zero AI calls, zero approvals, and no live outbox, delivery job, delivery receipt or trade. Five cases remain on scheduled retries: one exact-evidence hold and four other scheduled retries. None was due or fresh-authoritative-ready in this cycle, so an empty processing result is not counted as another assessment.
+
+Broad and urgent SEC, trade-halt, market-watch and the one due issuer SEC check succeeded. Direct issuer enrichment remained partial: nine direct requests produced six successes and three failures, consisting of one feed timeout and two discovery failures. The persisted registry preserved those failures and scheduled the next provider-paced retry for `10:45:31Z`; no forced replay was made. Daily source failures are now **27/648 = 4.17%**. The three timeouts are not restored IR coverage, but they do not justify a code change while the bounded backoff and persisted failure states are functioning.
+
+The exact-runtime profile pass completed HTTP 200 at `10:24:51Z` with 26 attempts and 28 source requests, zero request/body/storage/count failures, zero model calls and zero new verifications. HELP's stale admission again deferred safely with zero writes. Reconciled production remains **34/500**, 466 short, while all 25 cohort profiles remain verified.
+
+The shared rolling Committee ledger is unchanged at **$0.738494** recorded exposure, with zero reservations, zero pending/unknown usage and **$9.261506** headroom under `$10`. Daily processing failures remain **6/85 = 7.06%** and Committee technical failures remain **6/8 = 75%**. Source is presently below 5%, but processing and Committee reliability fail the gate and two consecutive fully qualifying windows do not exist. No scale change is permitted.
+
+No repair, cap change, paid replay, deployment or resource increase is justified. Next: observe the provider-paced direct-source retry, continue profile production, and wait for genuinely new decision-grade INOD/UPST evidence instead of repurchasing unchanged packets. No new critical incident, budget stop, authentication blocker or verified live Serious Alert warrants an hourly notification.
+
+---
+
 ## INOD Committee framing overflow repaired and live-completed — 8 October 2026, 17:21 Bangkok
 
 A new exact-code INOD retry exposed a second whole-review planning defect after the earlier visible-output reservation repair. At `2026-10-08T09:47:21Z`, review revision `75a6c04d5c81ccb2` failed closed before any provider request because the final-judge preflight planned **60,275 UTF-8 bytes** against the unchanged 60,000-byte hard cap. The plan reserved 4,736 bytes for earlier role results; all four roles recorded zero usage, the `$2.7538` reservation was released, rejected-request cost was `$0`, and no approval, alert, outbox, delivery or trade was created. This counts conservatively as one processing and one Committee technical failure.

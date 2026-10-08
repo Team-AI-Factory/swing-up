@@ -9,6 +9,7 @@ const listing = row => ({ ...row, name: row.company, exchange: "Nasdaq", securit
 const entry = (row, at = now) => ({ ...row, profile: companyProfileFixture(row, now), updatedAt: at.toISOString(), firstVerifiedAt: at.toISOString() });
 const noIo = { readVersionedTextFromR2: async () => { throw new Error("unexpected_io"); }, writeVersionedJsonToR2: async () => { throw new Error("unexpected_io"); } };
 const profileBuilder = loadTsModule("@/lib/simple-alert-profile-builder", { "@/lib/r2-warehouse": noIo });
+const profile = loadTsModule("@/lib/company-profile");
 const plan = profileBuilder.profileBatchPlan;
 const base = identity("AAC", 1), unit = identity("AAC-UN", 1), warrant = identity("AAC-WT", 1);
 assert.equal(plan([base, unit, warrant].map(listing), [], now, 100).due.length, 1, "Three same-CIK securities are one company attempt");
@@ -33,6 +34,17 @@ const retry = identity("RETRY", 100), retryEntry = { ...retry, profile: null, up
 assert.equal(plan([...fresh, listing(retry)], [retryEntry], now, 100).due[3].ticker, "RETRY", "Due retry receives an early reserved slot among fresh issuers");
 assert.equal(plan([...fresh, listing(retry)], [{ ...retryEntry, nextAttemptAt: new Date(now.getTime() + 3600000).toISOString() }], now, 100).due.some(row => row.ticker === "RETRY"), false, "Fairness cannot bypass source cooldown");
 assert.equal(plan([listing(retry)], [{ ...retryEntry, nextAttemptAt: new Date(now.getTime() + 3600000).toISOString(), error: "company_profile_products_and_customers_not_extracted", parserRevision: -1 }], now, 100).due.length, 1, "A repaired parser can revisit exact saved sources immediately");
+const olderRepair = identity("OLDREPAIR", 101), recentRepair = identity("RECENTREPAIR", 102);
+const parserRepairEntry = (row, updatedAt) => ({ ...row, profile: null, updatedAt, nextAttemptAt: new Date(now.getTime() + 3600000).toISOString(),
+  error: "company_profile_products_and_customers_not_extracted", parserRevision: -1 });
+const repairOrder = plan([listing(olderRepair), listing(recentRepair)], [
+  parserRepairEntry(olderRepair, new Date(now.getTime() - 86400000).toISOString()),
+  parserRepairEntry(recentRepair, new Date(now.getTime() - 60000).toISOString()),
+], now, 100).due;
+assert.deepEqual(repairOrder.map(row => row.ticker), ["RECENTREPAIR", "OLDREPAIR"],
+  "A new parser revision verifies the newest motivating exact-source failures before the ordinary retry backlog");
+assert.equal(plan([listing(recentRepair)], [{ ...parserRepairEntry(recentRepair, now.toISOString()), parserRevision: profile.COMPANY_PROFILE_PARSER_REVISION }], now, 100).due.length, 0,
+  "Same-revision extraction failures retain their persisted backoff");
 const invalidLegacy = { ...entry(base, yesterday), parserRevision: 6, nextAttemptAt: new Date(now.getTime() + 30 * 86400000).toISOString(),
   profile: { ...entry(base, yesterday).profile, business: "We sell our products to customers around the world through many different distribution channels.", description: "invalid legacy generic product description" } };
 assert.equal(plan([listing(base)], [invalidLegacy], now, 100).due.length, 1, "A rejected cached profile's old30-day refresh date cannot freeze repair");

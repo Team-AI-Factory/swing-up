@@ -126,22 +126,30 @@ export function profileBatchPlan(listings: Row[], entries: Row[], now: Date, lim
   const due = [...issuers.values()].flatMap(identity => {
     if (validIssuers.has(identity.cik)) return [];
     const previous = stored.get(identity.cik) ?? [];
+    const parserRepair = previous.some(row => ["company_profile_products_and_customers_not_extracted", "company_profile_annual_filing_unavailable"].includes(String(row.error))
+      && row.parserRevision !== COMPANY_PROFILE_PARSER_REVISION);
     const deferred = previous.some(row => {
-      const parserRepair = ["company_profile_products_and_customers_not_extracted", "company_profile_annual_filing_unavailable"].includes(String(row.error))
+      const rowParserRepair = ["company_profile_products_and_customers_not_extracted", "company_profile_annual_filing_unavailable"].includes(String(row.error))
         && row.parserRevision !== COMPANY_PROFILE_PARSER_REVISION;
       // A formerly verified profile can become invalid under current quality
       // checks. Its old refresh date must not prevent one normal guarded retry.
       // ensureCompanyProfile persists a null-profile backoff before source I/O.
       const invalidCachedProfile = Boolean(row.profile) && !row.error && !verifiedCompanyProfile(row.profile, row, now);
-      return !parserRepair && !invalidCachedProfile && Date.parse(String(row.nextAttemptAt ?? "")) > now.getTime();
+      return !rowParserRepair && !invalidCachedProfile && Date.parse(String(row.nextAttemptAt ?? "")) > now.getTime();
     });
     if (deferred) return [];
-    return [{ ...identity, lastAttempt: Math.max(0, ...previous.map(row => Date.parse(String(row.updatedAt ?? "")) || 0)) }];
+    return [{ ...identity, parserRepair, lastAttempt: Math.max(0, ...previous.map(row => Date.parse(String(row.updatedAt ?? "")) || 0)) }];
   }).sort((a, b) => a.lastAttempt - b.lastAttempt || a.ticker.localeCompare(b.ticker));
   const pilot = due.filter(row => cohort.has(row.ticker));
-  const fresh = due.filter(row => !cohort.has(row.ticker) && !row.lastAttempt);
-  const retries = due.filter(row => !cohort.has(row.ticker) && row.lastAttempt);
-  const ordered = [...pilot];
+  // A parser revision is justified by current failed source evidence. Give its
+  // newest exact-source rows one bounded pass before the ordinary oldest-first
+  // backlog, so the repair is actually verified instead of sitting behind
+  // thousands of due retries. Same-revision failures retain normal backoff.
+  const parserRepairs = due.filter(row => !cohort.has(row.ticker) && row.parserRepair)
+    .sort((a, b) => b.lastAttempt - a.lastAttempt || a.ticker.localeCompare(b.ticker));
+  const fresh = due.filter(row => !cohort.has(row.ticker) && !row.parserRepair && !row.lastAttempt);
+  const retries = due.filter(row => !cohort.has(row.ticker) && !row.parserRepair && row.lastAttempt);
+  const ordered = [...pilot, ...parserRepairs];
   // An endless supply of untouched issuers cannot starve due retries. Reserve
   // each fourth background slot for the oldest retry, without ignoring backoff.
   let freshCursor = 0, retryCursor = 0, slot = 0;

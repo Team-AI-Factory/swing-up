@@ -64,7 +64,7 @@ assert.equal(evidence.committeeInputLimitRejectedWithoutUsage(partialUsage), fal
 // A real lossless transport repair invalidates only a proven-zero technical hold.
 const inputPolicy = loadTsModule("@/lib/ai-committee/prompt-input");
 assert.equal(evidence.COMMITTEE_INPUT_POLICY_REVISION, inputPolicy.AI_COMMITTEE_INPUT_POLICY_REVISION);
-assert.equal(inputPolicy.AI_COMMITTEE_INPUT_POLICY_REVISION, "utf8-schema-framing-60000-compact-visible-plan-v6");
+assert.equal(inputPolicy.AI_COMMITTEE_INPUT_POLICY_REVISION, "utf8-schema-framing-60000-compact-result-framing-v7");
 const holdEntry = [...stored.values()].find(entry => entry.value.candidateFingerprint === "valuation:issuer:downside:unchanged");
 assert.ok(holdEntry);
 holdEntry.value.policyRevision = "utf8-schema-framing-60000-v1";

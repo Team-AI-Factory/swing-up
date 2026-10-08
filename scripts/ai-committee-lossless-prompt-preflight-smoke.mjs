@@ -216,7 +216,7 @@ try {
       }
     }
     assert.deepEqual(roomyPack, roomyOriginal, "Never change fingerprinted evidence, audit storage or consensus input");
-    assert.deepEqual(gateInputs.map(options => options.reservedPromptBytes ?? 0), [0, 1_712, 3_224, 4_736],
+    assert.deepEqual(gateInputs.map(options => options.reservedPromptBytes ?? 0), [0, 1_520, 2_840, 4_160],
       "Whole-review admission reserves the prompt's compact visible-result targets");
     assert.ok(gateInputs.every(options => !promptInput.committeePromptPreflight(options)));
     assert.deepEqual(captured.map(options => options.maxTokens), [1_000, 750, 700, 900],

@@ -632,6 +632,12 @@ export async function runAiCommittee(input: RunAiCommitteeInput) {
   // It is not a hard bound, so every actual call still checks the exact prior
   // results against the unchanged UTF-8 byte cap before provider transport.
   const bytesPerVisibleOutputToken = 4;
+  // The compact result object's keys, punctuation and fixed scalar fields are
+  // 218 bytes with empty arrays. Reserve 320 bytes per prior role so the plan
+  // includes that framing plus margin without over-reserving 512 bytes that
+  // the strict short-array/word contract cannot use. Exact generated JSON is
+  // still measured before every later provider call.
+  const plannedResultFramingBytes = 320;
   const plannedVisibleTokens = (agent: AiCommitteeAgentDefinition) =>
     ["explainer_agent", "analyst_agent"].includes(agent.id) ? Math.min(agent.maxOutputTokens, 300) : Math.min(agent.maxOutputTokens, 250);
   let reservedPriorResults = 0;
@@ -646,7 +652,7 @@ export async function runAiCommittee(input: RunAiCommitteeInput) {
     // Retain four bytes per planned visible token plus JSON framing. The API
     // permits the existing larger output allowance; exceeding this compact
     // planning target never bypasses the exact hard gate on the next call.
-    reservedPriorResults += Math.max(0, plannedVisibleTokens(agent)) * bytesPerVisibleOutputToken + 512;
+    reservedPriorResults += Math.max(0, plannedVisibleTokens(agent)) * bytesPerVisibleOutputToken + plannedResultFramingBytes;
     return result;
   }).find(result => result.failure);
   let sharedFailure: AiCommitteeProviderFailure | undefined = preflight?.failure;

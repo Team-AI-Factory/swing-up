@@ -1,3 +1,21 @@
+## CEVA SEC snapshot recovered; profiles reached 25/500 — 8 October 2026, 11:39 Bangkok
+
+The deployed executable remains tested runtime `86da747b3a156dba0282db93d057fc250c85d35a`; current pilot head is eight launch-log-only commits ahead with no executable difference. Railway reports zero recent service failures or active warnings. Main scanning remains stopped, the fixed cohort remains 25, and staged telemetry patch `97789f67-b0f5-4cb3-b689-bd46c2b4c63f` remains untouched.
+
+The latest sensor cycle completed HTTP200 at 04:33 UTC on active deployment `c2829ca6-f71e-4ec4-b720-d27975edfcb9`. CEVA's scheduled SEC retry succeeded, restoring **25/25 current SEC snapshots**. Thirteen due SEC checks and five direct-feed polls all succeeded; there were zero SEC, feed or source-preparation failures in the cycle, and the source deadline was not reached. No manual replay, code change or extra resource was needed.
+
+Two due processing attempts were nontechnical deferrals. There were zero processing failures, Committee attempts, AI calls, approvals, live outboxes, delivery jobs or deliveries. Two cases are profile-ready, but neither is a fresh authoritative ready case; the oldest reported wait is 1,651 minutes. Deferrals and queue-age reduction are not completed assessments.
+
+Bangkok-day source accounting is **10/300 (3.33%)** and processing is **1/38 (2.63%)**, both currently below 5%, but technical Committee reliability remains **1/1 (100%)** and two consecutive qualifying observation windows have not been established. Scale-up therefore remains ineligible.
+
+The latest profile pass completed HTTP200 at 04:39 UTC with 26 attempts, 26 source requests, three first-time verifications, zero request/body/storage/count failures and no model calls. Production is **25/500**, 475 short, while all 25 cohort profiles remain verified. Remaining outcomes were seven combined business/customer gaps, 12 customer gaps, two unavailable annual filings and one AIF document gap.
+
+The shared rolling ledger remains **$0.095300 recorded/exposure, $0 reserved, $0 pending unknown and $9.904700 headroom under $10**. Provider invoices and actual infrastructure spend under the separate $20/month limit remain unverified. No Serious Buy/Sell/Watch Out exists and no live delivery receipt exists.
+
+No runtime repair, redeploy, cap change, paid replay or scale change is justified. Next: continue profile production and provider-paced source checks, preserve exact-evidence holds, and wait for genuinely changed decision-grade packets. Remain at 25 until every gate passes.
+
+---
+
 ## CEVA SEC snapshot timed out; clean processing cycle remains below scale gates — 8 October 2026, 10:04 Bangkok
 
 The deployed executable remains tested runtime `86da747b3a156dba0282db93d057fc250c85d35a`; GitHub comparison shows the pilot branch is seven launch-log-only commits ahead, with no executable difference. Railway reports no failed service deployment or active warning. Main scanning remains stopped, the fixed cohort remains 25, and staged telemetry patch `97789f67-b0f5-4cb3-b689-bd46c2b4c63f` remains untouched.

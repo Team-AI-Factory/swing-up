@@ -1,43 +1,45 @@
-## Three live profile verifications; bounded source failures remain — 8 October 2026, 14:20 Bangkok
+## Four live profile verifications; bounded source failures remain — 8 October 2026, 14:34 Bangkok
 
-The deployed executable remains exact pilot commit `830f1d58d2a2c06d7d527af4fcf614e36149d0b1`. GitHub branch head is documentation-only child `7371afeb33747e5abf4e31ccb00cc7b1074cb294`; Railway still runs the tested parent on sensor `627ec256-573d-4d21-8b89-24bcce8a7b07`, profiles `9e2f0252-341e-41b6-ba91-06254497fcb1`, inert foundation `6bb994bb-c524-4e86-a3dd-22ae245f5ece`, and web `a6a6045f-88a5-4792-8212-41cfa119582a`. All services report no recent deployment failure, warning, or critical notification. Main remains stopped, the cohort remains 25, and staged telemetry patch `97789f67-b0f5-4cb3-b689-bd46c2b4c63f` remains untouched.
+The deployed executable remains exact pilot commit `830f1d58d2a2c06d7d527af4fcf614e36149d0b1`. Railway still runs that tested executable on sensor `627ec256-573d-4d21-8b89-24bcce8a7b07`, profiles `9e2f0252-341e-41b6-ba91-06254497fcb1`, inert foundation `6bb994bb-c524-4e86-a3dd-22ae245f5ece`, and web `a6a6045f-88a5-4792-8212-41cfa119582a`. All services report no recent deployment failure, warning, or critical notification. Main remains stopped, the cohort remains 25, and staged telemetry patch `97789f67-b0f5-4cb3-b689-bd46c2b4c63f` remains untouched.
 
 ### Sensor observations
 
-Four additional exact-code sensor cycles completed HTTP 200 at 06:32, 06:48, 07:04, and 07:16 UTC. They made no AI call, produced no approval or Serious Buy/Sell/Watch Out, created no live outbox, and attempted no live delivery.
+Five additional exact-code sensor cycles completed HTTP 200 at 06:32, 06:48, 07:04, 07:16, and 07:33 UTC. They made no AI call, produced no approval or Serious Buy/Sell/Watch Out, created no live outbox, and attempted no live delivery.
 
 Source outcomes remained mixed and were kept distinct:
 
 - the 06:30 cycle polled five registered feeds successfully, while discovery attempts for HSAI, OUST, and AI timed out; existing one-hour backoff scheduled later retries;
 - the 06:46 cycle completed five feed polls, 12 SEC network checks, and one SEC cache hit without a failure;
-- the 07:02 cycle completed 11 SEC checks but recorded one separate AMBQ source-preparation timeout, with its next check scheduled for `2026-10-08T07:18:33.433Z`;
-- the 07:15 cycle again completed five feed polls and one SEC check, while SDGR discovery returned HTTP 403 and RXRX and PDYN discovery timed out. Existing backoff scheduled SDGR for the next day and the two timeouts for 08:15 UTC.
+- the 07:02 cycle completed 11 SEC checks but recorded one AMBQ source-preparation timeout;
+- the 07:15 cycle completed five feed polls and one SEC check, while SDGR discovery returned HTTP 403 and RXRX and PDYN discovery timed out. Existing backoff scheduled SDGR for the next day and the two timeouts for 08:15 UTC;
+- the 07:31 cycle completed 11 SEC checks. AMBQ was deferred, not retried, by the existing SEC minimum-interval guard until `07:32:33Z`; CEVA separately timed out and was scheduled for `07:47:03Z`. No manual replay was made.
 
-These failures are remote source/discovery results, not successful issuer coverage. The direct issuer registry still truthfully distinguishes feed-checked, pending, confirmed-no-feed, 403/404, body-too-large, and transient-timeout states.
+These are remote source/discovery outcomes, not successful issuer coverage. The direct issuer registry continues to distinguish feed-checked, pending, confirmed-no-feed, 403/404, body-too-large, transient-timeout, and provider-interval deferral states.
 
-The latest daily accounting is source failures `20/470 = 4.26%`, processing failures `1/55 = 1.82%`, and Committee technical failures `1/2 = 50%`. Three intervening cycles processed only nontechnical deferrals; the latest had no due processing attempt because all five retained cases were waiting for scheduled retries. A temporarily empty ready queue is not a completed assessment and does not satisfy the scale gate.
+The latest daily accounting is source failures `20/484 = 4.13%`, processing failures `1/58 = 1.72%`, and Committee technical failures `1/2 = 50%`. The latest cycle made three nontechnical processing deferrals; `eventsProcessed=0` correctly excludes those nonterminal cases. Three cases were profile-ready, none had fresh authoritative ready evidence, and the oldest reported wait was 1,830 minutes. Queue waiting is not a completed assessment.
 
 The shared rolling AI ledger is unchanged at `$0.452006` recorded/exposure, zero reservations, zero pending or unknown exposure, and `$9.547994` headroom under `$10`. Provider invoice access and actual infrastructure spend under the separate `$20/month` constraint remain unavailable.
 
 ### Profile observations
 
-Three further profile runs on exact executable `830f1d58` completed HTTP 200:
+Four further profile runs on exact executable `830f1d58` completed HTTP 200:
 
 - 06:41 UTC: 25 attempts, 26 source requests, two first-time verifications;
 - 06:56 UTC: 21 attempts, 22 source requests, one first-time verification;
-- 07:10 UTC: 18 attempts, 17 source requests, zero first-time verifications.
+- 07:10 UTC: 18 attempts, 17 source requests, zero first-time verifications;
+- 07:24 UTC: 19 attempts, 18 source requests, one first-time verification.
 
-Across those runs, all 65 source requests completed without a request or response-body failure, no model call was made, and no storage or count-reconciliation failure was reported. Daily production increased from 30 to `33/500`, leaving 467. All 25 pilot-cohort profiles remain verified.
+Across those runs, all 83 source requests completed without a request or response-body failure, no model call was made, and no storage or count-reconciliation failure was reported. Daily production increased from 30 to `34/500`, leaving 466. All 25 pilot-cohort profiles remain verified.
 
 Each run encountered one stale HELP admission and safely rejected it as `company_profile_cache_superseded` with zero writes. The terminal summaries remained successful with `storageFailureObserved=false`, confirming the existing contention guard continues to preserve the winning cache state.
 
-The three first-time verifications prove live profile yield on the new executable, but the available production summaries do not identify those tickers. They therefore do not by themselves prove that the three specific revision-14 fixture recoveries—POCI, POWL, and PPSI—caused the yield. That attribution remains inconclusive rather than inferred.
+The four first-time verifications prove live profile yield on the new executable, but the available production summaries do not identify those tickers. They therefore do not by themselves prove that the three specific revision-14 fixture recoveries—POCI, POWL, and PPSI—caused the yield. That attribution remains inconclusive rather than inferred.
 
 ### Gate and next bounded action
 
 No code change, cap change, manual replay, resource increase, or redeploy is justified by this window. Source and processing cumulative rates are below 5%, but the technical Committee rate is not, there are still fewer than 20 distinct real completed assessments, and two consecutive fully qualifying observation windows do not exist. The pilot remains at 25.
 
-Next bounded verification is AMBQ's scheduled SEC/source retry, later provider-paced direct-discovery retries, and production identity evidence for the revision-14 profile recoveries if it becomes durably available. INOD still requires its own eligible exact-code Committee retry; UPST success is not a substitute, and unchanged evidence must not be repurchased. No new critical incident, budget stop, authentication blocker, or verified live Serious Alert warrants an hourly notification.
+Next bounded verification is AMBQ and CEVA on their provider-paced SEC retries, later direct-discovery retries, and production identity evidence for the revision-14 profile recoveries if it becomes durably available. INOD still requires its own eligible exact-code Committee retry; UPST success is not a substitute, and unchanged evidence must not be repurchased. No new critical incident, budget stop, authentication blocker, or verified live Serious Alert warrants an hourly notification.
 
 ## Live financial-input repair completed; profile-parser recovery still awaits live yield — 8 October 2026, 13:25 Bangkok
 

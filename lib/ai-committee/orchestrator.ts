@@ -626,11 +626,14 @@ export async function runAiCommittee(input: RunAiCommitteeInput) {
   }
 
   const agentResults: AiCommitteeAgentResult[] = [];
-  // Admit the whole review only if every later role has room for the preceding
-  // visible reviewer JSON. This is a planning estimate, not a hard bound:
-  // visible token targets are prompt instructions, and UTF-8 bytes/token vary.
-  // Every actual call still checks all prior results against the hard byte cap.
+  // Admit the whole review only if every later role has room for preceding
+  // compact visible JSON. Keep the API output/reasoning limits unchanged; this
+  // planning target follows the stricter per-array word limits in the prompt.
+  // It is not a hard bound, so every actual call still checks the exact prior
+  // results against the unchanged UTF-8 byte cap before provider transport.
   const bytesPerVisibleOutputToken = 4;
+  const plannedVisibleTokens = (agent: AiCommitteeAgentDefinition) =>
+    ["explainer_agent", "analyst_agent"].includes(agent.id) ? Math.min(agent.maxOutputTokens, 300) : Math.min(agent.maxOutputTokens, 250);
   let reservedPriorResults = 0;
   const preflight = dryRun ? undefined : plannedRoles.map(agent => {
     const prompt = buildAgentPrompt(agent, evidence.evidencePack!, [], mode);
@@ -640,9 +643,10 @@ export async function runAiCommittee(input: RunAiCommitteeInput) {
       responseSchema: agent.id === "analyst_agent" ? FOCUSED_ANALYST_RESPONSE_SCHEMA : undefined,
       reservedPromptBytes: reasoningCommitteeModel(model) ? reservedPriorResults : 0 });
     const result = { agentId: agent.id, failure };
-    // Retain the existing four-byte/token estimate plus JSON framing. The API
-    // permits more output; exceeding this estimate never bypasses the hard gate.
-    reservedPriorResults += Math.max(0, agent.maxOutputTokens) * bytesPerVisibleOutputToken + 512;
+    // Retain four bytes per planned visible token plus JSON framing. The API
+    // permits the existing larger output allowance; exceeding this compact
+    // planning target never bypasses the exact hard gate on the next call.
+    reservedPriorResults += Math.max(0, plannedVisibleTokens(agent)) * bytesPerVisibleOutputToken + 512;
     return result;
   }).find(result => result.failure);
   let sharedFailure: AiCommitteeProviderFailure | undefined = preflight?.failure;

@@ -3,7 +3,7 @@ import { AI_COMMITTEE_REVIEW_MAX_PROMPT_BYTES, reasoningCommitteeModel } from "@
 
 // Advance only when the actual prompt transport or limit policy changes.
 // This version applies to proven-zero technical input holds, never completed reviews.
-export const AI_COMMITTEE_INPUT_POLICY_REVISION = "utf8-schema-framing-60000-compact-valuation-rules-v5";
+export const AI_COMMITTEE_INPUT_POLICY_REVISION = "utf8-schema-framing-60000-compact-visible-plan-v6";
 
 /** Bound the text the model receives, including role/schema framing. JSON's
  * transport escaping is decoded before tokenization and is not extra input. */

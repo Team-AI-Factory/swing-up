@@ -216,9 +216,11 @@ try {
       }
     }
     assert.deepEqual(roomyPack, roomyOriginal, "Never change fingerprinted evidence, audit storage or consensus input");
-    assert.ok(gateInputs.some(options => (options.reservedPromptBytes ?? 0) > 0),
-      "Whole-review admission must reserve prior-role growth for later prompts");
+    assert.deepEqual(gateInputs.map(options => options.reservedPromptBytes ?? 0), [0, 1_712, 3_224, 4_736],
+      "Whole-review admission reserves the prompt's compact visible-result targets");
     assert.ok(gateInputs.every(options => !promptInput.committeePromptPreflight(options)));
+    assert.deepEqual(captured.map(options => options.maxTokens), [1_000, 750, 700, 900],
+      "Provider output limits remain unchanged");
     assert.equal(roomy.committeeOutput.overallRecommendation, "needs_more_data");
     assert.equal(roomy.compatibility.publishes, false);
     assert.equal(roomy.compatibility.sendsTelegram, false);
@@ -227,8 +229,7 @@ try {
     assert.ok(captured[0].responseSchema.schema.additionalProperties === false);
 
     // Match reported live totals only; these are synthetic, not historical packets.
-    // Every unreserved raw role fits. In v3 that exact condition bypassed record
-    // factoring, so the no-record control reproduces its reserve-only rejection.
+    // The no-record control reproduces a whole-review input rejection.
     gateInputs = []; captured = []; fetches = 0;
     await baseline.runAiCommittee({ ...input, [baseline.TRUSTED_IN_MEMORY_EVIDENCE]: roomyPack });
     const rawPlanningPeak = Math.max(...gateInputs.map(options => bytes(options) + (options.reservedPromptBytes ?? 0)));
@@ -242,7 +243,8 @@ try {
       assert.equal(held.ok, false);
       assert.equal(fetches, 0);
       assert.equal(captured.length, 0);
-      assert.ok(gateInputs.every(options => bytes(options) <= 60_000), "v3 bypasses factoring for every raw role");
+      assert.ok(gateInputs.some(options => bytes(options) + (options.reservedPromptBytes ?? 0) > 60_000),
+        "The no-record control must reproduce a whole-review input hold");
       assert.equal(Math.max(...gateInputs.map(options => bytes(options) + (options.reservedPromptBytes ?? 0))), target);
       const rawEvidence = JSON.parse(gateInputs[0].messages[1].content).evidencePack;
       const beforeReserved = gateInputs.map(options => bytes(options) + (options.reservedPromptBytes ?? 0));
@@ -281,32 +283,28 @@ try {
     const unchanged = structuredClone(fullPack);
     gateInputs = []; captured = []; fetches = 0;
     const after = await compact.runAiCommittee({ ...input, [compact.TRUSTED_IN_MEMORY_EVIDENCE]: fullPack });
-    assert.equal(after.ok, false);
-    assert.equal(captured.length, 0, "Reserved later-role growth must block before the first paid request");
-    assert.equal(fetches, 0);
-    assert.equal(after.committeeOutput.modelUsageSummary.actualOpenAiUsage.responsesWithUsage, 0);
-    const reservedFailure = after.agentResults.find(result => result.status === "failed").providerFailure;
-    assert.equal(reservedFailure.category, "input_limit");
-    assert.equal(reservedFailure.maximumPromptBytes, 60_000);
-    assert.ok(reservedFailure.promptSectionBytes.reservedPriorResults > 0);
+    assert.equal(after.ok, true);
+    assert.equal(captured.length, 4);
+    assert.equal(fetches, 4);
+    assert.equal(after.committeeOutput.modelUsageSummary.actualOpenAiUsage.responsesWithUsage, 4);
+    assert.ok(gateInputs.every(options => bytes(options) + (options.reservedPromptBytes ?? 0) <= 60_000));
+    assert.deepEqual(captured.map(request => JSON.parse(request.messages[1].content).agent.id),
+      ["analyst_agent", "valuation_dcf_agent", "skeptic_agent", "final_judge"]);
     assert.deepEqual(fullPack, unchanged, "Never change fingerprinted evidence, audit storage or consensus input");
     assert.equal(after.compatibility.publishes, false);
     assert.equal(after.compatibility.sendsTelegram, false);
 
-    // Keep a realistic counterexample: this SEC-derived reconstruction has
-    // only 12 financial facts and cannot recover the five-role planning reserve.
-    // It is not the historical live packet and must not make any provider call.
+    // Keep a realistic SEC-derived reconstruction with only 12 financial facts.
+    // Compact visible-result planning admits it without changing evidence or
+    // provider output limits; every actual role remains independently gated.
     const servPack = JSON.parse(readFileSync(new URL("./fixtures/committee-serv-reconstructed-2026-10-07/evidence-pack.json", import.meta.url), "utf8"));
     gateInputs = []; captured = []; fetches = 0;
     const servHeld = await compact.runAiCommittee({ ...input, [compact.TRUSTED_IN_MEMORY_EVIDENCE]: servPack });
-    assert.equal(servHeld.ok, false);
-    assert.equal(captured.length, 0);
-    assert.equal(fetches, 0);
-    const servFailure = servHeld.agentResults.find(result => result.status === "failed");
-    assert.equal(servFailure.agentId, "final_judge");
-    assert.equal(servFailure.providerFailure.promptBytes, 63_729);
-    assert.equal(servFailure.providerFailure.promptSectionBytes.reservedPriorResults, 14_248);
-    assert.equal(servHeld.committeeOutput.modelUsageSummary.actualOpenAiUsage.responsesWithUsage, 0);
+    assert.equal(servHeld.ok, true);
+    assert.ok(captured.length >= 4);
+    assert.equal(fetches, captured.length);
+    assert.equal(servHeld.committeeOutput.modelUsageSummary.actualOpenAiUsage.responsesWithUsage, captured.length);
+    assert.ok(gateInputs.every(options => bytes(options) + (options.reservedPromptBytes ?? 0) <= 60_000));
     for (const request of gateInputs) {
       const payload = JSON.parse(request.messages[1].content), restored = restore(payload.evidencePack, payload);
       assert.deepEqual(restored.financialDiligence, servPack.financialDiligence);
@@ -335,14 +333,17 @@ try {
       .update(`${role}-distinct-finding-${index}`).digest("hex")}`).join("\n");
     const cumulative = await compact.runAiCommittee({ ...input, [compact.TRUSTED_IN_MEMORY_EVIDENCE]: highCapacityPack });
     assert.equal(cumulative.ok, false);
-    assert.deepEqual(cumulative.agentResults.slice(0, 3).map(role => role.status), ["completed", "completed", "completed"]);
-    assert.equal(cumulative.agentResults[3].error, "prompt_too_large");
-    assert.equal(cumulative.committeeOutput.modelUsageSummary.actualOpenAiUsage.responsesWithUsage, 3);
-    assert.equal(fetches, 3);
+    const cumulativeFailureIndex = cumulative.agentResults.findIndex(role => role.error === "prompt_too_large");
+    assert.ok(cumulativeFailureIndex >= 1);
+    assert.ok(cumulative.agentResults.slice(0, cumulativeFailureIndex).every(role => role.status === "completed"));
+    assert.equal(cumulative.committeeOutput.modelUsageSummary.actualOpenAiUsage.responsesWithUsage, cumulativeFailureIndex);
+    assert.equal(fetches, cumulativeFailureIndex);
     assert.ok(replyBytes.every(size => size < 8_192));
-    assert.equal(new Set(cumulative.agentResults.slice(0, 3).map(role => role.riskNotes[0])).size, 3);
-    assert.equal(JSON.stringify(JSON.parse(captured[3].messages[1].content).previousResults),
-      JSON.stringify(cumulative.agentResults.slice(0, 3).map(role => Object.fromEntries(Object.entries(role).filter(([key]) => key !== "tokenUsage")))));
+    assert.equal(new Set(cumulative.agentResults.slice(0, cumulativeFailureIndex).map(role => role.riskNotes[0])).size,
+      cumulativeFailureIndex);
+    assert.equal(JSON.stringify(JSON.parse(captured[cumulativeFailureIndex].messages[1].content).previousResults),
+      JSON.stringify(cumulative.agentResults.slice(0, cumulativeFailureIndex)
+        .map(role => Object.fromEntries(Object.entries(role).filter(([key]) => key !== "tokenUsage")))));
     const cumulativeReplyBytes = [...replyBytes];
 
     // An unexpected long provider answer can still overflow the next prompt.
@@ -362,7 +363,7 @@ try {
     assert.ok(dynamic.agentResults[1].providerFailure.promptSectionBytes.sharedEvidenceValues > 0);
     assert.ok(!JSON.stringify(dynamic.agentResults[1].providerFailure).includes(responseExtension.slice(0, 30)));
     console.log(JSON.stringify({ syntheticOnly: true, exactHistoricalReplay: false, actualOrchestratorCapture: true,
-      before: 63_587, servReconstructionStillHeldAt: servFailure.providerFailure.promptBytes, valueDictionarySavings, reservedBoundaryMeasurements, roomyAfter: roomyPromptBytes, exactEvidenceRoundTrip: true, allPriorOutputsPreserved: true,
+      before: 63_587, servReconstructionAdmitted: true, valueDictionarySavings, reservedBoundaryMeasurements, roomyAfter: roomyPromptBytes, exactEvidenceRoundTrip: true, allPriorOutputsPreserved: true,
       reservedWholeReviewPreflight: true, zeroNetworkForIntrinsicOverflow: true,
       laterDynamicOverflowRetainsKnownUsage: true, cumulativeUniqueReplyBytes: cumulativeReplyBytes, numericOnlyDiagnostics: true,
       sourceDatesAndUrlsRemainLiteral: true, unchangedHardCap: 60_000, unchangedMaximumReservation: 2.7538 }));

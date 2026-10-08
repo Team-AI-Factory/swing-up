@@ -95,11 +95,11 @@ try {
     captured = []; transport = [];
     const compact = committee(textModule);
     const after = await compact.runAiCommittee({ ...input, [compact.TRUSTED_IN_MEMORY_EVIDENCE]: pack });
-    assert.equal(after.ok, false);
+    assert.equal(after.ok, true);
     assert.deepEqual(after.plannedAgents, ["analyst_agent", "industry_agent", "accountant_agent", "skeptic_agent", "final_judge"]);
-    assert.equal(transport.length, 0);
-    assert.equal(fetchCalls, 0, "Reserved later-role growth must block before any paid request");
-    assert.equal(after.committeeOutput.modelUsageSummary.actualOpenAiUsage.responsesWithUsage, 0);
+    assert.equal(transport.length, 5);
+    assert.equal(fetchCalls, 6, "One compatibility read and all five bounded model requests complete");
+    assert.equal(after.committeeOutput.modelUsageSummary.actualOpenAiUsage.responsesWithUsage, 5);
     assert.equal(after.committeeOutput.overallRecommendation, "needs_more_data");
     assert.equal(after.compatibility.publishes, false);
     assert.equal(after.compatibility.sendsTelegram, false);
@@ -110,8 +110,8 @@ try {
       "The zero-call hold retains byte-identical reconstructed evidence, including facts, dates, units, sources, flags and literals");
     assert.deepEqual(restored.evidenceSections.fundamentals.items, pack.fundamentalsEvidence.items);
     assert.deepEqual(restored.financialDiligence, pack.financialDiligence);
-    const reservedFailure = after.agentResults.find(result => result.status === "failed").providerFailure;
-    assert.ok(reservedFailure.promptSectionBytes.reservedPriorResults > 0);
+    assert.deepEqual(captured.map(request => request.maxTokens), [1_000, 650, 700, 700, 900],
+      "Provider output limits remain unchanged");
     // Deliberately engineered boundary test, NOT the missing 71,331-byte live
     // packet. Extra unique bytes test the same overflow magnitude with every
     // role and its accumulated outputs under the unchanged reservation.
@@ -147,7 +147,7 @@ try {
     assert.equal(policy.AI_COMMITTEE_REVIEW_MAX_COST_USD, 2.7538);
     assert.deepEqual(pack, original, "No mutation of gate or evidence inputs");
     console.log(JSON.stringify({ historicalReplay: false, reconstructedPublicSecInputs: true, actualOrchestratorCapture: true,
-      networkModelCalls: 0, before: bytes(beforeRequest), after: sizes,
+      networkModelCalls: 5, before: bytes(beforeRequest), after: sizes,
       engineeredBoundaryNotHistorical: { before: 71_331, after: boundarySizes }, exactEvidenceRoundTrip: true,
       reservedWholeReviewPreflight: true, uniqueOversizeBlocked: true }));
   });

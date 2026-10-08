@@ -2,7 +2,7 @@ import { extractFinancialNoteCustomerEvidence, verifiedFinancialNoteCustomerEvid
 import { annualInformationFormBusinessText, secAnnualFilingIndexUrl } from "@/lib/company-profile-annual-source";
 import { extractRevenueGeography, revenueGeographyFromQuote, type RevenueGeography } from "@/lib/company-revenue-geography";
 /** Company descriptions must be extracts from a dated, identity-verified source. */
-export const COMPANY_PROFILE_PARSER_REVISION = 14;
+export const COMPANY_PROFILE_PARSER_REVISION = 15;
 export type CompanyIdentity = { ticker?: unknown; company?: unknown; cik?: unknown };
 export type VerifiedCompanyProfile = {
   version: 1; status: "verified"; ticker: string; company: string; cik: string;
@@ -173,6 +173,21 @@ function customerDescriptionRank(sentence: string, identity: CompanyIdentity) {
   const manufacturingCapability = "(?:high complexity components|specific optical technologies|micro-optical assemblies|other advanced manufacturing challenges)";
   const outsourcedManufacturing = new RegExp(`^Our systems manufacturing operations assemble and manufacture components and systems for (?:both )?(?:medical device|advanced aerospace)(?: and (?:medical device|advanced aerospace))? customers who choose to outsource these services based on our ability to handle ${manufacturingCapability}(?:, ${manufacturingCapability})*(?:,? and ${manufacturingCapability})?[.]$`, "i");
   if (outsourcedManufacturing.test(sentence)) return 2;
+  // Some annual reports identify the current buyer population through an
+  // explicit revenue-attribution or supplier relationship rather than a
+  // sentence beginning with "customers". Require the exact issuer subject,
+  // a present commercial predicate and a concrete buyer group; projections,
+  // product users and third-party supply chains do not qualify.
+  const revenueMatch = sentence.match(/^([A-Za-z][A-Za-z0-9’'-]{5,40}) competes in multiple product categories, with the majority of (?:the company['’]s|our) revenues attributable to products and services sold to (.+?) for use in the packaging of their products for sale or shipment[.]$/i);
+  const identityFirstWord = text(identity.company).match(/^[A-Za-z][A-Za-z0-9’'-]{5,40}/)?.[0];
+  const revenueBuyers = revenueMatch && identityFirstWord?.toLowerCase() === revenueMatch[1].toLowerCase() ? revenueMatch[2] : undefined;
+  if (revenueBuyers && buyerGroups.test(revenueBuyers)) return 2;
+  const supplierBuyers = sentence.match(new RegExp(`^${issuerSubject(identity)} is a supplier to (.+?)(?: and has (?:longstanding|long-standing) relationships with .+)?[.]$`, "i"))?.[1];
+  if (supplierBuyers && buyerGroups.test(supplierBuyers)
+    && !/\b(?:potential|prospective|target|supplier|investor|employee)\b/i.test(supplierBuyers)) return 2;
+  const marketedBuyers = sentence.match(/^We have also hired a specialty sales force consisting of .{1,300}? to market our products to (.+)[.]$/i)?.[1];
+  if (marketedBuyers && buyerGroups.test(marketedBuyers)
+    && !/\b(?:potential|prospective|target|hypothetical|investor|employee)\b/i.test(marketedBuyers)) return 2;
   // These statements explicitly identify a commercial population, rather than
   // inferring one from product usage, partnership names or financing alone.
   const licensedPopulation = sentence.match(/^Our business model centers on licensing our (?:IP|software|technology)\b.{1,220}?\s+to\s+(.+)/i)?.[1]

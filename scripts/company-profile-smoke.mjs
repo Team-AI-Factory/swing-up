@@ -89,6 +89,44 @@ assert.equal(extractSentences(`${unfinishedBusiness}</p><h3>Other companies</h3>
 const serviceCustomers = "Our services are offered primarily to hospitals, outpatient clinics and government agencies.";
 assert.equal(extractSentences(fixture.business, serviceCustomers)?.customers, serviceCustomers, "A service company's explicit buyers qualify without invented product claims");
 assert.equal(extractSentences(fixture.business, "Our services are offered primarily to help customers manage their information."), null);
+
+// Exact current production constructions from official FY2025 annuals:
+// Sonoco: https://www.sec.gov/Archives/edgar/data/91767/000009176726000008/son-20251231.htm
+// Adient: https://www.sec.gov/Archives/edgar/data/1670541/000167054125000152/adnt-20250930.htm
+// ADMA: https://www.sec.gov/Archives/edgar/data/1368514/000114036126006815/ef20059416_10-k.htm
+const productionCustomerCases = [
+  {
+    identity: { ...identity, company: "SONOCO PRODUCTS CO" },
+    customers: "Sonoco competes in multiple product categories, with the majority of the Company’s revenues attributable to products and services sold to consumer and industrial products companies for use in the packaging of their products for sale or shipment.",
+    negatives: [
+      "Another Packaging Company competes in multiple product categories, with the majority of the Company’s revenues attributable to products and services sold to consumer and industrial products companies for use in the packaging of their products for sale or shipment.",
+      "Sonoco competes in multiple product categories, with the majority of the Company’s forecast revenues expected from products and services sold to consumer and industrial products companies for use in the packaging of their products for sale or shipment.",
+    ],
+  },
+  {
+    identity: { ...identity, company: "Adient plc" },
+    customers: "Adient is a supplier to all of the global OEMs and has longstanding relationships with premier automotive manufacturers, including BMW, Mercedes-Benz Group, Ford Motor Company, General Motors Company, Honda Motor Company, Hyundai Motor Company, Jaguar Land Rover, Kia Corporation, Mazda Motor Corporation, Mitsubishi Motor Corporation, Nissan Motor Corporation, Renault Group, Stellantis N.V., Suzuki Motor Corporation, Toyota Motor Corporation, Volkswagen Group and Volvo Car Group.",
+    negatives: [
+      "Adient may become a supplier to all of the global OEMs and has longstanding relationships with premier automotive manufacturers.",
+      "Adient is a supplier to prospective global OEMs and has longstanding relationships with premier automotive manufacturers.",
+    ],
+  },
+  {
+    identity: { ...identity, company: "ADMA BIOLOGICS, INC." },
+    customers: "We have also hired a specialty sales force consisting of account managers, medical science liaisons and other customary scientific, medical and detail representatives to market our products to hospitals, physician offices/clinics, and other specialty treatment organizations as applicable.",
+    negatives: [
+      "We may also hire a specialty sales force consisting of account managers to market our products to hospitals and clinics.",
+      "We have also hired a specialty sales force consisting of account managers to market our products to prospective hospitals and clinics.",
+    ],
+  },
+];
+const productionCaseBusiness = "We are a technology company developing and offering inventory management software and warehouse scheduling applications.";
+for (const candidate of productionCustomerCases) {
+  assert.equal(extractSentences(productionCaseBusiness, candidate.customers, candidate.identity)?.customers, candidate.customers,
+    "A current annual's explicit commercial population is retained verbatim");
+  for (const negative of candidate.negatives) assert.equal(extractSentences(productionCaseBusiness, negative, candidate.identity), null,
+    "Forecast, wrong-issuer and prospective variants remain unverified");
+}
 const extractionCheck = override => profile.inspectCompanyProfileExtraction({ identity, html, form: "10-K", sourceUrl: fixture.sourceUrl,
   filedAt: fixture.sourceFiledAt, now, ...override });
 assert.equal(extractionCheck({ html: "No business section is present." }).reason, "company_profile_business_section_missing");

@@ -96,14 +96,6 @@ assert.equal(extractSentences(fixture.business, "Our services are offered primar
 // ADMA: https://www.sec.gov/Archives/edgar/data/1368514/000114036126006815/ef20059416_10-k.htm
 const productionCustomerCases = [
   {
-    identity: { ...identity, company: "SONOCO PRODUCTS CO" },
-    customers: "Sonoco competes in multiple product categories, with the majority of the Company’s revenues attributable to products and services sold to consumer and industrial products companies for use in the packaging of their products for sale or shipment.",
-    negatives: [
-      "Another Packaging Company competes in multiple product categories, with the majority of the Company’s revenues attributable to products and services sold to consumer and industrial products companies for use in the packaging of their products for sale or shipment.",
-      "Sonoco competes in multiple product categories, with the majority of the Company’s forecast revenues expected from products and services sold to consumer and industrial products companies for use in the packaging of their products for sale or shipment.",
-    ],
-  },
-  {
     identity: { ...identity, company: "Adient plc" },
     customers: "Adient is a supplier to all of the global OEMs and has longstanding relationships with premier automotive manufacturers, including BMW, Mercedes-Benz Group, Ford Motor Company, General Motors Company, Honda Motor Company, Hyundai Motor Company, Jaguar Land Rover, Kia Corporation, Mazda Motor Corporation, Mitsubishi Motor Corporation, Nissan Motor Corporation, Renault Group, Stellantis N.V., Suzuki Motor Corporation, Toyota Motor Corporation, Volkswagen Group and Volvo Car Group.",
     negatives: [
@@ -127,6 +119,26 @@ for (const candidate of productionCustomerCases) {
   for (const negative of candidate.negatives) assert.equal(extractSentences(productionCaseBusiness, negative, candidate.identity), null,
     "Forecast, wrong-issuer and prospective variants remain unverified");
 }
+const sonocoIdentity = { ticker: "SON", company: "SONOCO PRODUCTS CO", cik: "0000091767" };
+const sonocoSourceUrl = "https://www.sec.gov/Archives/edgar/data/91767/000009176726000008/son-20251231.htm";
+const sonocoBusiness = "The Company manufactures and sells many of its products globally.";
+// The live filing contains source-rendering spaces inside two words. Retain
+// them verbatim instead of silently repairing the official quote.
+const sonocoCustomers = "As of December 31, 2025, the Company had approximately 265 l ocations in 37 cou ntries, serving some of the world’s best-known brands around the globe.";
+const sonocoFiller = "The Company maintains administrative facilities in multiple countries and employs regional teams across those locations. ";
+const sonocoHtml = `<h2>Item 1. Business</h2><p>${sonocoBusiness}</p><p>${sonocoCustomers}</p><p>${sonocoFiller.repeat(4)}</p><h2>Item 1A. Risk Factors</h2>
+<h2>Item 7. Management’s Discussion and Analysis</h2><p>Sonoco competes in multiple product categories, with the majority of the Company’s revenues attributable to products and services sold to consumer and industrial products companies for use in the packaging of their products for sale or shipment.</p>`;
+const sonoco = profile.extractCompanyProfile({ identity: sonocoIdentity, html: sonocoHtml, form: "10-K", sourceUrl: sonocoSourceUrl, filedAt: "2026-02-27", now });
+assert.equal(sonoco?.business, sonocoBusiness);
+assert.equal(sonoco?.customers, sonocoCustomers, "The actual Item 1 brands-served statement verifies SON without importing an Item 7 sentence");
+assert.equal(profile.extractCompanyProfile({ identity: sonocoIdentity,
+  html: sonocoHtml.replace(`<p>${sonocoCustomers}</p>`, ""), form: "10-K", sourceUrl: sonocoSourceUrl, filedAt: "2026-02-27", now }), null,
+  "The out-of-section Item 7 revenue statement cannot verify an Item 1 company profile");
+for (const decoy of [
+  "As of December 31, 2025, the Company had approximately 265 locations in 37 countries, serving prospective brands around the globe.",
+  "As of December 31, 2025, the Company had approximately 265 locations in 37 countries, serving its investors around the globe.",
+]) assert.equal(extractSentences(productionCaseBusiness, decoy, sonocoIdentity), null,
+  "Prospective brands and noncustomer stakeholders remain unverified");
 const extractionCheck = override => profile.inspectCompanyProfileExtraction({ identity, html, form: "10-K", sourceUrl: fixture.sourceUrl,
   filedAt: fixture.sourceFiledAt, now, ...override });
 assert.equal(extractionCheck({ html: "No business section is present." }).reason, "company_profile_business_section_missing");

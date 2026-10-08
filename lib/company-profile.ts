@@ -2,7 +2,7 @@ import { extractFinancialNoteCustomerEvidence, verifiedFinancialNoteCustomerEvid
 import { annualInformationFormBusinessText, secAnnualFilingIndexUrl } from "@/lib/company-profile-annual-source";
 import { extractRevenueGeography, revenueGeographyFromQuote, type RevenueGeography } from "@/lib/company-revenue-geography";
 /** Company descriptions must be extracts from a dated, identity-verified source. */
-export const COMPANY_PROFILE_PARSER_REVISION = 15;
+export const COMPANY_PROFILE_PARSER_REVISION = 16;
 export type CompanyIdentity = { ticker?: unknown; company?: unknown; cik?: unknown };
 export type VerifiedCompanyProfile = {
   version: 1; status: "verified"; ticker: string; company: string; cik: string;
@@ -182,6 +182,12 @@ function customerDescriptionRank(sentence: string, identity: CompanyIdentity) {
   const identityFirstWord = text(identity.company).match(/^[A-Za-z][A-Za-z0-9’'-]{5,40}/)?.[0];
   const revenueBuyers = revenueMatch && identityFirstWord?.toLowerCase() === revenueMatch[1].toLowerCase() ? revenueMatch[2] : undefined;
   if (revenueBuyers && buyerGroups.test(revenueBuyers)) return 2;
+  // Some Item 1 overviews name the current commercial population as brands
+  // served after a dated operating-footprint statement. Keep the complete
+  // quote and admit only this concrete present-tense construction; a generic
+  // brand, market, forecast or MD&A statement does not qualify.
+  const servedBrands = sentence.match(/^As of .{1,180}, the Company had .{1,160}, serving (some of the world['’]s best-known brands around the globe)[.]$/i)?.[1];
+  if (servedBrands) return 2;
   const supplierBuyers = sentence.match(new RegExp(`^${issuerSubject(identity)} is a supplier to (.+?)(?: and has (?:longstanding|long-standing) relationships with .+)?[.]$`, "i"))?.[1];
   if (supplierBuyers && buyerGroups.test(supplierBuyers)
     && !/\b(?:potential|prospective|target|supplier|investor|employee)\b/i.test(supplierBuyers)) return 2;

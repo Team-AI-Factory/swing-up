@@ -1,3 +1,17 @@
+## LMND SEC snapshot recovered; direct-feed timeouts keep source gate failed — 8 October 2026, 09:09 Bangkok
+
+The deployed executable remains tested runtime `86da747b3a156dba0282db93d057fc250c85d35a`; current pilot head differs only in this launch log. The latest sensor cycle completed HTTP200 at 02:01 UTC on active deployment `c2829ca6-f71e-4ec4-b720-d27975edfcb9`. LMND's previously timed-out SEC snapshot recovered on its existing cadence, restoring **25/25 current SEC snapshots** without a manual replay or code change.
+
+Direct issuer enrichment was still partial: six registered feeds were polled, five succeeded and PGY timed out; two separately selected discovery attempts also timed out. Existing provider backoff moved the timed-out feeds to later retries, no provider-budget bucket was blocked, and the cycle stayed within its source deadline. Bangkok-day source accounting is **7/129 (5.43%)**, so the source gate has moved back above 5%. These transient remote timeouts do not justify lowering evidence rules, adding resources or forcing a broad retry.
+
+One due UPST item was truthfully deferred as `same_evidence` with `reservationBlockedReason=unchanged_prompt_input_limit`; `openAiCalled=false`. The cycle had one nontechnical processing deferral, zero processing failures, zero Committee attempts, approvals, live outboxes or deliveries. Daily processing is **1/20 (5.00%)** and technical Committee reliability remains **1/1 (100%)**. The rolling ledger has aged to **$0.095300 recorded/exposure, $0 reserved, $0 pending unknown and $9.904700 headroom under $10**; this is rolling-window expiry, not a refund.
+
+The 02:09 UTC profile pass completed HTTP200 with 22 attempts and 25 source requests, one first-time verification, zero request/body/storage/count failures and no model calls. Production is now **18/500**, 482 short, while all 25 cohort profiles remain verified. Remaining extraction outcomes were six combined business/customer gaps, eight customer gaps, four unavailable annual filings and two 40-F/AIF verification gaps.
+
+Main scanning remains stopped, the fixed cohort remains 25, and staged telemetry patch `97789f67-b0f5-4cb3-b689-bd46c2b4c63f` remains untouched. No runtime repair or redeploy is justified. Next: retain provider throttling/backoff, verify later feed retries and continued profile yield, and do not repurchase unchanged UPST evidence. Remain at 25 until every scale gate passes.
+
+---
+
 ## Clean follow-up cycle; one LMND source timeout remains visible — 8 October 2026, 08:06 Bangkok
 
 The latest independent sensor cycle completed HTTP200 at 01:03 UTC on active deployment `c2829ca6-f71e-4ec4-b720-d27975edfcb9`. It had zero due processing attempts, Committee attempts, AI calls, approvals, live outboxes or deliveries. The queue contained six scheduled-retry cases, all currently not due; four retain exact-evidence holds and two have other scheduled retries. No work was expired or misreported as a completed assessment.

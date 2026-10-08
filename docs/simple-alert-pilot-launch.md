@@ -1,3 +1,19 @@
+## CEVA SEC snapshot timed out; clean processing cycle remains below scale gates — 8 October 2026, 10:04 Bangkok
+
+The deployed executable remains tested runtime `86da747b3a156dba0282db93d057fc250c85d35a`; GitHub comparison shows the pilot branch is seven launch-log-only commits ahead, with no executable difference. Railway reports no failed service deployment or active warning. Main scanning remains stopped, the fixed cohort remains 25, and staged telemetry patch `97789f67-b0f5-4cb3-b689-bd46c2b4c63f` remains untouched.
+
+The latest sensor cycle completed HTTP200 at 03:04 UTC on active deployment `c2829ca6-f71e-4ec4-b720-d27975edfcb9`. Three due processing attempts were all nontechnical deferrals; there were zero processing failures, Committee attempts, AI calls, approvals, live outboxes, delivery jobs or deliveries. The queue retains six scheduled-retry cases. Three are profile-ready but none is a fresh authoritative ready case; the oldest reported profile-ready wait is 2,792 minutes. Queue age and deferrals are not completed assessments.
+
+Direct issuer/SEC collection completed 11/11 SEC checks, but CEVA's state retained one transient source-preparation timeout and only 24 current SEC snapshots. The registry persisted successfully, the source deadline was not reached, and the existing cadence scheduled the next CEVA check for 03:18 UTC. Bangkok-day source accounting is **8/198 (4.04%)** and processing is **1/29 (3.45%)**, while technical Committee reliability remains **1/1 (100%)**. One below-5% source/processing observation does not establish two consecutive qualifying windows, and the Committee gate still fails.
+
+The latest completed profile pass at 02:56 UTC returned HTTP200 with 23 attempts, 22 source requests, one first-time verification, zero request/body/storage/count failures and no model calls. Production is **20/500**, 480 short, while all 25 cohort profiles remain verified. Remaining extraction outcomes were five combined business/customer gaps, 15 customer gaps and one unavailable annual filing.
+
+The shared rolling ledger is **$0.095300 recorded/exposure, $0 reserved, $0 pending unknown and $9.904700 headroom under $10**. Provider invoices and actual infrastructure spend under the separate $20/month limit remain unverified. No Serious Buy/Sell/Watch Out exists and no live delivery receipt exists.
+
+No code change, manual replay, resource increase or redeploy is justified. Next: verify CEVA's scheduled SEC retry, continue observing direct-feed retries and profile yield, and retain exact-evidence holds without repurchasing unchanged packets. Remain at 25 until every scale gate passes.
+
+---
+
 ## LMND SEC snapshot recovered; direct-feed timeouts keep source gate failed — 8 October 2026, 09:09 Bangkok
 
 The deployed executable remains tested runtime `86da747b3a156dba0282db93d057fc250c85d35a`; current pilot head differs only in this launch log. The latest sensor cycle completed HTTP200 at 02:01 UTC on active deployment `c2829ca6-f71e-4ec4-b720-d27975edfcb9`. LMND's previously timed-out SEC snapshot recovered on its existing cadence, restoring **25/25 current SEC snapshots** without a manual replay or code change.

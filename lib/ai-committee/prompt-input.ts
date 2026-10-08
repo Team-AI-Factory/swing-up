@@ -3,7 +3,7 @@ import { AI_COMMITTEE_REVIEW_MAX_PROMPT_BYTES, reasoningCommitteeModel } from "@
 
 // Advance only when the actual prompt transport or limit policy changes.
 // This version applies to proven-zero technical input holds, never completed reviews.
-export const AI_COMMITTEE_INPUT_POLICY_REVISION = "utf8-schema-framing-60000-reserved-review-v3";
+export const AI_COMMITTEE_INPUT_POLICY_REVISION = "utf8-schema-framing-60000-shared-financial-values-v4";
 
 /** Bound the text the model receives, including role/schema framing. JSON's
  * transport escaping is decoded before tokenization and is not extra input. */
@@ -30,7 +30,7 @@ function promptSectionBytes(messages: Array<{ role: string; content: string }>, 
   try {
     const user = JSON.parse(userMessages[0].content);
     if (!user || typeof user !== "object" || Array.isArray(user)) return sections;
-    for (const key of ["evidencePack", "sharedEvidenceTexts", "sharedEvidenceKeys", "previousResults", "decisionRules"]) {
+    for (const key of ["evidencePack", "sharedEvidenceTexts", "sharedEvidenceKeys", "sharedEvidenceValues", "previousResults", "decisionRules"]) {
       if (Object.hasOwn(user, key)) sections[key] = bytes(user[key]);
     }
     const pack = user.evidencePack;

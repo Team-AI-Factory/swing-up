@@ -1,0 +1,232 @@
+{
+  "asOf": "2026-10-08T05:17:00Z",
+  "baseCommit": "ef020eb0e3437affe8c96618620e1adc5cf048a8",
+  "selection": "Six purposefully selected failed tickers in authenticated Railway 05:08–05:10 UTC production logs. Latest official annuals, not proven to match production cached URLs. This is not a random sample or population-yield estimate.",
+  "sources": [
+    {
+      "ticker": "PNW",
+      "cik": "0000764622",
+      "company": "PINNACLE WEST CAPITAL CORP",
+      "form": "10-K",
+      "sourceUrl": "https://www.sec.gov/Archives/edgar/data/764622/000076462226000011/pnw-20251231.htm",
+      "sourceFiledAt": "2026-02-25",
+      "reportPeriod": "2025-12-31",
+      "accession": "0000764622-26-000011",
+      "discoveryUrl": "https://data.sec.gov/submissions/CIK0000764622.json",
+      "discoverySha256": "89233c71416cb59cf90988d79b315988fbf705fc0cdd97e41da9d5389832c946",
+      "sourceScope": "Latest annual discovered October 8 from official SEC submissions for actual 05:08-05:10 pending ticker; production cached URL unknown.",
+      "rawHtmlSha256": "d8df723f4abca1e68cc0ee8ef8bae0274d1387f2f13257c7fa78dcef01b23086",
+      "bytes": 5657650,
+      "businessTextSha256": "09be113e91f52e740b5f0fb2d24776ab1e903f6c9f642f4001e5edbf91eb0507",
+      "businessChars": 80000,
+      "baselineReason": "company_profile_customers_not_extracted",
+      "expectedReason": "company_profile_customers_not_extracted",
+      "expectedVerified": false,
+      "passages": [
+        {
+          "quote": "Pinnacle West is an investor-owned electric utility holding company based in Phoenix, Arizona\nwith consolidated assets of approximately $30 billion. We derive essentially all of our revenues and earnings from our principal subsidiary, APS. Since 1886, APS and its affiliates have provided energy and energy-related products to people and businesses throughout Arizona. APS is Arizona’s largest and longest-serving electric company and generates safe, affordable electricity in 11 of Arizona’s 15 counties. Our other active subsidiaries are El Dorado and PNW Power.\nOur reportable business segment is our regulated electricity segment, which consists of traditional regulated retail and wholesale electricity businesses (primarily electric service to Native Load customers) and related activities, and includes electricity generation, transmission, and distribution. Our reportable business segment activities are conducted primarily through our wholly-owned subsidiary, APS.",
+          "sha256": "4d336d285cb6d649a869960ba45968c2b6c459ec95609a2388e53a914fd48663",
+          "businessSectionOffset": 14
+        }
+      ]
+    },
+    {
+      "ticker": "POCI",
+      "cik": "0000867840",
+      "company": "PRECISION OPTICS CORPORATION, INC.",
+      "form": "10-K",
+      "sourceUrl": "https://www.sec.gov/Archives/edgar/data/867840/000168316826007462/poci_i10k-063026.htm",
+      "sourceFiledAt": "2026-09-28",
+      "reportPeriod": "2026-06-30",
+      "accession": "0001683168-26-007462",
+      "discoveryUrl": "https://data.sec.gov/submissions/CIK0000867840.json",
+      "discoverySha256": "55d623984edcb00695880aa48df6f60bc5174850b8cd4ed292709a83d5521713",
+      "sourceScope": "Latest annual discovered October 8 from official SEC submissions for actual 05:08-05:10 pending ticker; production cached URL unknown.",
+      "rawHtmlSha256": "6eb64e1157e1ca8c5dffc6dc5c62d59f8dd3cca63f7ae8f1993ba575c08e316f",
+      "bytes": 794502,
+      "businessTextSha256": "53b48a334ff118a0afa306fcb892084ed231b3f224a061aff8e6e137edd92719",
+      "businessChars": 21636,
+      "baselineReason": "company_profile_customers_not_extracted",
+      "expectedReason": null,
+      "expectedVerified": true,
+      "expected": {
+        "business": "We design and manufacture ultra-high precision endoscopes and very small Microprecision lenses, assemblies and complete medical devices to meet the surgical community’s continuing demand for smaller, disposable, and more enhanced imaging systems for minimally invasive surgery.",
+        "customers": "Our systems manufacturing operations assemble and manufacture components and systems for both medical device and advanced aerospace customers who choose to outsource these services based on our ability to handle high complexity components, specific optical technologies, micro-optical assemblies and other advanced manufacturing challenges."
+      },
+      "quoteEvidence": {
+        "business": {
+          "quoteSha256": "dc58ac43a8f80852be4b64b7b230afc14b924ab37d9b38fab0fbb9acb849279a",
+          "businessSectionOffset": 676,
+          "excerptOffset": 0
+        },
+        "customers": {
+          "quoteSha256": "bc55d6e0c626d845defd9cd09fe3fe22947efd8304d883053a276f79020ca9f2",
+          "businessSectionOffset": 1346,
+          "excerptOffset": 278
+        }
+      },
+      "passages": [
+        {
+          "quote": "We design and manufacture ultra-high precision endoscopes and very small Microprecision lenses, assemblies and complete medical devices to meet the surgical community’s continuing demand for smaller, disposable, and more enhanced imaging systems for minimally invasive surgery.",
+          "sha256": "dc58ac43a8f80852be4b64b7b230afc14b924ab37d9b38fab0fbb9acb849279a",
+          "businessSectionOffset": 676
+        },
+        {
+          "quote": "Our systems manufacturing operations assemble and manufacture components and systems for both medical device and advanced aerospace customers who choose to outsource these services based on our ability to handle high complexity components, specific optical technologies, micro-optical assemblies and other advanced manufacturing challenges.",
+          "sha256": "bc55d6e0c626d845defd9cd09fe3fe22947efd8304d883053a276f79020ca9f2",
+          "businessSectionOffset": 1346
+        }
+      ]
+    },
+    {
+      "ticker": "POWL",
+      "cik": "0000080420",
+      "company": "POWELL INDUSTRIES INC",
+      "form": "10-K",
+      "sourceUrl": "https://www.sec.gov/Archives/edgar/data/80420/000008042025000152/powl-20250930.htm",
+      "sourceFiledAt": "2025-11-19",
+      "reportPeriod": "2025-09-30",
+      "accession": "0000080420-25-000152",
+      "discoveryUrl": "https://data.sec.gov/submissions/CIK0000080420.json",
+      "discoverySha256": "92b3bb384b4d6d2c50badebef0e37d06836d7de1f55018329bb5a1ab540ad558",
+      "sourceScope": "Latest annual discovered October 8 from official SEC submissions for actual 05:08-05:10 pending ticker; production cached URL unknown.",
+      "rawHtmlSha256": "4d5f0482214f8564f291d9647f80fc81c9f2f683de4ac32c464d5ab49102dc22",
+      "bytes": 1477568,
+      "businessTextSha256": "c73ba87cd381f8a7d351a5548ba4bf70d79f62673cb9c97cc5e42024364aced2",
+      "businessChars": 20814,
+      "baselineReason": "company_profile_customers_not_extracted",
+      "expectedReason": null,
+      "expectedVerified": true,
+      "expected": {
+        "business": "We develop, design, manufacture and service custom-engineered equipment and systems that distribute, control and monitor the flow of electrical energy and provide protection to motors, transformers and other electrically powered equipment.",
+        "customers": "In the commercial and other industrial markets, our customers operate in commercial construction, data centers, metals and mining, pulp and paper, as well as other industrial applications."
+      },
+      "quoteEvidence": {
+        "business": {
+          "quoteSha256": "af95bafb6840ce25d720a2b6e18ba42e0a54a4095f4bcfcbab1899934036f4cf",
+          "businessSectionOffset": 97,
+          "excerptOffset": 88
+        },
+        "customers": {
+          "quoteSha256": "89017bcf17b070e860612a7702705f953e6eb20c4a43fbfcada4492a7b774788",
+          "businessSectionOffset": 11485,
+          "excerptOffset": 511
+        }
+      },
+      "passages": [
+        {
+          "quote": "Powell Industries, Inc. is a Delaware corporation founded by William E. Powell in 1947. We develop, design, manufacture and service custom-engineered equipment and systems that distribute, control and monitor the flow of electrical energy and provide protection to motors, transformers and other electrically powered equipment. Our major subsidiaries, all of which are wholly owned, include Powell Electrical Systems, Inc.; Powell Canada, Inc.; Powell (UK) Limited; and Powell Industries International Limited.",
+          "sha256": "0d1eecea72d9ef2fc7cc878243cc26f03e71470380bd0a401bda473403814896",
+          "businessSectionOffset": 9
+        },
+        {
+          "quote": "In the commercial and other industrial markets, our customers operate in commercial construction, data centers, metals and mining, pulp and paper, as well as other industrial applications.",
+          "sha256": "89017bcf17b070e860612a7702705f953e6eb20c4a43fbfcada4492a7b774788",
+          "businessSectionOffset": 11485
+        }
+      ]
+    },
+    {
+      "ticker": "PPIH",
+      "cik": "0000914122",
+      "company": "Perma-Pipe International Holdings, Inc.",
+      "form": "10-K",
+      "sourceUrl": "https://www.sec.gov/Archives/edgar/data/914122/000143774926012499/ppih20260131_10k.htm",
+      "sourceFiledAt": "2026-04-16",
+      "reportPeriod": "2026-01-31",
+      "accession": "0001437749-26-012499",
+      "discoveryUrl": "https://data.sec.gov/submissions/CIK0000914122.json",
+      "discoverySha256": "709bd50404c7e734239405718db2f8717002c86a760930e8bc9ba0f7f71c38b5",
+      "sourceScope": "Latest annual discovered October 8 from official SEC submissions for actual 05:08-05:10 pending ticker; production cached URL unknown.",
+      "rawHtmlSha256": "0f854d50b5ac2bf0d080ba47d3e17745cbb039d8537a9561fdeaea1aa1226e3d",
+      "bytes": 1920956,
+      "businessTextSha256": "5f848b3b443833300d94d6d0f6429250e16dee22a13db0ab8255bc063ea5a872",
+      "businessChars": 13093,
+      "baselineReason": "company_profile_customers_not_extracted",
+      "expectedReason": "company_profile_customers_not_extracted",
+      "expectedVerified": false,
+      "passages": [
+        {
+          "quote": "The Company provides insulated pipe for district energy systems.",
+          "sha256": "57d80a474dad9b4822d072ec7b13a38725ec449a785189f80319b504ff864d7a",
+          "businessSectionOffset": 8120
+        },
+        {
+          "quote": "Customers and sales channels. The Company's customer base is industrially and geographically diverse. In the United States, the Company employs inside and outside sales managers who use and assist a network of independent manufacturers' representatives, none of whom sell products that are competitive with the Company's piping systems. The Company employs a direct sales force to market and sell products and services in Canada, India, Egypt, and across several countries in the Middle East. On a country-by-country basis, and where advantageous, the Company uses an agent network to assist in marketing and selling the Company's products and services.",
+          "sha256": "0b17be9d0a08360d9437b2a3e2f09322430c6dd4eba60dc8af8ebf3708c3c807",
+          "businessSectionOffset": 3092
+        }
+      ]
+    },
+    {
+      "ticker": "ACCO",
+      "cik": "0000712034",
+      "company": "ACCO BRANDS Corp",
+      "form": "10-K",
+      "sourceUrl": "https://www.sec.gov/Archives/edgar/data/712034/000119312526098616/acco-20251231.htm",
+      "sourceFiledAt": "2026-03-09",
+      "reportPeriod": "2025-12-31",
+      "accession": "0001193125-26-098616",
+      "discoveryUrl": "https://data.sec.gov/submissions/CIK0000712034.json",
+      "discoverySha256": "3dc5c9e6f5b956cebd697c7b8883dc78c4982269322d493458b521d4982115cd",
+      "sourceScope": "Latest annual discovered October 8 from official SEC submissions for actual 05:08-05:10 pending ticker; production cached URL unknown.",
+      "rawHtmlSha256": "e752b8d15162195b98ea118ac122fabacb0b84b325bb97fd32bff9d0558754eb",
+      "bytes": 6638674,
+      "businessTextSha256": "fce301783af7429e66feafe433df45fb8c353acfab0a9e645f0b78b719f36688",
+      "businessChars": 15161,
+      "baselineReason": "company_profile_customers_not_extracted",
+      "expectedReason": "company_profile_customers_not_extracted",
+      "expectedVerified": false,
+      "passages": [
+        {
+          "quote": "We distribute our products through a wide variety of channels to ensure that our products are readily and conveniently available for purchase by consumers and other end-users, wherever they prefer to shop. These channels include mass retailers, e-tailers, discount, drug/grocery and variety chains, warehouse clubs, hardware and specialty stores, independent office product dealers, office superstores, wholesalers, contract stationers, and specialist technology businesses. We also sell directly through e-commerce sites and our direct sales organization.",
+          "sha256": "2eb4bf72f36c6cb4337330d07e6fb7873ccb5255f5813eb3d051157bcda25a33",
+          "businessSectionOffset": 4635
+        }
+      ]
+    },
+    {
+      "ticker": "PPSI",
+      "cik": "0001449792",
+      "company": "PIONEER POWER SOLUTIONS, INC.",
+      "form": "10-K",
+      "sourceUrl": "https://www.sec.gov/Archives/edgar/data/1449792/000149315226015715/form10-k.htm",
+      "sourceFiledAt": "2026-04-08",
+      "reportPeriod": "2025-12-31",
+      "accession": "0001493152-26-015715",
+      "discoveryUrl": "https://data.sec.gov/submissions/CIK0001449792.json",
+      "discoverySha256": "15494bacf096efa791ad89462c2eefa4833d07af1c0d2ab0e6ad3d64cdf63bd6",
+      "sourceScope": "Latest annual discovered October 8 from official SEC submissions for actual 05:08-05:10 pending ticker; production cached URL unknown.",
+      "rawHtmlSha256": "0ada341254a92821501ad8b5f7820fee5d1226681fb71730e9bc9a0a3383f2a4",
+      "bytes": 1770410,
+      "businessTextSha256": "83d14bffe9320d7678c70d108435e364e1c0fb4912dcbab19c635c41b5429a24",
+      "businessChars": 19359,
+      "baselineReason": "company_profile_business_not_extracted",
+      "expectedReason": null,
+      "expectedVerified": true,
+      "expected": {
+        "business": "Pioneer Power Solutions, Inc. and its wholly owned subsidiary (referred to herein as the “Company,” “Pioneer,” “Pioneer Power,” “we,” “our” and “us”) design, manufacture, integrate, service, and sell distributed energy resources, on site and mobile power generation equipment and a platform of mobile electric vehicle (“EV”) charging solutions.",
+        "customers": "Our products and services are sold to a broad range of customers in the utility, industrial and commercial markets."
+      },
+      "quoteEvidence": {
+        "business": {
+          "quoteSha256": "d0e1b9adcf27ce5d63073b28f95874486ae213ba418c510cc6a0b65bb13a6db4",
+          "businessSectionOffset": 9,
+          "excerptOffset": 0
+        },
+        "customers": {
+          "quoteSha256": "9498d0f8e334233d649931bee797a186d3987a15567bdf8d320b260d315ebc9a",
+          "businessSectionOffset": 354,
+          "excerptOffset": 345
+        }
+      },
+      "passages": [
+        {
+          "quote": "Pioneer Power Solutions, Inc. and its wholly owned subsidiary (referred to herein as the “Company,” “Pioneer,” “Pioneer Power,” “we,” “our” and “us”) design, manufacture, integrate, service, and sell distributed energy resources, on site and mobile power generation equipment and a platform of mobile electric vehicle (“EV”) charging solutions. Our products and services are sold to a broad range of customers in the utility, industrial and commercial markets. Our customers include, but are not limited to, Federal and State government entities, package delivery businesses, school bus fleet operators, EV charging infrastructure developers and owners, and distributed energy developers. We are headquartered in Fort Lee, New Jersey and operate from two (2) additional locations in the United States for manufacturing, service and maintenance, engineering, and sales and administration.",
+          "sha256": "6c49ac1b53f2d5400c1dfd4faf3dbedf89ce84474a8705f530709635668e14ae",
+          "businessSectionOffset": 9
+        }
+      ]
+    }
+  ]
+}

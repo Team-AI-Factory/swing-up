@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { restoreCommitteeEvidence } from "./helpers/restore-committee-evidence.mjs";
 import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 import { inSimpleAlertPilot } from "./helpers/simple-alert-pilot-fixture.mjs";
 
@@ -51,7 +52,7 @@ const committee = loadTsModule("@/lib/ai-committee/orchestrator", {
   "@/lib/ai-committee/run-persistence": { persistAiCommitteeRun() { throw new Error("unexpected_write"); } },
 });
 const savedEnvironment = { ...process.env }, originalFetch = globalThis.fetch, originalInfo = console.info;
-let captured = [], transport = [];
+let captured = [], transport = [], fullDocumentRoleBytes;
 try {
   Object.assign(process.env, { OPENAI_API_KEY: "synthetic-no-network", OPENAI_MODEL: "gpt-4.1-mini",
     AI_COMMITTEE_ENABLED: "true", AI_COMMITTEE_DRY_RUN_DEFAULT: "false", SWING_UP_SIMPLE_PILOT_ENABLED: "false" });
@@ -63,7 +64,8 @@ try {
     const request = JSON.parse(options.body);
     const promptBytes = provider.committeePromptInputBytes(request.messages, request.response_format?.type === "json_schema" ? request.response_format : undefined);
     assert.ok(promptBytes <= 60_000);
-    captured.push(JSON.parse(request.messages[1].content));
+    const payload = JSON.parse(request.messages[1].content);
+    captured.push({ ...payload, evidencePack: restoreCommitteeEvidence(payload.evidencePack, payload) });
     transport.push({ role: captured.at(-1).agent.id, model: request.model, promptBytes });
     return Response.json({ model: request.model, service_tier: "default", choices: [{ message: { content: JSON.stringify({ verdict: "needs_more_data", confidence: 60,
       keyFindings: ["Company: Synthetic issuer sells test products.", "What happened: This is a synthetic valuation review.",
@@ -128,19 +130,40 @@ try {
     const fullOriginal = structuredClone(fullPack);
     const result = await committee.runAiCommittee({ ...input, maxCostUsd: policy.AI_COMMITTEE_REVIEW_MAX_COST_USD,
       allowedModels: policy.COMMITTEE_ALLOWED_MODELS, [committee.TRUSTED_IN_MEMORY_EVIDENCE]: fullPack });
-    assert.equal(result.ok, false, "A packet without room for later reviewer JSON must stop before paid transport");
-    assert.equal(transport.length, 0);
-    assert.equal(captured.length, 0);
-    assert.equal(result.committeeOutput.modelUsageSummary.actualOpenAiUsage.responsesWithUsage, 0);
-    const failure = result.agentResults.find(role => role.status === "failed").providerFailure;
-    assert.equal(failure.category, "input_limit");
-    assert.ok(failure.promptSectionBytes.reservedPriorResults > 0);
+    assert.equal(result.ok, true, "Complete maximum-count facts and 16 full excerpts must fit with prior-review reserve");
+    assert.equal(transport.length, 4);
+    assert.equal(captured.length, 4);
+    assert.equal(result.committeeOutput.modelUsageSummary.actualOpenAiUsage.responsesWithUsage, 4);
+    assert.ok(transport.every(request => request.promptBytes <= 55_000), "At least 5 KB actual-call headroom");
+    for (const [index, prompt] of captured.entries()) {
+      assert.deepEqual(prompt.evidencePack.evidenceSections.fundamentals.items, fullPack.fundamentalsEvidence.items);
+      assert.deepEqual(prompt.evidencePack.financialDiligence, fullPack.financialDiligence);
+      assert.equal(JSON.stringify(prompt.previousResults), JSON.stringify(result.agentResults.slice(0, index)
+        .map(role => Object.fromEntries(Object.entries(role).filter(([key]) => key !== "tokenUsage")))));
+    }
     assert.deepEqual(fullPack, fullOriginal);
     assert.equal(result.committeeOutput.overallRecommendation, "needs_more_data");
+    fullDocumentRoleBytes = transport.map(request => request.promptBytes);
+    // Collector excerpt ceilings are character counts, not hard UTF-8 bounds.
+    // All 16 full-length unique multibyte excerpts cannot be guaranteed to fit.
+    const unicodePack = structuredClone(fullPack);
+    for (const [documentIndex, document] of unicodePack.financialDiligence.documents.documents.entries()) {
+      for (const [excerptIndex, excerpt] of document.excerpts.entries()) {
+        excerpt.text = `${documentIndex}:${excerptIndex}:`.padEnd(1600, "漢");
+      }
+    }
+    captured = []; transport = [];
+    const unicodeResult = await committee.runAiCommittee({ ...input, maxCostUsd: policy.AI_COMMITTEE_REVIEW_MAX_COST_USD,
+      allowedModels: policy.COMMITTEE_ALLOWED_MODELS, [committee.TRUSTED_IN_MEMORY_EVIDENCE]: unicodePack });
+    assert.equal(unicodeResult.ok, false);
+    assert.equal(captured.length, 0);
+    assert.equal(transport.length, 0);
+    assert.equal(unicodeResult.agentResults.find(role => role.status === "failed").providerFailure.category, "input_limit");
+    assert.equal(unicodeResult.committeeOutput.modelUsageSummary.actualOpenAiUsage.responsesWithUsage, 0);
   });
   console.log(JSON.stringify({ syntheticOnly: true, historicalReplay: false, factsPreservedPerRole: financialFacts.length,
     roleCount: 4, missingFactsNotInvented: true, oversizedBlockedBeforeNetwork: true, hardLimitBytes: 60_000,
-    fullDocumentsReservedBeforeNetwork: true }));
+    fullDocumentsFitWithReserve: true, fullDocumentRoleBytes, uniqueFullUnicodeExcerptsRejectedBeforeNetwork: true }));
 } finally {
   globalThis.fetch = originalFetch; console.info = originalInfo;
   for (const key of Object.keys(process.env)) if (!(key in savedEnvironment)) delete process.env[key];

@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 const checks = [
+  "company-profile-current-failures", "company-profile-current-failures-cache",
   "committee-input-limit-hold",
   "ai-committee-lossless-prompt-preflight", "ai-committee-preflight-usage",
   "simple-alert-sec-due-rotation",

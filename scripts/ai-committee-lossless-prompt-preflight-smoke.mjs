@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { restoreCommitteeEvidence as restore } from "./helpers/restore-committee-evidence.mjs";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 import { inSimpleAlertPilot } from "./helpers/simple-alert-pilot-fixture.mjs";
 
@@ -49,33 +52,7 @@ const promptInput = loadTsModule("@/lib/ai-committee/prompt-input");
 const records = loadTsModule("@/lib/ai-committee/evidence-record-references");
 const texts = loadTsModule("@/lib/ai-committee/evidence-text-references");
 const policy = loadTsModule("@/lib/ai-committee/model-policy");
-function restore(item, payload) {
-  if (Array.isArray(item)) return item.map(value => restore(value, payload));
-  if (!item || typeof item !== "object") return item;
-  if (Object.keys(item).length === 1 && Object.hasOwn(item, "verbatimRecordList")) {
-    const { fields, items } = item.verbatimRecordList;
-    assert.ok(Object.hasOwn(payload.sharedEvidenceKeys, fields));
-    const keys = payload.sharedEvidenceKeys[fields];
-    return items.map(row => {
-      if (!Array.isArray(row)) return restore(row, payload);
-      assert.equal(keys.length, row.length);
-      return Object.fromEntries(keys.map((key, index) => [key, row[index]]));
-    });
-  }
-  if (Object.keys(item).length === 1 && Object.hasOwn(item, "verbatimRecord")) {
-    const [id, ...values] = item.verbatimRecord;
-    assert.ok(Object.hasOwn(payload.sharedEvidenceKeys, id));
-    const keys = payload.sharedEvidenceKeys[id];
-    assert.equal(keys.length, values.length);
-    return Object.fromEntries(keys.map((key, index) => [key, values[index]]));
-  }
-  if (Object.keys(item).length === 1 && Object.hasOwn(item, "verbatimTextRef")) {
-    assert.ok(Object.hasOwn(payload.sharedEvidenceTexts, item.verbatimTextRef));
-    return payload.sharedEvidenceTexts[item.verbatimTextRef];
-  }
-  if (Object.keys(item).length === 1 && Object.hasOwn(item, "verbatimTextParts")) return item.verbatimTextParts.map(part => restore(part, payload)).join("");
-  return Object.fromEntries(Object.entries(item).map(([key, value]) => [key, restore(value, payload)]));
-}
+
 const bytes = options => promptInput.committeePromptInputBytes(options.messages.map(message => ({ ...message,
   role: message.role === "system" ? "developer" : message.role })), options.responseSchema
   ? { type: "json_schema", json_schema: { ...options.responseSchema, strict: true } } : undefined);
@@ -86,7 +63,7 @@ assert.ok(recordEncoding.records > 0);
 assert.equal(JSON.stringify(restore(recordEncoding.evidencePack, recordEncoding)), JSON.stringify(rowEvidence));
 assert.ok(Buffer.byteLength(JSON.stringify(recordEncoding.evidencePack)) + Buffer.byteLength(JSON.stringify(recordEncoding.sharedEvidenceKeys))
   + Buffer.byteLength(records.SHARED_EVIDENCE_RECORD_INSTRUCTIONS) < Buffer.byteLength(JSON.stringify(rowEvidence)));
-for (const key of ["verbatimRecord", "verbatimRecordList", "sharedEvidenceKeys"]) {
+for (const key of ["verbatimRecord", "verbatimRecordList", "sharedEvidenceKeys", "verbatimValueRef", "sharedEvidenceValues"]) {
   const collision = { ...rowEvidence, source: { [key]: "untrusted source-authored marker" } };
   const encoded = records.referenceFinancialEvidenceRecords(collision);
   assert.equal(encoded.records, 0);
@@ -107,6 +84,45 @@ for (const evidence of [
   assert.equal(JSON.stringify(restore(encoded.evidencePack, encoded)), originalJson);
   assert.equal(JSON.stringify(evidence), originalJson);
 }
+assert.ok(recordEncoding.valueReferences > 0);
+assert.ok(Object.values(recordEncoding.sharedEvidenceValues).includes(financialFacts[0].sourceUrl),
+  "Full financial source URLs remain readable in the same prompt dictionary");
+const restoreValuesOnly = (value, dictionary) => {
+  if (Array.isArray(value)) return value.map(item => restoreValuesOnly(item, dictionary));
+  if (!value || typeof value !== "object") return value;
+  if (Object.keys(value).length === 1 && Object.hasOwn(value, "verbatimValueRef")) return dictionary[value.verbatimValueRef];
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, restoreValuesOnly(item, dictionary)]));
+};
+const valuesOnlyBytes = encoding => Buffer.byteLength(JSON.stringify({ evidencePack: encoding.evidencePack,
+  sharedEvidenceKeys: encoding.sharedEvidenceKeys, sharedEvidenceValues: encoding.sharedEvidenceValues }))
+  + Buffer.byteLength(records.SHARED_EVIDENCE_VALUE_INSTRUCTIONS);
+const recordOnlyBytes = encoding => Buffer.byteLength(JSON.stringify({
+  evidencePack: restoreValuesOnly(encoding.evidencePack, encoding.sharedEvidenceValues), sharedEvidenceKeys: encoding.sharedEvidenceKeys }));
+const valueDictionarySavings = recordOnlyBytes(recordEncoding) - valuesOnlyBytes(recordEncoding);
+assert.ok(valueDictionarySavings >= 1_500, "Value sharing provides material net savings after its full dictionary/instructions");
+for (const modifier of [
+  (fact, index) => ({ ...fact, sourceUrl: `https://example.invalid/ภาษาไทย/🧪?quote="&line=\n`,
+    qualifier: 'Same exact qualifier with \"quoted\" and newline\nconditions 🧪'.repeat(3), tag: `literal-value_${index}` }),
+  (fact, index) => ({ ...fact, metric: `Unique metric ${index}:` + "a".repeat(40),
+    sourceUrl: `https://example.invalid/unique-source/${index}`, qualifier: `Unique qualifier ${index}` }),
+]) {
+  const valueFixture = { facts: financialFacts.map(modifier),
+    sourceContext: { verbatimMarkerAsLiteral: "verbatimValueRef", arbitraryString: "value_1" } };
+  const originalJson = JSON.stringify(valueFixture), encoded = records.referenceFinancialEvidenceRecords(valueFixture);
+  assert.equal(JSON.stringify(restore(encoded.evidencePack, encoded)), originalJson);
+  assert.equal(JSON.stringify(valueFixture), originalJson);
+}
+const uniqueScalars = { facts: Array.from({ length: 30 }, (_, index) => ({ metric: `metric_${index}`, value: index,
+  unit: "USD", periodEnd: "2026-06-30", sourceUrl: `https://example.invalid/${index}` })) };
+const uniqueEncoded = records.referenceFinancialEvidenceRecords(uniqueScalars);
+assert.equal(uniqueEncoded.valueReferences, 0, "No profitable complete repeated scalar means no value dictionary");
+assert.equal(JSON.stringify(restore(uniqueEncoded.evidencePack, uniqueEncoded)), JSON.stringify(uniqueScalars));
+const marginalValues = { facts: financialFacts.map((fact, index) => ({ ...fact, sourceUrl: "short", concept: "short",
+  qualifier: index < 2 ? "q".repeat(100) : `Unique qualifier ${index}` })) };
+const marginalEncoded = records.referenceFinancialEvidenceRecords(marginalValues);
+assert.ok(marginalEncoded.records > 0);
+assert.equal(marginalEncoded.valueReferences, 0, "Discard a dictionary whose decoding instruction erases its savings");
+assert.equal(JSON.stringify(restore(marginalEncoded.evidencePack, marginalEncoded)), JSON.stringify(marginalValues));
 assert.equal({}.metric, undefined);
 const exactText = "A complete source field, with unchanged dates and qualifiers. ภาษาไทย 🧪 ".repeat(100);
 const wrapperEvidence = { sourceText: exactText, whatHappened: `Source prefix. ${exactText} Unique unmet condition.`,
@@ -118,7 +134,7 @@ assert.equal(JSON.stringify(restore(wrapped.evidencePack, wrapped)), JSON.string
 assert.equal(wrapped.evidencePack.sourceUrl, wrapperEvidence.sourceUrl);
 assert.equal(texts.referenceRepeatedEvidenceText({ a: `One ${exactText}`, b: `Two ${exactText}` }).references, 0,
   "Do not discover arbitrary common fragments when no full field is present");
-let gateInputs = [], captured = [], fetches = 0, responseExtension = "";
+let gateInputs = [], captured = [], fetches = 0, responseExtension = "", replyBytes = [];
 function committee(compact) {
   return loadTsModule("@/lib/ai-committee/orchestrator", {
     "@/lib/ai-committee/evidence-record-references": compact ? records : { ...records,
@@ -156,12 +172,15 @@ try {
     assert.equal(url, "https://api.openai.com/v1/chat/completions");
     const request = JSON.parse(init.body);
     assert.ok(provider.committeePromptInputBytes(request.messages, request.response_format.type === "json_schema" ? request.response_format : undefined) <= 60_000);
-    return Response.json({ model: request.model, service_tier: "default", choices: [{ message: { content: JSON.stringify({ verdict: "needs_more_data", confidence: 60,
+    const riskText = typeof responseExtension === "function" ? responseExtension(JSON.parse(request.messages[1].content).agent.id) : responseExtension;
+    const content = JSON.stringify({ verdict: "needs_more_data", confidence: 60,
       keyFindings: ["Company: Synthetic issuer sells test products.", "What happened: This is a synthetic valuation review.",
         "Why it matters: The model requires reconciliation.", "Possible outcome: The value remains uncertain.",
         "Risks: Synthetic loan and debt adjustments remain unresolved."], supportingEvidence: [], concerns: [],
       missingData: ["Synthetic loan-normalized cash-flow and debt reconciliation are still required."],
-      riskNotes: responseExtension ? [responseExtension] : [], followUpChecks: [], suggestedActionLabel: "Research only" }) }, finish_reason: "stop" }],
+      riskNotes: riskText ? [riskText] : [], followUpChecks: [], suggestedActionLabel: "Research only" });
+    replyBytes.push(Buffer.byteLength(content));
+    return Response.json({ model: request.model, service_tier: "default", choices: [{ message: { content }, finish_reason: "stop" }],
       usage: { prompt_tokens: 100, completion_tokens: 100, total_tokens: 200,
         prompt_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 } } });
   };
@@ -190,7 +209,7 @@ try {
       assert.equal(JSON.stringify(payload.previousResults), JSON.stringify(roomy.agentResults.slice(0, index)
         .map(result => Object.fromEntries(Object.entries(result).filter(([key]) => key !== "tokenUsage")))));
       assert.ok(roomyPromptBytes[index] <= 60_000);
-      if (payload.sharedEvidenceKeys) assert.ok(request.messages[0].content.endsWith(records.SHARED_EVIDENCE_RECORD_INSTRUCTIONS));
+      if (payload.sharedEvidenceKeys) assert.ok(request.messages[0].content.includes(records.SHARED_EVIDENCE_RECORD_INSTRUCTIONS));
       for (const fact of financialFacts) {
         assert.ok(request.messages[1].content.includes(fact.sourceUrl));
         assert.ok(request.messages[1].content.includes(fact.filedAt));
@@ -207,6 +226,46 @@ try {
     assert.equal(policy.AI_COMMITTEE_REVIEW_MAX_COST_USD, 2.7538);
     assert.ok(captured[0].responseSchema.schema.additionalProperties === false);
 
+    // Match reported live totals only; these are synthetic, not historical packets.
+    // Every unreserved raw role fits. In v3 that exact condition bypassed record
+    // factoring, so the no-record control reproduces its reserve-only rejection.
+    gateInputs = []; captured = []; fetches = 0;
+    await baseline.runAiCommittee({ ...input, [baseline.TRUSTED_IN_MEMORY_EVIDENCE]: roomyPack });
+    const rawPlanningPeak = Math.max(...gateInputs.map(options => bytes(options) + (options.reservedPromptBytes ?? 0)));
+    const reservedBoundaryMeasurements = [];
+    let highCapacityPack;
+    for (const target of [61_958, 63_340]) {
+      const boundary = structuredClone(roomyPack);
+      boundary.financialDiligence.syntheticBoundaryPadding = "z".repeat(target - rawPlanningPeak);
+      gateInputs = []; captured = []; fetches = 0;
+      const held = await baseline.runAiCommittee({ ...input, [baseline.TRUSTED_IN_MEMORY_EVIDENCE]: boundary });
+      assert.equal(held.ok, false);
+      assert.equal(fetches, 0);
+      assert.equal(captured.length, 0);
+      assert.ok(gateInputs.every(options => bytes(options) <= 60_000), "v3 bypasses factoring for every raw role");
+      assert.equal(Math.max(...gateInputs.map(options => bytes(options) + (options.reservedPromptBytes ?? 0))), target);
+      const rawEvidence = JSON.parse(gateInputs[0].messages[1].content).evidencePack;
+      const beforeReserved = gateInputs.map(options => bytes(options) + (options.reservedPromptBytes ?? 0));
+      gateInputs = []; captured = []; fetches = 0;
+      const admitted = await compact.runAiCommittee({ ...input, [compact.TRUSTED_IN_MEMORY_EVIDENCE]: boundary });
+      assert.equal(admitted.ok, true);
+      assert.equal(fetches, 4);
+      assert.equal(captured.length, 4);
+      const afterReserved = gateInputs.map(options => bytes(options) + (options.reservedPromptBytes ?? 0));
+      assert.ok(Math.max(...afterReserved) <= 57_000, `At least 3 KB planning headroom: ${afterReserved}`);
+      for (const [index, request] of captured.entries()) {
+        const payload = JSON.parse(request.messages[1].content);
+        assert.ok(Object.keys(payload.sharedEvidenceValues).length > 0);
+        assert.ok(request.messages[0].content.includes(records.SHARED_EVIDENCE_VALUE_INSTRUCTIONS));
+        assert.equal(JSON.stringify(restore(payload.evidencePack, payload)), JSON.stringify(rawEvidence));
+        assert.equal(JSON.stringify(payload.previousResults), JSON.stringify(admitted.agentResults.slice(0, index)
+          .map(result => Object.fromEntries(Object.entries(result).filter(([key]) => key !== "tokenUsage")))));
+      }
+      reservedBoundaryMeasurements.push({ syntheticTarget: target, beforeReserved, afterReserved,
+        actualRoleBytes: captured.map(bytes), planningHeadroom: 60_000 - Math.max(...afterReserved) });
+      highCapacityPack = boundary;
+    }
+
     gateInputs = []; captured = []; fetches = 0;
     await baseline.runAiCommittee({ ...input, [baseline.TRUSTED_IN_MEMORY_EVIDENCE]: fullPack });
     // Engineered equality of size only. This fixture is NOT the missing INOD
@@ -215,7 +274,6 @@ try {
     gateInputs = []; captured = []; fetches = 0;
     const before = await baseline.runAiCommittee({ ...input, [baseline.TRUSTED_IN_MEMORY_EVIDENCE]: fullPack });
     assert.equal(bytes(gateInputs[0]), 63_587);
-    const originalPayload = JSON.parse(gateInputs[0].messages[1].content);
     assert.equal(before.agentResults[0].error, "prompt_too_large");
     assert.equal(before.committeeOutput.modelUsageSummary.actualOpenAiUsage.responsesWithUsage, 0);
     assert.equal(captured.length, 0, "Whole-review preflight must precede every provider invocation");
@@ -235,6 +293,26 @@ try {
     assert.equal(after.compatibility.publishes, false);
     assert.equal(after.compatibility.sendsTelegram, false);
 
+    // Keep a realistic counterexample: this SEC-derived reconstruction has
+    // only 12 financial facts and cannot recover the five-role planning reserve.
+    // It is not the historical live packet and must not make any provider call.
+    const servPack = JSON.parse(readFileSync(new URL("./fixtures/committee-serv-reconstructed-2026-10-07/evidence-pack.json", import.meta.url), "utf8"));
+    gateInputs = []; captured = []; fetches = 0;
+    const servHeld = await compact.runAiCommittee({ ...input, [compact.TRUSTED_IN_MEMORY_EVIDENCE]: servPack });
+    assert.equal(servHeld.ok, false);
+    assert.equal(captured.length, 0);
+    assert.equal(fetches, 0);
+    const servFailure = servHeld.agentResults.find(result => result.status === "failed");
+    assert.equal(servFailure.agentId, "final_judge");
+    assert.equal(servFailure.providerFailure.promptBytes, 63_729);
+    assert.equal(servFailure.providerFailure.promptSectionBytes.reservedPriorResults, 14_248);
+    assert.equal(servHeld.committeeOutput.modelUsageSummary.actualOpenAiUsage.responsesWithUsage, 0);
+    for (const request of gateInputs) {
+      const payload = JSON.parse(request.messages[1].content), restored = restore(payload.evidencePack, payload);
+      assert.deepEqual(restored.financialDiligence, servPack.financialDiligence);
+      assert.deepEqual(restored.evidenceSections.fundamentals.items, servPack.fundamentalsEvidence.items);
+    }
+
     // Unique evidence remains too large after every lossless encoding attempt.
     captured = []; fetches = 0;
     const blocked = await compact.runAiCommittee({ ...input, [compact.TRUSTED_IN_MEMORY_EVIDENCE]: { ...fullPack,
@@ -249,20 +327,44 @@ try {
     assert.ok(Object.values(uniqueFailure.promptSectionBytes).every(value => Number.isInteger(value) && value >= 0));
     assert.ok(!JSON.stringify(uniqueFailure).includes("Unique synthetic evidence"));
 
+    // Modest individually bounded mock outputs can cumulatively exceed the
+    // planning heuristic too. Every response has distinct ASCII findings and
+    // under 8,192 serialized bytes; no tokenizer-bound claim is inferred here.
+    captured = []; fetches = 0; replyBytes = [];
+    responseExtension = role => Array.from({ length: 80 }, (_, index) => `${index}:${createHash("sha256")
+      .update(`${role}-distinct-finding-${index}`).digest("hex")}`).join("\n");
+    const cumulative = await compact.runAiCommittee({ ...input, [compact.TRUSTED_IN_MEMORY_EVIDENCE]: highCapacityPack });
+    assert.equal(cumulative.ok, false);
+    assert.deepEqual(cumulative.agentResults.slice(0, 3).map(role => role.status), ["completed", "completed", "completed"]);
+    assert.equal(cumulative.agentResults[3].error, "prompt_too_large");
+    assert.equal(cumulative.committeeOutput.modelUsageSummary.actualOpenAiUsage.responsesWithUsage, 3);
+    assert.equal(fetches, 3);
+    assert.ok(replyBytes.every(size => size < 8_192));
+    assert.equal(new Set(cumulative.agentResults.slice(0, 3).map(role => role.riskNotes[0])).size, 3);
+    assert.equal(JSON.stringify(JSON.parse(captured[3].messages[1].content).previousResults),
+      JSON.stringify(cumulative.agentResults.slice(0, 3).map(role => Object.fromEntries(Object.entries(role).filter(([key]) => key !== "tokenUsage")))));
+    const cumulativeReplyBytes = [...replyBytes];
+
     // An unexpected long provider answer can still overflow the next prompt.
     // It must preserve the first usage receipt while stopping subsequent calls.
-    captured = []; fetches = 0; responseExtension = "Synthetic long reviewer uncertainty. ".repeat(3000);
-    const dynamic = await compact.runAiCommittee({ ...input, [compact.TRUSTED_IN_MEMORY_EVIDENCE]: roomyPack });
+    captured = []; fetches = 0;
+    responseExtension = Array.from({ length: 1024 }, (_, index) => `${index}:${createHash("sha256")
+      .update(`unique-reviewer-finding-${index}`).digest("hex")}\t"ภาษาไทย🧪"`).join("\n");
+    const dynamic = await compact.runAiCommittee({ ...input, [compact.TRUSTED_IN_MEMORY_EVIDENCE]: highCapacityPack });
     assert.equal(dynamic.ok, false);
     assert.equal(dynamic.agentResults[0].status, "completed");
     assert.equal(dynamic.agentResults[1].error, "prompt_too_large");
     assert.equal(dynamic.committeeOutput.modelUsageSummary.actualOpenAiUsage.responsesWithUsage, 1);
     assert.equal(fetches, 1);
     assert.ok(dynamic.agentResults[1].providerFailure.promptSectionBytes.previousResults > 60_000);
+    const blockedPayload = JSON.parse(captured[1].messages[1].content);
+    assert.equal(blockedPayload.previousResults[0].riskNotes[0], responseExtension);
+    assert.ok(dynamic.agentResults[1].providerFailure.promptSectionBytes.sharedEvidenceValues > 0);
+    assert.ok(!JSON.stringify(dynamic.agentResults[1].providerFailure).includes(responseExtension.slice(0, 30)));
     console.log(JSON.stringify({ syntheticOnly: true, exactHistoricalReplay: false, actualOrchestratorCapture: true,
-      before: 63_587, roomyAfter: roomyPromptBytes, exactEvidenceRoundTrip: true, allPriorOutputsPreserved: true,
+      before: 63_587, servReconstructionStillHeldAt: servFailure.providerFailure.promptBytes, valueDictionarySavings, reservedBoundaryMeasurements, roomyAfter: roomyPromptBytes, exactEvidenceRoundTrip: true, allPriorOutputsPreserved: true,
       reservedWholeReviewPreflight: true, zeroNetworkForIntrinsicOverflow: true,
-      laterDynamicOverflowRetainsKnownUsage: true, numericOnlyDiagnostics: true,
+      laterDynamicOverflowRetainsKnownUsage: true, cumulativeUniqueReplyBytes: cumulativeReplyBytes, numericOnlyDiagnostics: true,
       sourceDatesAndUrlsRemainLiteral: true, unchangedHardCap: 60_000, unchangedMaximumReservation: 2.7538 }));
   });
 } finally {

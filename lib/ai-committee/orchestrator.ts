@@ -6,7 +6,7 @@ import { persistAiCommitteeRun } from "@/lib/ai-committee/run-persistence";
 import { FOCUSED_REVIEW_POLICY, FOCUSED_CORE_ROLES } from "@/lib/ai-committee/review-policy";
 import { COMMITTEE_MODEL_POLICY } from "@/lib/ai-committee/model-policy";
 import { referenceRepeatedEvidenceText, SHARED_EVIDENCE_TEXT_INSTRUCTIONS, SHARED_EVIDENCE_TEXT_PARTS_INSTRUCTIONS } from "@/lib/ai-committee/evidence-text-references";
-import { referenceFinancialEvidenceRecords, SHARED_EVIDENCE_RECORD_INSTRUCTIONS } from "@/lib/ai-committee/evidence-record-references";
+import { referenceFinancialEvidenceRecords, SHARED_EVIDENCE_RECORD_INSTRUCTIONS, SHARED_EVIDENCE_VALUE_INSTRUCTIONS } from "@/lib/ai-committee/evidence-record-references";
 import { committeePromptInputBytes, committeePromptPreflight } from "@/lib/ai-committee/prompt-input";
 
 export type AiCommitteeMode = "preview" | "full";
@@ -368,7 +368,7 @@ function summarizeEvidence(pack: AiCommitteeEvidencePack) {
   };
 }
 
-function buildAgentPrompt(agent: AiCommitteeAgentDefinition, evidencePack: AiCommitteeEvidencePack, previousResults: AiCommitteeAgentResult[], mode: AiCommitteeMode, maximumPromptBytes?: number) {
+function buildAgentPrompt(agent: AiCommitteeAgentDefinition, evidencePack: AiCommitteeEvidencePack, previousResults: AiCommitteeAgentResult[], mode: AiCommitteeMode) {
   const policy = committeeEvidencePolicy(evidencePack);
   const promptEvidence = referenceRepeatedEvidenceText(summarizeEvidence(evidencePack));
   // Billing telemetry stays in durable results; it is not evidence for the next reviewer.
@@ -410,13 +410,14 @@ function buildAgentPrompt(agent: AiCommitteeAgentDefinition, evidencePack: AiCom
     user: JSON.stringify({ mode, agent: { id: agent.id, purpose: agent.purpose, requiredInputs: agent.inputRequirements, applicability: policy.nonApplicableAgentIds.has(agent.id) ? "n/a_unless_event_specific" : "applicable" }, decisionRules: { directionAndCatalyst: directionRule, discoveryProviderGap: evidencePack.analysisKind === "valuation" ? "Use the dated financial sources and valuation assumptions. A news publisher quorum is not required for valuation research." : policy.assetClass === "public_equity" ? "A verified primary source may establish event truth. Without one, require two independent origin publishers; never count syndicated copies or provider connectivity as evidence." : "Exactly one unavailable optional discovery provider is non-blocking only when the supplied evidence itself proves at least two discovery channels and three unique publishers.", missingData: "Only truly blocking evidence absent from the current candidate. Use [] for N/A or optional evidence.", followUpChecks: "Non-blocking checks that may improve confidence later.", needsMoreData: "Use only when missingData contains at least one genuinely blocking item.", negative: "Use only for an actual adverse or contradictory finding supported by supplied evidence." }, expectedSchema: { agentId: agent.id, verdict: "positive|negative|mixed|needs_more_data", confidence: "0-100", keyFindings: [], supportingEvidence: [], concerns: [], missingData: [], suggestedActionLabel: "safe plain-English label", riskNotes: [], followUpChecks: [] }, evidencePack: promptEvidence.evidencePack, ...(promptEvidence.references ? { sharedEvidenceTexts: promptEvidence.sharedEvidenceTexts } : {}), previousResults: previousReviews }),
   };
   const messages = [{ role: "system" as const, content: prompt.system }, { role: "user" as const, content: prompt.user }];
-  if (!committeePromptPreflight({ model: modelForTier(agent.modelTierPreference), messages, maximumPromptBytes,
-    responseSchema: agent.id === "analyst_agent" ? FOCUSED_ANALYST_RESPONSE_SCHEMA : undefined })) return prompt;
+  // Apply profitable lossless factoring before admission, including prompts
+  // that exceed the cap only after prior-review planning reserve is added.
   const records = referenceFinancialEvidenceRecords(promptEvidence.evidencePack);
   if (!records.records) return prompt;
   const compact = {
-    system: `${prompt.system} ${SHARED_EVIDENCE_RECORD_INSTRUCTIONS}`,
-    user: JSON.stringify({ ...JSON.parse(prompt.user), evidencePack: records.evidencePack, sharedEvidenceKeys: records.sharedEvidenceKeys }),
+    system: `${prompt.system} ${SHARED_EVIDENCE_RECORD_INSTRUCTIONS}${records.valueReferences ? ` ${SHARED_EVIDENCE_VALUE_INSTRUCTIONS}` : ""}`,
+    user: JSON.stringify({ ...JSON.parse(prompt.user), evidencePack: records.evidencePack, sharedEvidenceKeys: records.sharedEvidenceKeys,
+      ...(records.valueReferences ? { sharedEvidenceValues: records.sharedEvidenceValues } : {}) }),
   };
   // Keep the entire prompt, including readable decoding instructions, smaller.
   return committeePromptInputBytes([{ role: "system", content: compact.system }, { role: "user", content: compact.user }])
@@ -626,20 +627,21 @@ export async function runAiCommittee(input: RunAiCommitteeInput) {
 
   const agentResults: AiCommitteeAgentResult[] = [];
   // Admit the whole review only if every later role has room for the preceding
-  // visible reviewer JSON. Reasoning tokens are not inserted into later
-  // prompts; reserve the unchanged visible-output limit plus JSON framing.
+  // visible reviewer JSON. This is a planning estimate, not a hard bound:
+  // visible token targets are prompt instructions, and UTF-8 bytes/token vary.
+  // Every actual call still checks all prior results against the hard byte cap.
   const bytesPerVisibleOutputToken = 4;
   let reservedPriorResults = 0;
   const preflight = dryRun ? undefined : plannedRoles.map(agent => {
-    const prompt = buildAgentPrompt(agent, evidence.evidencePack!, [], mode, input.maximumPromptBytes);
+    const prompt = buildAgentPrompt(agent, evidence.evidencePack!, [], mode);
     const model = modelForTier(agent.modelTierPreference);
     const failure = committeePromptPreflight({ model, maximumPromptBytes: input.maximumPromptBytes,
       messages: [{ role: "system", content: prompt.system }, { role: "user", content: prompt.user }],
       responseSchema: agent.id === "analyst_agent" ? FOCUSED_ANALYST_RESPONSE_SCHEMA : undefined,
       reservedPromptBytes: reasoningCommitteeModel(model) ? reservedPriorResults : 0 });
     const result = { agentId: agent.id, failure };
-    // Four UTF-8 bytes per allowed visible token plus fixed JSON framing is a
-    // conservative planning bound. It changes neither model nor output limit.
+    // Retain the existing four-byte/token estimate plus JSON framing. The API
+    // permits more output; exceeding this estimate never bypasses the hard gate.
     reservedPriorResults += Math.max(0, agent.maxOutputTokens) * bytesPerVisibleOutputToken + 512;
     return result;
   }).find(result => result.failure);
@@ -653,7 +655,7 @@ export async function runAiCommittee(input: RunAiCommitteeInput) {
       agentResults.push({ ...plannedResult(agent, evidence.evidencePack!, mode), status: "blocked", error: "provider_review_stopped", providerFailure: sharedFailure ?? { category: "cancelled", stopRemainingAgents: true } });
       return;
     }
-    const prompt = buildAgentPrompt(agent, evidence.evidencePack!, agentResults, mode, input.maximumPromptBytes);
+    const prompt = buildAgentPrompt(agent, evidence.evidencePack!, agentResults, mode);
     const responseSchema = agent.id === "analyst_agent" ? FOCUSED_ANALYST_RESPONSE_SCHEMA : undefined;
     const response = await runOpenAiCommitteeProvider({ tier: agent.modelTierPreference, confirmRun: input.confirmRun, dryRun: false, maxTokens: agent.maxOutputTokens, messages: [{ role: "system", content: prompt.system }, { role: "user", content: prompt.user }], signal: input.signal, allowedModels: input.allowedModels, maximumPromptBytes: input.maximumPromptBytes, responseSchema });
     if (!response.ok) {

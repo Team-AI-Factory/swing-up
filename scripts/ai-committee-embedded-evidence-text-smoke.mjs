@@ -36,6 +36,10 @@ const oldModule = { ...textModule, SHARED_EVIDENCE_TEXT_INSTRUCTIONS: oldInstruc
 let captured = [], transport = [], fetchCalls = 0;
 function committee(module) {
   return loadTsModule("@/lib/ai-committee/orchestrator", {
+    // Isolate the text codec's original measured regression. Financial row/value
+    // factoring has its own integrated capacity and round-trip regressions.
+    "@/lib/ai-committee/evidence-record-references": {
+      referenceFinancialEvidenceRecords: evidencePack => ({ evidencePack, records: 0 }) },
     "@/lib/ai-committee/evidence-text-references": module,
     "@/lib/ai-committee/prompt-input": { ...promptInput, committeePromptPreflight: options => {
       const failure = promptInput.committeePromptPreflight(options);

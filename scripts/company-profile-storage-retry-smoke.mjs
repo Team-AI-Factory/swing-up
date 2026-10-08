@@ -336,11 +336,16 @@ try {
       const result = await builder.runSimpleAlertProfileBuilder(now, async (_url, init) => {
         sources++; assert.equal(mode, "source_deadline"); abort(); init.signal.throwIfAborted();
       });
-      const deferred = ["pre_read", "pre_put", "source_deadline", "wrapped_role_initial", "wrapped_role_store"].includes(mode);
+      const deferred = ["pre_read", "pre_put", "source_deadline", "wrapped_role_initial", "wrapped_role_store", "superseded_store"].includes(mode);
       assert.equal(result.status, deferred ? "time_budget_reached" : "failed", mode);
       assert.equal(result.ok, deferred);
       if (mode.startsWith("http_")) assert.equal(result.failure, "r2_state_read_http_502");
-      if (mode === "superseded_store") assert.equal(result.failure, "company_profile_cache_superseded");
+      if (mode === "superseded_store") {
+        assert.equal(result.failure, null, "A superseded admission with zero writes is a safe deferral");
+        assert.equal(result.storageFailureObserved, false);
+        assert.deepEqual(h.current(), { ...identity, profile: null, verificationHistoryKnown: true },
+          "Preserve the concurrent same-issuer winner without a cleanup overwrite");
+      }
       if (mode === "local_timeout_store") assert.equal(result.failure, "Store write deadline");
       assert.equal(result.modelCalls, 0);
       assert.equal(result.newlyVerifiedThisRun, result.status === "failed" && !h.current() ? null : 0,

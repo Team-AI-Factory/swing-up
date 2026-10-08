@@ -2,7 +2,7 @@ import { extractFinancialNoteCustomerEvidence, verifiedFinancialNoteCustomerEvid
 import { annualInformationFormBusinessText, secAnnualFilingIndexUrl } from "@/lib/company-profile-annual-source";
 import { extractRevenueGeography, revenueGeographyFromQuote, type RevenueGeography } from "@/lib/company-revenue-geography";
 /** Company descriptions must be extracts from a dated, identity-verified source. */
-export const COMPANY_PROFILE_PARSER_REVISION = 13;
+export const COMPANY_PROFILE_PARSER_REVISION = 14;
 export type CompanyIdentity = { ticker?: unknown; company?: unknown; cik?: unknown };
 export type VerifiedCompanyProfile = {
   version: 1; status: "verified"; ticker: string; company: string; cik: string;
@@ -100,6 +100,17 @@ function operatingBusiness(sentence: string, identity: CompanyIdentity) {
     && !/\b(?:broad|wide|comprehensive|diverse) (?:range|variety|selection) of products and services\b/i.test(statement)) return true;
   if (/^(?:we|the company)\s+(?:also\s+)?(?:manufacture|manufactures|sell|sells|provide|provides|offer|offers)\s+(?:(?:our|its|the) )?products\b/i.test(statement)) return false;
   if (/^(?:we|the company)\s+(?:also\s+)?(?:offer|offers|provide|provides|deliver|delivers)\s+(?:our )?customers?\s+(?:(?:a|an|the|our)\s+)?(?:competitive|differentiated|quality|superior|exceptional|innovative|valuable|high-quality)\b/i.test(statement)) return false;
+  // The issuer and its wholly owned subsidiary jointly describe these
+  // concrete manufacturing operations. Keep the name-definition apposition;
+  // don't extend the generic subject to procurement, benefits or future deals.
+  const groupNameWords = text(identity.company).split(/\s+/);
+  const groupNames = groupNameWords.slice(0, 4).map((_, index) => groupNameWords.slice(0, index + 1).join(" ").replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  // Definitions may contain quoted pronouns or exact issuer-name prefixes,
+  // never arbitrary acquisition/forecast qualifications inside parentheses.
+  const quotedGroupName = `[\"“](?:Company|we|our|us|${groupNames.join("|")}),?[\"”]`;
+  const groupDefinition = `${quotedGroupName}(?:,? ${quotedGroupName}){0,7}(?:,? and ${quotedGroupName})?`;
+  const groupManufacturer = new RegExp(`^${issuerSubject(identity)} and (?:its|our) wholly[- ]owned subsidiar(?:y|ies)(?: \\(referred to herein as the ${groupDefinition}\\))? design, manufacture, integrate, service, and sell distributed energy resources, on site and mobile power generation equipment and a platform of mobile electric vehicle \\([\"“]EV[\"”]\\) charging solutions[.]$`, "i");
+  if (groupManufacturer.test(statement)) return true;
   // Allow an issuer's parenthetical name or legal-form apposition, but require
   // its main predicate to describe operations, not incorporation or financing.
   const subject = `${issuerSubject(identity)}(?:\\s*\\([^)]{0,180}\\))?(?:,\\s*(?:a|an|the)\\s+(?:[^(),]|\\([^)]{0,180}\\)){1,180},)?\\s+`;
@@ -151,6 +162,17 @@ function customerDescriptionRank(sentence: string, identity: CompanyIdentity) {
   const explicit = sentence.match(customerPredicate);
   const currentMarket = sentence.match(/^Our customers operate in (?:diverse |various )?markets, (?:such as|including) (.+)/i)?.[1];
   if (currentMarket && /^(?:manufacturing|automotive(?: manufacturing)?|wholesale(?: and retail)?|retail|food(?: and grocery distribution)?|pharmaceutical(?: and medical distribution)?|medical|construction|mining|utilities|aerospace|vehicle rental|logistics|shipping|transportation|energy|field services)(?=,| and |[.]?$)/i.test(currentMarket)) return 2;
+  // A complete customer-industry list is direct population evidence. Keep
+  // the market qualifier and every list item; don't infer buyers from uses,
+  // planned markets or a clause merely containing an industry noun.
+  const customerIndustry = "(?:commercial construction|data centers|metals and mining|pulp and paper)";
+  if (new RegExp(`^(?:In the commercial and other industrial markets, )?our customers operate in ${customerIndustry}(?:, ${customerIndustry})*(?:,? (?:and|as well as) (?:${customerIndustry}|other industrial applications))[.]$`, "i").test(sentence)) return 2;
+  // This manufacturing statement explicitly identifies customers outsourcing
+  // production to the issuer. Product users, suppliers and development targets
+  // cannot satisfy its present-tense manufacturing and outsourcing predicates.
+  const manufacturingCapability = "(?:high complexity components|specific optical technologies|micro-optical assemblies|other advanced manufacturing challenges)";
+  const outsourcedManufacturing = new RegExp(`^Our systems manufacturing operations assemble and manufacture components and systems for (?:both )?(?:medical device|advanced aerospace)(?: and (?:medical device|advanced aerospace))? customers who choose to outsource these services based on our ability to handle ${manufacturingCapability}(?:, ${manufacturingCapability})*(?:,? and ${manufacturingCapability})?[.]$`, "i");
+  if (outsourcedManufacturing.test(sentence)) return 2;
   // These statements explicitly identify a commercial population, rather than
   // inferring one from product usage, partnership names or financing alone.
   const licensedPopulation = sentence.match(/^Our business model centers on licensing our (?:IP|software|technology)\b.{1,220}?\s+to\s+(.+)/i)?.[1]

@@ -2,6 +2,7 @@ import { inSimpleAlertPilot } from "./helpers/simple-alert-pilot-fixture.mjs";
 import { companyProfileFixture } from "./helpers/company-profile-fixture.mjs";
 import assert from "node:assert/strict";
 import { loadTsModule } from "./helpers/load-typescript-module.mjs";
+import { restoreCommitteeEvidence } from "./helpers/restore-committee-evidence.mjs";
 const now = new Date("2026-09-16T15:00:00Z");
 const analysis = { ticker: "TEST", company: "Test Software", industry: "Software", sector: "Technology", currency: "USD",
   observedAt: now.toISOString(), currentPrice: 50, fairValue: { conservativeValue: 95, baseValue: 100, optimisticValue: 105, methods: [{ method: "earnings_power", value: 95 }, { method: "owner_earnings_fcf", value: 105 }] },
@@ -17,7 +18,8 @@ const overrides = {
     runOpenAiCommitteeProvider: async input => {
       roleCalls++;
       assert.match(input.messages[0].content, /company-first valuation review/);
-      const data = JSON.parse(input.messages[1].content);
+      const payload = JSON.parse(input.messages[1].content);
+      const data = { ...payload, evidencePack: restoreCommitteeEvidence(payload.evidencePack, payload) };
       promptCaptures.push(data);
       assert.equal(data.evidencePack.analysisKind, "valuation");
       const companyProfile = data.evidencePack.evidenceSections.fundamentals.items.find(item => item.source === "verified_company_profile");

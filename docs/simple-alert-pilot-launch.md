@@ -1,3 +1,23 @@
+## Three issuer-discovery timeouts contained; profile production reached 27/500 — 8 October 2026, 12:47 Bangkok
+
+The deployed executable remains tested runtime `86da747b3a156dba0282db93d057fc250c85d35a`; current pilot head is nine launch-log-only commits ahead with no executable difference. Railway reports zero recent service failures or active warnings. Main scanning remains stopped, the fixed cohort remains 25, and staged telemetry patch `97789f67-b0f5-4cb3-b689-bd46c2b4c63f` remains untouched.
+
+At 05:30 UTC, three selected direct-issuer discovery attempts all timed out and were recorded as `temporarily_unavailable`; this increased Bangkok-day source failures from 11 to 14. SEC urgent, trade-halt and market-watch sources remained connected. The cycle completed HTTP200, persisted the source registry, and made no paid model call. This is a partial upstream source failure, not a successful discovery and not a reason to lower evidence rules or force an immediate broad retry.
+
+The latest sensor cycle completed HTTP200 at 05:46 UTC. Five registered feeds and 13 due SEC checks all succeeded, with zero feed, SEC or source-preparation failures and no source-deadline overrun. Its end-of-cycle snapshot counter was 13 current because the other rotating half had just become due; the preceding 05:16 cycle had 25/25 current. This is cadence state, not restored direct-IR coverage and not proof that prior discovery failures disappeared.
+
+Two processing attempts in the latest cycle were nontechnical deferrals. There were zero processing failures, Committee attempts, AI calls, approvals, live outboxes, delivery jobs or deliveries. Two cases are profile-ready but neither has fresh authoritative ready evidence; the oldest reported wait is 1,725 minutes. Queue waiting and repeated deferrals are not completed assessments.
+
+Bangkok-day source accounting is **14/378 (3.70%)** and processing is **1/44 (2.27%)**, both below 5% in this cumulative window. Technical Committee reliability remains **1/1 (100%)**, so the Committee gate fails and two consecutive fully qualifying windows do not exist. Scale-up remains ineligible.
+
+The latest profile pass completed HTTP200 at 05:39 UTC with 27 attempts and 30 source requests, zero request/body/storage/count failures and no model calls. It added no first-time verification in that pass; production remains **27/500**, 473 short, while all 25 cohort profiles remain verified. Remaining outcomes were seven combined business/customer gaps, 13 customer gaps, three unavailable annual filings, one missing business section, one oversized document and one 40-F/AIF gap.
+
+The shared rolling ledger remains **$0.095300 recorded/exposure, $0 reserved, $0 pending unknown and $9.904700 headroom under $10**. Provider invoices and actual infrastructure spend under the separate $20/month limit remain unverified. No Serious Buy/Sell/Watch Out exists and no live delivery receipt exists.
+
+No runtime repair, redeploy, cap change, paid replay or scale change is justified. Next: retain provider throttling, observe later discovery retries and the rotating SEC cadence, continue profile production, and preserve exact-evidence holds. Remain at 25 until every gate passes.
+
+---
+
 ## CEVA SEC snapshot recovered; profiles reached 25/500 — 8 October 2026, 11:39 Bangkok
 
 The deployed executable remains tested runtime `86da747b3a156dba0282db93d057fc250c85d35a`; current pilot head is eight launch-log-only commits ahead with no executable difference. Railway reports zero recent service failures or active warnings. Main scanning remains stopped, the fixed cohort remains 25, and staged telemetry patch `97789f67-b0f5-4cb3-b689-bd46c2b4c63f` remains untouched.

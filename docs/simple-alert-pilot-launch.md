@@ -1,3 +1,62 @@
+## Live financial-input repair completed; profile-parser recovery still awaits live yield — 8 October 2026, 13:25 Bangkok
+
+This maintenance checkpoint verified the newly deployed pilot executable rather than treating a green deployment as proof. Main scanning remains stopped, the fixed cohort remains `small-ai-25-20261003-v1` at 25 companies, and the unrelated staged telemetry patch `97789f67-b0f5-4cb3-b689-bd46c2b4c63f` remains untouched.
+
+### Exact deployed revision
+
+Railway is running branch `pilot-simple-alerts` at exact executable commit `830f1d58d2a2c06d7d527af4fcf614e36149d0b1` on all four pilot services:
+
+- sensor `627ec256-573d-4d21-8b89-24bcce8a7b07`;
+- profile recovery `9e2f0252-341e-41b6-ba91-06254497fcb1`;
+- inert foundation `6bb994bb-c524-4e86-a3dd-22ae245f5ece`;
+- web `a6a6045f-88a5-4792-8212-41cfa119582a`.
+
+The concurrent code change applies lossless shared financial-value factoring before the existing whole-review reservation and each provider call, and adds three narrow annual-report extraction patterns. The 60,000-byte prompt cap, `$2.7538` conservative review reservation, model policy, shared `$10` rolling-24-hour ledger, evidence requirements, final approval, and delivery gates are unchanged.
+
+### Live Committee verification
+
+The first exact-code sensor cycle ran from `2026-10-08T06:15:39.872Z` to `06:18:49.474Z` and completed successfully in 186,228 ms. It exercised UPST review revision `907c12944225d809` through all four required roles:
+
+- analyst, valuation, and skeptic used `gpt-6.1-sol`; final judge used `gpt-6-astra`;
+- all four roles completed with `finishReason=stop`, usage receipts, and no provider or local technical failure;
+- actual usage was 56,448 tokens, including 51,883 prompt and 4,565 completion tokens;
+- recorded cost was `$0.356706`. Rolling recorded exposure is now `$0.452006`, with zero reservations, zero pending/unknown exposure, and `$9.547994` headroom under the existing `$10` ledger.
+
+This is natural live proof that the new input representation can admit and complete this UPST review without the previous local byte-limit failure. It is not an approval and does not prove arbitrary evidence will fit: the Committee returned `insufficient_evidence`, financial facts remained incomplete, and the case was durably recorded as a nonterminal retry. The missing items remain the dated June-2026 EPS/CFO and loan-funding bridge, loan-adjusted sustainable cash flow, debt and maturities including recourse, diluted-share reconciliation, EBITDA, and justified forward growth/ROE/multiple or EBITDA-to-equity assumptions. No unchanged-evidence paid retry is authorized.
+
+The cycle produced no Serious Buy, Serious Sell, or Watch Out, no live outbox, and no live delivery. Its one event result was a nontechnical evidence deferral; `eventsProcessed=0` correctly excludes the nonterminal case. The exact-code isolated positive, negative, and duplicate web-feed controls passed with TEST-ONLY receipt `branch-labs/simple-alerts/cohorts/small-ai-25-20261003-v1/serious-signal/delivery-test/receipts/web_feed/89e4050a690f542fa670fdeb1790f2e6.json`; external test channels remained disabled.
+
+### Reliability and source accounting
+
+The exact-code cycle had 13/13 successful SEC checks, no feed poll in that cycle, no source-preparation failure, and no processing or Committee technical failure. Daily measured totals at the terminal summary are:
+
+- source failures: 14/413 = 3.39%;
+- processing failures: 1/47 = 2.13%;
+- Committee technical failures: 1/2 = 50%;
+- queue: five pending cases, one profile-ready at cycle start, and a 373-minute oldest profile-ready wait.
+
+The successful live review does not erase the earlier technical failure or satisfy two consecutive reliability windows. INOD still lacks its own exact-code technical retry; UPST completion is not evidence that INOD retried.
+
+### Profile production
+
+Two runs on the preceding executable, before `830f1d58` was deployed, added three first-time verifications: one at `05:55:27Z` and two at `06:10:26Z`, moving the reconciled daily total from 27 to 30.
+
+The first exact-`830f1d58` profile run completed successfully from `06:23:37Z` to `06:25:30Z`:
+
+- 25 attempts, zero verifications and zero first-time verifications in this run;
+- 28 source requests, zero request failures and zero response-body failures;
+- reconciled daily total 30/500, leaving 470;
+- all 25 pilot-cohort profiles remained verified;
+- no model calls.
+
+An admission read for HELP encountered `company_profile_cache_superseded`, made zero writes, and was safely skipped; the terminal run reported no storage failure. Because the three new daily verifications predated the new parser deployment, the three narrow parser recoveries remain local-fixture proof rather than production-yield proof. Their live effect is still inconclusive.
+
+### Gate and next bounded action
+
+The pilot remains at 25. No scale-up gate is newly satisfied: there are still fewer than 20 distinct real assessed cases, Committee reliability is above the required threshold, two qualifying consecutive source and processing windows are absent, and there is no live approved alert with receipt-backed delivery. Infrastructure spend remains unverified under the separate `$20/month` constraint; no resource or subscription was added.
+
+Next bounded work is to observe INOD's own eligible exact-code retry without forcing a signal or paying again for unchanged evidence, keep UPST queued for genuinely new missing financial evidence, and verify whether the new profile extraction patterns create first-time production verifications. The remaining profile shortfall is 470. No new critical incident, budget stop, authentication blocker, or verified live Serious Alert warrants an hourly notification.
+
 ## Three issuer-discovery timeouts contained; profile production reached 27/500 — 8 October 2026, 12:47 Bangkok
 
 The deployed executable remains tested runtime `86da747b3a156dba0282db93d057fc250c85d35a`; current pilot head is nine launch-log-only commits ahead with no executable difference. Railway reports zero recent service failures or active warnings. Main scanning remains stopped, the fixed cohort remains 25, and staged telemetry patch `97789f67-b0f5-4cb3-b689-bd46c2b4c63f` remains untouched.

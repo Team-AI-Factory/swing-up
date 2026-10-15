@@ -1,3 +1,4 @@
+import { publicationCompanyProfile } from "@/lib/event-company-profile";
 import crypto from "node:crypto";
 import { completeCommitteeReview } from "@/lib/ai-committee/review-policy";
 import { legacyTerminalReviewEvidence, legacyPrimarySourceReviewEvidence, sameTerminalReviewEvidence, terminalPublicationPacketKey, validatedTerminalEvidence, type TerminalEvidence } from "@/lib/equity-signal/terminal-review-evidence";
@@ -189,7 +190,8 @@ export async function finishTerminalReviewAttempt(input: Identity & { attemptId:
     const body: Omit<Decision, "integrity"> = { version: 1, cik: input.cik, ticker: input.ticker, direction: candidate.direction as "upside" | "downside" | "unknown",
       decisionKey: evidence.decisionKey, outcome: outcome === "approve" ? "approved" : outcome === "reject" ? "rejected" : "needs_more_data", fingerprint: input.report.candidateFingerprint,
       evidence, decidedAt: String(committee.finishedAt ?? input.report.checkedAt ?? input.now.toISOString()), eventId: input.eventId,
-      ...(input.resultKey ? { resultKey: input.resultKey } : {}), committee, publicationGatePassed: candidate.gatePassed === true,
+      ...(input.resultKey ? { resultKey: input.resultKey } : {}), committee, publicationGatePassed: candidate.gatePassed === true
+        && (object(candidate.companyProfile).status !== "event_scoped" || Boolean(publicationCompanyProfile(candidate.companyProfile, candidate, input.now))),
       publicationPacketKey: terminalPublicationPacketKey(candidate),
       // Additive sealed provenance, outside all evidence/admission keys. An old
       // record without this field does not prove that no documents were required.

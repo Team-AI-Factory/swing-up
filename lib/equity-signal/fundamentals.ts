@@ -176,7 +176,7 @@ export async function enrichCandidateFundamentals(candidate: ImpactCandidate | n
     }
     const latestFiledAt = items.map((item) => item.filedAt).filter((value): value is string => Boolean(value)).sort().at(-1) ?? null;
     const fiscalPeriodEnd = items.map((item) => item.periodEnd).filter((value): value is string => Boolean(value)).sort().at(-1) ?? null;
-    candidate.fundamentals = { available: currentMetricCount >= 3, sourceUrl, checkedAt: now.toISOString(), latestFiledAt, fiscalPeriodEnd, items, error: items.length ? null : "no_supported_company_facts" };
+    candidate.fundamentals = { ...(body.cik != null ? { issuerCik: String(body.cik).padStart(10, "0") } : {}), available: currentMetricCount >= 3, sourceUrl, checkedAt: now.toISOString(), latestFiledAt, fiscalPeriodEnd, items, error: items.length ? null : "no_supported_company_facts" };
     const annualRevenue = latestFact(facts, METRICS[0].concepts, ["USD"], now, true);
     if (candidate.eventFamily !== "valuation_gap") applyCompanyScale(candidate, annualRevenue, sourceUrl, now);
     if (candidate.fundamentals.available) await cache?.write({ evidenceVersion: 2, cik: candidate.cik, fundamentals: candidate.fundamentals, annualRevenue }).catch(() => undefined);

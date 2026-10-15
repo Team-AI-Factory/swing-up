@@ -1,4 +1,5 @@
-import { readCompanyProfiles } from "@/lib/opportunity-engine/company-profile-cache";
+import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
+import { readCompanyBusinessContexts, readCompanyProfiles } from "@/lib/opportunity-engine/company-profile-cache";
 import type { Pr262SensorEvent } from "@/lib/opportunity-engine/pr262-change-sensor";
 import { pr262QueueBlocker } from "@/lib/opportunity-engine/pr262-review-blockers";
 
@@ -9,23 +10,24 @@ const authoritative = (event: Pr262SensorEvent) => event.source === "sec" || eve
 
 /** Keep blocked research, but do not repeatedly spend the analysis window on it. */
 export function planPr262QueueAdmissions(events: Pr262SensorEvent[], verifiedTickers: ReadonlySet<string>, now: Date,
-  options: { committeePaused?: boolean } = {}) {
+  options: { committeePaused?: boolean; eventBusinessContextIds?: ReadonlySet<string> } = {}) {
+  const contextReady = (event: Pr262SensorEvent) => verifiedTickers.has(event.ticker!) || (isSimpleAlertPilot() && options.eventBusinessContextIds?.has(event.id) === true);
   const nowMs = now.getTime();
   const candidates = events.filter(event => event.priority >= 80 && event.ticker && event.mappingStatus === "mapped"
     && (event.source !== "sec" || (event.identityMethod === "official_sec_archive_link" && event.cik && event.accession && event.canonicalSecIndexUrl)));
   const held = candidates.filter(event => options.committeePaused && (pr262QueueBlocker(event.queueLastError) === "committee_disabled"
     || /pr262_event_report_retry:configuration_blocker(?:[:;]|$)/.test(event.queueLastError ?? "")));
   const heldIds = new Set(held.map(event => event.id));
-  const readyProfileEventIds = candidates.filter(event => verifiedTickers.has(event.ticker!) && profileWait(event) && !heldIds.has(event.id)).map(event => event.id);
+  const readyProfileEventIds = candidates.filter(event => contextReady(event) && profileWait(event) && !heldIds.has(event.id)).map(event => event.id);
   const due = candidates.filter(event => !Number.isFinite(Date.parse(event.queueNextAttemptAt ?? "")) || Date.parse(event.queueNextAttemptAt!) <= nowMs
     || readyProfileEventIds.includes(event.id));
-  const ready = due.filter(event => verifiedTickers.has(event.ticker!) && !heldIds.has(event.id));
-  const blocked = candidates.filter(event => !verifiedTickers.has(event.ticker!));
+  const ready = due.filter(event => contextReady(event) && !heldIds.has(event.id));
+  const blocked = candidates.filter(event => !contextReady(event));
   const blockerCounts: Record<string, number> = { missing_profile: blocked.length, missing_price_scenarios: 0, missing_industry: 0,
-    committee_disabled: held.filter(event => verifiedTickers.has(event.ticker!)).length, same_evidence: 0, ai_budget: 0,
+    committee_disabled: held.filter(event => contextReady(event)).length, same_evidence: 0, ai_budget: 0,
     review_capacity: 0, ai_provider: 0, accounting_unavailable: 0, reservation_unclassified: 0, other_scheduled_retry: 0 };
   for (const event of candidates) {
-    if (!verifiedTickers.has(event.ticker!) || heldIds.has(event.id) || readyProfileEventIds.includes(event.id)
+    if (!contextReady(event) || heldIds.has(event.id) || readyProfileEventIds.includes(event.id)
       || !(Date.parse(event.queueNextAttemptAt ?? "") > nowMs)) continue;
     const category = pr262QueueBlocker(event.queueLastError) ?? "other_scheduled_retry";
     blockerCounts[category] = (blockerCounts[category] ?? 0) + 1;
@@ -48,7 +50,7 @@ export function planPr262QueueAdmissions(events: Pr262SensorEvent[], verifiedTic
   // an issuer already examined wait for the shared profile warmer; time alone
   // must not turn an unchanged missing profile into another full analysis.
   const examinedTickers = new Set(candidates.filter(event => event.queueAttempts > 0 || profileWait(event)).map(event => event.ticker));
-  const discovery = due.filter(event => !verifiedTickers.has(event.ticker!) && !examinedTickers.has(event.ticker) && !heldIds.has(event.id))
+  const discovery = due.filter(event => !contextReady(event) && !examinedTickers.has(event.ticker) && !heldIds.has(event.id))
     .sort((a, b) => Number(a.queueAttempts > 0) - Number(b.queueAttempts > 0)
       || b.priority - a.priority || Date.parse(a.queueLastAttemptAt ?? "1970-01-01") - Date.parse(b.queueLastAttemptAt ?? "1970-01-01")
       || b.observedAt.localeCompare(a.observedAt))[0];
@@ -59,6 +61,8 @@ export function planPr262QueueAdmissions(events: Pr262SensorEvent[], verifiedTic
   return {
     status: "checked" as const,
     profileReadyCount: ready.length,
+    fullProfileReadyCount: ready.filter(event => verifiedTickers.has(event.ticker!)).length,
+    eventBusinessContextReadyCount: ready.filter(event => !verifiedTickers.has(event.ticker!)).length,
     profileBlockedCount: blocked.length,
     profileBlockedCompanyCount: new Set(blocked.map(event => event.ticker)).size,
     parkedProfileEventCount: blocked.filter(event => !admittedIds.has(event.id)).length,
@@ -78,14 +82,23 @@ export function planPr262QueueAdmissions(events: Pr262SensorEvent[], verifiedTic
 
 export async function readPr262QueueAdmissionPlan(events: Pr262SensorEvent[], now: Date) {
   const profiles = await readCompanyProfiles(events.map(event => ({ ticker: event.ticker, company: event.company, cik: event.cik })), now);
+  // Business context admits source classification only. The runner must still bind
+  // an eligible direct event and reject any customer/moat-dependent decision.
+  const possible = !isSimpleAlertPilot() ? [] : events.filter(event => !profiles.has(event.ticker ?? "") && event.source === "sec"
+    && !/event_business_context_rejected/.test(event.queueLastError ?? "")
+    && event.mappingStatus === "mapped" && event.identityMethod === "official_sec_archive_link"
+    && event.cik && event.accession && event.canonicalSecIndexUrl
+    && now.getTime() - Date.parse(event.observedAt) >= 0 && now.getTime() - Date.parse(event.observedAt) <= 48 * 3600000);
+  const business = possible.length ? await readCompanyBusinessContexts(possible, now) : new Map();
   return planPr262QueueAdmissions(events, new Set(profiles.keys()), now, {
+    eventBusinessContextIds: new Set(possible.filter(event => business.has(event.ticker)).map(event => event.id)),
     committeePaused: process.env.AI_COMMITTEE_ENABLED === "false" || process.env.SWING_UP_PR262_EVENT_JOB_OPENAI_ENABLED === "false",
   });
 }
 
 /** A failed readiness read cannot turn every retained event into an admission. */
 export function unavailablePr262QueueAdmissionPlan(events: Pr262SensorEvent[]) {
-  return { status: "temporarily_unavailable" as const, profileReadyCount: null, profileBlockedCount: null,
+  return { status: "temporarily_unavailable" as const, profileReadyCount: null, fullProfileReadyCount: null, eventBusinessContextReadyCount: null, profileBlockedCount: null,
     profileBlockedCompanyCount: null, parkedProfileEventCount: null, committeeHeldCount: null,
     blockerCounts: null, freshAuthoritativeReadyCount: null, oldestProfileReadyAgeMinutes: null,
     oldestProfileReadyQueueWaitMinutes: null, profileReadyQueueAgeUnknownCount: null,

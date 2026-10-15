@@ -1,3 +1,5 @@
+> Current policy, 15 October 2026: [Restricted-beta release boundary](restricted-beta-release.md) separates release safety from later coverage, scale-up and performance goals. The 500/day target, five-session/20-case observation goals and proven profitability are not prerequisites to opening the restricted 25-company beta. Exact shipped-version safety, real-model review and delivery evidence remain required. This local change does not claim a deployment or launch. Historical entries below are preserved.
+
 ## Second independent profile pass clean; scale gates still fail — 8 October 2026, 21:10 Bangkok
 
 GitHub head `093b22d4f38b95ca27ba9657596cf36201013090` is the launch-log-only successor to tested runtime `dde207a5be7ec6c01a6d2b9963dabb489fff3f9c`. Railway skipped all four documentation-only deployments. The profiles service continues on exact runtime deployment `44d6d23c-4bce-4a3b-9bcf-b7252a153122`; the other pilot services retain the same exact runtime. Main scanning remains stopped.

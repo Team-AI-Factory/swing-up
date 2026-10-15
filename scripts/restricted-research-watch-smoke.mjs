@@ -1,0 +1,17 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { loadTsModule } from './helpers/load-typescript-module.mjs';
+import { companyProfileFixture } from './helpers/company-profile-fixture.mjs';
+const config=JSON.parse(readFileSync(new URL('../config/simple-alert-pilot.json',import.meta.url),'utf8'));
+const {assembleRestrictedResearchWatch}=loadTsModule('@/lib/restricted-research-watch',{'@/config/simple-alert-pilot.json':config});
+const now=new Date('2026-10-15T00:00:00Z'),identity=config.companies[0];
+const row={...identity,id:'saved-case',eventHeadline:'Company-reported event',companyProfile:companyProfileFixture(identity,now),userAlertEligible:false,committeeApproved:false,committeeStatus:'needs_more_data',currentPrice:99,fairValue:150,createdAt:now.toISOString(),eventObservedAt:'2026-09-01T00:00:00Z',explanation:{missingInformation:['Current financial figures are missing.']},sources:[{label:'Filing',url:'https://www.sec.gov/example?token=no',publishedAt:'2026-09-01'},{label:'bad',url:'javascript:alert(1)'}]};
+const result=assembleRestrictedResearchWatch([row],now);
+assert.equal(result.length,1,'Incomplete cases remain visible even when no actionable alert exists');
+assert.equal(result[0].status,'parked');assert.equal(result[0].committeeApproved,false);assert.equal(result[0].currentPrice,null);assert.equal(result[0].targets,null);
+assert.match(result[0].missingInformation[0],/financial figures/);assert.equal(result[0].sourceDates.eventObservedAt,row.eventObservedAt);assert.equal(result[0].sources.length,1);assert.equal(result[0].sources[0].url,'https://www.sec.gov/example');
+assert.equal(assembleRestrictedResearchWatch([row,row],now).length,1);
+for(const bad of [{...row,cik:'999'},{...row,company:'Wrong Company'},{...row,ticker:'OUTSIDE'},{...row,committeeApproved:true},{...row,isTest:true}])assert.equal(assembleRestrictedResearchWatch([bad],now).length,0);
+assert.match(assembleRestrictedResearchWatch([{...row,companyProfile:null}],now)[0].missingInformation.join(' '),/not currently verified/);
+assert.match(assembleRestrictedResearchWatch([{...row,committeeStatus:'rejected'}],now)[0].missingInformation.join(' '),/rejected/);
+console.log('PASS restricted Research Watch: preserved parked cases, exact cohort identity, dates and reasons, no target/price/approval inheritance, no test records');

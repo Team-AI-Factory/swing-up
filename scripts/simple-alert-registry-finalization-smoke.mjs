@@ -23,12 +23,43 @@ const registry = now => ({ version: 1, updatedAt: now.toISOString(), discoveryCu
     lastSuccessAt: null, nextCheckAt: new Date(now.getTime() + 3600_000).toISOString(), error: null,
   })) });
 
+// The 5050 ms caller envelope reserves 5000 ms for the registry, leaving only
+// 50 ms for source work. Host scheduling used to consume this tiny allowance.
+// Advance a deterministic clock and cancel the same production-created signals
+// at their scheduled deadlines; no production timeout or assertion is relaxed.
+async function withControlledDeadlines(run) {
+  const NativeDate = Date, nativeTimeout = AbortSignal.timeout;
+  let clock = NativeDate.parse("2026-10-07T00:00:00.000Z");
+  const scheduled = [], deadlines = new WeakMap();
+  class ControlledDate extends NativeDate {
+    constructor(...args) { super(...(args.length ? args : [clock])); }
+    static now() { return clock; }
+  }
+  const advance = ms => {
+    assert.ok(Number.isFinite(ms) && ms >= 0);
+    clock += ms;
+    for (const { at, controller } of scheduled) if (at <= clock && !controller.signal.aborted)
+      controller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+  };
+  globalThis.Date = ControlledDate;
+  AbortSignal.timeout = ms => {
+    const controller = new AbortController(), at = clock + ms;
+    scheduled.push({ at, controller }); deadlines.set(controller.signal, at);
+    return controller.signal;
+  };
+  try { await run({ advance, deadlineOf: signal => deadlines.get(signal) }); }
+  finally { globalThis.Date = NativeDate; AbortSignal.timeout = nativeTimeout; }
+}
+
 // A completed exact-CIK source response is still evidence when final registry
 // publication fails. No second PUT or repeat source request is allowed.
+await withControlledDeadlines(async ({ advance, deadlineOf }) => {
 for (const stage of ["write", "write_timeout", "write_unacknowledged", "conflict_winner_read", "conflict_winner_missing"]) {
   const now = new Date();
+  const started = Date.now();
   let reads = 0, writes = 0, network = 0;
   const direct = loadTsModule("@/lib/opportunity-engine/pr262-direct-announcements", { ...common,
+    "node:timers/promises": { setTimeout: async (ms, _value, { signal } = {}) => { signal?.throwIfAborted(); advance(ms); signal?.throwIfAborted(); } },
     "@/lib/r2-warehouse": {
       readVersionedTextFromR2: async () => {
         reads++;
@@ -44,14 +75,15 @@ for (const stage of ["write", "write_timeout", "write_unacknowledged", "conflict
         if (stage === "write") throw new Error("r2_state_write_http_502");
         if (stage === "write_unacknowledged") return { written: false, conflict: false, etag: null };
         if (stage === "write_timeout") return new Promise((_, reject) => {
-          const timer = setTimeout(() => reject(new Error("unbounded_registry_write")), 6000);
-          options.signal.addEventListener("abort", () => { clearTimeout(timer); reject(options.signal.reason); }, { once: true });
+          assert.equal(deadlineOf(options.signal), started + 5050, "The final PUT inherits the exact caller deadline");
+          options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+          advance(started + 5050 - Date.now());
+          assert.equal(options.signal.aborted, true, "The hung PUT must be cancelled at its actual deadline");
         });
         return { written: false, conflict: true, etag: null };
       },
     },
   });
-  const started = Date.now();
   const result = await direct.runPr262DirectAnnouncementMonitor({ exposure: [company], now, deadlineAtMs: started + 5050,
     fetchImpl: async request => {
       network++;
@@ -77,6 +109,40 @@ for (const stage of ["write", "write_timeout", "write_unacknowledged", "conflict
   assert.match(result.preparationErrors[0], /^direct_registry_/);
   assert.equal(result.issuerSourceCoverage[0].sec.status, "current_snapshot");
   assert.ok(Date.parse(result.issuerSourceCoverageEvaluatedAt) >= started);
+}
+
+});
+
+// Reproduce the original 0-request outcome deliberately: 60 ms of registry
+// setup exhausts the 50 ms source slice. Separately cancel during source pacing.
+// Neither condition may fabricate a successful source or publish a stale event.
+for (const mode of ["setup_consumes_source_slice", "cancel_before_fetch"]) {
+  await withControlledDeadlines(async ({ advance }) => {
+    const now = new Date(), started = Date.now(); let network = 0, writes = 0;
+    const direct = loadTsModule("@/lib/opportunity-engine/pr262-direct-announcements", { ...common,
+      "node:timers/promises": { setTimeout: async (ms, _value, { signal } = {}) => {
+        signal?.throwIfAborted(); advance(mode === "cancel_before_fetch" ? 51 : ms); signal?.throwIfAborted();
+      } },
+      "@/lib/r2-warehouse": {
+        readVersionedTextFromR2: async () => {
+          if (mode === "setup_consumes_source_slice") advance(60);
+          return { found: true, text: JSON.stringify(registry(now)), etag: "before" };
+        },
+        writeVersionedJsonToR2: async (_key, _value, options) => {
+          options.signal.throwIfAborted(); writes++;
+          return { written: true, conflict: false, etag: "after" };
+        },
+      },
+    });
+    const result = await direct.runPr262DirectAnnouncementMonitor({ exposure: [company], now,
+      deadlineAtMs: started + 5050, fetchImpl: async () => { network++; return Response.json(body(company, now)); } });
+    assert.equal(network, 0, `${mode}: no provider call after source expiry/cancellation`);
+    assert.equal(result.successCount, 0, `${mode}: no fabricated successful source`);
+    assert.equal(result.events.length, 0, `${mode}: no event without completed evidence`);
+    assert.equal(writes, 1, "The reserved registry slice still permits truthful finalization");
+    assert.equal(result.registryPersistence.written, true);
+    assert.equal(result.directWorkBudgetMs, 50, "The original source deadline remains unchanged");
+  });
 }
 
 // V3 has already spent 25 seconds of its 45-second window. Thirteen sequential

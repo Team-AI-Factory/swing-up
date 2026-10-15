@@ -1,3 +1,5 @@
+import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
+import { eventCompanyContextEligible } from "@/lib/event-company-profile";
 import crypto from "node:crypto";
 import { validatedReviewEvidenceSnapshot } from "@/lib/equity-signal/review-evidence-revision";
 
@@ -48,8 +50,13 @@ function secPrimarySource(urlValue: unknown, cik: string, publishedAt: unknown) 
 /** An old approval must never attest targets recalculated by a newer model.
  * This is a publication check only; changing it cannot buy a paid review. */
 export function terminalPublicationPacketKey(candidate: Json) {
-  const forecast = object(candidate.priceForecast);
-  return hash({ valuationRange: candidate.valuationRange ?? null,
+  const forecast = object(candidate.priceForecast), profile = object(candidate.companyProfile), magnitude = object(candidate.eventMagnitude);
+  const relative = Object.fromEntries(Object.entries(object(magnitude.relativeToCompany)).filter(([key]) => key !== "eventMetricSourceReceiptId"));
+  const packetMagnitude = { ...magnitude, metrics: rows(magnitude.metrics).map(metric => Object.fromEntries(Object.entries(metric).filter(([key]) => key !== "sourceReceiptId"))),
+    relativeToCompany: magnitude.relativeToCompany == null ? null : relative };
+  return hash({ ...(isSimpleAlertPilot() && candidate.eventMagnitude && candidate.eventFamily !== "valuation_gap" ? { eventMagnitude: packetMagnitude } : {}), ...(profile.status === "event_scoped" ? { eventCompanyContext: { policyVersion: profile.policyVersion, business: profile.business, eventSource: profile.eventSource, unknownDetails: profile.unknownDetails, decisionDependenciesSatisfied: eventCompanyContextEligible(candidate) } } : {}), ...(candidate.riskWarningPolicy ? { riskWarningPolicy: candidate.riskWarningPolicy, riskWarningRule: candidate.riskWarningRule } : {}),
+    ...(candidate.singleScenarioEvidence ? { singleScenarioEvidence: candidate.singleScenarioEvidence } : {}),
+    valuationRange: candidate.valuationRange ?? null,
     forecast: Object.fromEntries(["status", "horizon", "probabilityDirectionCorrectPercent", "sampleSize", "medianReturnPercent",
       "pessimisticReturnPercent", "optimisticReturnPercent", "medianPrice", "lowPrice", "highPrice", "basedOnMarketRelativeOutcomes"]
       .map(key => [key, forecast[key] ?? null])) });

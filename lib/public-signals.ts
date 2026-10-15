@@ -1,5 +1,6 @@
 import { publicReviewConfidence } from "@/lib/public-review-confidence";
 import { verifiedCompanyProfile } from "@/lib/company-profile";
+import { publicationCompanyProfile } from "@/lib/event-company-profile";
 import { industryLabel, publicAlertDetailsComplete } from "@/lib/alert-details";
 import type { getValuationWatchlistStatus } from "@/lib/opportunity-engine/valuation-watchlist-feed";
 import { publicExplanation } from "@/lib/signal-explanation";
@@ -21,7 +22,7 @@ export function assemblePublicSignals(candidates: Candidate[], recent: Json[], a
       && row.priceObservedAt === current.priceObservedAt;
   };
   const events = recent.filter(row => {
-    if (row.userAlertEligible !== true || !verifiedCompanyProfile(row.companyProfile, row)) return false;
+    if (row.userAlertEligible !== true || !publicationCompanyProfile(row.companyProfile, row)) return false;
     if (row.kind !== "valuation") return true;
     const current = byTicker.get(String(row.ticker));
     return !current || (current.userAlertEligible && matchesCurrentValuation(row));
@@ -43,8 +44,16 @@ export function assemblePublicSignals(candidates: Candidate[], recent: Json[], a
       reviewProvenance: object(object(row.quality).historicalReview).source === "terminal_decision"
         ? { source: "historical_terminal_decision", decidedAt: object(object(row.quality).historicalReview).decidedAt ?? null }
         : object(row.quality).currentPassPaidReview === true ? { source: "current_attempt", decidedAt: null } : null,
-      explanation: publicExplanation(row.explanation, { company: String(row.company), ticker: row.ticker, cik: row.cik, companyProfile: row.companyProfile, industry: row.industry ?? context?.industry, sector: row.sector ?? context?.sector, headline: row.eventHeadline, eventFamily: row.eventFamily }),
-      kind: row.kind, eventFamily: row.eventFamily, ...publicReviewConfidence(row),
+      explanation: publicExplanation(row.explanation, { ...row, company: String(row.company), ticker: row.ticker, cik: row.cik, companyProfile: row.companyProfile, industry: row.industry ?? context?.industry, sector: row.sector ?? context?.sector, headline: row.eventHeadline, eventFamily: row.eventFamily }),
+      kind: row.kind, eventFamily: row.eventFamily, relationship: row.relationship, whatHappened: row.whatHappened,
+      causalChain: row.causalChain, receipts: row.receipts, eventHeadline: row.eventHeadline,
+      plainLanguageExplanation: row.plainLanguageExplanation, profileDecisionDependencies: row.profileDecisionDependencies,
+      eventMagnitude: row.eventMagnitude, riskWarningPolicy: row.riskWarningPolicy, riskWarningRule: row.riskWarningRule, direction: row.direction,
+      eventTruth: row.eventTruth, mappingConfidence: row.mappingConfidence, materiality: row.materiality,
+      transmissionConfidence: row.transmissionConfidence, evidenceIndependence: row.evidenceIndependence,
+      contradictionPenalty: row.contradictionPenalty, pricedInPenalty: row.pricedInPenalty, rumour: row.rumour,
+      primarySource: row.primarySource, gatePassed: row.gatePassed, gateChecks: row.gateChecks, quote: row.quote,
+      ...publicReviewConfidence(row),
     };
   }).filter(row => publicAlertDetailsComplete(row));
   const reviewedValuations = new Set(events.filter(row => row.kind === "valuation").map(row => row.ticker));

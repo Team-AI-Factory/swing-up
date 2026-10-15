@@ -1,3 +1,4 @@
+import { RISK_WARNING_POLICY } from "@/lib/equity-signal/risk-warning-policy";
 import { negativeEarningsEvidence, type NegativeEarningsEvidence } from "@/lib/valuation-availability";
 
 type Json = Record<string, unknown>;
@@ -65,6 +66,9 @@ export function buildPriceOutlook(input: {
 }
 
 export function candidatePriceOutlook(candidate: Json, analysis?: Json, now = new Date()): PriceOutlook {
+  if (candidate.riskWarningPolicy === RISK_WARNING_POLICY) return buildPriceOutlook({
+    currentPrice: object(candidate.quote).price ?? candidate.price, currency: analysis?.currency ?? candidate.currency, action: "watch_out", basis: "unavailable",
+  });
   const forecast = object(candidate.priceForecast), fair = object(analysis?.fairValue ?? candidate.valuationRange);
   const forecastReady = ["provisional", "calibrating", "calibrated"].includes(String(forecast.status))
     && [forecast.lowPrice, forecast.medianPrice, forecast.highPrice].every(value => positive(value) !== null);

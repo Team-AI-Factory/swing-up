@@ -10,7 +10,7 @@ const publicWatchlistRoute = readFileSync(new URL("../app/api/public/valuation-w
 const watchlistFeed = readFileSync(new URL("../lib/opportunity-engine/valuation-watchlist-feed.ts", import.meta.url), "utf8");
 const delivery = readFileSync(new URL("../lib/notifications/serious-signal-delivery.ts", import.meta.url), "utf8");
 
-assert.match(dashboard, /<SeriousSignalFeed compact \/>/);
+assert.match(dashboard, /<SeriousSignalFeed compact restrictedBeta=\{restrictedBeta\} \/>/);
 assert.doesNotMatch(dashboard, /mockAlerts|AlertCard/);
 assert.match(page, /Approval status shown/);
 assert.match(feed, /hours=48&limit=100/);
@@ -28,8 +28,8 @@ assert.match(feed, /refreshes within one minute/);
 assert.match(route, /internalApiScopeAuthorized\(request\.headers, "serious_signal_read"\)/);
 assert.match(watchlistRoute, /internalApiScopeAuthorized\(request\.headers, "serious_signal_read"\)/);
 assert.match(watchlistRoute, /cache-control": "private, no-store"/);
-assert.doesNotMatch(publicWatchlistRoute, /internalApiScopeAuthorized|internal-api-auth/);
-assert.match(publicWatchlistRoute, /cache-control": "public, max-age=30, stale-while-revalidate=60"/);
+assert.match(publicWatchlistRoute, /restrictedBeta && !internalApiScopeAuthorized\(request\.headers, "serious_signal_read"\)/);
+assert.match(publicWatchlistRoute, /"private, no-store" : "public, max-age=30, stale-while-revalidate=60"/);
 assert.match(watchlistFeed, /provisionalResearchOnly: false/);
 assert.match(watchlistFeed, /userAlertEligible: true/);
 assert.doesNotMatch(watchlistFeed, /TELEGRAM_BOT_TOKEN|SWING_UP_SERIOUS_SIGNAL_WEBHOOK_URL/);
@@ -47,6 +47,7 @@ console.log(JSON.stringify({
   tokenStoredForSessionOnly: true,
   sanitizedOutputContract: true,
   separateValuationWatchlist: true,
-  publicWatchlistNeedsNoKey: true,
+  nonpilotPublicWatchlistNeedsNoKey: true,
+  pilotWatchlistRequiresScopedReadKey: true,
   watchlistLinksAndMinuteRefresh: true,
 }, null, 2));

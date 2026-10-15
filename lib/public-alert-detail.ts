@@ -157,7 +157,7 @@ function liveAlertToCard(record: LiveAlertRecord): Alert {
     actionLabel: allowedActionLabel(record.action),
     ticker: record.ticker,
     company: record.company,
-    companyFacts: companyCardFacts(entry.companyProfile, { ticker: record.ticker, company: record.company, cik: entry.cik }),
+    companyFacts: companyCardFacts(entry.companyProfile, { ...entry, ticker: record.ticker, company: record.company, cik: entry.cik }),
     event: record.event,
     eventDate: formatDate(record.publishedAt),
     whatHappened: safeText(entry.whatHappened ?? entry.whatChanged ?? entry.summary, record.event),

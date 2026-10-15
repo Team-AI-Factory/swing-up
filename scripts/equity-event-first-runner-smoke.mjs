@@ -136,7 +136,7 @@ const localRequire = (name) => {
   if (name === "node:crypto") return awaitImportCrypto;
   if (name in stubs) return stubs[name];
   if (name === "@/lib/simple-alert-pilot-scope") return loadTsModule(name);
-  if (["@/lib/alert-details", "@/lib/company-profile", "@/lib/signal-explanation", "@/lib/valuation-availability", "@/lib/equity-signal/valuation-candidate", "@/lib/equity-signal/review-evidence-revision", "@/lib/equity-signal/valuation-review-materiality", "@/lib/equity-signal/terminal-review-evidence"].includes(name)) return loadTsModule(name);
+  if (["@/lib/simple-alert-pilot-runtime", "@/lib/restricted-beta-policy", "@/lib/event-company-profile", "@/lib/equity-signal/risk-warning-policy", "@/lib/equity-signal/single-valuation-scenario", "@/lib/alert-details", "@/lib/company-profile", "@/lib/signal-explanation", "@/lib/valuation-availability", "@/lib/equity-signal/valuation-candidate", "@/lib/equity-signal/review-evidence-revision", "@/lib/equity-signal/valuation-review-materiality", "@/lib/equity-signal/terminal-review-evidence"].includes(name)) return loadTsModule(name);
   if (["@/lib/ai-committee/review-policy", "@/lib/equity-signal/us-market-calendar", "@/lib/opportunity-engine/pr262-review-telemetry"].includes(name)) return loadTsModule(name);
   if (name === "@/lib/opportunity-engine/pr262-ai-daily-cost") return loadTsModule(name, { "@/lib/r2-warehouse": {} });
   if (["@/lib/ai-committee/model-policy", "@/lib/equity-signal/financial-evidence"].includes(name)) return loadTsModule(name);
@@ -397,7 +397,8 @@ assert.equal((await runEquitySignalLab(lossInput)).status, "candidate_alert_deta
 restore();
 await inSimpleAlertPilot(async () => {
   const identity = { ticker: "REKR", cik: "0001697851", company: "Rekor Systems, Inc." };
-  Object.assign(candidate, identity);
+  Object.assign(candidate, identity, { eventFamily: "earnings_guidance", eventMagnitude: { metrics: [
+    { kind: "guidance_change_percent", value: 100, sourceReceiptId: receipt.id, sourceUrl: receipt.url, promotionEvidenceVerified: true } ] } });
   const callsBeforeQuarantine = committeeCalls;
   let reservations = 0;
   const quarantined = await runEquitySignalLab({ ...researchInput, beforeOpenAiCall: async () => { reservations++; return true; } });
@@ -415,7 +416,8 @@ await inSimpleAlertPilot(async () => {
   assert.equal(risk.status, "serious_sell", "Sourced downside still uses the complete ordinary safety/Committee gates");
   restore();
   const ordinary = loadTsModule("@/lib/simple-alert-pilot-scope").pilotCompanies()[0];
-  Object.assign(candidate, ordinary);
+  Object.assign(candidate, ordinary, { eventFamily: "earnings_guidance", eventMagnitude: { metrics: [
+    { kind: "guidance_change_percent", value: 100, sourceReceiptId: receipt.id, sourceUrl: receipt.url, promotionEvidenceVerified: true } ] } });
   assert.equal((await runEquitySignalLab(researchInput)).status, "serious_buy", "The 24 ordinary names are not preapproved or blanket-blocked");
   restore();
 });
@@ -461,3 +463,60 @@ for (const fixturePath of ["./helpers/company-profile-financial-note-fixture.mjs
 }
 restore();
 console.log("Committee-bound financial-note type, period, exact quote and limitations: passed");
+
+await inSimpleAlertPilot(async () => {
+  restore();
+  const identity = { ticker: "AIOT", company: "Powerfleet, Inc.", cik: "0001774170" };
+  const directReceipt = { ...receipt, id: "scoped-regulatory-settlement", channel: "sec_current_filings", symbolHints: [identity.ticker],
+    companyHints: [identity.company], url: "https://www.sec.gov/Archives/edgar/data/1774170/000177417026000005/0001774170-26-000005-index.html",
+    title: "Powerfleet discloses regulatory settlement", summary: "Powerfleet regulatory disclosure. Official filing content: Powerfleet agreed to pay a $50 million regulatory penalty. The order requires its principal facility to suspend operations for thirty days. The settlement is binding and the penalty is payable from cash on hand within the next thirty days." };
+  Object.assign(candidate, identity, { eventFamily: "regulatory_enforcement", eventHeadline: directReceipt.title,
+    whatHappened: directReceipt.summary, receipts: [directReceipt], causalChain: ["Settlement reduces cash; suspension disrupts operations."],
+    eventMagnitude: { metrics: [{ kind: "fine_value", value: 50000000, sourceReceiptId: directReceipt.id, sourceUrl: directReceipt.url, promotionEvidenceVerified: true }] } });
+  const business = loadTsModule("@/lib/company-profile").sourcedCompanyBusiness(companyProfileFixture(identity, researchInput.now), identity, researchInput.now);
+  const input = { ...researchInput, resolveCompanyProfile: async () => business,
+    targetedContext: { ...researchInput.targetedContext, receipts: [directReceipt] } };
+  const valid = await runEquitySignalLab(input);
+  assert.equal(valid.selectedCandidate.companyProfile.status, "event_scoped");
+  assert.equal(valid.seriousSignalFound, true, "Sourced short context reaches existing review/publication gates for this direct event");
+  const supplied = lastCommitteeEvidence.fundamentalsEvidence.items.find(item => item.source === "sourced_direct_event_company_context");
+  assert.ok(supplied);
+  assert.equal(supplied.customers, null);
+  assert.deepEqual(supplied.unknownDetails, ["customers", "moat"]);
+  assert.match(supplied.reviewPolicy, /Do not infer.*decision depends/);
+  const originalAgent = structuredClone(agentResults[0]);
+  Object.assign(agentResults[0], { agentId: "analyst_agent", keyFindings: ["Why it matters: Customer retention and our competitive moat make the risk immaterial."] });
+  const reviewDependency = await runEquitySignalLab(input);
+  assert.equal(reviewDependency.seriousSignalFound, false, "New customer-dependent model prose is revalidated after review");
+  assert.equal(reviewDependency.reviewOutcome, "approved_pending_checks");
+  assert.match(reviewDependency.blockers.join(" "), /unverified customer or moat/);
+  const packetKey = loadTsModule("@/lib/equity-signal/terminal-review-evidence").terminalPublicationPacketKey;
+  assert.notEqual(packetKey(reviewDependency.selectedCandidate), packetKey({ ...reviewDependency.selectedCandidate, plainLanguageExplanation: null }), "Clearing reviewed dependency prose cannot match the held publication packet");
+  for (const key of Object.keys(agentResults[0])) delete agentResults[0][key];
+  Object.assign(agentResults[0], originalAgent);
+  const callsBeforeReplay = committeeCalls;
+  const replayedDependency = await runEquitySignalLab({ ...input, terminalReview: async request => ({ kind: "terminal", decision: {
+    outcome: "approved", fingerprint: request.fingerprint, evidence: request.evidence, decisionKey: "scoped-dependency-held",
+    direction: "upside", committee: reviewDependency.committee, publicationGatePassed: true,
+    publicationPacketKey: packetKey(reviewDependency.selectedCandidate), financialDocumentsRequired: false, financialDocumentsRequested: false,
+  } }) });
+  assert.equal(replayedDependency.seriousSignalFound, false, "Even an old approval flag cannot resurrect a dependency-rejected short-context packet");
+  assert.equal(committeeCalls, callsBeforeReplay, "Held dependency replay spends no further review budget");
+  const beforeDependency = committeeCalls;
+  candidate.causalChain = ["Customer concentration and pricing power make the penalty immaterial."];
+  const dependent = await runEquitySignalLab(input);
+  assert.equal(dependent.status, "candidate_company_profile_pending");
+  assert.equal(dependent.profileContextRejected, true);
+  assert.equal(committeeCalls, beforeDependency, "Customer-dependent short context cannot reach paid admission");
+  candidate.causalChain = ["Settlement reduces cash; suspension disrupts operations."];
+  quoteActionable = false;
+  assert.equal((await runEquitySignalLab(input)).seriousSignalFound, false, "Short context cannot waive quote gate");
+  quoteActionable = true; committeeFails = true;
+  assert.equal((await runEquitySignalLab(input)).seriousSignalFound, false, "Short context cannot waive final-review completion");
+  committeeFails = false;
+  const noRange = await runEquitySignalLab({ ...input, targetedContext: { ...input.targetedContext,
+    storedCompanyAnalysis: { currency: "USD", industry: "Application software", fairValue: {} } } });
+  assert.equal(noRange.seriousSignalFound, false, "Short context cannot create an unsupported Buy/Sell price case");
+  restore(); delete candidate.eventMagnitude;
+});
+console.log("Committee-bound sourced short context and unchanged quote, range, dependency and review gates: passed");

@@ -7,7 +7,7 @@ import { inSimpleAlertPilot } from "./helpers/simple-alert-pilot-fixture.mjs";
 
 // Synthetic financial/source/provider responses. The runner, Committee
 // orchestration, evidence classifier, terminal journal and event job stay real.
-export function terminalHarness({ eventMode = "valuation", eventAliases = true, useFinancialCollector = false, syntheticCommitteeResult = null } = {}) {
+export function terminalHarness({ eventMode = "valuation", eventAliases = true, useFinancialCollector = false, syntheticCommitteeResult = null, riskOnly = false, analysisFactory = null, factsTransform = null, realValuationHardener = false, observeProviderInput = null } = {}) {
   const identity = { ticker: "AIOT", company: "Powerfleet, Inc.", cik: "0001774170" };
   const state = { now: new Date("2026-10-05T15:00:00Z"), price: 50, quoteReady: true,
     haltKnown: true, halted: false, profileReady: true, sourceComplete: true,
@@ -53,9 +53,9 @@ export function terminalHarness({ eventMode = "valuation", eventAliases = true, 
       return { written: true, conflict: false, etag };
     },
   };
-  const analysis = () => ({ ...identity, tradingViewSymbol: "NASDAQ:AIOT", industry: "Software", sector: "Technology", currency: "USD",
+  const analysis = () => analysisFactory ? analysisFactory({ identity, state }) : ({ ...identity, tradingViewSymbol: "NASDAQ:AIOT", industry: "Software", sector: "Technology", currency: "USD",
     observedAt: state.now.toISOString(), currentPrice: state.price,
-    fairValue: { conservativeValue: state.baseValue - 5, baseValue: state.baseValue, optimisticValue: state.baseValue + 5,
+    fairValue: { conservativeValue: riskOnly ? null : state.baseValue - 5, baseValue: riskOnly ? null : state.baseValue, optimisticValue: riskOnly ? null : state.baseValue + 5,
       methods: [{ method: "earnings_power", value: state.baseValue - 5 }, { method: "owner_earnings_fcf", value: state.baseValue + 5 }] },
     scores: { fairValueConfidence: state.confidence, evidenceCompleteness: 90, businessQuality: 85, balanceSheet: 75, risk: 20 },
     fundamentals: { revenue: 1000000000 + state.factsRevision * 1000000 }, decision: { action: "buy" } });
@@ -70,7 +70,7 @@ export function terminalHarness({ eventMode = "valuation", eventAliases = true, 
     .filter(([concept]) => state.debtReady || concept !== "LongTermDebtNoncurrent")
     .map(([concept, unit, value]) => [concept, { units: { [unit]: [{ val: value,
       ...(["Assets", "StockholdersEquity", "CashAndCashEquivalentsAtCarryingValue", "CommonStockSharesOutstanding", "LongTermDebtNoncurrent"].includes(concept) ? {} : { start: "2025-01-01" }),
-      end: concept === "LongTermDebtNoncurrent" ? "2025-06-30" : "2025-12-31", filed: "2026-02-20", form: "10-K" }] } }])) } });
+      end: concept === "LongTermDebtNoncurrent" ? "2025-06-30" : "2025-12-31", filed: "2026-02-20", form: "10-K", accn: "0001774170-26-000001" }] } }])) } });
   const annualUrl = `https://www.sec.gov/Archives/edgar/data/${Number(identity.cik)}/000177417026000001/annual.htm`;
   const profile = () => state.profileReady ? { ...companyProfileFixture(identity, new Date("2026-10-05T15:00:00Z")), sourceUrl: annualUrl, sourceFiledAt: "2026-02-20" } : null;
   const provider = name => ({ provider: name, status: name === "nasdaq_trade_halts" && !state.haltKnown ? "unavailable" : "connected",
@@ -102,7 +102,8 @@ export function terminalHarness({ eventMode = "valuation", eventAliases = true, 
       Object.assign(event, { id: `sec:${accession}${state.eventAliases ? `:alias:${state.sequence}` : ""}`, source: "sec", sourceProvider: "sec_broad", kind: "8-K", form: "8-K", accession,
         observedAt: state.sourcePublishedAt,
         identityMethod: "official_sec_archive_link", url, sourceUrl: url, canonicalSecIndexUrl: url,
-        title: "Powerfleet, Inc. wins $200 million contract", reason: "Powerfleet, Inc. signed a committed $200 million contract for one year of services." });
+        title: riskOnly ? "Powerfleet, Inc. cuts guidance by 10%" : "Powerfleet, Inc. wins $200 million contract",
+        reason: riskOnly ? "Powerfleet, Inc. cuts guidance by 10% after weaker sales; the prior published annual revenue outlook is reduced by ten percent." : "Powerfleet, Inc. signed a committed $200 million contract for one year of services." });
     }
     return event;
   };
@@ -112,7 +113,7 @@ export function terminalHarness({ eventMode = "valuation", eventAliases = true, 
     official: false, primarySource: false, scheduled: false, symbolHints: [identity.ticker], companyHints: [identity.company], rawEventType: "valuation_review" });
   const fetchImpl = async input => {
     const url = String(input); fetches.push(url);
-    if (/companyfacts\/CIK\d+\.json$/.test(url)) return Response.json(facts());
+    if (/companyfacts\/CIK\d+\.json$/.test(url)) return Response.json(factsTransform ? factsTransform(facts(), state) : facts());
     if (/submissions\/CIK\d+\.json$/.test(url)) return Response.json({ cik: Number(identity.cik), filings: { recent: {
       form: ["10-K"], filingDate: ["2026-02-20"], accessionNumber: ["0001774170-26-000001"], primaryDocument: ["annual.htm"], reportDate: ["2025-12-31"],
     } } }, { status: state.indexStatus });
@@ -144,13 +145,14 @@ export function terminalHarness({ eventMode = "valuation", eventAliases = true, 
     "@/lib/opportunity-engine/pr262-pilot-watch-valuation": { readPilotWatchValuation: async () => ({ analysis: analysis(), receivedAt: state.now.toISOString() }),
       pilotValuationUnitsBlocker: () => null, PILOT_WATCH_VALUATION_MAX_AGE_MS: 15 * 60000 },
     "@/lib/opportunity-engine/pr262-trade-halt-snapshot": { fetchPr262TradeHalts: async () => provider("nasdaq_trade_halts") },
-    "@/lib/opportunity-engine/company-profile-cache": { ensureCompanyProfile: async () => profile(), warmFoundationCompanyProfiles: async () => ({}), readCompanyProfiles: async () => new Map() },
+    "@/lib/opportunity-engine/company-profile-cache": { ensureCompanyProfile: async () => profile(), ensureEventCompanyProfile: async () => profile(), warmFoundationCompanyProfiles: async () => ({}), readCompanyProfiles: async () => new Map() },
     "@/lib/opportunity-engine/us-value-investing-engine": { refreshUsValueCompany: async () => { throw new Error("Unexpected company refresh"); } },
     "@/lib/opportunity-engine/us-value-investing-safety": { hardenUsValueCompanyAnalysis: value => value },
     "@/lib/opportunity-engine/pr262-serious-watch-out-authority": { promotePr262SeriousWatchOut: async () => ({ promoted: false, outboxKey: null }) },
     "@/lib/ai-committee/provider": {
       modelForTier: () => state.model, getAiCommitteeProviderStatus: () => ({ configured: true, enabled: true, dryRunDefault: false }),
       runOpenAiCommitteeProvider: async input => {
+        observeProviderInput?.(input);
         state.roleCalls++;
         const data = JSON.parse(input.messages[1].content), agentId = data.agent.id;
         prompts.push(data);
@@ -170,7 +172,7 @@ export function terminalHarness({ eventMode = "valuation", eventAliases = true, 
     "@/lib/equity-signal/event-sources": { collectEventSources: async () => { throw new Error("Unexpected broad feed"); },
       mergeSecFilingDetails: (values, details) => values.map(value => ({ ...value, summary: `${value.summary} ${details.find(detail => detail.receipt.id === value.id)?.text ?? ""}` })) },
     "@/lib/equity-signal/sec-filing-details": { enrichSecFilingDetails: async receipts => {
-      const text = "Powerfleet, Inc. signed a committed $200 million contract for one year of software services. The agreement is final and work begins this quarter. ".repeat(4);
+      const text = (riskOnly ? "Powerfleet, Inc. cuts guidance by 10% after weaker sales. The company reduced its previously disclosed revenue guidance by ten percent for the same full-year reporting period. The revised guidance supersedes the previous company-reported outlook. " : "Powerfleet, Inc. signed a committed $200 million contract for one year of software services. The agreement is final and work begins this quarter. ").repeat(4);
       return { provider: provider("sec_filing_details"), details: [{ receipt: receipts[0], form: "8-K", indexUrl: receipts[0].url,
         primaryDocumentUrl: `${receipts[0].url}/primary.htm`, exhibitDocumentUrl: `${receipts[0].url}/exhibit.htm`, exhibitDocumentType: "EX-99.1",
         eventExhibitMissing: !state.sourceComplete, documentsFetched: 2, text, textLength: text.length, truncated: false, fetchedAt: state.now.toISOString() }],
@@ -187,6 +189,8 @@ export function terminalHarness({ eventMode = "valuation", eventAliases = true, 
       return { candidates, provider: provider("market_quote"), marketSnapshot: [], benchmarkQuote: null, benchmarkTicker: "SPY" };
     } },
   };
+  if (realValuationHardener) delete overrides["@/lib/opportunity-engine/us-value-investing-safety"];
+  if (riskOnly) delete overrides["@/lib/opportunity-engine/pr262-serious-watch-out-authority"];
   const reload = () => {
     const modelPolicy = loadTsModule("@/lib/ai-committee/model-policy");
     overrides["@/lib/ai-committee/model-policy"] = { ...modelPolicy, COMMITTEE_MODEL_POLICY: state.policyRevision };

@@ -49,12 +49,13 @@ function storageKey(relative) {
 const loaded = { exports: {} };
 new Function("require", "module", "exports", output)((specifier) => {
   if (specifier === "@/lib/equity-signal/terminal-review-evidence") return terminalApi;
+  if (specifier === "@/lib/equity-signal/single-valuation-scenario") return loadTsModule(specifier);
   if (specifier === "@/lib/equity-signal/financial-evidence") return loadTsModule(specifier);
   if (specifier === "@/lib/opportunity-engine/pr262-terminal-reviews") return { readTerminalDecision: async ({ cik, decisionKey, signal }) => { signal?.throwIfAborted(); return terminalDecisions.get(`${cik}:${decisionKey}`) ?? null; } };
   if (specifier === "@/lib/opportunity-engine/company-profile-cache") return { readCompanyProfiles: async () => new Map() };
   if (specifier === "node:crypto") return crypto;
   if (specifier === "node:util") return loadTsModule(specifier);
-  if (["@/lib/simple-alert-pilot-scope", "@/lib/simple-alert-pilot-runtime"].includes(specifier)) return loadTsModule(specifier);
+  if (["@/lib/restricted-beta-policy", "@/lib/event-company-profile", "@/lib/equity-signal/risk-warning-policy", "@/lib/simple-alert-pilot-scope", "@/lib/simple-alert-pilot-runtime"].includes(specifier)) return loadTsModule(specifier);
   if (specifier === "@/lib/notifications/serious-signal-evidence-binding") return loadTsModule(specifier, {
     "@/lib/opportunity-engine/pr262-storage": { pr262StorageKey: storageKey },
     "@/lib/r2-warehouse": { readVersionedTextFromR2: async key => stored(key), writeVersionedJsonToR2: write },
@@ -130,6 +131,20 @@ function validOutbox(ticker, createdAt, overrides = {}) {
     },
     ...overrides,
   };
+}
+
+// Preserve this suite's durability scenarios while satisfying the new exact
+// pilot scope. Dedicated beta suites test out-of-cohort and event-scope holds.
+function pilotOutbox(label, createdAt) {
+  const outbox = validOutbox(label, createdAt);
+  const identity = loadTsModule("@/lib/simple-alert-pilot-scope").pilotCompanies().find(row => row.ticker === (label === "REKR" ? "REKR" : "AIOT"));
+  outbox.ticker = identity.ticker; outbox.cik = identity.cik;
+  Object.assign(outbox.candidate, identity, { relationship: "direct", eventFamily: "contract_award" });
+  outbox.candidate.companyProfile = companyProfileFixture(identity);
+  const receipt = { id: `fixture:${label}`, url: `https://www.sec.gov/Archives/edgar/data/${Number(identity.cik)}/fixture/contract.htm`, official: true, primarySource: true };
+  outbox.candidate.receipts = [receipt];
+  outbox.candidate.eventMagnitude = { status: "verified", metrics: [{ kind: "contract_value", value: 100000000, promotionEvidenceVerified: true, sourceReceiptId: receipt.id, sourceUrl: receipt.url }] };
+  return outbox;
 }
 
 function approveTerminal(outbox, evidenceTag = outbox.candidateFingerprint) {
@@ -510,7 +525,7 @@ try {
     const control = await deliverSeriousSignalOutbox(deliveryTestKey, { now: wallNow });
     assert.equal(control.deliveryStatus, "delivered", "The approved isolated delivery control remains valid in the pilot");
     const key = `${prefix}serious-signal/outbox/event-job/buy/REKR/quarantine.json`;
-    const rekr = validOutbox("REKR", wallNow.toISOString());
+    const rekr = pilotOutbox("REKR", wallNow.toISOString());
     rekr.cik = rekr.candidate.cik = "0001697851";
     rekr.candidate.companyProfile = companyProfileFixture(rekr.candidate);
     rekr.candidate.quote.observedAt = observedAt;
@@ -521,7 +536,7 @@ try {
     // one durable delivery owner, even when racing or replayed much later.
     process.env.SWING_UP_PR262_EXTERNAL_NOTIFICATIONS_ENABLED = "false";
     const legacyKey = `${prefix}serious-signal/outbox/event-job/buy/LEGACY/unmigrated.json`;
-    const legacyOutbox = validOutbox("LEGACY", wallNow.toISOString());
+    const legacyOutbox = pilotOutbox("LEGACY", wallNow.toISOString());
     legacyOutbox.candidate.quote.observedAt = observedAt;
     await write(legacyKey, legacyOutbox, { createOnly: true });
     const objectCount = objects.size;
@@ -531,7 +546,7 @@ try {
     assert.equal(legacyDelivered.deliveryStatus, "delivered", "An actual existing legacy receipt remains reusable");
     for (const fault of ["missing", "rejected", "wrong_direction", "wrong_fingerprint", "wrong_issuer", "mutated_descriptor", "altered_reference", "altered_range", "altered_forecast", "missing_key"]) {
       const badKey = `${prefix}serious-signal/outbox/event-job/buy/BADPROOF/${fault}.json`;
-      const bad = approveTerminal(validOutbox("BADPROOF", wallNow.toISOString()), `proof-${fault}`);
+      const bad = approveTerminal(pilotOutbox("BADPROOF", wallNow.toISOString()), `proof-${fault}`);
       bad.candidate.quote.observedAt = observedAt;
       const journalKey = `${bad.cik}:${bad.candidate.terminalDecisionKey}`;
       const journal = terminalDecisions.get(journalKey);
@@ -552,7 +567,7 @@ try {
     }
     const duplicateA = `${prefix}serious-signal/outbox/event-job/buy/DUPL/day-a.json`;
     const duplicateB = `${prefix}serious-signal/outbox/event-job/buy/DUPL/day-b.json`;
-    const duplicatePayload = validOutbox("DUPL", wallNow.toISOString());
+    const duplicatePayload = pilotOutbox("DUPL", wallNow.toISOString());
     duplicatePayload.candidate.quote.observedAt = observedAt;
     approveTerminal(duplicatePayload);
     await write(duplicateA, duplicatePayload, { createOnly: true });
@@ -572,7 +587,7 @@ try {
     assert.equal([...objects].filter(([key, row]) => key.includes("/receipts/web_feed/") && [duplicateA, duplicateB].includes(row.payload.outboxKey)).length, 1);
     assert.equal([...objects].filter(([key, row]) => key.includes("/feed/") && [duplicateA, duplicateB].includes(row.payload.outboxKey)).length, 1);
     const duplicateStatus = await getSeriousSignalStatus({ now: wallNow, hours: 48 });
-    assert.equal(duplicateStatus.alerts.filter(row => row.ticker === "DUPL").length, 1);
+    assert.equal(duplicateStatus.alerts.filter(row => [duplicateA, duplicateB].map(key => crypto.createHash("sha256").update(key).digest("hex").slice(0, 32)).includes(row.id)).length, 1);
     const newKey = `${prefix}serious-signal/outbox/event-job/buy/DUPL/new-evidence.json`;
     const newPayload = structuredClone(duplicatePayload);
     newPayload.candidateFingerprint = newPayload.candidate.evidenceFingerprint = "dupl-genuinely-new-evidence";
@@ -586,7 +601,50 @@ try {
     await write(riskKey, rekr, { createOnly: true });
     assert.equal((await deliverSeriousSignalOutbox(riskKey, { now: wallNow })).ok, true,
       "Quarantine preserves fully sourced and approved downside/risk delivery");
+    const deliveredState = structuredClone([...objects]);
+    const currentPilotFeed = await getSeriousSignalStatus({ now: wallNow, hours: 48 });
+    const stalePilotFeed = await getSeriousSignalStatus({ now: new Date(wallNow.getTime() + 25 * 3600000), hours: 48 });
+    for (const [key, action] of [[newKey, "buy"], [riskKey, "sell"]]) {
+      const id = crypto.createHash("sha256").update(key).digest("hex").slice(0, 32);
+      const fresh = currentPilotFeed.alerts.find(alert => alert.id === id);
+      const stale = stalePilotFeed.alerts.find(alert => alert.id === id);
+      assert.equal(fresh?.publicationEligible, true, `Fresh pilot ${action} remains current`);
+      assert.equal(stale?.alertType, action, `Historical ${action} remains visible`);
+      assert.equal(stale?.delivery.status, "delivered", `Original ${action} delivery remains recorded`);
+      assert.equal(stale?.publicationEligible, false, `Old ${action} quote cannot claim current eligibility`);
+      assert.equal(stale?.publicationHoldReason, "market_quote_no_longer_current");
+    }
+    assert.deepEqual([...objects], deliveredState, "Current eligibility reads cannot change approvals, jobs, or delivery receipts");
+    const marketNow = new Date("2026-10-06T19:00:00Z");
+    const marketLater = new Date(marketNow.getTime() + 20 * 60000);
+    for (const action of ["buy", "sell"]) {
+      const makeQuoteCase = tag => {
+        const candidate = pilotOutbox(`quote-${action}-${tag}`, marketNow.toISOString());
+        candidate.alertType = action; candidate.candidate.direction = action === "buy" ? "upside" : "downside";
+        if (action === "sell") candidate.candidate.valuationRange = { conservativeValue: 28, baseValue: 32, optimisticValue: 38 };
+        return approveTerminal(candidate);
+      };
+      const freshKey = `${prefix}serious-signal/outbox/event-job/${action}/AIOT/current-quote-fresh-${action}.json`;
+      await write(freshKey, makeQuoteCase("fresh"), { createOnly: true });
+      assert.equal((await deliverSeriousSignalOutbox(freshKey, { now: marketNow })).deliveryStatus, "delivered", `Fresh ${action} can still deliver`);
+      const originalReceiptRows = structuredClone([...objects].filter(([key, row]) => key.includes("/receipts/") && row.payload.outboxKey === freshKey));
+      assert.equal((await deliverSeriousSignalOutbox(freshKey, { now: marketLater })).deliveryStatus, "delivered", `Already-delivered ${action} keeps its late duplicate history`);
+      assert.deepEqual([...objects].filter(([key, row]) => key.includes("/receipts/") && row.payload.outboxKey === freshKey), originalReceiptRows);
+      const staleKey = `${prefix}serious-signal/outbox/event-job/${action}/AIOT/current-quote-stale-${action}.json`;
+      await write(staleKey, makeQuoteCase("stale"), { createOnly: true });
+      await assert.rejects(() => deliverSeriousSignalOutbox(staleKey, { now: marketLater }), /market_quote_stale/, `First ${action} delivery cannot use a 22-minute old live quote`);
+      assert.equal([...objects].filter(([key, row]) => key.includes("/receipts/") && row.payload.outboxKey === staleKey).length, 0);
+      const pendingJob = [...objects].find(([key, row]) => key.includes("/jobs/") && row.payload.outboxKey === staleKey);
+      assert.equal(pendingJob?.[1].payload.status, "pending", "The stale attempt has not claimed or sent its registered job");
+      const pendingState = structuredClone(pendingJob[1]);
+      await assert.rejects(() => deliverSeriousSignalOutbox(staleKey, { now: new Date(marketLater.getTime() + 60000) }), /market_quote_stale/, `Resumed pending ${action} cannot bypass current quote freshness`);
+      assert.deepEqual(objects.get(pendingJob[0]), pendingState, "Stale retry must not claim or change its pending job");
+      assert.equal([...objects].filter(([key, row]) => key.includes("/receipts/") && row.payload.outboxKey === staleKey).length, 0);
+    }
   });
+  const nonpilotLaterFeed = await getSeriousSignalStatus({ now: new Date(wallNow.getTime() + 25 * 3600000), hours: 48 });
+  for (const ticker of ["GAIN50", "DROP80"]) assert.equal(nonpilotLaterFeed.alerts.find(alert => alert.ticker === ticker)?.publicationEligible, true,
+    "The new current-quote status policy is restricted to the exact pilot");
 } finally {
   globalThis.fetch = originalFetch;
   for (const key of Object.keys(process.env)) if (!(key in originalEnvironment)) delete process.env[key];
@@ -605,6 +663,10 @@ console.log(JSON.stringify({
   boundedRecoverableFeedIndex: true,
   deliveryRequiresExactAuthority: true,
   staleQuoteCannotReachUser: true,
+  pilotDeliveredBuySellHistoryLosesCurrentEligibilityWithStaleQuote: true,
+  pilotQuoteStatusReadPreservesAllDeliveryRecords: true,
+  pilotNewAndResumedBuySellDeliveryRequiresCurrentQuote: true,
+  pilotLateDeliveredDuplicatesPreserveReceipts: true,
   staleMarketObservationCannotReachUser: true,
   pricedInSignalCannotReachUser: true,
   delayedNotificationCannotReuseOldQuote: true,

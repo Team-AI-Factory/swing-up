@@ -40,7 +40,7 @@ await inSimpleAlertPilot(async () => {
     return { storage: loadTsModule("@/lib/opportunity-engine/pr262-storage", overrides),
       delivery: loadTsModule("@/lib/notifications/serious-signal-delivery", overrides) };
   };
-  const now = new Date("2026-10-06T19:00:00Z"), identity = { ticker: "TEST", cik: "0001234567", company: "Test Software Company" };
+  const now = new Date("2026-10-06T19:00:00Z"), identity = { ticker: "AIOT", cik: "0001774170", company: "Powerfleet, Inc." };
   const make = tag => {
     const fingerprint = `fixture-${tag}`;
     const evidence = terminal.terminalReviewEvidence({ ...identity, scope: "event", price: 42, analysis: {},
@@ -50,13 +50,14 @@ await inSimpleAlertPilot(async () => {
       outcome: "approved", financialDocumentsRequired: false, financialDocumentsRequested: false, fingerprint, evidence, decidedAt: now.toISOString(), eventId: `event-${tag}` });
     const outbox = { version: 1, kind: "pr262_committee_verified_event_signal", createdAt: now.toISOString(), ticker: identity.ticker, cik: identity.cik,
       alertType: "buy", candidateFingerprint: fingerprint,
-      candidate: { financialDocumentsRequired: false, financialDocumentsRequirementKnown: true, ...identity, direction: "upside", currency: "USD", industry: "Application software", companyProfile: companyProfileFixture(identity),
+      candidate: { financialDocumentsRequired: false, financialDocumentsRequirementKnown: true, ...identity, direction: "upside", relationship: "direct", eventFamily: "contract_award", currency: "USD", industry: "Application software", companyProfile: companyProfileFixture(identity),
         evidenceFingerprint: fingerprint, terminalEvidence: evidence, terminalDecisionKey: evidence.decisionKey,
         valuationRange: { conservativeValue: 38, baseValue: 55, optimisticValue: 65 }, gatePassed: true, eventTruth: 96,
         mappingConfidence: 100, materiality: 88, transmissionConfidence: 90, evidenceIndependence: 92, contradictionPenalty: 0,
         pricedInPenalty: 0, rumour: false, eventHeadline: "Verified guidance increased", whatHappened: "A dated filing raised the current operating guidance.",
         quote: { price: 42, observedAt: "2026-10-06T18:58:00Z", actionableForSeriousSignal: true, marketSession: "regular" },
-        receipts: [{ source: "SEC", url: "https://www.sec.gov/Archives/edgar/data/1234567/fixture.htm" }] },
+        receipts: [{ id: "contract-receipt", source: "SEC", official: true, primarySource: true, url: "https://www.sec.gov/Archives/edgar/data/1774170/fixture.htm" }],
+        eventMagnitude: { status: "verified", metrics: [{ kind: "contract_value", value: 100000000, promotionEvidenceVerified: true, sourceReceiptId: "contract-receipt", sourceUrl: "https://www.sec.gov/Archives/edgar/data/1774170/fixture.htm" }] } },
       committee: { agentsCompleted: 14, agentsFailed: 0, finalJudge: { verdict: "positive", confidence: 88 }, output: { overallRecommendation: "approve" } },
       authority: { exactIssuerMapping: true, currentEvidenceGatesPassed: true, freshQuoteAndHaltStateKnown: true,
         fullCommitteeAgentsCompleted: 14, finalJudgePositiveMinimumConfidence: 80, historicalCasesRequired: false } };

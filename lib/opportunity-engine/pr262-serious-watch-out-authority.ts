@@ -1,3 +1,6 @@
+import { restrictedBetaScopeBlocker } from "@/lib/restricted-beta-policy";
+import { terminalPublicationPacketKey, validatedTerminalEvidence } from "@/lib/equity-signal/terminal-review-evidence";
+import { completeRiskWarningReview, riskOnlyWarning } from "@/lib/equity-signal/risk-warning-policy";
 import { completeCommitteeReview } from "@/lib/ai-committee/review-policy";
 import { alertDetails } from "@/lib/alert-details";
 import crypto from "node:crypto";
@@ -49,7 +52,7 @@ function riskRule(candidate: Json) {
   return rules.find(([, pattern]) => pattern.test(corpus))?.[0] ?? null;
 }
 
-function committeeProof(report: Json, pointer: Json) {
+function committeeProof(report: Json, pointer: Json, now: Date) {
   const committee = object(report.committee);
   const judge = object(committee.finalJudge);
   const output = object(committee.output);
@@ -62,11 +65,13 @@ function committeeProof(report: Json, pointer: Json) {
   const pointerCik = normalizedCik(pointer.cik);
   const officialEvidence = Array.isArray(candidate.receipts) && candidate.receipts.map(object).some((receipt) =>
     receipt.official === true || receipt.primarySource === true || receipt.channel === "sec_current_filings");
-  const ruleId = riskRule(candidate);
+  const riskOnly = report.alertType === "watch_out" && riskOnlyWarning(candidate, now);
+  const ruleId = riskOnly ? String(candidate.riskWarningRule) : riskRule(candidate);
   const approved = report.seriousSignalFound === true
-    && alertDetails(candidate).complete
+    && !restrictedBetaScopeBlocker(candidate)
+    && alertDetails(candidate, undefined, now).complete
     && report.actionableSignalFound === true
-    && report.alertType === "sell"
+    && (riskOnly || (report.alertType === "sell" && !candidate.riskWarningPolicy))
     && candidate.direction === "downside"
     && candidateTicker !== null
     && candidateTicker === pointerTicker
@@ -91,6 +96,7 @@ function committeeProof(report: Json, pointer: Json) {
     && officialEvidence
     && committee.ok === true
     && completeCommitteeReview(committee)
+    && (!candidate.riskWarningPolicy || completeRiskWarningReview(candidate, committee))
     && committee.agentsFailed === 0
     && judge.verdict === "positive"
     && Number(judge.confidence) >= 80
@@ -99,14 +105,14 @@ function committeeProof(report: Json, pointer: Json) {
   return { approved, ruleId, candidate, committee, judge, output };
 }
 
-export async function promotePr262SeriousWatchOut(resultKey: string | null | undefined) {
+export async function promotePr262SeriousWatchOut(resultKey: string | null | undefined, now = new Date()) {
   if (!resultKey) return { promoted: false, reason: "no_result_key", outboxKey: null as string | null };
   const stored = await readVersionedTextFromR2(resultKey);
   if (!stored.found || !stored.text) return { promoted: false, reason: "result_missing", outboxKey: null as string | null };
   const payload = object(JSON.parse(stored.text));
   const report = object(payload.report);
   const pointer = object(payload.companyPointer);
-  const proof = committeeProof(report, pointer);
+  const proof = committeeProof(report, pointer, now);
   if (!proof.approved || !proof.ruleId) return { promoted: false, reason: "committee_or_watch_out_rule_not_proven", outboxKey: null as string | null };
 
   const ticker = text(pointer.ticker)?.toUpperCase() ?? "UNKNOWN";
@@ -140,8 +146,20 @@ export async function promotePr262SeriousWatchOut(resultKey: string | null | und
     const existing = await readVersionedTextFromR2(outboxKey);
     if (!existing.found || !existing.text) throw new Error("pr262_watch_out_outbox_conflict_read_failed");
     const value = object(JSON.parse(existing.text));
+    const existingCandidate = object(value.candidate);
+    const currentEvidence = validatedTerminalEvidence(proof.candidate.terminalEvidence, { cik: proof.candidate.cik, ticker });
+    const priorEvidence = validatedTerminalEvidence(existingCandidate.terminalEvidence, { cik: proof.candidate.cik, ticker });
+    // A new daily alias may reuse one enduring approved risk decision. Keep the
+    // original immutable outbox and result link; never treat a new decision as
+    // a duplicate merely because its ticker or warning text looks the same.
+    const sameRiskDecision = riskOnlyWarning(proof.candidate, now) && riskOnlyWarning(existingCandidate, now)
+      && currentEvidence !== null && priorEvidence !== null
+      && proof.candidate.terminalDecisionKey === currentEvidence.decisionKey
+      && existingCandidate.terminalDecisionKey === currentEvidence.decisionKey
+      && JSON.stringify(currentEvidence) === JSON.stringify(priorEvidence)
+      && terminalPublicationPacketKey(proof.candidate) === terminalPublicationPacketKey(existingCandidate);
     if (value.kind !== outbox.kind
-      || value.resultKey !== resultKey
+      || (value.resultKey !== resultKey && !sameRiskDecision)
       || value.ticker !== ticker
       || normalizedCik(value.cik) !== normalizedCik(pointer.cik)
       || value.ruleId !== proof.ruleId

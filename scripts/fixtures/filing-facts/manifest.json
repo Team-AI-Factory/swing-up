@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "fixture": "upst-20260630.html.gz",
+      "rawBytes": 3037401,
+      "sha256": "8fe80018185cdad82d23c0a314a52b673eef4b2a70719f2556c59b784c803111",
+      "retrievedAt": "2026-10-15",
+      "source": {
+        "cik": "0001647639",
+        "accession": "0001647639-26-000063",
+        "filedAt": "2026-08-04",
+        "form": "10-Q",
+        "reportingPeriod": "2026-06-30",
+        "url": "https://www.sec.gov/Archives/edgar/data/1647639/000164763926000063/upst-20260630.htm"
+      },
+      "provenance": "Unmodified HTTP 200 public SEC response body, gzip compressed only; includes SEC-injected script but never executed. Dates/numbers are historical test data, never runtime defaults."
+    },
+    {
+      "fixture": "inod-20260630.html.gz",
+      "rawBytes": 2193581,
+      "sha256": "3c1b642b86a8bfc600056a1a20e77559966d3c22b73f2916d37c8d7adc3abd67",
+      "retrievedAt": "2026-10-15",
+      "source": {
+        "cik": "0000903651",
+        "accession": "0001104659-26-092021",
+        "filedAt": "2026-08-06",
+        "form": "10-Q",
+        "reportingPeriod": "2026-06-30",
+        "url": "https://www.sec.gov/Archives/edgar/data/903651/000110465926092021/inod-20260630x10q.htm"
+      },
+      "provenance": "Unmodified HTTP 200 public SEC response body, gzip compressed only; includes SEC-injected script but never executed. Dates/numbers are historical test data, never runtime defaults."
+    },
+    {
+      "fixture": "upst-20260630-amended.html.gz",
+      "rawBytes": 2454277,
+      "sha256": "19458d882f58f49bfae30822bee4438438c9ac5fa78a46ffd9b248a643f8b37d",
+      "retrievedAt": "2026-10-15",
+      "source": {
+        "cik": "0001647639",
+        "accession": "0001647639-26-000066",
+        "filedAt": "2026-08-05",
+        "form": "10-Q/A",
+        "reportingPeriod": "2026-06-30",
+        "url": "https://www.sec.gov/Archives/edgar/data/1647639/000164763926000066/upst-20260630.htm"
+      },
+      "provenance": "Unmodified HTTP 200 public SEC response body, gzip compressed only; includes SEC-injected script but never executed. Dates/numbers are historical test data, never runtime defaults."
+    }
+  ]
+}

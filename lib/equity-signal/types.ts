@@ -166,6 +166,11 @@ export type CausalExposureEvidence = {
 };
 
 export type ImpactCandidate = {
+  singleScenarioEvidence?: Record<string, unknown> | null;
+  sector?: string | null;
+  industry?: string | null;
+  currency?: string | null;
+  valuationRange?: unknown;
   ticker: string;
   company: string;
   cik: string | null;
@@ -200,6 +205,7 @@ export type ImpactCandidate = {
   failedGateChecks: string[];
   quote: MarketQuote | null;
   fundamentals: {
+    issuerCik?: string;
     available: boolean;
     sourceUrl: string | null;
     checkedAt: string | null;

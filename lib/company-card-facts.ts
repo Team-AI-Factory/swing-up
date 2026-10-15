@@ -1,4 +1,5 @@
-import { verifiedCompanyProfile, type CompanyIdentity, type VerifiedCompanyProfile } from "@/lib/company-profile";
+import type { VerifiedCompanyProfile } from "@/lib/company-profile";
+import { publicationCompanyProfile, type EventCompanyContext } from "@/lib/event-company-profile";
 
 export type CompanyCardFacts = {
   business: string; customers: string; revenueCountry: string;
@@ -10,12 +11,12 @@ const plain = (text: string) => text.replace(/\butilize\b/gi, "use")
   .replace(/\bmanufacture\b/gi, "make").replace(/\bprincipally\b/gi, "mainly")
   .replace(/\bprimarily\b/gi, "mainly");
 
-export function companyCardFacts(value: unknown, identity: CompanyIdentity, now = new Date()): CompanyCardFacts {
-  const profile = verifiedCompanyProfile(value, identity, now);
+export function companyCardFacts(value: unknown, identity: EventCompanyContext, now = new Date()): CompanyCardFacts {
+  const profile = publicationCompanyProfile(value, identity, now);
   const geography = profile?.revenueGeography;
   return {
     business: profile ? plain(profile.business) : "Products and services have not yet been verified.",
-    customers: profile ? profile.customerEvidence ? profile.customers : plain(profile.customers) : "Customer groups have not yet been verified.",
+    customers: profile?.customers ? profile.customerEvidence ? profile.customers : plain(profile.customers) : "Customer groups have not yet been verified.",
     customerLabel: profile?.customerEvidence ? profile.customerEvidence.section === "financial_notes_accounts_receivable" ? "Accounts-receivable customer pools" : "Revenue-contract counterparties" : "Disclosed customers",
     customerPeriod: profile?.customerEvidence?.reportPeriod ?? null, customerType: profile?.customerType,
     revenueCountry: geography ? `${geography.country} — ${geography.percent}% of total revenue in ${geography.year}.`

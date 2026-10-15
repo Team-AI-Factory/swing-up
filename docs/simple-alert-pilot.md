@@ -1,3 +1,5 @@
+> Current policy, 15 October 2026: [Restricted-beta release boundary](restricted-beta-release.md) separates release safety from later coverage, scale-up and performance goals. The 500/day target, five-session/20-case observation goals and proven profitability are not prerequisites to opening the restricted 25-company beta. Exact shipped-version safety, real-model review and delivery evidence remain required. This local change does not claim a deployment or launch. Historical entries below are preserved.
+
 # Simple Alerts pilot
 
 > 28 September update: live launch code is now prepared. See [the current launch record](simple-alert-pilot-launch.md) for deployment, authentication blockers, the 500-profile target and acceptance gates. The read-only baseline and earlier decisions below are historical; latest user authorization stops main scanning and replaces the prior no-scheduler-change restriction. No live launch is claimed.

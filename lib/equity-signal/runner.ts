@@ -1,14 +1,19 @@
+import { qualifiedSingleScenario, singleScenarioPublicationGap, completeSingleScenarioReview } from "@/lib/equity-signal/single-valuation-scenario";
+import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
+import { restrictedBetaScopeBlocker } from "@/lib/restricted-beta-policy";
+import { completeRiskWarningReview, directMaterialRiskRule, RISK_WARNING_POLICY, RISK_WARNING_NOTICE } from "@/lib/equity-signal/risk-warning-policy";
 import { pilotUpsideBlocker } from "@/lib/simple-alert-pilot-scope";
 import { COMMITTEE_ALLOWED_MODELS, COMMITTEE_MODEL_POLICY } from "@/lib/ai-committee/model-policy";
 import { financialDocumentsEvidenceView, financialDocumentsPublicationGap, financialDocumentsReady, financialDocumentsRequired as requiresFinancialDocuments, valuationEvidenceAudit, type FinancialDocuments } from "@/lib/equity-signal/financial-evidence";
 import { completeCommitteeReview } from "@/lib/ai-committee/review-policy";
 import { historicalReviewTelemetry } from "@/lib/opportunity-engine/pr262-review-telemetry";
 import { PR262_REVIEW_MAX_PROMPT_BYTES, PR262_REVIEW_MAX_COST_USD } from "@/lib/opportunity-engine/pr262-ai-daily-cost";
-import { verifiedCompanyProfile, type CompanyIdentity, type VerifiedCompanyProfile } from "@/lib/company-profile";
+import { type CompanyIdentity, type SourcedCompanyBusiness, type VerifiedCompanyProfile } from "@/lib/company-profile";
+import { publicationCompanyProfile, scopedEventCompanyProfile } from "@/lib/event-company-profile";
 import { committeeExplanation } from "@/lib/signal-explanation";
 import { NEGATIVE_EARNINGS_NOTICE } from "@/lib/valuation-availability";
 import crypto from "node:crypto";
-import { alertDetails, industryLabel } from "@/lib/alert-details";
+import { alertDetails, completePriceOutlook, industryLabel } from "@/lib/alert-details";
 import { runAiCommittee, TRUSTED_IN_MEMORY_EVIDENCE } from "@/lib/ai-committee/orchestrator";
 import type { AiCommitteeEvidencePack, EvidenceStrength } from "@/lib/ai-committee/evidence-pack";
 import { getAiCommitteeProviderStatus } from "@/lib/ai-committee/provider";
@@ -64,7 +69,7 @@ export type EquitySignalLabInput = {
     release: (now: Date) => Promise<void>;
   } | null>;
   fetchImpl?: typeof fetch;
-  resolveCompanyProfile?: (identity: CompanyIdentity) => Promise<VerifiedCompanyProfile | null>;
+  resolveCompanyProfile?: (identity: CompanyIdentity) => Promise<VerifiedCompanyProfile | SourcedCompanyBusiness | null>;
   signal?: AbortSignal;
   now?: Date;
   outcomeTickers?: string[];
@@ -183,7 +188,7 @@ function withPriceForecast(candidate: ImpactCandidate, now: Date): ImpactCandida
   };
 }
 
-function seriousActionEligible(candidate: ImpactCandidate) {
+function seriousActionEligible(candidate: ImpactCandidate, now: Date) {
   return candidate.direction !== "unknown" && candidate.gatePassed
     && !(candidate.direction === "upside" && pilotUpsideBlocker(candidate))
     && Boolean(candidate.quote)
@@ -194,7 +199,8 @@ function seriousActionEligible(candidate: ImpactCandidate) {
     && candidate.eventTruth >= 80
     && candidate.mappingConfidence >= 95
     && candidate.materiality >= 65
-    && candidate.transmissionConfidence >= 70
+    && (candidate.transmissionConfidence >= 70 || qualifiedSingleScenario(candidate, now))
+    && !singleScenarioPublicationGap(candidate, now)
     && candidate.evidenceIndependence >= 78
     && !candidate.rumour
     && candidate.contradictionPenalty < 50
@@ -297,7 +303,7 @@ function evidencePack(candidate: ImpactCandidate, providers: ProviderResult[], m
     rawSignalIds: [],
     ticker: candidate.ticker,
     company: candidate.company,
-    actionLabel: candidate.direction === "unknown" ? "Research candidate — direction unresolved" : seriousActionEligible(candidate)
+    actionLabel: candidate.direction === "unknown" ? "Research candidate — direction unresolved" : seriousActionEligible(candidate, now)
       ? candidate.direction === "upside" ? "BUY alert candidate" : "SELL alert candidate"
       : candidate.direction === "upside" ? "Serious upside watch" : "Serious downside watch",
     eventHeadline: candidate.eventHeadline,
@@ -319,7 +325,7 @@ function evidencePack(candidate: ImpactCandidate, providers: ProviderResult[], m
     historicalPatternMatch: section(candidate.historicalAnalog.available, candidate.historicalAnalog.strength, `${candidate.historicalAnalog.summary} Forecast status: ${candidate.priceForecast.status}. ${candidate.priceForecast.warning}`, historicalItems),
     previousSimilarOutcomes: section(candidate.historicalAnalog.available && candidate.historicalAnalog.sampleSize > 0, candidate.historicalAnalog.strength, `${candidate.historicalAnalog.summary} Only outcomes observable before this scan were eligible.`, historicalItems),
     score: { direction: candidate.direction, eventMagnitude: candidate.eventMagnitude, causalExposure: candidate.causalExposure, actionStrength: candidate.score, profitPotential: candidate.score, evidenceConfidence: Math.round((candidate.eventTruth + candidate.evidenceIndependence + candidate.mappingConfidence) / 3), riskLevel: candidate.contradictionPenalty >= 50 ? "high" : candidate.relationship === "direct" ? "medium" : "medium_high", pricedInCheck: candidate.quote ? "market_snapshot_checked_but_no_prior_move_required" : "not_checked", eventTruth: candidate.eventTruth, mappingConfidence: candidate.mappingConfidence, materiality: candidate.materiality, transmissionConfidence: candidate.transmissionConfidence, historicalSupport: candidate.historicalSupport, contradictionPenalty: candidate.contradictionPenalty, priorPriceMoveRequired: false, gateChecks: candidate.gateChecks, createdAt: now.toISOString(), persisted: false },
-    currentRiskLabels: [`direction:${candidate.direction}`, `relationship:${candidate.relationship}`, `event_family:${candidate.eventFamily}`, `historical_support:${candidate.historicalAnalog.strength}`, "historical_comparison_role:optional_context_only", `alert_readiness:${seriousActionEligible(candidate) ? "actionable_candidate" : "watch_only"}`, ...(candidate.rumour ? ["rumour"] : []), ...(!candidate.quote ? ["market_quote_unavailable"] : []), ...(candidate.quote && candidate.quote.actionableForSeriousSignal !== true ? ["market_quote_stale_for_action"] : [])],
+    currentRiskLabels: [`direction:${candidate.direction}`, `relationship:${candidate.relationship}`, `event_family:${candidate.eventFamily}`, `historical_support:${candidate.historicalAnalog.strength}`, "historical_comparison_role:optional_context_only", `alert_readiness:${seriousActionEligible(candidate, now) ? "actionable_candidate" : "watch_only"}`, ...(candidate.rumour ? ["rumour"] : []), ...(!candidate.quote ? ["market_quote_unavailable"] : []), ...(candidate.quote && candidate.quote.actionableForSeriousSignal !== true ? ["market_quote_stale_for_action"] : [])],
     missingEvidence,
     dataFreshnessWarnings,
     compatibility: { callsOpenAi: false, publishes: false, sendsTelegram: false, writesDatabase: false },
@@ -588,14 +594,17 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       marketSnapshot: quoted.marketSnapshot,
       benchmarkSnapshot: quoted.benchmarkQuote,
       rejectionAuditReview,
-      rankedCandidates: ranked.slice(0, 100).map((candidate) => ({ ticker: candidate.ticker, company: candidate.company, cik: candidate.cik, direction: candidate.direction, eventFamily: candidate.eventFamily, relationship: candidate.relationship, eventHeadline: candidate.eventHeadline, eventObservedAt: candidate.eventObservedAt, primarySource: candidate.primarySource, independentPublishers: candidate.independentPublishers, eventTruth: candidate.eventTruth, mappingConfidence: candidate.mappingConfidence, materiality: candidate.materiality, transmissionConfidence: candidate.transmissionConfidence, historicalSupport: candidate.historicalSupport, evidenceIndependence: candidate.evidenceIndependence, contradictionPenalty: candidate.contradictionPenalty, pricedInPenalty: candidate.pricedInPenalty, score: candidate.score, gateChecks: candidate.gateChecks, gatePassed: candidate.gatePassed, quote: candidate.quote, fundamentals: candidate.fundamentals, causalChain: candidate.causalChain, falsifiers: candidate.falsifiers, historicalAnalog: candidate.historicalAnalog, priceForecast: candidate.priceForecast, alertReadiness: seriousActionEligible(candidate) ? "actionable_candidate" : "watch_only" })),
+      rankedCandidates: ranked.slice(0, 100).map((candidate) => ({ ticker: candidate.ticker, company: candidate.company, cik: candidate.cik, direction: candidate.direction, eventFamily: candidate.eventFamily, relationship: candidate.relationship, eventHeadline: candidate.eventHeadline, eventObservedAt: candidate.eventObservedAt, primarySource: candidate.primarySource, independentPublishers: candidate.independentPublishers, eventTruth: candidate.eventTruth, mappingConfidence: candidate.mappingConfidence, materiality: candidate.materiality, transmissionConfidence: candidate.transmissionConfidence, historicalSupport: candidate.historicalSupport, evidenceIndependence: candidate.evidenceIndependence, contradictionPenalty: candidate.contradictionPenalty, pricedInPenalty: candidate.pricedInPenalty, score: candidate.score, gateChecks: candidate.gateChecks, gatePassed: candidate.gatePassed, quote: candidate.quote, fundamentals: candidate.fundamentals, causalChain: candidate.causalChain, falsifiers: candidate.falsifiers, historicalAnalog: candidate.historicalAnalog, priceForecast: candidate.priceForecast, alertReadiness: seriousActionEligible(candidate, now) ? "actionable_candidate" : "watch_only" })),
       sourceFailures: providers.filter((provider) => !["connected", "not_due"].includes(provider.status)).map((provider) => ({ provider: provider.provider, status: provider.status, error: provider.error, nextRetryAt: provider.nextRetryAt })),
     };
     if (!best) {
       return { ...common, status: "no_qualified_signal", noSignalReason: noSignalClassification, seriousSignalFound: false, openAiCalled: false, qualityScore: ranked[0]?.score ?? 0, blockers: [`No Committee candidate was produced (${noSignalClassification}). The candidate funnel and failed-gate counts identify the exact stage; price movement was not required.`], technicalFailureFingerprint: null };
     }
-    const companyProfile = verifiedCompanyProfile(
-      await input.resolveCompanyProfile?.(best) ?? targeted?.storedCompanyAnalysis?.companyProfile, best, now);
+    const betaScopeBlocker = restrictedBetaScopeBlocker(best);
+    if (betaScopeBlocker) return { ...common, status: "candidate_restricted_beta_parked", seriousSignalFound: false, actionableSignalFound: false, openAiCalled: false,
+      selectedCandidate: { ...best, parked: true, parkedReason: betaScopeBlocker }, qualityScore: best.score, blockers: [betaScopeBlocker], technicalFailureFingerprint: null };
+    const profileSource = await input.resolveCompanyProfile?.(best) ?? targeted?.storedCompanyAnalysis?.companyProfile;
+    const companyProfile = publicationCompanyProfile(profileSource, best, now) ?? scopedEventCompanyProfile(profileSource, best, now);
     const customerEvidenceDetails = companyProfile?.customerEvidence ? {
       customerType: companyProfile.customerType,
       customerEvidence: companyProfile.customerEvidence,
@@ -615,7 +624,7 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
     const reviewEvidenceInputs = {
       source: best.receipts.filter(r => r.channel !== "nasdaq_trade_halts").map(r => ({ id: r.id, summary: r.summary, rawEventType: r.rawEventType,
         url: r.url, publishedAt: r.publishedAt, official: r.official })),
-      companyProfile: companyProfile ? { business: companyProfile.business, customers: companyProfile.customers, sourceUrl: companyProfile.sourceUrl, sourceFiledAt: companyProfile.sourceFiledAt, ...customerEvidenceDetails } : null,
+      companyProfile: companyProfile ? { business: companyProfile.business, customers: companyProfile.customers, sourceUrl: companyProfile.sourceUrl, sourceFiledAt: companyProfile.sourceFiledAt, ...(companyProfile.status === "event_scoped" ? { policyVersion: companyProfile.policyVersion, eventSource: companyProfile.eventSource, unknownDetails: companyProfile.unknownDetails } : {}), ...customerEvidenceDetails } : null,
       industry: industryLabel(targeted?.storedCompanyAnalysis?.industry, companyProfile?.industry),
       outlookRange: (() => {
         const fair = targeted?.storedCompanyAnalysis?.fairValue as UsValueCompanyAnalysis["fairValue"] | undefined;
@@ -664,6 +673,7 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       sector: targeted?.storedCompanyAnalysis?.sector ?? null,
       currency: targeted?.storedCompanyAnalysis?.currency ?? null,
       valuationRange: targeted?.storedCompanyAnalysis?.fairValue ?? null,
+      ...(best.singleScenarioEvidence ? { singleScenarioEvidence: best.singleScenarioEvidence } : {}),
       timeHorizon: best.timeHorizon,
       whatHappened: best.whatHappened,
       plainLanguageExplanation: null as Record<string, string> | null,
@@ -695,6 +705,7 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       gatePassed: best.gatePassed,
       score: best.score,
       gateChecks: best.gateChecks,
+      eventMagnitude: best.eventMagnitude,
       causalChain: best.causalChain,
       falsifiers: best.falsifiers,
       receipts: best.receipts,
@@ -702,8 +713,16 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       fundamentals: best.fundamentals,
       historicalAnalog: best.historicalAnalog,
       priceForecast: best.priceForecast,
-      alertReadiness: seriousActionEligible(best) ? "actionable_candidate" : "watch_only",
+      riskWarningPolicy: null as string | null, riskWarningRule: null as string | null,
+      alertReadiness: seriousActionEligible(best, now) ? "actionable_candidate" : "watch_only",
     };
+    // A missing valuation never creates risk authority: independently prove a
+    // current direct downside event before selecting the target-free review.
+    const riskRule = directMaterialRiskRule(selectedCandidate, now);
+    if (isSimpleAlertPilot() && riskRule && !completePriceOutlook(alertDetails(selectedCandidate, undefined, now).outlook)) {
+      selectedCandidate.riskWarningPolicy = RISK_WARNING_POLICY;
+      selectedCandidate.riskWarningRule = riskRule;
+    }
     // This runs before any paid admission, including daily aliases and legacy
     // exact-key checks. A completed approval can rerun publication checks only.
     const terminal = terminalEvidence && best.cik && input.terminalReview
@@ -749,7 +768,7 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
     if (pilotUpsideHold) return { ...common, status: "candidate_pilot_upside_quarantined", seriousSignalFound: false,
       actionableSignalFound: false, alertType: null, openAiCalled: false, candidateFingerprint: fingerprint,
       selectedCandidate, qualityScore: best.score, blockers: [pilotUpsideHold], technicalFailureFingerprint: null };
-    if (!companyProfile) return { ...common, status: "candidate_company_profile_pending", seriousSignalFound: false, actionableSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, blockers: ["A source-backed company profile describing its products or services and customers is required before publication."], technicalFailureFingerprint: null };
+    if (!companyProfile) return { ...common, status: "candidate_company_profile_pending", profileContextRejected: Boolean(profileSource && typeof profileSource === "object" && "status" in profileSource && profileSource.status === "sourced_business"), seriousSignalFound: false, actionableSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, blockers: ["A source-backed full profile or eligible direct-event business context is required before publication; customer-dependent claims still require customer evidence."], technicalFailureFingerprint: null };
     if (!terminal && input.previousValuationReview?.fingerprint === fingerprint && ["approved", "rejected", "needs_more_data", "approved_pending_checks"].includes(input.previousValuationReview.outcome)) {
       return { ...common, status: "qualified_candidate_already_reviewed", reviewOutcome: input.previousValuationReview.outcome,
         seriousSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score,
@@ -796,12 +815,13 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
         && (financialDocuments !== null || replay.evidence.comparison.external.documents.length === 0)
         && (input.verifiedFactsCache?.requiredMetrics ?? []).every(metric =>
           requiredFinancialFactPresent(best.fundamentals?.items ?? [], metric, now));
-      const seriousSignalFound = replay.publicationGatePassed === true && ["upside", "downside"].includes(best.direction) && replay.direction === best.direction && completeCommitteeReview(committee)
+      const seriousSignalFound = replay.publicationGatePassed === true && ["upside", "downside"].includes(best.direction) && replay.direction === best.direction && completeCommitteeReview(committee) && completeSingleScenarioReview(selectedCandidate, committee)
         && judge?.verdict === "positive" && Number(judge.confidence) >= 80 && best.gatePassed
+        && (!selectedCandidate.riskWarningPolicy || completeRiskWarningReview(selectedCandidate, committee))
         && replay.publicationPacketKey === terminalPublicationPacketKey(selectedCandidate)
         && financialReplayReady && !targeted?.sourceEvidenceIncomplete && !watchOnlyBlocker && Boolean(best.quote);
-      const actionableSignalFound = seriousSignalFound && seriousActionEligible(best);
-      const alertType = !seriousSignalFound ? null : actionableSignalFound ? best.direction === "upside" ? "buy" : "sell" : "watch";
+      const actionableSignalFound = seriousSignalFound && seriousActionEligible(best, now);
+      const alertType = !seriousSignalFound ? null : actionableSignalFound ? selectedCandidate.riskWarningPolicy === RISK_WARNING_POLICY ? "watch_out" : best.direction === "upside" ? "buy" : "sell" : "watch";
       return { ...common, status: seriousSignalFound ? `serious_${alertType}` : "candidate_needs_more_data",
         reviewOutcome: seriousSignalFound ? "approved" : "approved_pending_checks", terminalReviewReplayed: true,
         researchReview: { admitted: true, gaps: [], publicationHeld: !seriousSignalFound },
@@ -812,6 +832,18 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
             ? ["The original whole-text completeness requirement is unknown; retained historical approval cannot establish current publication eligibility."]
             : !financialPublicationReady ? [financialDocumentsPublicationGap(financialDocuments)!] : [])], technicalFailureFingerprint: null };
     }
+    if (best.singleScenarioEvidence && (!best.gatePassed || !seriousActionEligible(best, now) || singleScenarioPublicationGap(selectedCandidate, now)
+      || !(input.verifiedFactsCache?.requiredMetrics ?? []).every(metric => requiredFinancialFactPresent(best.fundamentals?.items ?? [], metric, now))
+      || !financialPublicationReady || targeted?.sourceEvidenceIncomplete || watchOnlyBlocker)) {
+      return { ...common, status: "candidate_single_scenario_evidence_pending", seriousSignalFound: false, actionableSignalFound: false,
+        openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score,
+        researchReview: { admitted: false, publicationHeld: true },
+        blockers: ["The single-scenario evidence rule is not satisfied. Collect the named missing facts before spending on Committee review.",
+          ...best.failedGateChecks, ...(singleScenarioPublicationGap(selectedCandidate, now) ? [singleScenarioPublicationGap(selectedCandidate, now)!] : []),
+          ...(!financialPublicationReady ? [financialDocumentsPublicationGap(financialDocuments)!] : []),
+          ...(targeted?.sourceEvidenceIncomplete ? ["Full source evidence is incomplete."] : []), ...(watchOnlyBlocker ? [watchOnlyBlocker] : [])],
+        technicalFailureFingerprint: null };
+    }
     const aiProvider = getAiCommitteeProviderStatus();
     if (input.aiProviderBlockedReason) return { ...common, status: "committee_provider_access_blocked", seriousSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, committee: { configured: aiProvider.configured, enabled: aiProvider.enabled, providerBlockedReason: input.aiProviderBlockedReason }, blockers: [`The read-only OpenAI access check blocked paid review: ${input.aiProviderBlockedReason}. Evidence collection continues; no paid request or budget reservation was made.`], technicalFailureFingerprint: `openai_access_${input.aiProviderBlockedReason}`, failureScope: "configuration", repairEligible: false };
     if (!input.allowOpenAi) return { ...common, status: "qualified_signal_openai_not_requested", seriousSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, committee: { configured: aiProvider.configured, enabled: aiProvider.enabled }, blockers: ["The rolling OpenAI review budget was not available; the qualified event remains recorded without another paid call."], technicalFailureFingerprint: null };
@@ -820,7 +852,9 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
     admittedCandidateFingerprint = fingerprint;
     if (valuationBaseline) selectedCandidate.valuationAdmittedAt = now.toISOString();
     const pack = evidencePack(best, providers, macroResult.context, now, fingerprint, quoted.benchmarkQuote, targeted?.storedCompanyAnalysis);
-    pack.financialDiligence = { documents: financialEvidence, valuationAudit };
+    pack.financialDiligence = { documents: financialEvidence, valuationAudit,
+      ...(best.singleScenarioEvidence ? { singleScenarioEvidence: best.singleScenarioEvidence,
+        singleScenarioReviewPolicy: "The reported annual SEC facts define this scenario, not a normalized or verified TTM claim. The multiple/yield and 20% sensitivity are explicit model assumptions, not SEC-endorsed values or forecasts. Scanner confidence remains capped because independent methods are absent. Verify suitability, sustainable economics, contradictions, missing facts and every required role; arithmetic reproduction alone is not approval." } : {}) };
     // General dated-facts availability does not satisfy a specifically
     // requested current debt split. Keep old rows as history while exposing
     // the unresolved period requirement to every reviewer and consensus gate.
@@ -837,12 +871,20 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
     // Qualitative business facts cannot satisfy financial completeness, but every
     // role must see the same verified company and customer evidence as the alert.
     pack.fundamentalsEvidence.items.splice(targeted?.storedCompanyAnalysis ? 1 : 0, 0, {
-      source: "verified_company_profile", business: companyProfile.business, customers: companyProfile.customers,
+      source: companyProfile.status === "event_scoped" ? "sourced_direct_event_company_context" : "verified_company_profile", business: companyProfile.business, customers: companyProfile.customers,
+      ...(companyProfile.status === "event_scoped" ? { eventSource: companyProfile.eventSource, unknownDetails: companyProfile.unknownDetails,
+        reviewPolicy: "Customers and moat are unknown. Do not infer them. Reject or request evidence if the decision depends on those details. This short context does not replace financial facts, prices or required review." } : {}),
       sourceUrl: companyProfile.sourceUrl, sourceFiledAt: companyProfile.sourceFiledAt, verifiedAt: companyProfile.verifiedAt, ...customerEvidenceDetails,
     });
-    pack.sourceLinks = [...new Set([...pack.sourceLinks, companyProfile.sourceUrl])];
-    pack.sourceNames = [...new Set([...pack.sourceNames, companyProfile.customerEvidence
+    pack.sourceLinks = [...new Set([...pack.sourceLinks, companyProfile.sourceUrl, ...(companyProfile.status === "event_scoped" ? [companyProfile.eventSource.url] : [])])];
+    pack.sourceNames = [...new Set([...pack.sourceNames, companyProfile.status === "event_scoped" ? "SEC annual business disclosure and exact issuer event; customers and moat unknown" : companyProfile.customerEvidence
       ? "SEC annual business disclosures and period-specific financial-note customer evidence" : "SEC annual business and customer disclosures"])];
+    if (details.riskWarningException) {
+      pack.actionLabel = "SERIOUS WATCH OUT risk-only candidate";
+      pack.currentRiskLabels.push(`risk_warning_policy:${RISK_WARNING_POLICY}`);
+      pack.fundamentalsEvidence.items.push({ source: "risk_warning_policy", rule: selectedCandidate.riskWarningRule,
+        explanation: RISK_WARNING_NOTICE, reviewPolicy: "Approve only the sourced direct material downside risk and its current relevance. Verify event magnitude, baseline, contradictions, market state and all event-dependent financial facts. Unknown price impact stays unknown. Do not approve Buy/Sell, invent a target, or estimate a percentage return." });
+    }
     if (details.valuationException) {
       pack.fundamentalsEvidence.items.push({ source: "valuation_availability", ...details.outlook.fairValueUnavailable,
         explanation: NEGATIVE_EARNINGS_NOTICE,
@@ -885,6 +927,8 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
     });
     const results = Array.isArray(committee.agentResults) ? committee.agentResults : [];
     selectedCandidate.plainLanguageExplanation = committeeExplanation(results.find(result => ["explainer_agent", "analyst_agent"].includes(result.agentId) && result.status === "completed")?.keyFindings ?? []);
+    const reviewedProfileReady = companyProfile.status !== "event_scoped" || Boolean(publicationCompanyProfile(companyProfile, selectedCandidate, now));
+    if (!reviewedProfileReady) researchGaps.push("The reviewed conclusion depends on unverified customer or moat details; sourced evidence is required before publication.");
     const completed = results.filter((result) => result.status === "completed").length;
     const failed = results.filter((result) => result.status === "failed" || result.status === "blocked").length;
     const technicalFailure = !committee.ok || failed > 0;
@@ -893,7 +937,10 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
     const finalJudge = results.find((result) => result.agentId === "final_judge");
     const recommendation = committee.committeeOutput?.overallRecommendation ?? "needs_more_data";
     const seriousSignalFound = committee.ok === true
+      && reviewedProfileReady
+      && (!selectedCandidate.riskWarningPolicy || completeRiskWarningReview(selectedCandidate, { ok: committee.ok, agentsCompleted: completed, agentsFailed: failed, output: committee.committeeOutput }))
       && completeCommitteeReview({ ok: committee.ok, agentsCompleted: completed, agentsFailed: failed, output: committee.committeeOutput })
+      && completeSingleScenarioReview(selectedCandidate, { ok: committee.ok, agentsCompleted: completed, agentsFailed: failed, output: committee.committeeOutput })
       && failed === 0
       && recommendation === "approve"
       && finalJudge?.verdict === "positive"
@@ -904,8 +951,8 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       && !targeted?.sourceEvidenceIncomplete
       && !watchOnlyBlocker
       && Boolean(best.quote);
-    const actionableSignalFound = seriousSignalFound && seriousActionEligible(best);
-    const alertType = !seriousSignalFound ? null : actionableSignalFound ? best.direction === "upside" ? "buy" : "sell" : "watch";
+    const actionableSignalFound = seriousSignalFound && seriousActionEligible(best, now);
+    const alertType = !seriousSignalFound ? null : actionableSignalFound ? selectedCandidate.riskWarningPolicy === RISK_WARNING_POLICY ? "watch_out" : best.direction === "upside" ? "buy" : "sell" : "watch";
     return { ...common, researchReview: inclusiveReview ? { admitted: true, gaps: researchGaps, publicationHeld: !seriousSignalFound } : null, reviewOutcome: technicalFailure ? "technical_failure" : seriousSignalFound ? "approved" : recommendation === "reject" ? "rejected" : recommendation === "approve" ? "approved_pending_checks" : "insufficient_evidence", status: seriousSignalFound ? `serious_${alertType}` : technicalFailure ? "committee_failed" : recommendation === "reject" ? "candidate_rejected" : "candidate_needs_more_data", seriousSignalFound, actionableSignalFound, alertType, openAiCalled: true, candidateFingerprint: fingerprint, selectedCandidate, historicalPilot: pilotGate, qualityScore: Math.round((best.score * 0.45 + (committee.committeeOutput?.evidenceConfidenceScore ?? 0) * 0.25 + (finalJudge?.confidence ?? 0) * 0.3) * 100) / 100, committee: { ok: committee.ok, status: committee.status, startedAt: committeeStartedAt, finishedAt: new Date(now.getTime() + Date.now() - startedAt).toISOString(), agentsPlanned: committee.plannedAgents?.length ?? 0, agentsCompleted: completed, agentsFailed: failed, roleDiagnostics, finalJudge: finalJudge ? { verdict: finalJudge.verdict, confidence: finalJudge.confidence, concerns: finalJudge.concerns, missingData: finalJudge.missingData, followUpChecks: finalJudge.followUpChecks } : null, output: committee.committeeOutput, writesDatabase: committee.compatibility?.writesDatabase ?? false }, blockers: seriousSignalFound ? [] : [...new Set([...providerBlockers, ...researchGaps, ...(committee.committeeOutput?.missingEvidence ?? []), ...(finalJudge?.missingData ?? []), ...(finalJudge?.concerns ?? [])])].slice(0, 12), technicalFailureFingerprint: technicalFailure ? `committee_${committee.status}` : null, failureScope: technicalFailure ? "external_provider" : "none", repairEligible: false };
   } catch (error) {
     const message = error instanceof Error ? error.message.slice(0, 200) : "equity_signal_lab_failed";

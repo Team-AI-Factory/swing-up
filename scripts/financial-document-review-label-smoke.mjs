@@ -13,9 +13,9 @@ function loadComponent(path, states) {
     target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText;
   const result = { exports: {} }; let index = 0;
   const require = name => name === "react" ? { ...nativeRequire("react"),
-    useState: () => [states[index++], () => {}], useEffect: () => {}, useCallback: value => value }
-    : ["@/components/CompanyFacts", "@/components/SignalPriceOutlook"].includes(name)
-      ? { CompanyFacts: () => null, SignalPriceOutlook: () => null }
+    useState: () => [states[index++], () => {}], useEffect: () => {}, useCallback: value => value, useRef: value => ({ current: value }) }
+    : ["@/components/CompanyFacts", "@/components/SignalPriceOutlook", "@/components/PublicSignalFeed"].includes(name)
+      ? { CompanyFacts: () => null, SignalPriceOutlook: () => null, PublicSignalFeed: () => null }
       : name.startsWith("@/") ? loadTsModule(name) : nativeRequire(name);
   new Function("require", "module", "exports", code)(require, result, result.exports);
   return result.exports;
@@ -28,8 +28,8 @@ for (const [status, expected, currentlyApproved = false] of [["approved", "Commi
   ["approved_pending_checks", "Positive review · final checks pending"], ["rejected", "Committee rejected"],
   ["needs_more_data", null], ["awaiting_review", "Awaiting Committee review"]]) {
   const value = { ...item, committeeStatus: status, committeeApproved: currentlyApproved };
-  const publicComponent = loadComponent("components/PublicSignalFeed.tsx", [20, null, null, [value], "", "all"]);
-  const publicHtml = renderToStaticMarkup(publicComponent.PublicSignalFeed());
+  const publicComponent = loadComponent("components/PublicSignalFeed.tsx", [[], 20, null, null, [value], "", "all"]);
+  const publicHtml = renderToStaticMarkup(publicComponent.PublicSignalFeed({}));
   assert.ok(publicHtml.includes(expected ?? "Collecting more information"), `${status}: public label`);
   assert.ok(publicHtml.includes("Historical Committee confidence: 0/100"), "Genuine historical zero survives held badge");
   const watchlist = { candidates: [value], summary: {}, foundation: {}, livePricing: {} };

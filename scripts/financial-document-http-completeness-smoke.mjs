@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import http from "node:http";
 import https from "node:https";
 import net from "node:net";
+import { filingFixtureManifest, filingFixture } from "./helpers/filing-facts-fixture.mjs";
 import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 
 // Every source response and storage call is local. Block accidental real I/O.
@@ -18,10 +19,10 @@ const cik = "0000903651", indexUrl = `https://data.sec.gov/submissions/CIK${cik}
 const indexBytes = readFileSync(new URL("./fixtures/sec-submissions-root-2026-10-07/INOD.json", import.meta.url));
 assert.equal(crypto.createHash("sha256").update(indexBytes).digest("hex"),
   "070461656ae36691ad952bd53e529dd48fbb74b8f7191637d3c6bb79e27910f3");
-// The index is an unchanged authentic SEC fixture. The filing below is entirely
-// synthetic: it tests transport completeness, not extraction accuracy or issuer facts.
+// Both index and quarterly filing are immutable authentic SEC fixtures. The
+// synthetic prefix below is used only for interrupted/partial transport cases.
 const filingPrefix = `<html><body>${"Synthetic preface. ".repeat(140)}<p>Operating segments: synthetic segment.</p>`;
-const filing = `${filingPrefix}<p>Major customers: synthetic customer.</p><p>Gross margin: synthetic margin.</p></body></html>`;
+const filing = filingFixture(filingFixtureManifest.sources.find(r => r.source.cik === cik && r.source.form === "10-Q"));
 const partial = (body, total) => new Response(body, { status: 206,
   headers: { "Content-Range": `bytes 0-${Buffer.byteLength(body) - 1}/${total}` } });
 const interrupted = () => {
@@ -112,7 +113,9 @@ if (baselineProbe) {
     record(name, result, test.calls.length);
   }
   const bounded = setup(), boundedResult = await bounded.run(undefined, () => new Response(`${filing}${" ".repeat(5000001)}`));
-  assert.equal(boundedResult.documents.length, 2);
+  assert.equal(boundedResult.documents.length, 1, "Capped supported quarterly filing cannot promote typed identity/numeric evidence");
+  assert.equal(boundedResult.documents[0].form, "10-K");
+  assert.equal(boundedResult.failures.length, 1);
   assert.ok(boundedResult.documents.every(doc => !doc.readComplete));
   record("HTTP 200 filing capped at existing 5MB limit stays incomplete", boundedResult, bounded.calls.length);
 

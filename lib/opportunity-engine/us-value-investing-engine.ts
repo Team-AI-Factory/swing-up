@@ -1,3 +1,4 @@
+import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
 import {
   getR2Config,
   writeVersionedJsonToR2,
@@ -19,6 +20,7 @@ export type ValueMethod = {
   method: "earnings_power" | "owner_earnings_fcf" | "graham_value" | "industry_sales_comparison" | SpecialistValuationMethod["method"];
   value: number;
   assumption: string;
+  singleScenario?: { version: "engine-sensitivity-v1"; inputBasis: "reported_eps" | "reported_fcf"; parameter: number; lowFactor: 0.8; highFactor: 1.2 };
 };
 
 export type UsValueCompanyAnalysis = {
@@ -557,11 +559,11 @@ function analyzeRow(row: RawRow, observedAt: string): UsValueCompanyAnalysis {
   const growthAdjustment = clamp((growthMedian ?? 0) * 0.2, -4, 5);
   const justifiedPe = clamp(8 + businessQuality / 6 + growthAdjustment, 8, 26);
   if (row.dilutedEpsTtm !== null && row.dilutedEpsTtm > 0) {
-    methods.push({ method: "earnings_power", value: row.dilutedEpsTtm * justifiedPe, assumption: `Normalized earnings valued at a conservative ${justifiedPe.toFixed(1)}x multiple based on quality and growth.` });
+    methods.push({ method: "earnings_power", value: row.dilutedEpsTtm * justifiedPe, assumption: isSimpleAlertPilot() ? `Reported earnings valued at a conservative ${justifiedPe.toFixed(1)}x multiple based on quality and growth.` : `Normalized earnings valued at a conservative ${justifiedPe.toFixed(1)}x multiple based on quality and growth.`, ...(isSimpleAlertPilot() ? { singleScenario: { version: "engine-sensitivity-v1" as const, inputBasis: "reported_eps" as const, parameter: justifiedPe, lowFactor: 0.8 as const, highFactor: 1.2 as const } } : {}) });
   }
   const targetFcfYield = clamp(0.1 - businessQuality * 0.0006, 0.045, 0.1);
   if (fcfPerShare !== null && fcfPerShare > 0) {
-    methods.push({ method: "owner_earnings_fcf", value: fcfPerShare / targetFcfYield, assumption: `Owner earnings valued at a ${(targetFcfYield * 100).toFixed(1)}% required free-cash-flow yield.` });
+    methods.push({ method: "owner_earnings_fcf", value: fcfPerShare / targetFcfYield, assumption: isSimpleAlertPilot() ? `Reported free cash flow valued at a ${(targetFcfYield * 100).toFixed(1)}% required free-cash-flow yield.` : `Owner earnings valued at a ${(targetFcfYield * 100).toFixed(1)}% required free-cash-flow yield.`, ...(isSimpleAlertPilot() ? { singleScenario: { version: "engine-sensitivity-v1" as const, inputBasis: "reported_fcf" as const, parameter: targetFcfYield, lowFactor: 0.8 as const, highFactor: 1.2 as const } } : {}) });
   }
   if (row.dilutedEpsTtm !== null && row.dilutedEpsTtm > 0 && bookValuePerShare !== null && bookValuePerShare > 0) {
     methods.push({ method: "graham_value", value: Math.sqrt(22.5 * row.dilutedEpsTtm * bookValuePerShare), assumption: "Conservative Graham earnings-and-book-value cross-check." });
@@ -572,8 +574,11 @@ function analyzeRow(row: RawRow, observedAt: string): UsValueCompanyAnalysis {
     .filter((method) => method.value > 0);
   const methodValues = plausibleMethods.map((method) => method.value);
   const baseValue = median(methodValues);
-  const conservativeValue = methodValues.length ? Math.min(...methodValues) : null;
-  const optimisticValue = methodValues.length ? Math.max(...methodValues) : null;
+  const singleMethodBeta = isSimpleAlertPilot() && plausibleMethods.length === 1;
+  // A transparent mechanical sensitivity around one method, not extra models
+  // or a forecast. Primary-fact reproduction is required later in the runner.
+  const conservativeValue = singleMethodBeta ? methodValues[0] * 0.8 : methodValues.length ? Math.min(...methodValues) : null;
+  const optimisticValue = singleMethodBeta ? methodValues[0] * 1.2 : methodValues.length ? Math.max(...methodValues) : null;
   const completeness = evidenceCompleteness(row);
   const methodScore = Math.min(36, plausibleMethods.length * 12);
   const extremeValuation = baseValue !== null && (baseValue < row.currentPrice * 0.2 || baseValue > row.currentPrice * 5);

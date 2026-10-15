@@ -154,9 +154,12 @@ function selectAgents(input: RunAiCommitteeInput, pack: AiCommitteeEvidencePack)
       purpose: "Verify the exact issuer, event, dated primary sources, products and customers, material financial facts, causal direction, valuation assumptions, price reaction and whether the event is already priced in. Explain what happened and why it matters in everyday language. Never invent targets or missing facts.",
     };
     const ids = ["skeptic_agent"];
+    const riskOnly = pack.currentRiskLabels.includes("risk_warning_policy:direct_material_risk_v1");
+    const riskFinancial = riskOnly && pack.currentRiskLabels.some(label => ["event_family:earnings_guidance", "event_family:financing_dilution"].includes(label));
+    const riskRegulatory = riskOnly && pack.currentRiskLabels.includes("event_family:regulatory_enforcement");
     if (pack.analysisKind === "valuation") ids.unshift("valuation_dcf_agent");
-    else if (/earnings|guidance|revenue|profit|balance sheet|financing|debt/i.test(`${pack.eventHeadline} ${pack.whatHappened}`)) ids.unshift("accountant_agent");
-    if (/FDA|clinical|trial|drug approval|regulatory approval|antitrust/i.test(`${pack.eventHeadline} ${pack.whatHappened}`)) ids.unshift("industry_agent");
+    else if (riskFinancial || /earnings|guidance|revenue|profit|balance sheet|financing|debt/i.test(`${pack.eventHeadline} ${pack.whatHappened}`)) ids.unshift("accountant_agent");
+    if (riskRegulatory || /FDA|clinical|trial|drug approval|regulatory approval|antitrust/i.test(`${pack.eventHeadline} ${pack.whatHappened}`)) ids.unshift("industry_agent");
     return [analyst, ...ids.map(id => AI_COMMITTEE_AGENTS.find(agent => agent.id === id)!)];
   }
   const requested = new Set((input.selectedAgents ?? []).filter((id) => id !== "final_judge"));
@@ -328,6 +331,8 @@ function summarizeEvidence(pack: AiCommitteeEvidencePack) {
     researchReview: pack.researchReview ?? null,
     analysisKind: pack.analysisKind ?? "event",
     financialDiligence: pack.financialDiligence ?? null,
+    ...(pack.currentRiskLabels.includes("risk_warning_policy:direct_material_risk_v1") ? { riskWarning: { policy: "direct_material_risk_v1",
+      actionLabel: pack.actionLabel, priceImpact: "unknown", targetPrice: null, expectedReturn: null } } : {}),
     assetContext: {
       assetClass: policy.assetClass,
       primaryAnalysis: pack.analysisKind === "valuation" ? ["dated financial inputs", "exact issuer mapping", "valuation assumptions and range", "current price gap", "business risks and contradictions"] : policy.assetClass === "digital_asset" ? ["verified event evidence", "token market structure", "price/volume reaction", "liquidity and supply structure", "macro/FX context when relevant"] : policy.assetClass === "public_equity" ? ["verified event truth", "issuer mapping", "materiality", "causal transmission", "historical context", "contradictions and priced-in risk"] : ["verified event evidence", "company fundamentals", "price/volume reaction"],
@@ -375,7 +380,9 @@ function buildAgentPrompt(agent: AiCommitteeAgentDefinition, evidencePack: AiCom
   const previousReviews = previousResults.map(result => Object.fromEntries(
     Object.entries(result).filter(([key]) => key !== "tokenUsage"),
   ));
-  const assetInstructions = evidencePack.analysisKind === "valuation"
+  const assetInstructions = evidencePack.currentRiskLabels.includes("risk_warning_policy:direct_material_risk_v1")
+    ? "This is a risk-only Serious Watch Out review, not a Buy or Sell valuation. Verify the exact issuer, current official disclosure, direct downside risk, materiality against the required baseline, contradictions, market relevance and all event-dependent financial inputs. The quantified event magnitude is not an expected stock return. No target price, fair value or return estimate is claimed or required. Do not invent one. Approve only when every required risk check is satisfied; otherwise reject or request the precise missing facts."
+    : evidencePack.analysisKind === "valuation"
     ? "This is a company-first valuation review: no new catalyst or price move is required. Assess dated statements, sustainable earnings and cash flow, debt, shares, suitable methods, assumptions, range, margin of safety and current price. Check deteriorating cash flow, refinancing, dilution, one-offs or peak-cycle earnings, and inconsistent share or currency units. For Sell, test whether durable growth or quality justifies the premium; overvaluation alone is not a safe short. Explain plainly. Value is an estimate, not fact or promised return. Request only necessary company data; news, FDA, macro and event exhibits are N/A unless relevant."
     : policy.assetClass === "digital_asset"
     ? "This candidate is a digital asset. Treat verified event receipts, token market structure, price/volume reaction, liquidity, circulating/max supply, dilution/FDV, volatility and macro/FX context as the primary evidence. Corporate filings, accounting metrics, DCF, FDA evidence and FINRA short data are N/A unless the supplied event is specifically about one of them. Never penalize the candidate or request data merely because an N/A corporate section is absent."

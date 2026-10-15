@@ -33,6 +33,7 @@ await inSimpleAlertPilot(async () => {
   for (const [name, change] of [
     ["legacy unknown", candidate => { for (const row of candidate.financialDocuments.documents) { delete row.transportProof; delete row.transportCompleteness; } }],
     ["known partial", candidate => { for (const row of candidate.financialDocuments.documents) { delete row.transportProof; delete row.transportCompleteness; row.readComplete = false; } }],
+    ["unbound typed numeric payload", candidate => { candidate.financialDocuments.documents[0].factExtraction = { version: 1, status: "extracted", facts: [{ metric: "fixture_only", value: 1, unit: "USD" }] }; }],
     ["missing dependency", candidate => { candidate.financialDocuments = null; candidate.financialDocumentsRequired = false; }],
     ["unknown original requirement", candidate => { delete candidate.financialDocumentsRequired; }],
   ]) {

@@ -1,5 +1,5 @@
 import { companyCardFacts } from "@/lib/company-card-facts";
-import { verifiedCompanyProfile } from "@/lib/company-profile";
+import { publicationCompanyProfile, type EventCompanyContext } from "@/lib/event-company-profile";
 type Json = Record<string, unknown>;
 const object = (v: unknown): Json => v && typeof v === "object" && !Array.isArray(v) ? v as Json : {};
 const text = (v: unknown) => typeof v === "string" ? v.replace(/\s+/g, " ").trim().slice(0, 900) : "";
@@ -45,7 +45,7 @@ export function plainEventSummary(company: string, raw: unknown, headline?: unkn
   return summaries[String(family)] ?? `We're checking an update from ${company}. We have not yet established what changed in the business or what it could mean for the share price.`;
 }
 
-export function explainSignal(input: { company: string; ticker?: unknown; cik?: unknown; companyProfile?: unknown; industry?: unknown; sector?: unknown; description?: unknown; kind: "valuation" | "event"; action: string; price?: unknown; fairValue?: unknown; headline?: unknown; whatHappened?: unknown; eventFamily?: unknown; reasons?: unknown; gaps?: unknown; fundamentals?: unknown }) {
+export function explainSignal(input: EventCompanyContext & { company: string; ticker?: unknown; cik?: unknown; companyProfile?: unknown; industry?: unknown; sector?: unknown; description?: unknown; kind: "valuation" | "event"; action: string; price?: unknown; fairValue?: unknown; headline?: unknown; whatHappened?: unknown; eventFamily?: unknown; reasons?: unknown; gaps?: unknown; fundamentals?: unknown }) {
   const price = number(input.price), value = number(input.fairValue);
   const money = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 2 });
   const companyDoes = explainCompany(input.company, input.industry, input.sector, input.description);
@@ -88,8 +88,8 @@ export function explainSignal(input: { company: string; ticker?: unknown; cik?: 
 }
 
 export function explainCandidate(candidate: Json, analysis?: Json) {
-  const profile = verifiedCompanyProfile(candidate.companyProfile, candidate);
-  const explanation = explainSignal({ company: text(candidate.company) || text(candidate.ticker), industry: analysis?.industry ?? candidate.industry, sector: analysis?.sector ?? candidate.sector,
+  const profile = publicationCompanyProfile(candidate.companyProfile, candidate);
+  const explanation = explainSignal({ ...candidate, company: text(candidate.company) || text(candidate.ticker), industry: analysis?.industry ?? candidate.industry, sector: analysis?.sector ?? candidate.sector,
     ticker: candidate.ticker, cik: candidate.cik, companyProfile: profile, description: profile?.description, kind: candidate.eventFamily === "valuation_gap" ? "valuation" : "event", action: text(candidate.direction),
     price: object(candidate.quote).price, fairValue: object(analysis?.fairValue ?? candidate.valuationRange).baseValue, headline: candidate.eventHeadline,
     whatHappened: candidate.whatHappened, eventFamily: candidate.eventFamily, gaps: candidate.failedGateChecks, fundamentals: analysis?.fundamentals });
@@ -97,13 +97,14 @@ export function explainCandidate(candidate: Json, analysis?: Json) {
   for (const key of ["whatHappened", "whyItMatters", "whatCouldHappen", "whatCouldGoWrong"] as const) {
     if (text(reviewed[key]) && !filingBoilerplate.test(text(reviewed[key]))) explanation[key] = text(reviewed[key]);
   }
+  if (candidate.riskWarningPolicy === "direct_material_risk_v1") explanation.whatCouldHappen = "The verified risk may affect the business. Its share-price impact, target price and expected return are unknown.";
   return explanation;
 }
 
 /** Also clean older saved alerts on read, without rewriting their historical review. */
-export function publicExplanation(explanation: unknown, context: { company: string; ticker?: unknown; cik?: unknown; companyProfile?: unknown; industry?: unknown; sector?: unknown; headline?: unknown; eventFamily?: unknown }) {
+export function publicExplanation(explanation: unknown, context: EventCompanyContext & { company: string; ticker?: unknown; cik?: unknown; companyProfile?: unknown; industry?: unknown; sector?: unknown; headline?: unknown; eventFamily?: unknown }) {
   const saved = object(explanation);
-  const profile = verifiedCompanyProfile(context.companyProfile, context);
+  const profile = publicationCompanyProfile(context.companyProfile, context);
   return {
     companyDoes: profile?.description ?? "",
     companyFacts: companyCardFacts(profile, context),

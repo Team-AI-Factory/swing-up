@@ -6,10 +6,11 @@ import ts from "typescript";
 const nodeRequire = createRequire(import.meta.url);
 const cache = new Map();
 function load(file, overrides = {}) {
+  if (file.endsWith(".json")) return JSON.parse(readFileSync(file, "utf8"));
   if (cache.has(file)) return cache.get(file).exports;
   const cjsModule = { exports: {} }; cache.set(file, cjsModule);
   const output = ts.transpileModule(readFileSync(file, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText;
-  new Function("require", "module", "exports", output)((name) => overrides[name] ?? (name.startsWith("@/") ? load(resolve(name.slice(2) + ".ts")) : nodeRequire(name)), cjsModule, cjsModule.exports);
+  new Function("require", "module", "exports", output)((name) => overrides[name] ?? (name.startsWith("@/") ? load(resolve(name.slice(2) + (name.endsWith(".json") ? "" : ".ts"))) : nodeRequire(name)), cjsModule, cjsModule.exports);
   return cjsModule.exports;
 }
 const research = load(resolve("lib/growth/research.ts"));

@@ -1,3 +1,7 @@
+import { qualifiedSingleScenario, singleScenarioPublicationGap, completeSingleScenarioReview } from "@/lib/equity-signal/single-valuation-scenario";
+import { alertDetails } from "@/lib/alert-details";
+import { restrictedBetaScopeBlocker } from "@/lib/restricted-beta-policy";
+import { completeRiskWarningReview, riskOnlyWarning } from "@/lib/equity-signal/risk-warning-policy";
 import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
 import { checkTerminalReview, reserveTerminalReview, finishTerminalReviewAttempt, readTerminalDecision } from "@/lib/opportunity-engine/pr262-terminal-reviews";
 import { validatedTerminalEvidence } from "@/lib/equity-signal/terminal-review-evidence";
@@ -5,8 +9,8 @@ import { pilotIncludes, pilotUpsideBlocker } from "@/lib/simple-alert-pilot-scop
 import { readPilotWatchValuation, pilotValuationUnitsBlocker, PILOT_WATCH_VALUATION_MAX_AGE_MS } from "@/lib/opportunity-engine/pr262-pilot-watch-valuation";
 import { collectFinancialDocuments } from "@/lib/equity-signal/financial-evidence";
 import { completeCommitteeReview, committeeRequestsRejectedWithoutUsage } from "@/lib/ai-committee/review-policy";
-import { verifiedCompanyProfile } from "@/lib/company-profile";
-import { ensureCompanyProfile, warmFoundationCompanyProfiles } from "@/lib/opportunity-engine/company-profile-cache";
+import { publicationCompanyProfile } from "@/lib/event-company-profile";
+import { ensureEventCompanyProfile, warmFoundationCompanyProfiles } from "@/lib/opportunity-engine/company-profile-cache";
 import { recordResearchEvidence, readEvidenceFollowup, readLastValuationReview, readLegacyTerminalReviews, unchangedCommitteeInputLimitHeld, verifiedFactsCache, reserveRejectionAudit } from "@/lib/opportunity-engine/pr262-research-evidence";
 import crypto from "node:crypto";
 import { lookup, resolve4 } from "node:dns/promises";
@@ -1577,9 +1581,12 @@ function committeeApproved(report: Json, pointer: Json, now = new Date()) {
   const candidateCik = normalizedCik(candidate.cik);
   const pointerCik = normalizedCik(pointer.cik);
   return report.seriousSignalFound === true
-    && Boolean(verifiedCompanyProfile(candidate.companyProfile, candidate, now))
+    && !restrictedBetaScopeBlocker(candidate)
+    && (!isSimpleAlertPilot() || alertDetails(candidate, undefined, now).complete)
+    && Boolean(publicationCompanyProfile(candidate.companyProfile, candidate, now))
     && report.actionableSignalFound === true
-    && (report.alertType === "buy" || report.alertType === "sell")
+    && (report.alertType === "watch_out" ? riskOnlyWarning(candidate, now)
+      : !candidate.riskWarningPolicy && (report.alertType === "buy" || report.alertType === "sell"))
     && !(report.alertType === "buy" && pilotUpsideBlocker(candidate))
     && candidateTicker !== null
     && candidateTicker === pointerTicker
@@ -1593,7 +1600,8 @@ function committeeApproved(report: Json, pointer: Json, now = new Date()) {
     && Number(candidate.eventTruth) >= 80
     && Number(candidate.mappingConfidence) >= 95
     && Number(candidate.materiality) >= 65
-    && Number(candidate.transmissionConfidence) >= 70
+    && (Number(candidate.transmissionConfidence) >= 70 || qualifiedSingleScenario(candidate, now))
+    && !singleScenarioPublicationGap(candidate, now)
     && Number(candidate.evidenceIndependence) >= 78
     && candidate.rumour !== true
     && Number(candidate.contradictionPenalty) < 50
@@ -1603,9 +1611,11 @@ function committeeApproved(report: Json, pointer: Json, now = new Date()) {
     && quote.actionableForSeriousSignal === true
     && !["halted", "unknown"].includes(String(quote.marketSession ?? "unknown"))
     && halt.currentStateKnown === true
-    && officialEvidence
+    && (officialEvidence || qualifiedSingleScenario(candidate, now))
     && committee.ok === true
     && completeCommitteeReview(committee)
+    && completeSingleScenarioReview(candidate, committee)
+    && (!candidate.riskWarningPolicy || completeRiskWarningReview(candidate, committee))
     && committee.agentsFailed === 0
     && judge.verdict === "positive"
     && Number(judge.confidence) >= 80
@@ -1747,14 +1757,15 @@ async function finalizePersistedResult(input: {
       }
     }
     const fingerprint = text(candidate.terminalDecisionKey) ?? text(report.candidateFingerprint) ?? safeSegment(input.eventId);
-    const seriousWatchOut = alertType === "sell"
-      ? await promotePr262SeriousWatchOut(input.resultKey)
+    const seriousWatchOut = alertType === "sell" || alertType === "watch_out"
+      ? await promotePr262SeriousWatchOut(input.resultKey, input.now)
       : { promoted: false, outboxKey: null as string | null };
     if (seriousWatchOut.promoted && seriousWatchOut.outboxKey) {
       // A qualifying downside risk is one Watch Out alert, not a duplicate
       // Sell plus Watch Out pair for the same Committee decision.
       outboxKey = seriousWatchOut.outboxKey;
     } else {
+      if (alertType === "watch_out") throw new Error("risk_only_watch_out_authority_not_proven");
       outboxKey = `${OUTBOX_PREFIX}/${alertType}/${String(pointer.ticker).toUpperCase()}/${safeSegment(fingerprint)}.json`;
       const outboxPayload = {
         version: 1,
@@ -2293,7 +2304,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
           terminalReview: terminalGuard ? request => checkTerminalReview({ ...request, legacy: legacyTerminalReviews, signal: jobAbort.signal }) : undefined,
           verifiedFactsCache: { ...verifiedFactsCache, requiredMetrics: (Array.isArray(priorFollowup.tasks) ? priorFollowup.tasks : []).flatMap(task => object(task).type === "financial_facts" && Array.isArray(object(task).fields) ? object(task).fields as string[] : []) },
           reserveRejectionAudit: () => reserveRejectionAudit(event.id, now),
-          resolveCompanyProfile: identity => ensureCompanyProfile(identity, quotaAwareFetch, now, { signal: jobAbort.signal }),
+          resolveCompanyProfile: identity => ensureEventCompanyProfile(identity, quotaAwareFetch, now, { signal: jobAbort.signal }),
           fetchImpl: quotaAwareFetch,
           signal: jobAbort.signal,
           now,
@@ -2360,7 +2371,7 @@ export async function runPr262EventJob(input: Pr262EventJobInput = {}) {
     if (retryableReport(report, retryClassificationAllowsAi) && eventAgeMs <= 7 * 24 * 60 * 60_000) {
       const reportStatus = text(report.status) ?? "unknown";
       const capacityOnly = reportStatus === "qualified_signal_openai_reservation_denied" && !evidenceProgress.evidenceFollowupScheduled;
-      const retryReason = `pr262_event_report_retry:${reportStatus}${reportBlocker ? `:blocker=${reportBlocker}` : ""}${capacityOnly ? ":awaiting_paid_capacity_only" : ""}`;
+      const retryReason = `pr262_event_report_retry:${reportStatus}${reportBlocker ? `:blocker=${reportBlocker}` : ""}${capacityOnly ? ":awaiting_paid_capacity_only" : ""}${report.profileContextRejected === true ? ":event_business_context_rejected" : ""}`;
       const paidAttempt = report.openAiCalled === true;
       // A real or conservatively admitted paid Committee attempt must not be
       // retried while its rolling 24-hour cost record remains active. The

@@ -33,7 +33,7 @@ new Function("require", "module", "exports", output)((name) => {
   if (name === "@/lib/r2-warehouse") return storage;
   if (name === "@/lib/opportunity-engine/pr262-storage") return { pr262StorageKey: (relative) => `production/pr262/${relative}` };
   if (["@/lib/ai-committee/review-policy", "@/lib/equity-signal/us-market-calendar"].includes(name)) return loadTsModule(name);
-  if (name === "@/lib/alert-details") return loadTsModule(name);
+  if (["@/lib/alert-details", "@/lib/equity-signal/risk-warning-policy", "@/lib/restricted-beta-policy", "@/lib/equity-signal/terminal-review-evidence"].includes(name)) return loadTsModule(name);
   throw new Error(`Unexpected Watch Out authority import: ${name}`);
 }, loaded, loaded.exports);
 

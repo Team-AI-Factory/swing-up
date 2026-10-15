@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { internalApiScopeAuthorized } from "@/lib/internal-api-auth";
+import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
 import { getValuationWatchlistStatus } from "@/lib/opportunity-engine/valuation-watchlist-feed";
 
 export const dynamic = "force-dynamic";
@@ -10,12 +12,18 @@ function boundedInteger(value: string | null, fallback: number, minimum: number,
 }
 
 export async function GET(request: NextRequest) {
+  const restrictedBeta = isSimpleAlertPilot();
+  if (restrictedBeta && !internalApiScopeAuthorized(request.headers, "serious_signal_read")) {
+    return NextResponse.json({ ok: false, error: "not_found" }, {
+      status: 404, headers: { "cache-control": "private, no-store" },
+    });
+  }
   try {
     const status = await getValuationWatchlistStatus({
       limit: boundedInteger(request.nextUrl.searchParams.get("limit"), 60, 1, 200),
     });
     return NextResponse.json(status, {
-      headers: { "cache-control": "public, max-age=30, stale-while-revalidate=60" },
+      headers: { "cache-control": restrictedBeta ? "private, no-store" : "public, max-age=30, stale-while-revalidate=60" },
     });
   } catch {
     return NextResponse.json({

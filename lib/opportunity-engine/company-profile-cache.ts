@@ -1,3 +1,4 @@
+import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
 import { createCompleteSourceRecord, readCompleteSourceRecord, type CompleteSourceBinding, type CompleteSourceRecord } from "@/lib/company-profile-complete-source";
 import { inspectAnnualDocumentIdentity } from "@/lib/company-profile-financial-customer-source";
 import { isAnnualInformationFormDocument, resolve40FAnnualInformationForm, secAnnualFilingIndexUrl } from "@/lib/company-profile-annual-source";
@@ -6,7 +7,7 @@ import { isDeepStrictEqual } from "node:util";
 import { redactSecrets } from "@/lib/redact-secrets";
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
-import { COMPANY_PROFILE_PARSER_REVISION, annualBusinessText, extractCompanyProfile, inspectCompanyProfileExtraction, profileCik, sameCompanyName, verifiedCompanyProfile, type CompanyIdentity, type VerifiedCompanyProfile } from "@/lib/company-profile";
+import { COMPANY_PROFILE_PARSER_REVISION, annualBusinessText, extractCompanyProfile, inspectCompanyProfileExtraction, profileCik, sameCompanyName, sourcedCompanyBusiness, verifiedCompanyProfile, type CompanyIdentity, type SourcedCompanyBusiness, type VerifiedCompanyProfile } from "@/lib/company-profile";
 const KEY = pr262StorageKey("research-evidence/company-profiles-v1.json");
 const UNIVERSE = pr262StorageKey("equity-universe/v1.json");
 // Older excerpts could originate after an in-text cross-reference in Risk
@@ -248,6 +249,47 @@ export async function readCompanyProfiles(identities: CompanyIdentity[], now = n
     if (verified) result.set(ticker, verified);
   }
   return result;
+}
+
+/** Read-only business context. Never changes full-profile status, history or daily counters. */
+export async function readCompanyBusinessContexts(identities: CompanyIdentity[], now = new Date(), options: { signal?: AbortSignal } = {}) {
+  const result = new Map<string, SourcedCompanyBusiness>();
+  if (!isSimpleAlertPilot() || options.signal?.aborted) return result;
+  const [{ entries }, universeSaved] = await Promise.all([load({ signal: options.signal }), readVersionedTextFromR2(UNIVERSE, { signal: options.signal })]);
+  const universe = universeSaved.found && universeSaved.text ? object(JSON.parse(universeSaved.text)) : {};
+  if (universe.version !== 1 || universe.scope !== "active_us_exchange_listed_common_equities_and_adrs") return result;
+  const listings = (Array.isArray(universe.entries) ? universe.entries.map(object) : [])
+    .filter(row => Array.isArray(row.sourceNames) && row.sourceNames.includes("SEC company_tickers_exchange"));
+  for (const identity of identities) {
+    const ticker = text(identity.ticker).toUpperCase(), listing = listings.find(row => row.ticker === ticker);
+    const cik = profileCik(listing?.cik);
+    if (!cik || !sameCompanyName(listing?.company, identity.company) || profileCik(identity.cik) !== cik) continue;
+    const exact = { ticker, company: text(identity.company), cik }, entry = entries.find(row => same(row, exact));
+    const filing = entry?.filing;
+    if (!entry || !filing) continue;
+    const sourceKey = pr262StorageKey(`research-evidence/company-profile-sources/${cik}/${filing.url.split("/").slice(-2).join("-")}.json`);
+    options.signal?.throwIfAborted();
+    const saved = await readVersionedTextFromR2(sourceKey, { signal: options.signal });
+    const source = saved.found && saved.text ? object(JSON.parse(saved.text)) : {};
+    const complete = completeSource(source, filing, exact, now);
+    // Require authenticated complete bytes. Legacy excerpts cannot create a new relaxed-context path.
+    if (complete.status !== "valid" || source.url !== filing.url || source.filedAt !== filing.filedAt) continue;
+    const extracted = inspectCompanyProfileExtraction({ identity: exact, html: complete.html, form: filing.form,
+      sourceUrl: filing.url, filedAt: filing.filedAt, annualFilingUrl: filing.annualFilingUrl,
+      annualFilingIndexUrl: filing.annualFilingIndexUrl, now }).businessContext;
+    const context = sourcedCompanyBusiness({ ...extracted, verifiedAt: complete.record.observedAt,
+      ...(filing.industry ? { industry: filing.industry, industrySourceUrl: `https://data.sec.gov/submissions/CIK${cik}.json` } : {}) }, exact, now);
+    if (context) result.set(ticker, context);
+  }
+  return result;
+}
+
+/** Same budgeted full-profile attempt, then read-only short context for the event runner. */
+export async function ensureEventCompanyProfile(identity: CompanyIdentity, fetchImpl: typeof fetch = fetch, now = new Date(),
+  options: Parameters<typeof ensureCompanyProfile>[3] = {}): Promise<VerifiedCompanyProfile | SourcedCompanyBusiness | null> {
+  const full = await ensureCompanyProfile(identity, fetchImpl, now, options);
+  if (full || !isSimpleAlertPilot() || options.signal?.aborted) return full;
+  return (await readCompanyBusinessContexts([identity], now, { signal: options.signal })).get(text(identity.ticker).toUpperCase()) ?? null;
 }
 
 async function boundedText(response: Response, complete?: (text: string) => boolean, onResponseBodyFailure?: () => void, onEof?: (bytes: Uint8Array) => void) {

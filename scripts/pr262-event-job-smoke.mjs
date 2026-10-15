@@ -20,7 +20,7 @@ assert.match(source, /FULL_SOURCE_ABSOLUTE_TIMEOUT_MS = 15_000/, "Full-source re
 assert.match(source, /LEASE_MS = 5 \* 60_000/, "A crashed event job must not retain the old two-hour global lease");
 assert.match(source, /LEASE_HEARTBEAT_MS = 60_000/, "A healthy long-running event job must renew its short lease");
 assert.match(source, /deadlineAtMs/, "Event processing must accept a hard parent-cycle deadline");
-assert.match(source, /alertType === "sell"[\s\S]*?promotePr262SeriousWatchOut\(input\.resultKey\)/, "A qualifying downside risk must become one Watch Out instead of duplicate Sell and Watch Out alerts");
+assert.match(source, /alertType === "sell" \|\| alertType === "watch_out"[\s\S]*?promotePr262SeriousWatchOut\(input\.resultKey, input\.now\)/, "A qualifying downside risk must become one Watch Out instead of duplicate Sell and Watch Out alerts");
 assert.match(source, /request\.destroy\(new Error\("full_source_timeout"\)\)/, "The fixed deadline must terminate the pinned HTTPS request and its body stream");
 assert.doesNotMatch(source, /request\.setTimeout\(/, "A socket-inactivity timeout cannot replace the absolute full-source deadline");
 assert.match(source, /FULL_SOURCE_CACHE_PREFIX/, "Decision-grade full-source work must be reusable across retries.");
@@ -593,6 +593,7 @@ const stubs = {
 const cjsModule = { exports: {} };
 new Function("require", "module", "exports", output)((name) => {
   if (["@/lib/opportunity-engine/pr262-terminal-reviews", "@/lib/equity-signal/terminal-review-evidence"].includes(name)) return loadTsModule(name, stubs);
+  if (["@/lib/alert-details", "@/lib/restricted-beta-policy", "@/lib/equity-signal/risk-warning-policy", "@/lib/equity-signal/single-valuation-scenario", "@/lib/event-company-profile"].includes(name)) return loadTsModule(name, stubs);
   if (name === "@/lib/equity-signal/valuation-review-materiality") return loadTsModule(name);
   if (["@/lib/simple-alert-pilot-runtime", "@/lib/simple-alert-pilot-scope"].includes(name)) return loadTsModule(name);
   if (name in stubs) return stubs[name];
@@ -1388,12 +1389,29 @@ await inSimpleAlertPilot(async () => {
   Object.assign(report.selectedCandidate, identity);
   const checkedAt = new Date(report.checkedAt);
   report.selectedCandidate.companyProfile = companyProfileFixture(identity, checkedAt);
+  const sourceUrl = "https://www.sec.gov/Archives/edgar/data/1697851/fixture-contract.htm";
+  Object.assign(report.selectedCandidate, { eventFamily: "contract_award", currency: "USD", industry: "Software",
+    valuationRange: { conservativeValue: 60, baseValue: 75, optimisticValue: 90 },
+    receipts: [{ id: "rekr-contract", url: sourceUrl, official: true, primarySource: true }],
+    eventMagnitude: { metrics: [{ kind: "contract_value", value: 100000000, promotionEvidenceVerified: true,
+      sourceReceiptId: "rekr-contract", sourceUrl }] } });
+  assert.equal(loadTsModule("@/lib/restricted-beta-policy").restrictedBetaScopeBlocker(report.selectedCandidate), null);
+  assert.equal(loadTsModule("@/lib/alert-details").alertDetails(report.selectedCandidate, undefined, checkedAt).complete, true);
   assert.equal(cjsModule.exports.committeeApproved(report, identity, checkedAt), false,
     "Even complete persisted Committee approval cannot create a quarantined Buy outbox");
   report.alertType = "sell";
   report.selectedCandidate.direction = "downside";
+  report.selectedCandidate.valuationRange = { conservativeValue: 20, baseValue: 25, optimisticValue: 30 };
   assert.equal(cjsModule.exports.committeeApproved(report, identity, checkedAt), true,
     "Downside approvals still must pass all ordinary evidence, identity and Committee gates");
+  const missingQuantity = structuredClone(report);
+  delete missingQuantity.selectedCandidate.eventMagnitude;
+  assert.equal(cjsModule.exports.committeeApproved(missingQuantity, identity, checkedAt), false,
+    "An old approval without verified event quantity cannot bypass restricted scope");
+  const missingTargets = structuredClone(report);
+  delete missingTargets.selectedCandidate.valuationRange;
+  assert.equal(cjsModule.exports.committeeApproved(missingTargets, identity, checkedAt), false,
+    "A Sell approval without supported targets cannot pass pilot publication");
 });
 // Same-cycle watch valuation reuse needs no targeted reservation or network call.
 watchValuationReuse = { analysis: { ...analysis, observedAt: "2026-08-11T10:17:00.000Z" },

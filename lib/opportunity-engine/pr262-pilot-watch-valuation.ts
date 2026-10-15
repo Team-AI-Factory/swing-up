@@ -1,3 +1,4 @@
+import { singleScenarioResearchCandidate } from "@/lib/equity-signal/single-valuation-scenario";
 import { createHash } from "node:crypto";
 import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
 import { pilotCompanies, pilotUpsideBlocker } from "@/lib/simple-alert-pilot-scope";
@@ -94,8 +95,8 @@ export function pilotWatchValuationThresholds(rows: unknown[], identity: Identit
   if (matches.length !== 1) return null;
   const analysis = exactAnalysis(matches[0], identity, now.toISOString());
   if (!analysis || analysis.currency !== "USD" || analysis.fairValue.baseValue === null
-    || analysis.fairValue.baseValue <= 0 || analysis.fairValue.methods.length < 2
-    || analysis.scores.fairValueConfidence < 70) return null;
+    || analysis.fairValue.baseValue <= 0
+    || (!singleScenarioResearchCandidate(analysis) && (analysis.fairValue.methods.length < 2 || analysis.scores.fairValueConfidence < 70))) return null;
   const upsideHeld = Boolean(pilotUpsideBlocker(identity));
   return {
     buyBelowPrice: upsideHeld ? null : analysis.fairValue.buyBelowPrice,

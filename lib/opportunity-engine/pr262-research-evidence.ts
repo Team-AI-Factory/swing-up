@@ -6,7 +6,8 @@ import type { LegacyTerminalReview } from "@/lib/opportunity-engine/pr262-termin
 import { isSimpleAlertPilot, SIMPLE_PILOT_PREFIX } from "@/lib/simple-alert-pilot-runtime";
 import { completeCommitteeReview, committeeRequestsRejectedWithoutUsage } from "@/lib/ai-committee/review-policy";
 import { readCompanyProfiles } from "@/lib/opportunity-engine/company-profile-cache";
-import { verifiedCompanyProfile, profileCik } from "@/lib/company-profile";
+import { profileCik } from "@/lib/company-profile";
+import { publicationCompanyProfile } from "@/lib/event-company-profile";
 import crypto from "node:crypto";
 import { evidenceTiming, summarizeEvidenceQuality } from "@/lib/opportunity-engine/pr262-evidence-metrics";
 import { currentReviewTelemetry, retainPaidReviewTelemetry } from "@/lib/opportunity-engine/pr262-review-telemetry";
@@ -444,7 +445,7 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
   const auditMissing = object(candidate.valuationAudit).missingEssentialFacts;
   const completeness = {
     financialDocuments: !documentsRequired || (financialDocumentsReady(financialDocuments) && missingDocumentTopics.length === 0),
-    companyProfile: Boolean(verifiedCompanyProfile(candidate.companyProfile, candidate, now)),
+    companyProfile: Boolean(publicationCompanyProfile(candidate.companyProfile, candidate, now)),
     industry: Boolean(details.industry), priceScenarios: completePriceOutlook(details.outlook),
     issuer: Boolean((candidate.ticker ?? event.ticker) && (candidate.cik ?? event.cik)), sourceDocument: input.sourceDecisionGrade,
     financialFacts: !financialFactsRequired || (object(candidate.fundamentals).available === true
@@ -454,13 +455,13 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
     direction: candidate.direction === "upside" || candidate.direction === "downside",
     tradingHaltCheck: object(report.tradingHaltSafety).currentStateKnown === true,
   };
-  const applicableFields = Object.entries(completeness).filter(([field]) => (field !== "priceScenarios" || !details.valuationException)
+  const applicableFields = Object.entries(completeness).filter(([field]) => (field !== "priceScenarios" || (!details.valuationException && !details.riskWarningException))
     && (field !== "financialDocuments" || documentsRequired));
   const requiredFieldCount = applicableFields.length;
   const known = applicableFields.filter(([, complete]) => complete).length;
   const collectionGaps = [
     ...details.missing,
-    ...(!completeness.companyProfile ? ["A verified company profile with products or services and customers is required."] : []),
+    ...(!completeness.companyProfile ? ["A verified full profile or eligible sourced direct-event context is required."] : []),
     ...(!completeness.sourceDocument ? ["The source document or required filing exhibit is incomplete."] : []),
     ...(documentsRequired && !financialDocumentsReady(financialDocuments) ? [financialDocumentsPublicationGap(financialDocuments)!] : []),
     ...(missingDocumentTopics.length ? [`Requested excerpt topics are missing: ${missingDocumentTopics.join(", ")}.`] : []),
@@ -474,7 +475,7 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
   ] });
   const timing = evidenceTiming({ event, candidate, committee, previous: object(object(previousFollowup.quality).timing), collection: input.collectionTiming, paid, now });
   let quality: Json = { fields: completeness, availableFields: known, requiredFields: requiredFieldCount,
-    applicability: { financialDocuments: documentsRequired, financialFacts: financialFactsRequired, priceScenarios: !details.valuationException },
+    applicability: { financialDocuments: documentsRequired, financialFacts: financialFactsRequired, priceScenarios: !details.valuationException && !details.riskWarningException },
     valuationException: details.valuationException ? "verified_negative_earnings_event" : null,
     ...currentReviewTelemetry(report, eventId,
       report.status === "qualified_signal_openai_reservation_denied" || report.status === "qualified_signal_openai_not_requested" ? "budget_deferred"
@@ -552,19 +553,26 @@ export async function recordResearchEvidence(input: { event: Json; report: Json;
   }
   if (candidate.ticker && (report.seriousSignalFound !== true || input.approvedResultKey)) {
     const approved = details.complete && Boolean(input.approvedResultKey) && report.seriousSignalFound === true && completeCommitteeReview(committee) && Number(committee.agentsFailed) === 0 && output.overallRecommendation === "approve";
-    const alert = { id: hash(eventId), eventId, createdAt: now.toISOString(), eventObservedAt: event.observedAt,
+    const alert = { id: hash(eventId), eventId, createdAt: now.toISOString(), eventObservedAt: candidate.eventObservedAt ?? event.observedAt,
       financialDocumentsRequired: documentsRequired,
       financialDocumentsRequirementKnown: candidate.financialDocumentsRequirementKnown !== false,
-      ticker: candidate.ticker, company: candidate.company, cik: candidate.cik, companyProfile: candidate.companyProfile ?? null, action: candidate.direction === "upside" ? "buy" : candidate.direction === "downside" ? "sell" : "watch_out",
+      ticker: candidate.ticker, company: candidate.company, cik: candidate.cik, companyProfile: candidate.companyProfile ?? null, action: details.riskWarningException ? "watch_out" : candidate.direction === "upside" ? "buy" : candidate.direction === "downside" ? "sell" : "watch_out",
+      ...(details.riskWarningException ? { riskWarningPolicy: candidate.riskWarningPolicy, riskWarningRule: candidate.riskWarningRule,
+        direction: candidate.direction, relationship: candidate.relationship, gatePassed: candidate.gatePassed, gateChecks: candidate.gateChecks,
+        eventTruth: candidate.eventTruth, mappingConfidence: candidate.mappingConfidence, materiality: candidate.materiality, transmissionConfidence: candidate.transmissionConfidence,
+        evidenceIndependence: candidate.evidenceIndependence, rumour: candidate.rumour, contradictionPenalty: candidate.contradictionPenalty, pricedInPenalty: candidate.pricedInPenalty,
+        quote: candidate.quote, receipts: candidate.receipts } : {}),
       valuationObservedAt: input.companyAnalysis?.observedAt ?? null,
       financialDocuments: candidate.financialDocuments ?? null, valuationAudit: candidate.valuationAudit ?? null,
       reviewEvidenceFingerprint: candidate.evidenceFingerprint ?? report.candidateFingerprint ?? null,
-      eventHeadline: candidate.eventHeadline, kind: candidate.eventFamily === "valuation_gap" ? "valuation" : "event",
+      eventHeadline: candidate.eventHeadline, relationship: candidate.relationship, whatHappened: candidate.whatHappened,
+      causalChain: candidate.causalChain, receipts: candidate.receipts, profileDecisionDependencies: candidate.profileDecisionDependencies,
+      plainLanguageExplanation: candidate.plainLanguageExplanation, kind: candidate.eventFamily === "valuation_gap" ? "valuation" : "event",
       currentPrice: object(candidate.quote).price ?? null, priceObservedAt: object(candidate.quote).observedAt ?? null,
       currency: input.companyAnalysis?.currency ?? candidate.currency ?? null,
       industry: details.industry, sector: input.companyAnalysis?.sector ?? candidate.sector ?? null,
-      eventFamily: candidate.eventFamily, outlook: details.outlook,
-      fairValue: object(input.companyAnalysis?.fairValue).baseValue ?? null,
+      eventFamily: candidate.eventFamily, eventMagnitude: candidate.eventMagnitude, outlook: details.outlook,
+      fairValue: details.riskWarningException ? null : object(input.companyAnalysis?.fairValue).baseValue ?? null,
       userAlertEligible: details.complete && !screeningRejected && output.overallRecommendation !== "reject", committeeApproved: approved,
       committeeStatus: screeningRejected ? "not_eligible" : approved ? "approved" : output.overallRecommendation === "reject" ? "rejected" : output.overallRecommendation === "approve" ? "approved_pending_checks" : needsFollowup ? "needs_more_data" : "awaiting_review",
       committee: { source: paid ? "current_attempt" : "none", completed: quality.committeeRolesCompleted,

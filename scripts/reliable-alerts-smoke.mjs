@@ -1,5 +1,11 @@
 import { spawnSync } from "node:child_process";
 const checks = [
+  "load-typescript-module",
+  "filing-facts", "filing-facts-integration",
+  "single-scenario-publication",
+  "restricted-beta-policy", "restricted-beta-feed", "restricted-research-watch",
+  "single-valuation-scenario", "event-company-profile", "event-company-profile-cache", "risk-only-watch-out",
+  "us-value-investing-engine",
   "financial-document-http-completeness", "financial-document-proof-boundary",
   "financial-document-review-label", "financial-document-dependency-lifecycle", "financial-document-delivery-proof",
   "terminal-review-telemetry", "company-disclosure-presentation", "public-review-confidence",
@@ -61,7 +67,7 @@ const checks = [
 for (const check of checks) {
   const filename = check.endsWith(".mjs") ? check : `${check}-smoke.mjs`;
   // Full real-module history/transport fixtures exceed the ordinary unit-test allowance.
-  const timeout = check === "financial-document-proof-boundary" ? 900000 : ["terminal-review-runner", "terminal-review-event-job", "terminal-review-legacy-overwrite", "company-profile-storage-retry"].includes(check) ? 180000 : 60000;
+  const timeout = check === "financial-document-proof-boundary" ? 900000 : check === "risk-only-watch-out" ? 600000 : ["risk-only-watch-out", "single-valuation-scenario", "event-company-profile", "event-company-profile-cache", "terminal-review-runner", "terminal-review-event-job", "terminal-review-legacy-overwrite", "company-profile-storage-retry"].includes(check) ? 180000 : 60000;
   const result = spawnSync(process.execPath, [`scripts/${filename}`], { encoding: "utf8", timeout });
   if (result.status !== 0) {
     console.error(`FAIL ${check}\n${result.stdout.slice(-3000)}\n${result.stderr.slice(-5000)}`);

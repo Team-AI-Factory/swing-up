@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
+import { extractFilingFacts, FILING_FACTS_VERSION, type FilingFactExtraction } from "@/lib/equity-signal/filing-facts";
 
 type Json = Record<string, unknown>;
 const object = (v: unknown): Json => v && typeof v === "object" && !Array.isArray(v) ? v as Json : {};
@@ -11,14 +12,17 @@ export const FINANCIAL_EVIDENCE_VERSION = 1;
 type FinancialTransportProof = { version: 1; httpStatus: 200; reachedEof: true; documentKey: string };
 export type FinancialDocument = { url: string; form: string; filedAt: string; accession: string;
   reportingPeriod: string; collectedAt: string; readComplete: boolean; excerpts: Array<{ topic: string; text: string }>; digest: string;
-  transportProof?: FinancialTransportProof };
+  transportProof?: FinancialTransportProof; factExtraction?: FilingFactExtraction };
 export type FinancialDocuments = { version: number; cik: string; checkedAt: string; nextCheckAt: string;
   documents: FinancialDocument[]; failures: Array<{ sourceUrl: string; reason: string }>; cached: boolean };
 
 const excerptDigest = (excerpts: unknown) => crypto.createHash("sha256").update(JSON.stringify(excerpts)).digest("hex");
 const transportDocumentKey = (document: Json) => crypto.createHash("sha256")
   .update(JSON.stringify([document.url, document.accession, document.form, document.filedAt, document.reportingPeriod,
-    document.digest, document.collectedAt])).digest("hex");
+    document.digest, document.collectedAt,
+    // Existing attestations retain their exact key. New fact payloads must be
+    // bound to the same naturally collected response, not pasted onto old proof.
+    ...(document.factExtraction === undefined ? [] : [excerptDigest(document.factExtraction)])])).digest("hex");
 
 /** Transport/body coverage only; extracted windows never attest coverage of all notes.
  * Legacy readComplete remains a retrieval/identity flag, not HTTP/EOF proof. */
@@ -43,7 +47,13 @@ export function financialDocumentsEvidenceView(value: unknown): Json | null {
   return { ...documents, transportCompletenessScope: "HTTP response body only; excerpts are selected windows, not all financial notes.",
     documents: (Array.isArray(documents.documents) ? documents.documents : []).map(value => {
     const document = object(value), transportCompleteness = financialDocumentCompleteness(document);
-    return { ...document, readComplete: transportCompleteness === "complete", transportCompleteness };
+    const extraction = object(document.factExtraction);
+    return { ...document, readComplete: transportCompleteness === "complete", transportCompleteness,
+      ...(document.factExtraction === undefined ? {} : {
+        factExtraction: transportCompleteness === "complete" ? document.factExtraction
+          : { version: 1, status: "blocked", facts: [], gaps: [{ metric: "filing_facts",
+            reason: "complete_bound_transport_proof_required" }], sourceHash: extraction.sourceHash },
+      }) };
   }) };
 }
 
@@ -149,13 +159,26 @@ export async function collectFinancialDocuments(cik: string, fetchImpl: typeof f
     const selected = [candidates.find(d => d.form !== "10-Q"), candidates.find(d => d.form === "10-Q")].filter(d => d !== undefined);
     if (!selected.length) throw new Error("financial_filing_not_found");
     for (const filing of selected) {
-      if (documents.some(d => d.url === filing.url && d.readComplete)) continue;
+      const previous = documents.find(d => d.url === filing.url);
+      const typedExtractionEligible = ["0001647639", "0000903651"].includes(cik) && filing.form === "10-Q";
+      // A parser-version repair is eligible only at this normal due collection.
+      // No cache sweep, forced refresh, extra slot, or paid-review reset.
+      const typedExtractionCurrent = previous?.factExtraction?.version === FILING_FACTS_VERSION
+        && previous.factExtraction.status === "extracted" && financialDocumentCompleteness(previous) === "complete";
+      if (previous?.readComplete && (!typedExtractionEligible || typedExtractionCurrent)) continue;
       try {
         const result = await request(filing.url, 5000000);
         const excerpts = financialExcerpt(result.body);
         if (!excerpts.length) throw new Error("financial_sections_not_extracted");
         const document: FinancialDocument = { ...filing, collectedAt: now.toISOString(), readComplete: result.complete, excerpts,
           digest: excerptDigest(excerpts) };
+        // Natural version repair reuses the selected quarterly request slot.
+        // No immediate invalidation/backfill, extra request ceiling or byte increase.
+        // Capped/legacy responses cannot acquire numeric or completeness proof.
+        if (typedExtractionEligible) {
+          document.factExtraction = extractFilingFacts(result.body, { ...filing, cik }, result.complete);
+          if (document.factExtraction.status !== "extracted") throw new Error("typed_filing_refresh_unproved");
+        }
         // Only this naturally requested, exact-200 read can mint proof. Cache
         // hits, skipped legacy rows and capped/interrupted reads cannot.
         if (result.complete) document.transportProof = { version: 1, httpStatus: 200, reachedEof: true,

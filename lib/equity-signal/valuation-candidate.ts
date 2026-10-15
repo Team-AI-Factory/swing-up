@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
+import { singleValuationScenarioSupported, singleScenarioEvidenceQuality, singleScenarioEvidence } from "@/lib/equity-signal/single-valuation-scenario";
 import { analyzeHistoricalAnalogs } from "@/lib/equity-signal/historical-analogs";
 import type { EventReceipt, ImpactCandidate } from "@/lib/equity-signal/types";
 import type { UsValueCompanyAnalysis } from "@/lib/opportunity-engine/us-value-investing-engine";
@@ -16,9 +18,11 @@ export function buildValuationCandidate(analysis: UsValueCompanyAnalysis, cik: s
   const score = Math.round((confidence + completeness + materiality) / 3);
   const rootEventKey = crypto.createHash("sha256").update(`${analysis.ticker}|valuation|${analysis.observedAt.slice(0, 10)}|${direction}`).digest("hex").slice(0, 20);
   const causalChain = ["Financial results support an estimated business value", "The share price differs from that estimate", "The gap may close if the estimate proves sound"];
+  const singleMethod = isSimpleAlertPilot() && analysis.fairValue.methods.length === 1;
   const checks = { directionResolved: true, exactIssuer: true, valuationCurrencyConfirmed: analysis.currency === "USD", currentFoundation: age <= 30 * 3600000,
-    valuationConfidence: confidence >= 75, financialEvidence: completeness >= 75,
-    independentValuationMethods: new Set(analysis.fairValue.methods.filter(method => Number.isFinite(method.value) && method.value > 0).map(method => method.method)).size >= 2, materialGap: Math.abs(gap) >= 20,
+    ...(!singleMethod ? { valuationConfidence: confidence >= 75 } : { singleScenarioEvidenceQuality: false }), financialEvidence: completeness >= 75,
+    ...(singleMethod ? { singleReproducibleScenario: false } : { independentValuationMethods: new Set(analysis.fairValue.methods.filter(method => Number.isFinite(method.value) && method.value > 0).map(method => method.method)).size >= 2 }),
+    materialGap: Math.abs(gap) >= 20,
     valueTrapRiskAcceptable: direction === "downside" || (Number.isFinite(analysis.scores.risk) && analysis.scores.risk <= 45
       && analysis.scores.businessQuality >= 70 && analysis.scores.balanceSheet >= 50),
     currentEvidenceScoreAtLeast72: score >= 72, verifiedFinancialFacts: false };
@@ -42,6 +46,11 @@ export function buildValuationCandidate(analysis: UsValueCompanyAnalysis, cik: s
 
 export function reassessValuationCandidate(candidate: ImpactCandidate, now: Date, analysis?: UsValueCompanyAnalysis) {
   if (candidate.eventFamily !== "valuation_gap") return candidate;
+  candidate.singleScenarioEvidence = singleScenarioEvidence(analysis, candidate);
+  if (candidate.singleScenarioEvidence && analysis) {
+    candidate.sector = analysis.sector; candidate.industry = analysis.industry; candidate.currency = analysis.currency;
+    candidate.valuationRange = analysis.fairValue;
+  }
   const value = analysis?.fairValue.baseValue;
   const price = candidate.quote?.price;
   const currentGap = value && price && price > 0 ? (value / price - 1) * 100 : null;
@@ -53,6 +62,10 @@ export function reassessValuationCandidate(candidate: ImpactCandidate, now: Date
   const period = Date.parse(candidate.fundamentals?.fiscalPeriodEnd ?? "");
   candidate.gateChecks.verifiedFinancialFacts = candidate.fundamentals?.available === true
     && Number.isFinite(period) && period <= now.getTime() && now.getTime() - period <= 550 * 86400000;
+  if ("singleReproducibleScenario" in candidate.gateChecks) {
+    candidate.gateChecks.singleScenarioEvidenceQuality = isSimpleAlertPilot() && singleScenarioEvidenceQuality(analysis);
+    candidate.gateChecks.singleReproducibleScenario = isSimpleAlertPilot() && singleValuationScenarioSupported(analysis, candidate, now);
+  }
   candidate.failedGateChecks = Object.entries(candidate.gateChecks).filter(([, v]) => !v).map(([k]) => k);
   candidate.gatePassed = candidate.failedGateChecks.length === 0;
   candidate.trackingDisposition = candidate.gatePassed ? "qualified" : "shadow_near_miss";

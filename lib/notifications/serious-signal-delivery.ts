@@ -1,3 +1,6 @@
+import { qualifiedSingleScenario, singleScenarioPublicationGap, completeSingleScenarioReview, singleScenarioNotice } from "@/lib/equity-signal/single-valuation-scenario";
+import { restrictedBetaScopeBlocker } from "@/lib/restricted-beta-policy";
+import { completeRiskWarningReview, riskOnlyWarning, RISK_WARNING_NOTICE } from "@/lib/equity-signal/risk-warning-policy";
 import { financialCandidatePublicationGap, financialDocumentsReady } from "@/lib/equity-signal/financial-evidence";
 import { pilotUpsideBlocker } from "@/lib/simple-alert-pilot-scope";
 import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
@@ -6,8 +9,8 @@ import { terminalPublicationPacketKey, validatedTerminalEvidence } from "@/lib/e
 import { readTerminalDecision } from "@/lib/opportunity-engine/pr262-terminal-reviews";
 import { NEGATIVE_EARNINGS_NOTICE } from "@/lib/valuation-availability";
 import { readCompanyProfiles } from "@/lib/opportunity-engine/company-profile-cache";
-import { verifiedCompanyProfile } from "@/lib/company-profile";
-import { alertDetails, industryLabel } from "@/lib/alert-details";
+import { publicationCompanyProfile } from "@/lib/event-company-profile";
+import { alertDetails, industryLabel, legacyEventValuationException } from "@/lib/alert-details";
 import { completeCommitteeReview } from "@/lib/ai-committee/review-policy";
 import { usQuoteFreshness } from "@/lib/equity-signal/us-market-calendar";
 import { explainCandidate } from "@/lib/signal-explanation";
@@ -219,13 +222,14 @@ function blankChannelState(): DeliveryChannelState {
 
 async function withCachedCompanyProfile(raw: unknown) {
   const outbox = object(raw), candidate = object(outbox.candidate);
-  if (verifiedCompanyProfile(candidate.companyProfile, candidate) || outbox.kind === DELIVERY_TEST_KIND) return outbox;
+  const profileTime = object(candidate.companyProfile).status === "event_scoped" ? new Date(String(outbox.createdAt)) : new Date();
+  if (publicationCompanyProfile(candidate.companyProfile, candidate, profileTime) || outbox.kind === DELIVERY_TEST_KIND) return outbox;
   const profiles = await readCompanyProfiles([candidate]).catch(() => new Map());
   const companyProfile = profiles.get(String(candidate.ticker));
   return companyProfile ? { ...outbox, candidate: { ...candidate, companyProfile } } : outbox;
 }
 
-function validatedOutbox(raw: unknown, outboxKey: string) {
+function validatedOutbox(raw: unknown, outboxKey: string, allowDeliveredLegacyHistory = false) {
   const outbox = object(raw);
   const kind = text(outbox.kind);
   const ticker = text(outbox.ticker)?.toUpperCase();
@@ -262,13 +266,21 @@ function validatedOutbox(raw: unknown, outboxKey: string) {
   if (!testOnly && alertType === "buy" && pilotUpsideBlocker(candidate)) {
     throw new Error("serious_signal_delivery_pilot_upside_quarantined");
   }
-  if (!testOnly && !verifiedCompanyProfile(candidate.companyProfile, candidate)) throw new Error("serious_signal_delivery_company_profile_unverified");
-  if (!testOnly && !alertDetails(candidate).complete) throw new Error("serious_signal_delivery_alert_details_incomplete");
+  if (!testOnly && !publicationCompanyProfile(candidate.companyProfile, candidate, object(candidate.companyProfile).status === "event_scoped" ? new Date(createdAtMs) : new Date())) throw new Error("serious_signal_delivery_company_profile_unverified");
+  if (!testOnly && candidate.riskWarningPolicy && (alertType !== "watch_out" || kind !== "pr262_committee_verified_serious_watch_out"
+    || !riskOnlyWarning(candidate, new Date(createdAtMs)))) throw new Error("serious_signal_delivery_risk_policy_mismatch");
+  const details = alertDetails(candidate, undefined, candidate.riskWarningPolicy || object(candidate.companyProfile).status === "event_scoped" ? new Date(createdAtMs) : new Date());
+  const legacyTargetFree = isSimpleAlertPilot() && !candidate.riskWarningPolicy
+    && legacyEventValuationException(candidate, candidatePriceOutlook(candidate, undefined, new Date(createdAtMs)), new Date(createdAtMs));
+  if (!testOnly && !details.complete && !(allowDeliveredLegacyHistory && legacyTargetFree && details.companyProfile && details.industry)) {
+    throw new Error("serious_signal_delivery_alert_details_incomplete");
+  }
   if (candidate.gatePassed !== true
     || Number(candidate.eventTruth) < 80
     || Number(candidate.mappingConfidence) < 95
     || Number(candidate.materiality) < 65
-    || Number(candidate.transmissionConfidence) < 70
+    || (Number(candidate.transmissionConfidence) < 70 && !qualifiedSingleScenario(candidate, new Date(createdAtMs)))
+    || singleScenarioPublicationGap(candidate, new Date(createdAtMs)) !== null
     || Number(candidate.evidenceIndependence) < 78
     || candidate.rumour === true
     || Number(candidate.contradictionPenalty) >= 50
@@ -286,6 +298,8 @@ function validatedOutbox(raw: unknown, outboxKey: string) {
     || !usQuoteFreshness(String(quote.observedAt), new Date(createdAtMs)).usable) {
     throw new Error("serious_signal_delivery_market_state_not_actionable");
   }
+  if (!testOnly && candidate.riskWarningPolicy && !completeRiskWarningReview(candidate, committee)) throw new Error("serious_signal_delivery_incomplete_risk_committee");
+  if (!completeSingleScenarioReview(candidate, committee)) throw new Error("serious_signal_delivery_incomplete_single_scenario_review");
   // Legacy outboxes did not always serialize `ok`; their original 14-role proof remains valid.
   if (!completeCommitteeReview({ ...committee, ok: committee.ok ?? (Number(committee.agentsCompleted) === 14) })) throw new Error("serious_signal_delivery_incomplete_committee");
   if (authority.exactIssuerMapping !== true
@@ -311,6 +325,7 @@ function validatedOutbox(raw: unknown, outboxKey: string) {
     judge,
     output,
     testOnly,
+    legacyTargetFree,
   };
 }
 
@@ -327,7 +342,7 @@ function messageFor(input: ReturnType<typeof validatedOutbox>) {
     ].join("\n").slice(0, 3900);
   }
   const explanation = explainCandidate(input.candidate);
-  const details = alertDetails(input.candidate);
+  const details = alertDetails(input.candidate, undefined, input.candidate.riskWarningPolicy || object(input.candidate.companyProfile).status === "event_scoped" ? new Date(input.createdAt) : new Date());
   const outlook = details.outlook;
   const money = (value: number | null) => `${outlook.currency} ${value?.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
   const scenario = (name: string, value: typeof outlook.base) => `${name}: ${money(value.price)} (${value.changePercent! >= 0 ? "+" : ""}${value.changePercent}%)`;
@@ -340,8 +355,9 @@ function messageFor(input: ReturnType<typeof validatedOutbox>) {
     `Swing Up — ${label}`,
     `${input.ticker}${price !== null ? ` @ ${price}` : ""}`,
     `Industry: ${details.industry}`,
+    ...(singleScenarioNotice(input.candidate) ? [singleScenarioNotice(input.candidate)!] : []),
     `Recorded price: ${money(outlook.currentPrice)} · ${text(quote.observedAt) ?? ""}`,
-    ...(details.valuationException ? [NEGATIVE_EARNINGS_NOTICE] : [
+    ...(details.riskWarningException ? [RISK_WARNING_NOTICE] : details.valuationException ? [NEGATIVE_EARNINGS_NOTICE] : [
       `${outlook.basis === "valuation" ? "Estimated business value" : "Historical price scenarios"}:`,
       scenario("Conservative", outlook.conservative), scenario("Base", outlook.base), scenario("Optimistic", outlook.optimistic), outlook.horizon,
     ]),
@@ -352,7 +368,7 @@ function messageFor(input: ReturnType<typeof validatedOutbox>) {
     event.slice(0, 240),
     "",
     `Why it matters: ${explanation.whyItMatters.slice(0, 240)}`,
-    `What could happen: ${explanation.whatCouldHappen.slice(0, 220)}`,
+    `What could happen: ${details.riskWarningException ? "The verified risk may affect the business. Its share-price impact is unknown." : explanation.whatCouldHappen.slice(0, 220)}`,
     `What could go wrong: ${explanation.whatCouldGoWrong.slice(0, 260)}`,
     "",
     `Final Judge confidence: ${Number.isFinite(confidence) ? confidence : "n/a"}/100`,
@@ -484,6 +500,10 @@ async function ensureDeliveryJob(validated: ReturnType<typeof validatedOutbox>, 
   const key = jobKey(validated.outboxKey);
   const existing = await loadJob(key, validated.outboxKey);
   if (existing) return existing;
+  if (!validated.testOnly && object(validated.candidate.companyProfile).status === "event_scoped" && !publicationCompanyProfile(validated.candidate.companyProfile, validated.candidate, now)) throw new Error("serious_signal_delivery_company_profile_stale");
+  if (!validated.testOnly && restrictedBetaScopeBlocker(validated.candidate)) throw new Error("serious_signal_delivery_restricted_beta_scope");
+  if (validated.candidate.riskWarningPolicy && !riskOnlyWarning(validated.candidate, now)) throw new Error("serious_signal_delivery_risk_evidence_stale");
+  if (!validated.testOnly && singleScenarioPublicationGap(validated.candidate, now)) throw new Error("serious_signal_delivery_single_scenario_evidence_unproved");
   if (!validated.testOnly && financialCandidatePublicationGap(validated.candidate)) throw new Error("serious_signal_delivery_financial_completeness_unproved");
   if (isSimpleAlertPilot() && !validated.testOnly) {
     if (validated.candidate.terminalEvidence == null) throw new Error("serious_signal_legacy_evidence_requires_migration");
@@ -788,6 +808,12 @@ async function processDeliveryJobKey(
         duplicateSuppressed: true, canonicalOutboxKey: binding.outboxKey, canonicalDeliveryStatus: result.deliveryStatus };
     }
   }
+  if (!validated.testOnly && !terminalStatus(current.job.status) && object(validated.candidate.companyProfile).status === "event_scoped" && !publicationCompanyProfile(validated.candidate.companyProfile, validated.candidate, now)) throw new Error("serious_signal_delivery_company_profile_stale");
+  if (!validated.testOnly && !terminalStatus(current.job.status) && restrictedBetaScopeBlocker(validated.candidate)) throw new Error("serious_signal_delivery_restricted_beta_scope");
+  if (validated.candidate.riskWarningPolicy && !terminalStatus(current.job.status) && !riskOnlyWarning(validated.candidate, now)) throw new Error("serious_signal_delivery_risk_evidence_stale");
+  if (isSimpleAlertPilot() && !validated.testOnly && !terminalStatus(current.job.status) && ["buy", "sell"].includes(validated.alertType)
+    && !usQuoteFreshness(String(object(validated.candidate.quote).observedAt ?? ""), now).usable) throw new Error("serious_signal_delivery_market_quote_stale");
+  if (!validated.testOnly && !terminalStatus(current.job.status) && singleScenarioPublicationGap(validated.candidate, now)) throw new Error("serious_signal_delivery_single_scenario_evidence_unproved");
   const claimed = await claimDeliveryJob(current, now, ownerId);
   if (!claimed) return responseFromJob(current.job, validated, message);
 
@@ -1031,10 +1057,23 @@ async function listCursorPage(prefix: string, limit: number, continuationToken: 
   }
 }
 
-async function readAndValidateOutbox(outboxKey: string) {
+async function readAndValidateOutbox(outboxKey: string, allowDeliveredLegacyHistory = false) {
   const stored = await readVersionedTextFromR2(outboxKey);
   if (!stored.found || !stored.text) throw new Error("serious_signal_delivery_outbox_missing");
-  return validatedOutbox(await withCachedCompanyProfile(JSON.parse(stored.text)), outboxKey);
+  const raw = await withCachedCompanyProfile(JSON.parse(stored.text));
+  const candidate = object(raw.candidate), createdAt = new Date(String(raw.createdAt));
+  let deliveredLegacyProof = false;
+  if (allowDeliveredLegacyHistory && isSimpleAlertPilot() && !candidate.riskWarningPolicy
+    && legacyEventValuationException(candidate, candidatePriceOutlook(candidate, undefined, createdAt), createdAt)) {
+    // This extra bounded read is only for legacy target-free archive rows. A
+    // mutable job status alone cannot manufacture historical delivery proof.
+    const storedReceipt = await readVersionedTextFromR2(receiptKey(outboxKey, "web_feed"));
+    const receipt = storedReceipt.found && storedReceipt.text ? object(JSON.parse(storedReceipt.text)) : {};
+    deliveredLegacyProof = receipt.version === 2 && receipt.kind === "serious_signal_delivery_receipt" && receipt.status === "sent"
+      && receipt.outboxKey === outboxKey && receipt.channel === "web_feed" && receipt.idempotencyKey === digest(outboxKey)
+      && receipt.destination === "authenticated_serious_signals_feed" && receipt.responseStatus === 200 && dateMs(receipt.deliveredAt) !== null;
+  }
+  return validatedOutbox(raw, outboxKey, deliveredLegacyProof);
 }
 
 export async function discoverSeriousSignalDeliveries(options: { now?: Date } & DeliveryControl = {}) {
@@ -1380,13 +1419,21 @@ export async function getSeriousSignalStatus(options: { hours?: number; limit?: 
       const outboxKey = text(pointer.outboxKey);
       const deliveryJobKey = text(pointer.deliveryJobKey);
       if (!outboxKey || !deliveryJobKey) continue;
-      const validated = await readAndValidateOutbox(outboxKey);
-      const created = dateMs(validated.createdAt);
-      if (created === null || created < start.getTime() || created > now.getTime() + 5 * 60_000) continue;
       const storedJob = await readJson(await readVersionedTextFromR2(deliveryJobKey));
       const job = storedJob ? parseJob(storedJob, outboxKey) : null;
+      // Only an already delivered archive may retain the old target-free label.
+      // Every new/resumed delivery still uses the strict default validator.
+      const validated = await readAndValidateOutbox(outboxKey, job?.status === "delivered");
+      const created = dateMs(validated.createdAt);
+      if (created === null || created < start.getTime() || created > now.getTime() + 5 * 60_000) continue;
       const quote = object(validated.candidate.quote);
-      const publicationHoldReason = financialCandidatePublicationGap(validated.candidate);
+      const publicationHoldReason = restrictedBetaScopeBlocker(validated.candidate)
+        ?? (validated.legacyTargetFree ? "pilot_valuation_targets_required" : null)
+        ?? (object(validated.candidate.companyProfile).status === "event_scoped" && !publicationCompanyProfile(validated.candidate.companyProfile, validated.candidate, now) ? "company_profile_context_no_longer_current" : null)
+        ?? (validated.candidate.riskWarningPolicy && !riskOnlyWarning(validated.candidate, now) ? "risk_warning_evidence_no_longer_current" : null)
+        ?? (isSimpleAlertPilot() && ["buy", "sell"].includes(validated.alertType) && !usQuoteFreshness(String(quote.observedAt ?? ""), now).usable ? "market_quote_no_longer_current" : null)
+        ?? singleScenarioPublicationGap(validated.candidate, now)
+        ?? financialCandidatePublicationGap(validated.candidate);
       alerts.push({
         publicationEligible: publicationHoldReason === null, publicationHoldReason,
         id: digest(outboxKey),
@@ -1395,12 +1442,13 @@ export async function getSeriousSignalStatus(options: { hours?: number; limit?: 
         company: text(validated.candidate.company),
         industry: industryLabel(validated.candidate.industry, object(validated.candidate.companyProfile).industry),
         explanation: explainCandidate(validated.candidate),
-        outlook: candidatePriceOutlook(validated.candidate),
+        outlook: candidatePriceOutlook(validated.candidate, undefined, validated.legacyTargetFree ? new Date(validated.createdAt) : now),
         alertType: validated.alertType,
         eventHeadline: text(validated.candidate.eventHeadline) ?? text(validated.candidate.whatHappened) ?? "Material event confirmed",
         whyItMatters: text(validated.output.SwingUpView) ?? text(validated.candidate.whatHappened),
         price: finite(quote.price),
         priceObservedAt: text(quote.observedAt, 64),
+        singleScenarioNotice: singleScenarioNotice(validated.candidate),
         finalJudgeConfidence: Number(validated.judge.confidence),
         committee: { completed: Number(validated.committee.agentsCompleted), planned: Number(validated.committee.agentsCompleted), failed: 0, recommendation: "approve" },
         evidence: safeEvidenceUrls(validated.candidate),

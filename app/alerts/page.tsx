@@ -1,3 +1,5 @@
+import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
+import { SeriousSignalFeed } from "@/app/serious-signals/SeriousSignalFeed";
 import { PublicSignalFeed } from "@/components/PublicSignalFeed";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -7,12 +9,19 @@ import styles from "./alerts.module.css";
 
 export const dynamic = "force-dynamic";
 
-export const metadata: Metadata = {
-  title: "Public research alerts | Swing Up",
-  description: "Published Swing Up research alerts with proof, risk checks, scores, and public tracking.",
-  robots: { index: true, follow: true },
-  alternates: { canonical: "/alerts" },
-};
+export function generateMetadata(): Metadata {
+  if (isSimpleAlertPilot()) return {
+    title: "Restricted beta · Serious Signals and Research Watch | Swing Up",
+    description: "Authenticated research candidates and separately verified Serious Signals. Investment accuracy is not yet established.",
+    robots: { index: false, follow: false },
+  };
+  return {
+    title: "Public research alerts | Swing Up",
+    description: "Published Swing Up research alerts with proof, risk checks, scores, and public tracking.",
+    robots: { index: true, follow: true },
+    alternates: { canonical: "/alerts" },
+  };
+}
 
 function formatDate(value: Date | null) {
   if (!value) return "Not available yet";
@@ -38,6 +47,14 @@ async function getPublishedAlerts() {
 function FilterHint({ label }: { label: string }) { return <span className="badge">{label}</span>; }
 
 export default async function AlertsPage() {
+  if (isSimpleAlertPilot()) return (
+    <div className="page">
+      <div className="eyebrow">Restricted beta</div>
+      <h1>Serious Signals and Research Watch</h1>
+      <p>Investment accuracy is not yet established. Research candidates are not approved Serious Alerts. Release checks and live delivery proof remain required.</p>
+      <SeriousSignalFeed restrictedBeta />
+    </div>
+  );
   const alerts = await getPublishedAlerts();
   return (
     <div className="page">

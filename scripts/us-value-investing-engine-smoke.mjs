@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
+import { inSimpleAlertPilot } from "./helpers/simple-alert-pilot-fixture.mjs";
+import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 
 const source = readFileSync(new URL("../lib/opportunity-engine/us-value-investing-engine.ts", import.meta.url), "utf8");
 const output = ts.transpileModule(source, {
@@ -13,6 +15,7 @@ new Function("require", "module", "exports", output)((name) => {
     writeVersionedJsonToR2: async () => ({ written: true, conflict: false, etag: "test" }),
   };
   if (name === "@/lib/opportunity-engine/pr262-storage") return { pr262StorageKey: (relative) => `branch-labs/pr-262/${relative}` };
+  if (name === "@/lib/simple-alert-pilot-runtime") return loadTsModule(name);
   throw new Error(`Unexpected import in value-engine smoke: ${name}`);
 }, cjsModule, cjsModule.exports);
 const { analyzeValueCompanyForTest } = cjsModule.exports;
@@ -145,3 +148,21 @@ console.log(JSON.stringify({
   noNewsRequiredForFoundationAlert: true,
   analystTargetUsedAsFairValue: false,
 }, null, 2));
+
+const oneMethodInput = { ...qualityBase, ticker: "ONE", tradingViewSymbol: "NASDAQ:ONE", company: "One Method Corp", currentPrice: 50, freeCashFlow: null, priceToBook: null };
+const legacySingle = analyzeValueCompanyForTest(oneMethodInput);
+assert.equal(legacySingle.fairValue.methods.length, 1);
+assert.equal(legacySingle.fairValue.conservativeValue, legacySingle.fairValue.baseValue);
+assert.ok(legacySingle.scores.fairValueConfidence <= 69);
+await inSimpleAlertPilot(async () => {
+  const betaSingle = analyzeValueCompanyForTest(oneMethodInput);
+  assert.equal(betaSingle.fairValue.methods.length, 1);
+  assert.ok(Math.abs(betaSingle.fairValue.conservativeValue - betaSingle.fairValue.baseValue * 0.8) <= 0.01);
+  assert.ok(Math.abs(betaSingle.fairValue.optimisticValue - betaSingle.fairValue.baseValue * 1.2) <= 0.01);
+  assert.equal(betaSingle.scores.fairValueConfidence, legacySingle.scores.fairValueConfidence);
+  assert.ok(betaSingle.scores.fairValueConfidence <= 69);
+  assert.equal(betaSingle.decision.seriousSignal, false);
+  assert.equal(betaSingle.scores.businessQuality, legacySingle.scores.businessQuality);
+  assert.equal(betaSingle.scores.risk, legacySingle.scores.risk);
+});
+console.log("PASS single-method pilot sensitivity generation; nonpilot confidence cap and scores preserved");

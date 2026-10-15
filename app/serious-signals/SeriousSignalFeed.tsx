@@ -1,6 +1,7 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { PublicSignalFeed } from "@/components/PublicSignalFeed";
 import { CompanyFacts } from "@/components/CompanyFacts";
 import type { CompanyCardFacts } from "@/lib/company-card-facts";
 import { SignalPriceOutlook } from "@/components/SignalPriceOutlook";
@@ -21,6 +22,7 @@ type LiveAlert = {
   price: number | null;
   priceObservedAt: string | null;
   outlook?: PriceOutlook;
+  singleScenarioNotice?: string | null;
   finalJudgeConfidence: number;
   committee: { completed: number; planned?: number; failed: number; recommendation: string };
   evidence: Array<{ source: string | null; url: string }>;
@@ -137,6 +139,15 @@ function alertLabel(value: LiveAlert["alertType"]) {
   return `SERIOUS ${value.toUpperCase()}`;
 }
 
+function liveAlertLabel(alert: LiveAlert, restrictedBeta: boolean) {
+  if (alert.publicationEligible === false) return "HISTORICAL APPROVAL · CURRENT CHECKS PENDING";
+  if (restrictedBeta && alert.publicationEligible !== true) return "APPROVAL RECORD · CURRENT ELIGIBILITY UNVERIFIED";
+  if (restrictedBeta && !["sent", "already_delivered"].includes(alert.delivery.channels?.webFeed ?? "")) {
+    return "APPROVAL RECORD · WEB DELIVERY UNVERIFIED";
+  }
+  return alertLabel(alert.alertType);
+}
+
 function deliveryLabel(value: string) {
   if (value === "delivered") return "Delivered";
   if (value === "pending_registration" || value === "pending") return "Pending delivery";
@@ -147,7 +158,8 @@ function deliveryLabel(value: string) {
   return value.replaceAll("_", " ");
 }
 
-function watchlistLabel(value: ValuationWatchlistItem["action"]) {
+function watchlistLabel(value: ValuationWatchlistItem["action"], restrictedBeta: boolean) {
+  if (restrictedBeta) return `RESEARCH WATCH · ${value.replaceAll("_", " ").toUpperCase()}`;
   if (value === "buy_research") return "PROVISIONAL BUY ALERT";
   if (value === "sell_research") return "PROVISIONAL SELL ALERT";
   if (value === "watch_out_research") return "PROVISIONAL WATCH OUT ALERT";
@@ -165,17 +177,19 @@ function ValuationWatchlistPanel({
   watchlist,
   error,
   loading,
+  restrictedBeta,
 }: {
+  restrictedBeta: boolean;
   watchlist: ValuationWatchlist | null;
   error: string | null;
   loading: boolean;
 }) {
   return (
     <section id="valuation-watchlist" style={{ marginTop: 36 }}>
-      <div className="eyebrow">Live valuation alerts · no access key needed</div>
-      <h2>Valuation Watchlist</h2>
+      <div className="eyebrow">{restrictedBeta ? "Restricted beta · candidates only" : "Live valuation alerts · no access key needed"}</div>
+      <h2>{restrictedBeta ? "Research Watch · valuation candidates" : "Valuation Watchlist"}</h2>
       <p>
-        These live alerts explain potential opportunities and risks from the company valuation screen. Each alert shows its actual Committee review status.
+        {restrictedBeta ? "These candidates are not Serious Alerts or approved investment opportunities. Missing facts, source dates and price limitations remain visible while research continues." : "These live alerts explain potential opportunities and risks from the company valuation screen. Each alert shows its actual Committee review status."}
       </p>
       <p className="muted">Buy and Sell opportunities are ranked together, largest potential percentage move to base value first. Sell percentages show the potential price decline. Alerts without a supported target follow, then Watch Out alerts.</p>
       <p className="muted">
@@ -185,7 +199,7 @@ function ValuationWatchlistPanel({
       {watchlist ? (
         <>
           <div className="grid three">
-            <div className="card"><span className="muted">Provisional Buy / Sell / Risk</span><div className="kpi">{watchlist.summary.buyResearch} / {watchlist.summary.sellResearch} / {watchlist.summary.watchOutResearch}</div></div>
+            <div className="card"><span className="muted">{restrictedBeta ? "Research directions · Buy / Sell / Risk" : "Provisional Buy / Sell / Risk"}</span><div className="kpi">{watchlist.summary.buyResearch} / {watchlist.summary.sellResearch} / {watchlist.summary.watchOutResearch}</div></div>
             <div className="card"><span className="muted">Quality price watches</span><div className="kpi">{watchlist.summary.priceWatch}</div></div>
             <div className="card"><span className="muted">Specialist sector model</span><div className="kpi">{watchlist.summary.specialistModelApplied}</div></div>
           </div>
@@ -197,20 +211,21 @@ function ValuationWatchlistPanel({
             {watchlist.livePricing.available && watchlist.livePricing.checkedAt ? ` Live prices checked ${formatTime(watchlist.livePricing.checkedAt)}.` : ""}
           </p>
           {watchlist.candidates.length === 0 ? (
-            <section className="card"><h3>No valuation alert has completed all company-detail and price-comparison checks yet.</h3></section>
+            <section className="card"><h3>{restrictedBeta ? "No Research Watch valuation candidate is currently available." : "No valuation alert has completed all company-detail and price-comparison checks yet."}</h3>{restrictedBeta ? <p>An empty research view does not verify the absence of qualifying Serious Alerts.</p> : null}</section>
           ) : (
             <div className="grid">
               {[...watchlist.candidates].sort(compareSignalPotential).map((item) => (
                 <article className="card alert-card" id={item.anchor} key={item.id}>
                   <div className="button-row">
-                    <span className="badge">{watchlistLabel(item.action)}</span>
-                    <span className="badge">{item.committeeApproved ? "Committee approved" : ["approved", "approved_pending_checks"].includes(item.committeeStatus) ? "Positive review · final checks pending" : item.committeeStatus === "rejected" ? "Committee rejected" : item.committeeStatus === "needs_more_data" ? "Committee requests more information" : "Awaiting Committee review"}</span>
+                    <span className="badge">{watchlistLabel(item.action, restrictedBeta)}</span>
+                    <span className="badge">{restrictedBeta ? (item.committeeApproved ? "Committee review recorded · delivery unverified here" : `Review: ${item.committeeStatus.replaceAll("_", " ")}`) : item.committeeApproved ? "Committee approved" : ["approved", "approved_pending_checks"].includes(item.committeeStatus) ? "Positive review · final checks pending" : item.committeeStatus === "rejected" ? "Committee rejected" : item.committeeStatus === "needs_more_data" ? "Committee requests more information" : "Awaiting Committee review"}</span>
                     {item.specialistModelApplied ? <span className="badge">Sector specialist</span> : null}
-                    {item.livePriceAlert ? <span className="badge">{livePriceAlertLabel(item.livePriceAlert)}</span> : null}
+                    {item.livePriceAlert ? <span className="badge">{restrictedBeta ? "PRICE OBSERVATION · RESEARCH ONLY" : livePriceAlertLabel(item.livePriceAlert)}</span> : null}
                   </div>
                   <h3>{item.ticker} · {item.company}</h3>
                   <p><strong>Industry:</strong> {item.industry}</p>
                   <CompanyFacts facts={item.explanation?.companyFacts} />{item.explanation ? <><p><strong>What is happening:</strong> {item.explanation.whatHappened}</p><p><strong>Why it matters:</strong> {item.explanation.whyItMatters}</p><p><strong>What could happen:</strong> {item.explanation.whatCouldHappen}</p><p><strong>What could go wrong:</strong> {item.explanation.whatCouldGoWrong}</p></> : null}
+                  {restrictedBeta ? <><p><strong>Still needed:</strong> {item.blockers.length ? item.blockers.join(" ") : "Current Serious Alert eligibility and a saved live delivery receipt are not verified in this research view."}</p><p className="muted">Research snapshot: {formatTime(item.observedAt)} Bangkok time. Source checked: {watchlist.foundation.sourceCheckedAt ? `${formatTime(watchlist.foundation.sourceCheckedAt)} Bangkok time` : "unavailable"}. Source publication dates are not supplied by this view.</p><p><strong>{item.livePriceFresh ? "Price is a collection snapshot; current trade-time freshness is unverified." : "Historical price snapshot; stale or unverified for action."}</strong> Research scenarios are not executable quotes.</p></> : null}
                   <SignalPriceOutlook outlook={item.outlook} action={item.action} />
                   <p className="muted">Price snapshot collected {formatTime(item.priceObservedAt)} Bangkok time{item.livePriceFresh ? " · sensor snapshot" : " · foundation snapshot"}. This is the collection time; the exchange trade time is unavailable. Prices may have changed.</p>
                   {item.livePriceAlert ? <p><strong>Live market move:</strong> {item.livePriceAlert.changePercent !== null ? `${item.livePriceAlert.changePercent.toFixed(1)}%` : "change unavailable"}{item.livePriceAlert.relativeVolume !== null ? ` · ${item.livePriceAlert.relativeVolume.toFixed(1)}x relative volume` : ""}. This remains provisional research until current evidence and the Committee approve it.</p> : null}
@@ -230,7 +245,8 @@ function ValuationWatchlistPanel({
   );
 }
 
-export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
+export function SeriousSignalFeed({ compact = false, restrictedBeta = false }: { compact?: boolean; restrictedBeta?: boolean }) {
+  const activeToken = useRef("");
   const [token, setToken] = useState("");
   const [draftToken, setDraftToken] = useState("");
   const [feed, setFeed] = useState<LiveFeed | null>(null);
@@ -240,10 +256,17 @@ export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
   const [error, setError] = useState<string | null>(null);
   const [watchlistError, setWatchlistError] = useState<string | null>(null);
 
-  const loadWatchlist = useCallback(async (background = false) => {
+  const loadWatchlist = useCallback(async (readToken = "", background = false) => {
+    if (restrictedBeta && !readToken) return;
     if (!background) setWatchlistLoading(true);
     try {
-      const response = await fetch("/api/public/valuation-watchlist?limit=60", { cache: "no-store" });
+      const headers = readToken ? { "x-swing-up-serious-signal-read-token": readToken } : undefined;
+      const response = await fetch("/api/public/valuation-watchlist?limit=60", { headers, cache: "no-store" });
+      if (restrictedBeta && activeToken.current !== readToken) return;
+      if (response.status === 404 || response.status === 401) {
+        setWatchlist(null);
+        throw new Error("The read-only access key was not accepted. Lock the feed to enter another key.");
+      }
       if (!response.ok) throw new Error("The Valuation Watchlist is temporarily unavailable.");
       const payload = await response.json() as ValuationWatchlist;
       if (!payload.ok
@@ -252,14 +275,16 @@ export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
         || !Array.isArray(payload.candidates)) {
         throw new Error("The Valuation Watchlist response failed its safety check.");
       }
+      if (restrictedBeta && activeToken.current !== readToken) return;
       setWatchlist(payload);
       setWatchlistError(null);
     } catch (caught) {
+      if (restrictedBeta && activeToken.current !== readToken) return;
       setWatchlistError(caught instanceof Error ? caught.message : "The Valuation Watchlist is temporarily unavailable.");
     } finally {
-      if (!background) setWatchlistLoading(false);
+      if (!background && (!restrictedBeta || activeToken.current === readToken)) setWatchlistLoading(false);
     }
-  }, []);
+  }, [restrictedBeta]);
 
   const load = useCallback(async (readToken: string, background = false) => {
     if (!readToken) return;
@@ -267,35 +292,43 @@ export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
     try {
       const headers = { "x-swing-up-serious-signal-read-token": readToken };
       const response = await fetch("/api/internal/serious-signal-status?hours=48&limit=100", { headers, cache: "no-store" });
-      if (response.status === 404) throw new Error("The read-only access key was not accepted.");
+      if (activeToken.current !== readToken) return;
+      if (response.status === 404 || response.status === 401) {
+        setFeed(null);
+        throw new Error("The read-only access key was not accepted. Lock the feed to enter another key.");
+      }
       if (!response.ok) throw new Error("The live alert store is temporarily unavailable.");
       const payload = await response.json() as LiveFeed;
       if (!payload.ok || payload.sanitized !== true || !Array.isArray(payload.alerts)) {
         throw new Error("The live alert response failed its safety check.");
       }
+      if (activeToken.current !== readToken) return;
       setFeed(payload);
       setError(null);
     } catch (caught) {
+      if (activeToken.current !== readToken) return;
       setError(caught instanceof Error ? caught.message : "Unable to load live Serious Signals.");
     } finally {
-      if (!background) setLoading(false);
+      if (!background && activeToken.current === readToken) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    if (!compact) void loadWatchlist();
+    if (!compact && !restrictedBeta) void loadWatchlist();
     const saved = window.sessionStorage.getItem(TOKEN_STORAGE_KEY)?.trim() ?? "";
     if (!saved) return;
+    activeToken.current = saved;
     setToken(saved);
     setDraftToken(saved);
     void load(saved);
-  }, [compact, load, loadWatchlist]);
+    if (!compact && restrictedBeta) void loadWatchlist(saved);
+  }, [compact, restrictedBeta, load, loadWatchlist]);
 
   useEffect(() => {
-    if (compact) return;
-    const timer = window.setInterval(() => void loadWatchlist(true), 60_000);
+    if (compact || (restrictedBeta && !token)) return;
+    const timer = window.setInterval(() => void loadWatchlist(token, true), 60_000);
     return () => window.clearInterval(timer);
-  }, [compact, loadWatchlist]);
+  }, [compact, restrictedBeta, token, loadWatchlist]);
 
   useEffect(() => {
     if (!token) return;
@@ -311,26 +344,35 @@ export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
       return;
     }
     window.sessionStorage.setItem(TOKEN_STORAGE_KEY, next);
+    activeToken.current = next;
     setToken(next);
     void load(next);
+    if (!compact && restrictedBeta) void loadWatchlist(next);
   }
 
   function disconnect() {
+    activeToken.current = "";
     window.sessionStorage.removeItem(TOKEN_STORAGE_KEY);
     setToken("");
     setDraftToken("");
     setFeed(null);
+    setLoading(false);
+    if (restrictedBeta) {
+      setWatchlist(null);
+      setWatchlistError(null);
+      setWatchlistLoading(false);
+    }
     setError(null);
   }
 
   if (!token) {
     return (
       <section aria-live="polite" aria-busy={watchlistLoading}>
-        {!compact ? <ValuationWatchlistPanel watchlist={watchlist} error={watchlistError} loading={watchlistLoading} /> : null}
+        {!compact && !restrictedBeta ? <ValuationWatchlistPanel watchlist={watchlist} error={watchlistError} loading={watchlistLoading} restrictedBeta={restrictedBeta} /> : null}
         <section className="card" aria-label="Connect to live Serious Signals" style={{ marginTop: 36 }}>
           <span className="badge">Real data only</span>
-          <h2>Connect the Committee-approved Serious Signal feed</h2>
-          <p>The Valuation Watchlist above is public and needs no key. Only the private, Committee-approved alert record remains protected by its read-only access key.</p>
+          <h2>{restrictedBeta ? "Connect the restricted beta feed" : "Connect the Committee-approved Serious Signal feed"}</h2>
+          <p>{restrictedBeta ? "Use the existing read-only access key for Serious Signals and Research Watch. The key is kept only for this browser session. Investment accuracy is not yet established." : "The Valuation Watchlist above is public and needs no key. Only the private, Committee-approved alert record remains protected by its read-only access key."}</p>
           <form className="form" onSubmit={connect}>
             <label htmlFor="serious-signal-read-token"><strong>Serious Signal read-only access key</strong></label>
             <input
@@ -342,7 +384,7 @@ export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
               onChange={(event) => setDraftToken(event.target.value)}
               placeholder="Enter access key"
             />
-            <button className="button primary" type="submit">Open Committee-approved alerts</button>
+            <button className="button primary" type="submit">{restrictedBeta ? "Open restricted feed" : "Open Committee-approved alerts"}</button>
           </form>
           {error ? <p role="alert"><strong>Unable to connect:</strong> {error}</p> : null}
         </section>
@@ -355,12 +397,13 @@ export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
       <div className="button-row">
         <button className="button" type="button" onClick={() => {
           void load(token);
-          if (!compact) void loadWatchlist();
+          if (!compact) void loadWatchlist(token);
         }} disabled={loading || watchlistLoading}>
           {loading ? "Refreshing…" : "Refresh now"}
         </button>
         <button className="button" type="button" onClick={disconnect}>Lock feed</button>
         <span className="badge">Auto-refreshes every minute</span>
+        {restrictedBeta ? <span className="badge">Restricted beta · investment accuracy unproven</span> : null}
       </div>
 
       {error ? <section className="card"><strong>Live feed unavailable:</strong> {error} The previous verified result is kept on screen if available.</section> : null}
@@ -368,7 +411,7 @@ export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
       {feed ? (
         <>
           <div className="grid three" style={{ marginTop: 18 }}>
-            <div className="card"><span className="muted">Verified alerts · 48h</span><div className="kpi">{feed.summary.total}</div></div>
+            <div className="card"><span className="muted">{restrictedBeta ? "Approval records · 48h" : "Verified alerts · 48h"}</span><div className="kpi">{feed.summary.total}</div></div>
             <div className="card"><span className="muted">Buy / Sell / Watch Out</span><div className="kpi">{feed.summary.buy} / {feed.summary.sell} / {feed.summary.watchOut}</div></div>
             <div className="card"><span className="muted">Delivered / Needs attention</span><div className="kpi">{feed.summary.delivered} / {feed.summary.deliveryAttentionNeeded}</div></div>
           </div>
@@ -387,7 +430,7 @@ export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
             <section className="card">
               <span className="badge">{feed.emptyResultVerified ? "Verified live result" : "Live scan proof needed"}</span>
               <h2>{feed.emptyResultVerified
-                ? "No Committee-approved Serious Signal was found in the latest 48 hours."
+                ? restrictedBeta ? "No qualifying Serious Alert yet in the latest 48 hours." : "No Committee-approved Serious Signal was found in the latest 48 hours."
                 : feed.sensor.verifiedLive
                   ? "The alert feed is empty, but critical source or baseline coverage is incomplete."
                   : "The alert feed is empty, but the sensor is not freshly verified."}</h2>
@@ -400,7 +443,7 @@ export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
               {[...feed.alerts].sort(compareSignalPotential).slice(0, compact ? 3 : 100).map((alert) => (
                 <article className="card alert-card" key={alert.id}>
                   <div className="button-row">
-                    <span className="badge">{alert.publicationEligible === false ? "HISTORICAL APPROVAL · CURRENT CHECKS PENDING" : alertLabel(alert.alertType)}</span>
+                    <span className="badge">{liveAlertLabel(alert, restrictedBeta)}</span>
                     <span className="badge">Judge {alert.finalJudgeConfidence}/100</span>
                     <span className="badge">{deliveryLabel(alert.delivery.status)}</span>
                   </div>
@@ -409,6 +452,7 @@ export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
                   <p><strong>What happened:</strong> {alert.explanation?.whatHappened ?? "The business effect is being assessed."}</p>
                   <CompanyFacts facts={alert.explanation?.companyFacts} />{alert.explanation ? <><p><strong>What could happen:</strong> {alert.explanation.whatCouldHappen}</p><p><strong>What could go wrong:</strong> {alert.explanation.whatCouldGoWrong}</p></> : null}
                   <p><strong>Why it matters:</strong> {alert.explanation?.whyItMatters ?? alert.whyItMatters ?? "The full verified explanation is not available in the sanitized feed."}</p>
+                  {alert.singleScenarioNotice ? <p className="muted">{alert.singleScenarioNotice}</p> : null}
                   {alert.outlook ? <SignalPriceOutlook outlook={alert.outlook} action={alert.alertType} /> : null}
                   <p className="muted"><strong>Price observed:</strong> {alert.priceObservedAt ? `${formatTime(alert.priceObservedAt)} Bangkok time` : "Observation time unavailable"}. This is the quote recorded with the alert; prices may have changed.</p>
                   <p><strong>Detected:</strong> {formatTime(alert.createdAt)} Bangkok time</p>
@@ -431,7 +475,8 @@ export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
 
         </>
       ) : loading ? <section className="card">Loading the verified R2 feed…</section> : null}
-      {!compact ? <ValuationWatchlistPanel watchlist={watchlist} error={watchlistError} loading={watchlistLoading} /> : null}
+      {!compact && restrictedBeta ? <PublicSignalFeed restrictedBeta readToken={token} key={token} /> : null}
+      {!compact ? <ValuationWatchlistPanel watchlist={watchlist} error={watchlistError} loading={watchlistLoading} restrictedBeta={restrictedBeta} /> : null}
     </section>
   );
 }

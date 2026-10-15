@@ -1,7 +1,8 @@
 import { pilotUpsideBlocker } from "@/lib/simple-alert-pilot-scope";
 import { COMMITTEE_ALLOWED_MODELS, COMMITTEE_MODEL_POLICY } from "@/lib/ai-committee/model-policy";
-import { valuationEvidenceAudit, type FinancialDocuments } from "@/lib/equity-signal/financial-evidence";
+import { financialDocumentsEvidenceView, financialDocumentsPublicationGap, financialDocumentsReady, financialDocumentsRequired as requiresFinancialDocuments, valuationEvidenceAudit, type FinancialDocuments } from "@/lib/equity-signal/financial-evidence";
 import { completeCommitteeReview } from "@/lib/ai-committee/review-policy";
+import { historicalReviewTelemetry } from "@/lib/opportunity-engine/pr262-review-telemetry";
 import { PR262_REVIEW_MAX_PROMPT_BYTES, PR262_REVIEW_MAX_COST_USD } from "@/lib/opportunity-engine/pr262-ai-daily-cost";
 import { verifiedCompanyProfile, type CompanyIdentity, type VerifiedCompanyProfile } from "@/lib/company-profile";
 import { committeeExplanation } from "@/lib/signal-explanation";
@@ -57,7 +58,7 @@ export type EquitySignalLabInput = {
   previousValuationReview?: { fingerprint: string; outcome: string } | null;
   terminalReview?: (input: { cik: string; ticker: string; fingerprint: string; evidence: TerminalEvidence }) => Promise<
     { kind: "eligible" } | { kind: "held"; reason: string; outcome?: string }
-    | { kind: "terminal"; decision: { outcome: "approved" | "rejected" | "needs_more_data"; fingerprint: string; evidence: TerminalEvidence; decisionKey: string; direction: "upside" | "downside" | "unknown"; committee: Record<string, unknown>; publicationGatePassed?: boolean; publicationPacketKey?: string } }>;
+    | { kind: "terminal"; decision: { outcome: "approved" | "rejected" | "needs_more_data"; fingerprint: string; evidence: TerminalEvidence; decisionKey: string; direction: "upside" | "downside" | "unknown"; committee: Record<string, unknown>; decidedAt?: string; eventId?: string; resultKey?: string; publicationGatePassed?: boolean; publicationPacketKey?: string; financialDocumentsRequired?: boolean; financialDocumentsRequested?: boolean } }>;
   reserveRejectionAudit?: () => Promise<{
     commit: (now: Date) => Promise<boolean>;
     release: (now: Date) => Promise<void>;
@@ -604,6 +605,9 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       && (["valuation_gap", "earnings_guidance", "financing_dilution", "merger_acquisition"].includes(best.eventFamily)
         || input.financialDocumentsRequested || input.verifiedFactsCache?.requiredMetrics?.length)
       ? await input.collectFinancialDocuments(best.cik) : null;
+    const financialEvidence = financialDocumentsEvidenceView(financialDocuments);
+    let financialDocumentsRequired = requiresFinancialDocuments(financialDocuments, best.eventFamily, input.financialDocumentsRequested);
+    let financialPublicationReady = !financialDocumentsRequired || financialDocumentsReady(financialDocuments);
     const valuationAudit = best.eventFamily === "valuation_gap"
       ? valuationEvidenceAudit(targeted?.storedCompanyAnalysis, best.fundamentals, best.quote?.price ?? null, now) : null;
     // Stable evidence revisions allow another review when missing facts arrive.
@@ -619,6 +623,9 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
           forecastStatus: best.priceForecast.status, forecastSample: best.priceForecast.sampleSize };
       })(),
       reviewPolicy: COMMITTEE_MODEL_POLICY,
+      // Historical identity only: preserve these exact fields/values, including
+      // legacy skip flags, for snapshots, terminal holds and paid admission.
+      // Transport proof belongs exclusively to the outward/publication view.
       financialDocuments: financialDocuments?.documents.map(d => ({ url: d.url, filedAt: d.filedAt, digest: d.digest, readComplete: d.readComplete })) ?? [],
       modelAssumptions: (targeted?.storedCompanyAnalysis?.fairValue as UsValueCompanyAnalysis["fairValue"] | undefined)?.methods,
       facts: best.fundamentals?.items ?? [], sourceComplete: targeted?.sourceEvidenceIncomplete !== true,
@@ -647,7 +654,8 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
         version: 1, fingerprint, cik: best.cik, direction: best.direction, evidence: reviewEvidenceInputs,
       }, { fingerprint, cik: best.cik, direction: best.direction }) : null,
       companyProfile,
-      financialDocuments, valuationAudit,
+      financialDocuments: financialEvidence, financialDocumentsRequired,
+      financialDocumentsRequested: input.financialDocumentsRequested === true, financialDocumentsRequirementKnown: true, valuationAudit,
       ...(valuationBaseline ? { valuationBaseline } : {}),
       valuationAdmittedAt: null as string | null,
       ticker: best.ticker,
@@ -700,6 +708,20 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
     // exact-key checks. A completed approval can rerun publication checks only.
     const terminal = terminalEvidence && best.cik && input.terminalReview
       ? await input.terminalReview({ cik: best.cik, ticker: best.ticker, fingerprint, evidence: terminalEvidence }) : null;
+    if (terminal?.kind === "terminal") {
+      const prior = terminal.decision;
+      const priorRequirement = typeof prior.financialDocumentsRequired === "boolean" ? prior.financialDocumentsRequired
+        : prior.evidence.comparison.external.documents.length > 0 ? true : null;
+      financialDocumentsRequired ||= priorRequirement === true;
+      selectedCandidate.financialDocumentsRequired = financialDocumentsRequired;
+      selectedCandidate.financialDocumentsRequested ||= prior.financialDocumentsRequested === true;
+      // Unknown legacy dependency holds publication only. It must not invent a
+      // retrieval task, alter historical completion, or reopen paid admission.
+      selectedCandidate.financialDocumentsRequirementKnown = priorRequirement !== null;
+      financialPublicationReady = priorRequirement !== null
+        && (!financialDocumentsRequired || financialDocumentsReady(financialDocuments));
+    }
+    if (terminal?.kind === "held") selectedCandidate.financialDocumentsRequirementKnown = false;
     if (terminal?.kind === "held" || (terminal?.kind === "terminal" && terminal.decision.outcome !== "approved")) {
       const decision = terminal.kind === "terminal" ? terminal.decision : null;
       if (decision) {
@@ -710,9 +732,10 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       const followup = outcome === "needs_more_data" || outcome === "unknown";
       return { ...common, status: followup ? "candidate_needs_more_data" : "qualified_candidate_already_reviewed", reviewOutcome: outcome,
         terminalReviewUncertain: outcome === "unknown",
+        ...(terminal.kind === "held" ? { terminalReviewHold: { reason: terminal.reason, outcome: terminal.outcome ?? null } } : {}),
         ...(followup ? { researchReview: { admitted: true, publicationHeld: true } } : {}),
         seriousSignalFound: false, actionableSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint,
-        selectedCandidate, qualityScore: best.score, ...(decision ? { committee: decision.committee } : {}),
+        selectedCandidate, qualityScore: best.score, ...(decision ? { committee: decision.committee, historicalReview: historicalReviewTelemetry(decision) } : {}),
         blockers: ["The durable review history does not establish new substantive evidence. No additional review was purchased."], technicalFailureFingerprint: null };
     }
     const replay = terminal?.kind === "terminal" ? terminal.decision : null;
@@ -769,9 +792,8 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
     if (replay) {
       const committee = replay.committee, judge = committee.finalJudge as Record<string, unknown> | undefined;
       const financialReplayReady = (!valuationAudit || valuationAudit.missingEssentialFacts.length === 0)
-        && (!financialDocuments ? best.eventFamily !== "valuation_gap" && replay.evidence.comparison.external.documents.length === 0
-          : financialDocuments.documents.length > 0 && financialDocuments.failures.length === 0
-            && financialDocuments.documents.every(document => document.readComplete === true))
+        && financialPublicationReady
+        && (financialDocuments !== null || replay.evidence.comparison.external.documents.length === 0)
         && (input.verifiedFactsCache?.requiredMetrics ?? []).every(metric =>
           requiredFinancialFactPresent(best.fundamentals?.items ?? [], metric, now));
       const seriousSignalFound = replay.publicationGatePassed === true && ["upside", "downside"].includes(best.direction) && replay.direction === best.direction && completeCommitteeReview(committee)
@@ -784,8 +806,11 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
         reviewOutcome: seriousSignalFound ? "approved" : "approved_pending_checks", terminalReviewReplayed: true,
         researchReview: { admitted: true, gaps: [], publicationHeld: !seriousSignalFound },
         seriousSignalFound, actionableSignalFound, alertType, openAiCalled: false, candidateFingerprint: fingerprint,
-        selectedCandidate, committee, historicalPilot: pilotGate, qualityScore: best.score,
-        blockers: seriousSignalFound ? [] : ["The completed approval is retained; current publication checks are still pending."], technicalFailureFingerprint: null };
+        selectedCandidate, committee, historicalReview: historicalReviewTelemetry(replay), historicalPilot: pilotGate, qualityScore: best.score,
+        blockers: seriousSignalFound ? [] : ["The completed approval is retained; current publication checks are still pending.",
+          ...(!selectedCandidate.financialDocumentsRequirementKnown
+            ? ["The original whole-text completeness requirement is unknown; retained historical approval cannot establish current publication eligibility."]
+            : !financialPublicationReady ? [financialDocumentsPublicationGap(financialDocuments)!] : [])], technicalFailureFingerprint: null };
     }
     const aiProvider = getAiCommitteeProviderStatus();
     if (input.aiProviderBlockedReason) return { ...common, status: "committee_provider_access_blocked", seriousSignalFound: false, openAiCalled: false, candidateFingerprint: fingerprint, selectedCandidate, qualityScore: best.score, committee: { configured: aiProvider.configured, enabled: aiProvider.enabled, providerBlockedReason: input.aiProviderBlockedReason }, blockers: [`The read-only OpenAI access check blocked paid review: ${input.aiProviderBlockedReason}. Evidence collection continues; no paid request or budget reservation was made.`], technicalFailureFingerprint: `openai_access_${input.aiProviderBlockedReason}`, failureScope: "configuration", repairEligible: false };
@@ -795,7 +820,7 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
     admittedCandidateFingerprint = fingerprint;
     if (valuationBaseline) selectedCandidate.valuationAdmittedAt = now.toISOString();
     const pack = evidencePack(best, providers, macroResult.context, now, fingerprint, quoted.benchmarkQuote, targeted?.storedCompanyAnalysis);
-    pack.financialDiligence = { documents: financialDocuments, valuationAudit };
+    pack.financialDiligence = { documents: financialEvidence, valuationAudit };
     // General dated-facts availability does not satisfy a specifically
     // requested current debt split. Keep old rows as history while exposing
     // the unresolved period requirement to every reviewer and consensus gate.
@@ -807,6 +832,7 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
     }
     if (financialDocuments) pack.sourceLinks = [...new Set([...pack.sourceLinks, ...financialDocuments.documents.map(d => d.url)])];
     if (financialDocuments && (!financialDocuments.documents.length || financialDocuments.failures.length)) pack.missingEvidence.push("Required financial filings could not be fully collected; see dated document failures.");
+    if (!financialPublicationReady) pack.missingEvidence.push(financialDocumentsPublicationGap(financialDocuments)!);
     if (valuationAudit) pack.missingEvidence.push(...valuationAudit.missingEssentialFacts.map(field => `Missing dated financial fact: ${field}`));
     // Qualitative business facts cannot satisfy financial completeness, but every
     // role must see the same verified company and customer evidence as the alert.
@@ -874,6 +900,7 @@ export async function runEquitySignalLab(input: EquitySignalLabInput = {}) {
       && (finalJudge.confidence ?? 0) >= 80
       && best.gatePassed
       && best.direction !== "unknown"
+      && financialPublicationReady
       && !targeted?.sourceEvidenceIncomplete
       && !watchOnlyBlocker
       && Boolean(best.quote);

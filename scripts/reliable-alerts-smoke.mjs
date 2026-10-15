@@ -1,5 +1,8 @@
 import { spawnSync } from "node:child_process";
 const checks = [
+  "financial-document-http-completeness", "financial-document-proof-boundary",
+  "financial-document-review-label", "financial-document-dependency-lifecycle", "financial-document-delivery-proof",
+  "terminal-review-telemetry", "company-disclosure-presentation", "public-review-confidence",
   "company-profile-current-failures", "company-profile-current-failures-cache",
   "committee-input-limit-hold",
   "ai-committee-lossless-prompt-preflight", "ai-committee-preflight-usage",
@@ -57,7 +60,9 @@ const checks = [
 ];
 for (const check of checks) {
   const filename = check.endsWith(".mjs") ? check : `${check}-smoke.mjs`;
-  const result = spawnSync(process.execPath, [`scripts/${filename}`], { encoding: "utf8", timeout: 60000 });
+  // Full real-module history/transport fixtures exceed the ordinary unit-test allowance.
+  const timeout = check === "financial-document-proof-boundary" ? 900000 : ["terminal-review-runner", "terminal-review-event-job", "terminal-review-legacy-overwrite", "company-profile-storage-retry"].includes(check) ? 180000 : 60000;
+  const result = spawnSync(process.execPath, [`scripts/${filename}`], { encoding: "utf8", timeout });
   if (result.status !== 0) {
     console.error(`FAIL ${check}\n${result.stdout.slice(-3000)}\n${result.stderr.slice(-5000)}`);
     process.exit(1);

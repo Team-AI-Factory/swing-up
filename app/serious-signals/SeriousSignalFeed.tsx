@@ -13,6 +13,8 @@ type LiveAlert = {
   company: string;
   industry: string;
   alertType: "buy" | "sell" | "watch_out";
+  publicationEligible?: boolean;
+  publicationHoldReason?: string | null;
   eventHeadline: string;
   whyItMatters: string | null;
   explanation?: { companyFacts?: CompanyCardFacts; companyDoes: string; whatHappened: string; whyItMatters: string; whatCouldHappen: string; whatCouldGoWrong: string };
@@ -202,7 +204,7 @@ function ValuationWatchlistPanel({
                 <article className="card alert-card" id={item.anchor} key={item.id}>
                   <div className="button-row">
                     <span className="badge">{watchlistLabel(item.action)}</span>
-                    <span className="badge">{item.committeeApproved ? "Committee approved" : item.committeeStatus === "approved_pending_checks" ? "Positive review · final checks pending" : item.committeeStatus === "needs_more_data" ? "Committee requests more information" : "Awaiting Committee review"}</span>
+                    <span className="badge">{item.committeeApproved ? "Committee approved" : ["approved", "approved_pending_checks"].includes(item.committeeStatus) ? "Positive review · final checks pending" : item.committeeStatus === "rejected" ? "Committee rejected" : item.committeeStatus === "needs_more_data" ? "Committee requests more information" : "Awaiting Committee review"}</span>
                     {item.specialistModelApplied ? <span className="badge">Sector specialist</span> : null}
                     {item.livePriceAlert ? <span className="badge">{livePriceAlertLabel(item.livePriceAlert)}</span> : null}
                   </div>
@@ -398,7 +400,7 @@ export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
               {[...feed.alerts].sort(compareSignalPotential).slice(0, compact ? 3 : 100).map((alert) => (
                 <article className="card alert-card" key={alert.id}>
                   <div className="button-row">
-                    <span className="badge">{alertLabel(alert.alertType)}</span>
+                    <span className="badge">{alert.publicationEligible === false ? "HISTORICAL APPROVAL · CURRENT CHECKS PENDING" : alertLabel(alert.alertType)}</span>
                     <span className="badge">Judge {alert.finalJudgeConfidence}/100</span>
                     <span className="badge">{deliveryLabel(alert.delivery.status)}</span>
                   </div>
@@ -411,6 +413,7 @@ export function SeriousSignalFeed({ compact = false }: { compact?: boolean }) {
                   <p className="muted"><strong>Price observed:</strong> {alert.priceObservedAt ? `${formatTime(alert.priceObservedAt)} Bangkok time` : "Observation time unavailable"}. This is the quote recorded with the alert; prices may have changed.</p>
                   <p><strong>Detected:</strong> {formatTime(alert.createdAt)} Bangkok time</p>
                   <p><strong>Committee:</strong> All {alert.committee.completed} selected reviewers completed their checks.</p>
+                  {alert.publicationEligible === false ? <p className="muted">{alert.publicationHoldReason} The displayed review and scenarios are historical.</p> : null}
                   {alert.evidence.length ? (
                     <div className="button-row">
                       {alert.evidence.slice(0, 4).map((evidence, index) => (

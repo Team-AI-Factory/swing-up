@@ -16,7 +16,7 @@ export function companyCardFacts(value: unknown, identity: CompanyIdentity, now 
   return {
     business: profile ? plain(profile.business) : "Products and services have not yet been verified.",
     customers: profile ? profile.customerEvidence ? profile.customers : plain(profile.customers) : "Customer groups have not yet been verified.",
-    customerLabel: profile?.customerEvidence ? profile.customerEvidence.section === "financial_notes_accounts_receivable" ? "Accounts-receivable customer pools" : "Revenue-contract counterparties" : "Main customers",
+    customerLabel: profile?.customerEvidence ? profile.customerEvidence.section === "financial_notes_accounts_receivable" ? "Accounts-receivable customer pools" : "Revenue-contract counterparties" : "Disclosed customers",
     customerPeriod: profile?.customerEvidence?.reportPeriod ?? null, customerType: profile?.customerType,
     revenueCountry: geography ? `${geography.country} — ${geography.percent}% of total revenue in ${geography.year}.`
       : "Not yet verified from country-level revenue disclosures. The headquarters location is not a substitute.",

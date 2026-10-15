@@ -309,6 +309,7 @@ try {
   assert.equal(firstSensor.initialCatchupEvents, 2);
   assert.equal(firstSensor.queueAdmissions, 2);
   assert.equal(firstSensor.pendingEventCount, 2);
+  assert.equal(firstSensor.directAnnouncementMonitoring.issuerSourceCoverageEvaluatedAt, new Date(clock).toISOString());
   const firstQueue = objects.get(prefix + "sensor/state-v1.json").value.pending;
   assert.ok(firstQueue.every(event => event.observedAt === publishedAt && event.reason.includes("Initial source catch-up")));
   const repeatedSensor = await sensorRuntime.runPr262LightweightSensorV3({ now: new Date(), fetchImpl: sensorFetch, deadlineAtMs: clock + 120_000 });

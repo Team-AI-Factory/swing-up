@@ -1,6 +1,7 @@
 import { inSimpleAlertPilot } from "./helpers/simple-alert-pilot-fixture.mjs";
 import { companyProfileFixture } from "./helpers/company-profile-fixture.mjs";
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 import { restoreCommitteeEvidence } from "./helpers/restore-committee-evidence.mjs";
 const now = new Date("2026-09-16T15:00:00Z");
@@ -52,7 +53,20 @@ Object.assign(facts.facts["us-gaap"], Object.fromEntries([
   ["EarningsPerShareDiluted", "USD/shares", 2], ["NetCashProvidedByUsedInOperatingActivities", "USD", 2000000],
   ["PaymentsToAcquirePropertyPlantAndEquipment", "USD", 100000],
 ].map(([concept, unit, val]) => [concept, { units: { [unit]: [{ val, start: "2025-01-01", end: "2025-12-31", filed: "2026-02-20", form: "10-K" }] } }])));
-const input = { now, collectFinancialDocuments: async () => ({ version: 1, cik: "0000000001", checkedAt: now.toISOString(), nextCheckAt: now.toISOString(), cached: false, failures: [], documents: [{ url: "https://www.sec.gov/Archives/edgar/data/1/000000000126000001/annual.htm", form: "10-K", filedAt: "2026-02-20", digest: "test-financial-document", readComplete: true, excerpts: [{ topic: "segments", text: "Synthetic source-backed software segment facts" }, { topic: "customers", text: "Synthetic customer concentration facts" }, { topic: "margins", text: "Synthetic margin facts" }] }] }), resolveCompanyProfile: async identity => companyProfileFixture(identity, now), allowOpenAi: true, allowIncompleteCommitteeReview: true,
+// Synthetic successful-transport fixture; these excerpts and all financial assertions stay unchanged.
+const excerpts = [{ topic: "segments", text: "Synthetic source-backed software segment facts" }, { topic: "customers", text: "Synthetic customer concentration facts" }, { topic: "margins", text: "Synthetic margin facts" }];
+const document = { url: "https://www.sec.gov/Archives/edgar/data/1/000000000126000001/annual.htm", form: "10-K", filedAt: "2026-02-20",
+  accession: "0000000001-26-000001", reportingPeriod: "2025-12-31", collectedAt: now.toISOString(), readComplete: true, excerpts,
+  digest: crypto.createHash("sha256").update(JSON.stringify(excerpts)).digest("hex") };
+document.transportProof = { version: 1, httpStatus: 200, reachedEof: true,
+  documentKey: crypto.createHash("sha256").update(JSON.stringify([document.url, document.accession, document.form, document.filedAt,
+    document.reportingPeriod, document.digest, document.collectedAt])).digest("hex") };
+const financialDocuments = { version: 1, cik: "0000000001", checkedAt: now.toISOString(), nextCheckAt: now.toISOString(), cached: false, failures: [], documents: [document] };
+const financialEvidence = loadTsModule("@/lib/equity-signal/financial-evidence");
+assert.equal(financialEvidence.financialDocumentsReady(financialDocuments), true);
+assert.equal(financialEvidence.financialDocumentsReady({ ...financialDocuments, documents: [{ ...document, transportProof: undefined }] }), false,
+  "Legacy readComplete alone must not certify this otherwise identical fixture");
+const input = { now, collectFinancialDocuments: async () => structuredClone(financialDocuments), resolveCompanyProfile: async identity => companyProfileFixture(identity, now), allowOpenAi: true, allowIncompleteCommitteeReview: true,
   beforeOpenAiCall: async () => { reservations++; return !denyBudget; },
   fetchImpl: async () => Response.json(missingFacts ? { cik: 1, facts: {} } : facts),
   targetedContext: { analysisKind: "valuation", universe: { entries: [{ ticker: "TEST", name: "Test Software", cik: "0000000001", aliases: [], exchange: "NASDAQ", securityType: "common_stock" }], coverage: {}, sources: [] },

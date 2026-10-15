@@ -2,6 +2,7 @@ import { completeCommitteeReview } from "@/lib/ai-committee/review-policy";
 type Json = Record<string, unknown>;
 const object = (value: unknown): Json => value && typeof value === "object" && !Array.isArray(value) ? value as Json : {};
 const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+const utcDay = (value: unknown) => typeof value === "string" && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString().slice(0, 10) : null;
 
 function timestamp(value: unknown, now: Date) {
   const parsed = typeof value === "string" ? Date.parse(value) : Number.NaN;
@@ -74,8 +75,18 @@ export function summarizeEvidenceQuality(samples: Json[]) {
     usableEvidenceRatioPercent: ratio(complete.length),
     usableEvidenceDefinition: "All applicable evidence checks pass. Price scenarios may be unavailable for an event with verified negative earnings; this exception never supplies a price target or Committee approval.",
     negativeEarningsEventExceptions: measured.filter(row => row.valuationException === "verified_negative_earnings_event").length,
-    reviewOutcomes: Object.fromEntries(["approved", "rejected", "incomplete_evidence", "technical_failure", "budget_deferred", "awaiting_review"].map(outcome => [outcome, samples.filter(row => row.reviewOutcome === outcome).length])),
-    completedCommitteeReviews: samples.filter(row => row.committeeCompleted === true).length,
+    reviewOutcomes: Object.fromEntries(["approved", "rejected", "incomplete_evidence", "technical_failure", "budget_deferred", "awaiting_review", "historical_review_reused", "unknown_history", "unknown_attempt"].map(outcome => [outcome, samples.filter(row => row.reviewOutcome === outcome
+      && (row.reviewTelemetryVersion === 2 || outcome === "technical_failure")).length])),
+    reviewOutcomeMeaning: "Latest known paid attempt for each event, otherwise a retained legacy failure observation with unknown attempt provenance or the current assessment; not an attempt-based reliability denominator. Immutable paid-attempt receipts remain authoritative.",
+    completedCommitteeReviews: samples.filter(row => {
+      const attempt = object(row.lastPaidAttempt);
+      return row.reviewTelemetryVersion === 2 && attempt.committeeCompleted === true && attempt.eventId === row.eventId
+        && utcDay(attempt.committeeFinishedAt) !== null && utcDay(attempt.committeeFinishedAt) === utcDay(row.checkedAt);
+    }).length,
+    completedCommitteeReviewsMeaning: "Unique events whose latest proven paid attempt completed in this UTC day; historical reuse and legacy samples without provenance are excluded.",
+    historicalReviewReusedEvents: samples.filter(row => row.reviewTelemetryVersion === 2 && object(row.historicalReview).source === "terminal_decision").length,
+    unknownReviewProvenanceEvents: samples.filter(row => row.reviewTelemetryVersion !== 2 || row.assessmentOutcome === "unknown_history" || row.reviewOutcome === "unknown_attempt"
+      || object(row.legacyReviewObservation).attemptProvenance === "unknown").length,
     decisionGradeSourceEvents: measured.filter(row => object(row.fields).sourceDocument === true).length,
     decisionGradeSourceRatioPercent: ratio(measured.filter(row => object(row.fields).sourceDocument === true).length),
     averageCompletenessPercent: measured.length ? Math.round(measured.reduce((sum, row) => sum + Number(row.availableFields) / Number(row.requiredFields) * 100, 0) / measured.length) : null,

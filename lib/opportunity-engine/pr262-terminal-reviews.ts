@@ -19,6 +19,8 @@ export type TerminalDecision = {
   decisionKey: string; outcome: "approved" | "rejected" | "needs_more_data"; fingerprint: string;
   evidence: TerminalEvidence; decidedAt: string; eventId: string; resultKey?: string;
   publicationPacketKey: string;
+  financialDocumentsRequired?: boolean;
+  financialDocumentsRequested?: boolean;
 };
 type Decision = TerminalDecision & { committee: Json; publicationGatePassed: boolean; integrity: string };
 type Legacy = { fingerprint: string; outcome: "approved" | "rejected" | "needs_more_data" | "unknown"; evidence: TerminalEvidence | null; completionProven: boolean };
@@ -35,6 +37,9 @@ function validateDecision(value: unknown, cik: string): Decision {
     || !["upside", "downside", "unknown"].includes(String(r.direction)) || typeof r.fingerprint !== "string" || !r.fingerprint
     || typeof r.eventId !== "string" || !r.eventId || !Number.isFinite(Date.parse(String(r.decidedAt)))
     || typeof r.publicationGatePassed !== "boolean"
+    || (r.financialDocumentsRequired !== undefined && typeof r.financialDocumentsRequired !== "boolean")
+    || (r.financialDocumentsRequested !== undefined && typeof r.financialDocumentsRequested !== "boolean")
+    || (r.financialDocumentsRequested === true && r.financialDocumentsRequired !== true)
     || typeof r.publicationPacketKey !== "string" || !/^[a-f0-9]{64}$/.test(r.publicationPacketKey)
     || !completeCommitteeReview(r.committee) || object(object(r.committee).output).overallRecommendation !== (r.outcome === "approved" ? "approve" : r.outcome === "rejected" ? "reject" : "needs_more_data")
     || integrity !== seal(unsealed)) throw new Error("terminal_review_decision_invalid");
@@ -185,7 +190,12 @@ export async function finishTerminalReviewAttempt(input: Identity & { attemptId:
       decisionKey: evidence.decisionKey, outcome: outcome === "approve" ? "approved" : outcome === "reject" ? "rejected" : "needs_more_data", fingerprint: input.report.candidateFingerprint,
       evidence, decidedAt: String(committee.finishedAt ?? input.report.checkedAt ?? input.now.toISOString()), eventId: input.eventId,
       ...(input.resultKey ? { resultKey: input.resultKey } : {}), committee, publicationGatePassed: candidate.gatePassed === true,
-      publicationPacketKey: terminalPublicationPacketKey(candidate) };
+      publicationPacketKey: terminalPublicationPacketKey(candidate),
+      // Additive sealed provenance, outside all evidence/admission keys. An old
+      // record without this field does not prove that no documents were required.
+      ...(typeof candidate.financialDocumentsRequired === "boolean" && candidate.financialDocumentsRequirementKnown !== false
+        ? { financialDocumentsRequired: candidate.financialDocumentsRequired,
+          financialDocumentsRequested: candidate.financialDocumentsRequested === true } : {}) };
     decision = { ...body, integrity: seal(body) };
     validateDecision(decision, input.cik);
   }
@@ -216,5 +226,7 @@ export async function readTerminalDecision(input: { cik: string; decisionKey: st
   if (!found) return null;
   return { version: 1, cik: found.cik, ticker: found.ticker, direction: found.direction, decisionKey: found.decisionKey,
     outcome: found.outcome, fingerprint: found.fingerprint, evidence: found.evidence, decidedAt: found.decidedAt,
-    eventId: found.eventId, ...(found.resultKey ? { resultKey: found.resultKey } : {}), publicationPacketKey: found.publicationPacketKey };
+    eventId: found.eventId, ...(found.resultKey ? { resultKey: found.resultKey } : {}), publicationPacketKey: found.publicationPacketKey,
+    ...(typeof found.financialDocumentsRequired === "boolean" ? { financialDocumentsRequired: found.financialDocumentsRequired } : {}),
+    ...(typeof found.financialDocumentsRequested === "boolean" ? { financialDocumentsRequested: found.financialDocumentsRequested } : {}) };
 }

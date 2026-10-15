@@ -6,7 +6,7 @@ import { SignalPriceOutlook } from "@/components/SignalPriceOutlook";
 import { compareSignalPotential, type PriceOutlook } from "@/lib/signal-outlook";
 type Signal = { id: string; ticker: string; company: string; action: string; currentPrice: number | null; priceObservedAt?: string | null; fairValue: number | null;
   outlook: PriceOutlook; eventObservedAt?: string | null; industry: string;
-  committeeApproved: boolean; committeeStatus: string; createdAt: string; confidence?: number | null;
+  committeeApproved: boolean; committeeStatus: string; createdAt: string; confidence?: number | null; confidenceBasis?: string | null;
   explanation: { companyFacts?: CompanyCardFacts; companyDoes: string; whatHappened: string; whyItMatters: string; whatCouldHappen: string; whatCouldGoWrong: string; missingInformation: string[] };
   sources: Array<{ label: string; url: string }> };
 export function PublicSignalFeed() {
@@ -32,7 +32,7 @@ export function PublicSignalFeed() {
     {error ? <p role="status">{error}</p> : null}
     {!error && !visible.length ? <p>No matching live alert is currently available.</p> : null}
     <div className="grid">{visible.slice(0, visibleCount).map(s => <article className="card alert-card" key={s.id}>
-      <div className="button-row"><span className="badge">{s.committeeApproved ? "SERIOUS SIGNAL" : "PROVISIONAL ALERT"} · {s.action.replaceAll("_", " ").toUpperCase()}</span><span className="badge">{s.committeeApproved ? "Committee approved" : s.committeeStatus === "approved_pending_checks" ? "Positive review · final checks pending" : s.committeeStatus === "needs_more_data" ? "Collecting more information" : "Awaiting Committee review"}</span></div>
+      <div className="button-row"><span className="badge">{s.committeeApproved ? "SERIOUS SIGNAL" : "PROVISIONAL ALERT"} · {s.action.replaceAll("_", " ").toUpperCase()}</span><span className="badge">{s.committeeApproved ? "Committee approved" : ["approved", "approved_pending_checks"].includes(s.committeeStatus) ? "Positive review · final checks pending" : s.committeeStatus === "rejected" ? "Committee rejected" : s.committeeStatus === "needs_more_data" ? "Collecting more information" : "Awaiting Committee review"}</span></div>
       <h3>{s.ticker} — {s.company}</h3>
       <p><strong>Industry:</strong> {s.industry}</p>
       <CompanyFacts facts={s.explanation.companyFacts} />
@@ -43,7 +43,7 @@ export function PublicSignalFeed() {
       <p><strong>What could go wrong:</strong> {s.explanation.whatCouldGoWrong}</p>
       {s.explanation.missingInformation?.length ? <p><strong>Still needed:</strong> {s.explanation.missingInformation.join(" ")}</p> : null}
       {s.priceObservedAt ? <p className="muted">Price recorded: {new Date(s.priceObservedAt).toLocaleString("en-GB", { timeZone: "Asia/Bangkok" })} Bangkok time</p> : null}
-      {typeof s.confidence === "number" ? <p>Model confidence: {s.confidence}/100. This is not the probability of making a profit.</p> : null}
+      {typeof s.confidence === "number" ? <p>{s.confidenceBasis === "historical_committee_review" ? "Historical Committee confidence" : s.confidenceBasis === "committee_review" ? "Committee confidence" : "Model confidence"}: {s.confidence}/100. This is not the probability of making a profit.</p> : <p className="muted">Committee confidence is unavailable without a completed review of this assessment.</p>}
       <p className="muted">Updated: {new Date(s.createdAt).toLocaleString("en-GB", { timeZone: "Asia/Bangkok" })} Bangkok time</p>
       {s.eventObservedAt ? <p className="muted">Event recorded: {new Date(s.eventObservedAt).toLocaleString("en-GB", { timeZone: "Asia/Bangkok" })} Bangkok time</p> : null}
       <details><summary>Sources</summary><div className="button-row">{s.sources.map(source => <a key={source.url} href={source.url} target="_blank" rel="noreferrer">{source.label || "Evidence"}</a>)}</div></details>

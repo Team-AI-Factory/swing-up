@@ -377,7 +377,9 @@ try {
     assert.equal(refreshed.quality.committeeCompleted, false);
     assert.equal(refreshed.reviewEvidenceFingerprint, changedDisplayFingerprint);
     assert.deepEqual(refreshed.completedReview, paidRow.completedReview, "The actual writer preserves the completed fingerprint and full Committee through unpaid refreshes");
-    assert.deepEqual(refreshed.committee, paidRow.committee);
+    assert.deepEqual(refreshed.committee, { source: "none", completed: 0, failed: 0, confidence: null });
+    assert.deepEqual(refreshed.quality.lastPaidAttempt, paidRow.quality.lastPaidAttempt,
+      "Current-pass role counts reset while the original paid-attempt classification remains available");
     const preservedReviews = await research.readLegacyTerminalReviews(identity.cik);
     assert.equal(preservedReviews.length, 1);
     assert.equal(preservedReviews[0].fingerprint, completedFingerprint, "Migration uses completed evidence identity, not overwritten display identity");
@@ -387,7 +389,10 @@ try {
 
     const historic = structuredClone(refreshed);
     delete historic.completedReview;
+    historic.committee = { completed: paidRow.committee.completed, failed: 0, confidence: null };
     historic.quality = { ...historic.quality, committeeCompleted: false };
+    delete historic.quality.reviewTelemetryVersion;
+    delete historic.quality.lastPaidAttempt;
     clear();
     objects.set(indexKey, { text: JSON.stringify({ version: 1, alerts: [historic] }), etag: "pre-preservation-unpaid-refresh" });
     const uncertainReviews = await research.readLegacyTerminalReviews(identity.cik);

@@ -24,6 +24,7 @@ class TestDate extends Date {
 }
 const cache = new Map();
 function load(file) {
+  if (file.endsWith(".json")) return JSON.parse(readFileSync(file, "utf8"));
   if (cache.has(file)) return cache.get(file).exports;
   const cjsModule = { exports: {} }; cache.set(file, cjsModule);
   const output = ts.transpileModule(readFileSync(file, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
@@ -36,7 +37,7 @@ function load(file) {
       observedAt: `${day}T02:00:00Z`, priceObservedAt: `${day}T16:00:00Z`, livePriceFresh: true,
       fundamentals: { revenueGrowthTtmPercent: 8.2, netMarginPercent: 5.1 }, valuationMethods: [], links: [],
     })) }) };
-    return name.startsWith("@/") ? load(resolve(name.slice(2) + ".ts")) : nodeRequire(name);
+    return name.startsWith("@/") ? load(resolve(name.slice(2) + (name.endsWith(".json") ? "" : ".ts"))) : nodeRequire(name);
   }, cjsModule, cjsModule.exports, TestDate);
   return cjsModule.exports;
 }

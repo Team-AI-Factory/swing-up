@@ -167,7 +167,17 @@ async function run(stage, mode) {
     "An eligible failed row gets exactly one settlement GET, plus only existing normal reads");
   if (!baseline) {
     assert.equal(result.failureOperationFamily, recovered ? null : "profile_workers");
-    const diagnostic = logs.filter(value => value.startsWith("[company-profile-storage]")).map(value => JSON.parse(value.slice("[company-profile-storage] ".length)))[0];
+    const diagnostics = logs.filter(value => value.startsWith("[company-profile-storage]")).map(value => JSON.parse(value.slice("[company-profile-storage] ".length)));
+    const sourceReads = diagnostics.filter(row => row.stage === "annual_source");
+    assert.equal(sourceReads.length, Number(mode === "source_fault_pending_settlement"));
+    if (sourceReads.length) {
+      assert.equal(sourceReads[0].cause, "http_502"); assert.equal(sourceReads[0].retryAdmitted, false);
+      assert.equal(sourceReads[0].readAttempt, 1); assert.equal(sourceReads[0].ticker, identity.ticker);
+      assert.ok(Object.keys(sourceReads[0]).every(key => ["stage", "phase", "ticker", "readAttempt", "cause", "retryAdmitted", "workDeadline", "persistenceDeadline",
+        "responsePhase", "readDurationMs", "requestDurationMs", "requestTimeoutMs", "requestAbortSource", "abortReasonMatched"].includes(key)), "Source read diagnostics expose controlled fields only");
+    }
+    assert.equal(result.sourceReadRetryAdmissions, 0, "PUT/CAS/initial/HTTP failures gain no source GET retry");
+    const diagnostic = diagnostics.filter(row => row.stage !== "annual_source")[0];
     assert.ok(diagnostic);
     assert.equal(diagnostic.stage, mode === "initial_read_timeout" ? "initial" : stage === "final" ? "verified" : stage);
     assert.equal(diagnostic.writes, mode.endsWith("read_timeout") ? 0 : 1);

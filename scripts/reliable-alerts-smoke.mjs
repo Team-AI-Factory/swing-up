@@ -31,7 +31,7 @@ const checks = [
   "company-profile-complete-source-cache", "company-profile-operating-quality",
   "simple-alert-source-storage-deadline",
   "company-profile-r2-integration",
-  "company-profile-storage-provenance", "company-profile-initial-read-diagnostics",
+  "company-profile-storage-provenance", "company-profile-initial-read-diagnostics", "company-profile-source-read-recovery",
   "r2-state-write-recovery", "simple-alert-profile-deferral-labels", "ai-committee-prompt-budget", "evidence-model-upgrade",
   "simple-alert-issuer-coverage",
   "company-profile-cache-invalidation",

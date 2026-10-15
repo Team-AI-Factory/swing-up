@@ -173,11 +173,25 @@ export function profileBatchPlan(listings: Row[], entries: Row[], now: Date, lim
 export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: typeof fetch = fetch) {
   if (!isSimpleAlertPilot() || process.env.SWING_UP_SIMPLE_PILOT_ROLE !== "profiles") throw new Error("simple_pilot_profile_role_required");
   const startedAt = Date.now();
+  const workStartedAt = performance.now();
   const admissionSignal = AbortSignal.timeout(PROFILE_ADMISSION_BUDGET_MS);
   const signal = AbortSignal.timeout(PROFILE_WORK_BUDGET_MS);
   const persistenceSignal = AbortSignal.timeout(PROFILE_PERSISTENCE_DEADLINE_MS);
   const countSignal = AbortSignal.timeout(PROFILE_COUNT_DEADLINE_MS);
   const summarySignal = AbortSignal.timeout(PROFILE_SUMMARY_DEADLINE_MS);
+  let sourceReadRetryAdmissions = 0, sourceReadRetryRecoveries = 0;
+  const reserveSourceReadRetry = (requestTimeoutMs: number) => {
+    // One extra read per whole batch, not per issuer. Use the original work
+    // signal and stop admitting recovery at the existing admission cutoff.
+    // A monotonic remaining-time check cannot extend either role deadline.
+    const elapsed = performance.now() - workStartedAt;
+    const remaining = PROFILE_WORK_BUDGET_MS - elapsed;
+    if (sourceReadRetryAdmissions >= 1 || admissionSignal.aborted || signal.aborted || persistenceSignal.aborted
+      || !Number.isFinite(elapsed) || elapsed < 0 || elapsed >= PROFILE_ADMISSION_BUDGET_MS
+      || !Number.isFinite(requestTimeoutMs) || requestTimeoutMs <= 0 || remaining < requestTimeoutMs) return false;
+    sourceReadRetryAdmissions++;
+    return true;
+  };
   const day = dayOf(now), key = pr262StorageKey(`pilot/profile-builder/${day}.json`), owner = crypto.randomUUID();
   const loaded = await read(key, signal);
   if (Date.parse(String(loaded.value.leaseUntil ?? "")) > now.getTime()) return { ok: true, status: "busy", target: PROFILE_DAILY_TARGET };
@@ -280,6 +294,7 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
         if (!identity.neverVerified || identity.lastAttempt) retryLaneAttempts++;
         try {
           if (await ensureCompanyProfile(identity, provider.fetchImpl, new Date(), { signal, persistenceSignal,
+            reserveSourceReadRetry, onSourceReadRetryRecovered: () => { sourceReadRetryRecoveries++; },
             // Headers/connect errors are counted by paced fetch; body failures
             // belong to that same request, not an invented additional attempt.
             onResponseBodyFailure: () => { requestFailures++; responseBodyFailures++; },
@@ -327,6 +342,7 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
     failureCategory, failureOperationFamily, storageFailureObserved, failureRateBasis: "source_requests_only",
     requests, requestFailures, responseBodyFailures, failureRatePercent: requests ? requestFailures / requests * 100 : null,
     ...eligibility, cohortProfiles, retryAttempts, retryLaneAttempts, pendingReasons, durationMs: Date.now() - startedAt, concurrency: 2,
+    sourceReadRetryAdmissions, sourceReadRetryRecoveries,
     modelCalls: 0, failure, guarantees500: false };
   const current = await read(key, summarySignal);
   if (current.value.owner !== owner) throw new Error("simple_profile_lease_lost");

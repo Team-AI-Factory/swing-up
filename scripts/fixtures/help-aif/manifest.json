@@ -1,0 +1,58 @@
+{
+  "issuer": {
+    "ticker": "HELP",
+    "company": "Helus Pharma Inc.",
+    "cik": "0001833141"
+  },
+  "form": "40-F",
+  "filedAt": "2026-06-29",
+  "accession": "0001833141-26-000046",
+  "retrievedDate": "2026-10-15",
+  "provenance": "Official public source bytes captured independently; production cache byte identity is unknown.",
+  "files": [
+    {
+      "url": "https://www.sec.gov/Archives/edgar/data/1833141/000183314126000046/cybn-20260331.htm",
+      "finalUrl": "https://www.sec.gov/Archives/edgar/data/1833141/000183314126000046/cybn-20260331.htm",
+      "status": 200,
+      "bytes": 298905,
+      "sha256": "33975d3f9e1e9e9ed29acecd33b7d3f3af0e462df35f27459529f3751d766887",
+      "elapsedMs": 11611,
+      "eof": true,
+      "file": "cybn-20260331.htm.gz",
+      "compressedSha256": "6c0923784de0ca1af8e45d5739505c4ffbea4a313478de1a33ba1a61b9cb6363"
+    },
+    {
+      "url": "https://www.sec.gov/Archives/edgar/data/1833141/000183314126000046/0001833141-26-000046-index.html",
+      "finalUrl": "https://www.sec.gov/Archives/edgar/data/1833141/000183314126000046/0001833141-26-000046-index.html",
+      "status": 200,
+      "bytes": 17353,
+      "sha256": "c9ac33aeadd1798a287bd43bda9987dc71f3b533c373ff085c9c941e29ad1094",
+      "elapsedMs": 10609,
+      "eof": true,
+      "file": "index.html.gz",
+      "compressedSha256": "3692f847d4b16100c390a1ddbc02a1f110fd79cbc494d0ecb36ff7c23f3baf1e"
+    },
+    {
+      "url": "https://www.sec.gov/Archives/edgar/data/1833141/000183314126000046/cybin-annualinformationfor.htm",
+      "finalUrl": "https://www.sec.gov/Archives/edgar/data/1833141/000183314126000046/cybin-annualinformationfor.htm",
+      "status": 200,
+      "bytes": 1459900,
+      "sha256": "5033da381d69274bfe99700bf4a0bb45e9df425c2df48060356ca2847b8ac6b9",
+      "elapsedMs": 2052,
+      "eof": true,
+      "file": "cybin-annualinformationfor.htm.gz",
+      "compressedSha256": "37d81eab1da28e59821ed438a692baef197f00625b91d306f4ca67a19959b3d3"
+    },
+    {
+      "url": "https://data.sec.gov/submissions/CIK0001833141.json",
+      "finalUrl": "https://data.sec.gov/submissions/CIK0001833141.json",
+      "status": 200,
+      "bytes": 75514,
+      "sha256": "51619b21e4645c2d016e324c8afa03789d713a55d30723005b99469a1c66dcbb",
+      "elapsedMs": 11427,
+      "eof": true,
+      "file": "submissions.json.gz",
+      "compressedSha256": "5551cb61b7dfabdc379a70862cdbb51c0851916329c4d357d44312f195e60a09"
+    }
+  ]
+}

@@ -18,12 +18,12 @@ const fact=(name,value,format="")=>`<ix:nonNumeric name="dei:${name}" ${format?`
 const declared=`<tr><td>99.1</td><td><a href="a991-alliedx2026aif.htm">Annual Information Form for the year ended December 31, 2025</a></td></tr>`;
 const annualHtml=fact("DocumentType","40-F")+fact("EntityCentralIndexKey","0001993344")
   +fact("DocumentAnnualReport","&#9746;","ixt:fixed-true")+fact("DocumentRegistrationStatement","&#9744;","ixt:fixed-false")
-  +fact("AnnualInformationForm","&#9746;","ixt:fixed-true")+`<table>${declared}</table>`;
+  +fact("DocumentPeriodEndDate","2025-12-31")+fact("AnnualInformationForm","&#9746;","ixt:fixed-true")+`<table>${declared}</table>`;
 const indexed=`<tr><td>3</td><td>EX-99.1</td><td><a href="/Archives/edgar/data/1993344/000162828026022512/a991-alliedx2026aif.htm">a991-alliedx2026aif.htm</a></td><td>EX-99.1</td><td>1000</td></tr>`;
-const indexHtml=`<h1>Form 40-F</h1><div>SEC Accession No. 0001628280-26-022512</div><div>Filing Date</div><div>2026-04-01</div><span>CIK: 0001993344</span><table>
+const indexHtml=`<h1>Form 40-F</h1><div>SEC Accession No. 0001628280-26-022512</div><div>Filing Date</div><div>2026-04-01</div><span>CIK: 0001993344</span><div>Period of Report</div><div>2025-12-31</div><table>
 <tr><td>1</td><td>40-F</td><td><a href="/ix?doc=/Archives/edgar/data/1993344/000162828026022512/aaue-20251231.htm">aaue-20251231.htm</a></td><td>40-F</td><td>2000</td></tr>${indexed}</table>`;
 const input={cik:"0001993344",filing,annualHtml,indexHtml};
-const expected={url:aif,form:"40-F",filedAt:"2026-04-01",cik:"0001993344",accessionNumber:"0001628280-26-022512",annualFilingUrl:url,annualFilingIndexUrl:base+"0001628280-26-022512-index.html"};
+const expected={url:aif,form:"40-F",filedAt:"2026-04-01",cik:"0001993344",accessionNumber:"0001628280-26-022512",reportPeriod:"2025-12-31",annualFilingUrl:url,annualFilingIndexUrl:base+"0001628280-26-022512-index.html"};
 assert.deepEqual(resolveAif(input),expected);
 assert.deepEqual(resolveAif({...input,cik:"1993344"}),expected,"CIK normalization preserves authenticated identity");
 assert.equal(indexUrl(url,input.cik),expected.annualFilingIndexUrl);

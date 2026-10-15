@@ -5,11 +5,11 @@ import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 const now = new Date(), cik = "0001993344", identity = { ticker: "AAUC", company: "Allied Gold Corp", cik };
 const base = "https://www.sec.gov/Archives/edgar/data/1993344/000162828026022512/", cover = base + "aaue-20251231.htm", aif = base + "a991-alliedx2026aif.htm", index = base + "0001628280-26-022512-index.html";
 const fact = (name, value) => `<ix:nonNumeric name="dei:${name}">${value}</ix:nonNumeric>`;
-const wrapper = fact("DocumentType", "40-F") + fact("EntityCentralIndexKey", cik) + fact("DocumentAnnualReport", "true") + fact("DocumentRegistrationStatement", "false") + fact("AnnualInformationForm", "true") + `<table><tr><td>99.1</td><td><a href="a991-alliedx2026aif.htm">Annual Information Form for the year ended 2025</a></td></tr></table>`;
-const indexHtml = `<div>SEC Accession No. 0001628280-26-022512</div><div>Filing Date</div><div>2026-04-01</div><span>CIK: 0001993344</span><table><tr><td>1</td><td>Annual</td><td><a href="aaue-20251231.htm">cover</a></td><td>40-F</td></tr><tr><td>2</td><td>Exhibit</td><td><a href="a991-alliedx2026aif.htm">AIF</a></td><td>EX-99.1</td></tr></table>`;
+const wrapper = fact("DocumentType", "40-F") + fact("EntityCentralIndexKey", cik) + fact("DocumentAnnualReport", "true") + fact("DocumentRegistrationStatement", "false") + fact("DocumentPeriodEndDate", "2025-12-31") + fact("AnnualInformationForm", "true") + `<table><tr><td>99.1</td><td><a href="a991-alliedx2026aif.htm">Annual Information Form for the year ended December 31, 2025</a></td></tr></table>`;
+const indexHtml = `<div>SEC Accession No. 0001628280-26-022512</div><div>Filing Date</div><div>2026-04-01</div><span>CIK: 0001993344</span><div>Period of Report</div><div>2025-12-31</div><table><tr><td>1</td><td>Annual</td><td><a href="aaue-20251231.htm">cover</a></td><td>40-F</td></tr><tr><td>2</td><td>Exhibit</td><td><a href="a991-alliedx2026aif.htm">AIF</a></td><td>EX-99.1</td></tr></table>`;
 const business = "The Company produces precision instruments and calibration equipment for industrial laboratories.";
 const buyers = "Our customers include industrial laboratories and research institutions that buy precision instruments.";
-const html = `<h1>ANNUAL INFORMATION FORM</h1><h2>DESCRIPTION OF THE BUSINESS</h2><p>${business.repeat(7)}</p><p>${buyers}</p><h2>Risk Factors</h2>`;
+const html = `<h1>ANNUAL INFORMATION FORM</h1><p>For the year ended December 31, 2025</p><h2>DESCRIPTION OF THE BUSINESS</h2><p>${business.repeat(7)}</p><p>${buyers}</p><h2>Risk Factors</h2>`;
 const submissions = { cik: 1993344, tickers: ["AAUC"], sicDescription: "Gold and Silver Ores", filings: { recent: { form: ["40-F"], filingDate: ["2026-04-01"], accessionNumber: ["0001628280-26-022512"], primaryDocument: ["aaue-20251231.htm"] } } };
 const originalInfo = console.info;
 try {

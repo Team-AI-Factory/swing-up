@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "asOf": "2026-10-15T08:00:00.000Z",
+  "source": {
+    "identity": {
+      "ticker": "AMH",
+      "company": "American Homes 4 Rent",
+      "cik": "0001562401"
+    },
+    "currentCacheByteIdentity": "unknown",
+    "submissions": {
+      "url": "https://data.sec.gov/submissions/CIK0001562401.json",
+      "timeoutSeconds": 12,
+      "byteCap": 5000000,
+      "status": 200,
+      "finalUrl": "https://data.sec.gov/submissions/CIK0001562401.json",
+      "eof": true,
+      "bytes": 164013,
+      "sha256": "b2fd62f61ca660d4fee5540fbe2b1a5c5bd0ede621e151500d1ec88b66d3c242",
+      "elapsedMs": 11313
+    },
+    "filing": {
+      "form": "10-K",
+      "filedAt": "2026-02-20",
+      "accession": "0001562401-26-000010",
+      "sourceUrl": "https://www.sec.gov/Archives/edgar/data/1562401/000156240126000010/amh-20251231.htm",
+      "document": "amh-20251231.htm"
+    },
+    "annual": {
+      "url": "https://www.sec.gov/Archives/edgar/data/1562401/000156240126000010/amh-20251231.htm",
+      "timeoutSeconds": 12,
+      "byteCap": 5000000,
+      "status": 200,
+      "finalUrl": "https://www.sec.gov/Archives/edgar/data/1562401/000156240126000010/amh-20251231.htm",
+      "eof": true,
+      "bytes": 3376438,
+      "sha256": "884669bb6baf540fb343d98de8dac859ffb223f2a909bcf0c1f893dbc52d3abc",
+      "elapsedMs": 7436
+    }
+  },
+  "fixture": "amh-20251231.html.gz",
+  "submissionsFixture": "amh-submissions.json.gz",
+  "baselineBusinessContext": {
+    "version": 1,
+    "status": "sourced_business",
+    "ticker": "AMH",
+    "company": "American Homes 4 Rent",
+    "cik": "0001562401",
+    "business": "We provide annual safety training for all employees, and every employee in a safety-sensitive position is required to complete additional relevant training.",
+    "description": "We provide annual safety training for all employees, and every employee in a safety-sensitive position is required to complete additional relevant training.",
+    "sourceType": "sec_annual_filing",
+    "sourceUrl": "https://www.sec.gov/Archives/edgar/data/1562401/000156240126000010/amh-20251231.htm",
+    "sourceFiledAt": "2026-02-20",
+    "verifiedAt": "2026-10-15T08:00:00.000Z",
+    "sourceForm": "10-K"
+  },
+  "baselineReason": "company_profile_customers_not_extracted",
+  "sourceScope": "Fresh official SEC annual; production cached source byte identity unknown. Own-workforce safety-training exclusion only; no claimed AMH recovery."
+}

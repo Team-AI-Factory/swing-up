@@ -1,13 +1,15 @@
+import { extractRetailChannelCustomerEvidence, verifiedRetailChannelCustomerEvidence, type RetailChannelCustomerEvidence } from "@/lib/company-profile-retail-channel";
 import { extractFinancialNoteCustomerEvidence, verifiedFinancialNoteCustomerEvidence, type FinancialNoteCustomerEvidence } from "@/lib/company-profile-financial-customer-source";
 import { annualInformationFormBusinessText, secAnnualFilingIndexUrl } from "@/lib/company-profile-annual-source";
 import { extractRevenueGeography, revenueGeographyFromQuote, type RevenueGeography } from "@/lib/company-revenue-geography";
 /** Company descriptions must be extracts from a dated, identity-verified source. */
-export const COMPANY_PROFILE_PARSER_REVISION = 16;
+export const COMPANY_PROFILE_PARSER_REVISION = 17;
 export type CompanyIdentity = { ticker?: unknown; company?: unknown; cik?: unknown };
 export type VerifiedCompanyProfile = {
   version: 1; status: "verified"; ticker: string; company: string; cik: string;
   business: string; customers: string; description: string;
   customerType?: "accounts_receivable_customer_pools" | "revenue_contract_counterparties"; customerEvidence?: FinancialNoteCustomerEvidence;
+  retailChannelEvidence?: RetailChannelCustomerEvidence;
   revenueGeography?: RevenueGeography;
   industry?: string; industrySourceUrl?: string;
   sourceForm?: "10-K" | "20-F" | "40-F"; annualFilingUrl?: string; annualFilingIndexUrl?: string;
@@ -69,6 +71,9 @@ function operatingBusiness(sentence: string, identity: CompanyIdentity) {
   // sells. These guards also run on cached profiles, before customer recovery.
   const ownWorkforce = /\b(?:our|its|the company['’]s) (?:(?:global|eligible|current|former|full[- ]time|part[- ]time)\s+){0,3}(?:employees|associates|staff|team members)\b/i;
   if (ownWorkforce.test(sentence) && /\b(?:total rewards|compensation|retirement plans|provident fund|benefit package|professional development|training opportunities)\b/i.test(sentence)) return false;
+  // Mandatory safety instruction for the issuer's own workforce is not a
+  // description of an externally sold training product or operating business.
+  if (/^(?:We|The Company) provides? (?:annual|regular|mandatory) safety training for (?:all|our) employees, and every employee in a safety-sensitive position is required to complete additional relevant training[.]$/i.test(sentence)) return false;
   if (/^(?:We|The Company) (?:also )?provides? employee paid supplemental life and accident insurance plans[.]$/i.test(sentence)) return false;
   if (/^(?:We|The company) (?:(?:also|currently) )?(?:offer|offers|provide|provides) (?:(?:our|all|eligible|full[- ]time|part[- ]time|non[- ]executive|officer)\s+){0,6}employees\b.{0,160}\b(?:total compensation|base salary|cash target bonus|employee stock purchase|benefit package|paid time off)\b/i.test(sentence)
     || /^We (?:(?:also|currently) )?(?:offer|provide) (?:\d+ paid days of time off|paid parental leave to)\b/i.test(sentence)
@@ -259,7 +264,7 @@ function customerDescriptionRank(sentence: string, identity: CompanyIdentity) {
   return explicit ? 2 : 1;
 }
 /** Business-only source context is never a verified full profile or a coverage success. */
-export type SourcedCompanyBusiness = Omit<VerifiedCompanyProfile, "status" | "customers" | "customerType" | "customerEvidence" | "revenueGeography"> & {
+export type SourcedCompanyBusiness = Omit<VerifiedCompanyProfile, "status" | "customers" | "customerType" | "customerEvidence" | "retailChannelEvidence" | "revenueGeography"> & {
   status: "sourced_business";
 };
 export function sourcedCompanyBusiness(value: unknown, identity: CompanyIdentity, now = new Date()): SourcedCompanyBusiness | null {
@@ -297,13 +302,16 @@ export function verifiedCompanyProfile(value: unknown, identity: CompanyIdentity
   const business = text(decodeSourceEntities(text(p.business))), customers = text(decodeSourceEntities(text(p.customers))), description = text(decodeSourceEntities(text(p.description)));
   const customerEvidence = verifiedFinancialNoteCustomerEvidence(p.customerEvidence, { identity: { cik, ticker, company: text(identity.company) },
     form: text(p.sourceForm), sourceUrl: text(p.sourceUrl), filedAt: text(p.sourceFiledAt), now });
+  const retailChannelEvidence = verifiedRetailChannelCustomerEvidence(p.retailChannelEvidence, { cik,
+    form: text(p.sourceForm), sourceUrl: text(p.sourceUrl), filedAt: text(p.sourceFiledAt) });
+  if (p.retailChannelEvidence != null && (!retailChannelEvidence || retailChannelEvidence.quote !== customers || p.customerEvidence != null || p.customerType != null)) return null;
   const evidenceType = customerEvidence?.section === "financial_notes_accounts_receivable" ? "accounts_receivable_customer_pools" : "revenue_contract_counterparties";
   if ((p.customerEvidence != null || p.customerType != null) && (!customerEvidence || p.customerType !== evidenceType || customerEvidence.quote !== customers)) return null;
   const verified = Date.parse(text(p.verifiedAt)), filed = Date.parse(text(p.sourceFiledAt));
   if (!Number.isFinite(verified) || !Number.isFinite(filed) || verified > now.getTime() || filed > verified
     || now.getTime() - verified > 30 * 86400000 || now.getTime() - filed > 550 * 86400000
     || business.length < 60 || customers.length < 25 || description.length > 2400
-    || !operatingBusiness(business, { ...identity, company: p.company }) || (!customerDescriptionRank(customers, { ...identity, company: p.company }) && !customerEvidence)
+    || !operatingBusiness(business, { ...identity, company: p.company }) || (!customerDescriptionRank(customers, { ...identity, company: p.company }) && !customerEvidence && !retailChannelEvidence)
     || description !== (business === customers ? business : `${business} ${customers}`)
     || placeholder.test(description)) return null;
   try {
@@ -322,6 +330,8 @@ export function verifiedCompanyProfile(value: unknown, identity: CompanyIdentity
   const normalized = { ...p, business, customers, description } as VerifiedCompanyProfile;
   if (customerEvidence) { normalized.customerEvidence = customerEvidence; normalized.customerType = evidenceType; }
   else { delete normalized.customerEvidence; delete normalized.customerType; }
+  if (retailChannelEvidence) normalized.retailChannelEvidence = retailChannelEvidence;
+  else delete normalized.retailChannelEvidence;
   if (industry) { normalized.industry = industry; normalized.industrySourceUrl = industryUrl; }
   else { delete normalized.industry; delete normalized.industrySourceUrl; }
   const geography = revenueGeographyFromQuote(object(p.revenueGeography).quote, text(p.sourceFiledAt));
@@ -402,7 +412,10 @@ export function inspectCompanyProfileExtraction(input: ProfileExtractionInput) {
       : /^We also offer\b/i.test(sentence) ? 0
       : /\b(?:sell|sells|design|designs|develop|develops|manufacture|manufactures|offer|offers)\b/i.test(sentence) ? 2 : 1 }))
     .sort((a, b) => b.rank - a.rank)[0]?.sentence;
-  const businessCustomers = useful.map(sentence => ({ sentence, rank: customerDescriptionRank(sentence, input.identity) }))
+  const retailChannelEvidence = extractRetailChannelCustomerEvidence(section, { cik: profileCik(input.identity.cik) ?? "",
+    form: input.form, sourceUrl: input.sourceUrl, filedAt: input.filedAt });
+  const businessCustomers = useful.map(sentence => ({ sentence,
+    rank: retailChannelEvidence?.quote === sentence ? 2 : customerDescriptionRank(sentence, input.identity) }))
     .filter(candidate => candidate.rank > 0).sort((a, b) => b.rank - a.rank)[0]?.sentence;
   // A separately proven financial-note quote must retain its real section and
   // report period. It is never promoted by the Business-section predicates.
@@ -418,6 +431,7 @@ export function inspectCompanyProfileExtraction(input: ProfileExtractionInput) {
     : !business ? "company_profile_business_not_extracted" : "company_profile_customers_not_extracted" };
   const profile = verifiedCompanyProfile({ version: 1, status: "verified", ticker: text(input.identity.ticker).toUpperCase(), company: text(input.identity.company),
     cik: profileCik(input.identity.cik), business, customers,
+    ...(retailChannelEvidence?.quote === customers ? { retailChannelEvidence } : {}),
     ...(customerEvidence ? { customerEvidence, customerType: customerEvidence.section === "financial_notes_accounts_receivable" ? "accounts_receivable_customer_pools" : "revenue_contract_counterparties" } : {}), revenueGeography: extractRevenueGeography(input.html, input.filedAt), description: business === customers ? business : `${business} ${customers}`,
     sourceType: "sec_annual_filing", sourceForm: input.form, annualFilingUrl: input.annualFilingUrl, annualFilingIndexUrl: input.annualFilingIndexUrl, sourceUrl: input.sourceUrl, sourceFiledAt: input.filedAt, verifiedAt: input.now.toISOString() }, input.identity, input.now);
   return { profile, businessContext, reason: profile ? null : "company_profile_identity_or_freshness_invalid" };

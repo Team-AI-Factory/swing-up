@@ -5,7 +5,7 @@
 export type SecAnnualFilingReference = { url: string; form: string; filedAt: string };
 export type SecAnnualInformationFormReference = SecAnnualFilingReference & {
   form: "40-F"; cik: string; accessionNumber: string;
-  annualFilingUrl: string; annualFilingIndexUrl: string;
+  annualFilingUrl: string; annualFilingIndexUrl: string; reportPeriod: string;
 };
 const normalize = (value: string) => value.replace(/\s+/g, " ").trim();
 function entities(value: string) {
@@ -56,10 +56,38 @@ function hrefs(html: string) {
   return [...html.matchAll(/<a\b[^>]*>/gi)].map(match => attribute(match[0],"href")).filter(Boolean);
 }
 function fact(html: string, name: string) {
-  const found = [...html.matchAll(/<ix:nonNumeric\b([^>]*)>([\s\S]*?)<\/ix:nonNumeric>/gi)]
+  const found = [...html.matchAll(/<ix:nonNumeric\b([^>]*)>/gi)]
     .filter(match => attribute(match[1],"name") === `dei:${name}`);
   if (found.length !== 1) return null;
-  return { value: normalize(visible(found[0][2])), format: attribute(found[0][1],"format") };
+  if (attribute(found[0][1],"continuedAt") || /^(?:true|1)$/i.test(attribute(found[0][1],"nil"))) return null;
+  // The report-period fact can contain a nested fiscal month/day fact.
+  const start = (found[0].index ?? 0) + found[0][0].length;
+  const tags = /<\/?ix:nonNumeric\b[^>]*>/gi;
+  tags.lastIndex = start;
+  let depth = 1;
+  for (let tag = tags.exec(html); tag; tag = tags.exec(html)) {
+    depth += /^<\//.test(tag[0]) ? -1 : 1;
+    if (depth === 0) return { value: normalize(visible(html.slice(start,tag.index))), format: attribute(found[0][1],"format") };
+  }
+  return null;
+}
+const dateText = "(?:\\d{4}-\\d{2}-\\d{2}|(?:January|February|March|April|May|June|July|August|September|October|November|December)\\s+\\d{1,2},?\\s+\\d{4})";
+function calendarDate(value: string): string | null {
+  const names = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+  const named = /^(\w+) (\d{1,2}),? (\d{4})$/i.exec(normalize(value));
+  const month = named ? names.findIndex(name => name.toLowerCase() === named[1].toLowerCase()) + 1 : 0;
+  const iso = named && month ? `${named[3]}-${String(month).padStart(2,"0")}-${named[2].padStart(2,"0")}` : value;
+  return /^\d{4}-\d{2}-\d{2}$/.test(iso) && Number.isFinite(Date.parse(iso))
+    && new Date(iso).toISOString().slice(0,10) === iso ? iso : null;
+}
+function yearEndedPeriod(value: string): string | null {
+  const found = [...normalize(value).matchAll(new RegExp(`\\b(?:fiscal )?year ended\\s+(${dateText})\\b`,"gi"))];
+  return found.length === 1 ? calendarDate(found[0][1]) : null;
+}
+/** An authenticated reporting period is a real calendar date, not metadata
+ * inferred from a filename or signature/filing date. */
+export function validAnnualInformationFormPeriod(value: unknown, filedAt: string): value is string {
+  return typeof value === "string" && calendarDate(value) === value && calendarDate(filedAt) === filedAt && value <= filedAt;
 }
 function trueFact(html: string, name: string) {
   const f = fact(html,name);
@@ -81,6 +109,11 @@ export function resolve40FAnnualInformationForm(input: {
     || trueFact(annualHtml,"DocumentRegistrationStatement") || !trueFact(annualHtml,"AnnualInformationForm")
     || fact(annualHtml,"EntityCentralIndexKey")?.value !== reference.cik) return null;
   const indexText = normalize(visible(indexHtml.replace(/<\/div>|<\/span>/gi," ")));
+  const periodFact = fact(annualHtml,"DocumentPeriodEndDate");
+  if (periodFact?.format && !/^(?:[\w.-]+:)?date-(?:monthname-day-year-en|year-month-day)$/.test(periodFact.format)) return null;
+  const reportPeriod = calendarDate(periodFact?.value ?? "");
+  const indexPeriods = [...indexText.matchAll(/\bPeriod of Report\s+(\d{4}-\d{2}-\d{2})\b/g)];
+  if (!reportPeriod || reportPeriod > filing.filedAt || indexPeriods.length !== 1 || indexPeriods[0][1] !== reportPeriod) return null;
   if (!indexText.includes(reference.accession)
     || !indexText.includes(`Filing Date ${filing.filedAt}`)
     || !new RegExp(`CIK\\s*:\\s*0*${Number(cik)}\\b`).test(indexText)) return null;
@@ -94,9 +127,16 @@ export function resolve40FAnnualInformationForm(input: {
   const indexed = exhibitRows.flatMap(row => hrefs(row[2] ?? "").map(href => documentLink(href,reference.directory))).filter(Boolean);
   const declaredRows = rows(annualHtml).filter(row => /^(?:EX-)?99\.1$/i.test(normalize(visible(row[0] ?? ""))));
   if (declaredRows.length !== 1 || !/^Annual Information Form\b/i.test(normalize(visible(declaredRows[0][1] ?? "")))) return null;
-  const declared = declaredRows.flatMap(row => hrefs(row[1] ?? "").map(href => documentLink(href,reference.directory))).filter(Boolean);
+  if (yearEndedPeriod(visible(declaredRows[0][1] ?? "")) !== reportPeriod) return null;
+  // Filing generators can split one exhibit caption into adjacent anchors.
+  // Require one distinct authenticated document, not one HTML anchor; reject
+  // every unsafe or conflicting target rather than filtering it away.
+  const declaredLinks = [...(declaredRows[0][1] ?? "").matchAll(/<a\b[^>]*>/gi)]
+    .map(match => documentLink(attribute(match[0],"href"),reference.directory));
+  if (!declaredLinks.length || declaredLinks.some(link => !link)) return null;
+  const declared = [...new Set(declaredLinks)];
   if (indexed.length !== 1 || declared.length !== 1 || indexed[0] !== declared[0] || indexed[0] === filing.url) return null;
-  return {url:indexed[0]!,form:"40-F",filedAt:filing.filedAt,cik:reference.cik,accessionNumber:reference.accession,
+  return {url:indexed[0]!,form:"40-F",filedAt:filing.filedAt,cik:reference.cik,accessionNumber:reference.accession,reportPeriod,
     annualFilingUrl:filing.url,annualFilingIndexUrl:`${reference.directory}${reference.accession}-index.html`};
 }
 /** Exact AIF business section only; never risk factors, general product uses,
@@ -112,9 +152,12 @@ function annualInformationFormText(html: string): string {
 }
 /** Apply to newly fetched raw AIF bytes before extraction/caching. Cache-only
  * replay intentionally uses annualInformationFormBusinessText instead. */
-export function isAnnualInformationFormDocument(html: string): boolean {
+export function isAnnualInformationFormDocument(html: string, expectedPeriod?: string): boolean {
   const start = annualInformationFormText(html).slice(0,5000);
-  return /^ANNUAL INFORMATION FORM[.:]?\s*$/im.test(start)
+  const titles = [...start.matchAll(/^ANNUAL INFORMATION FORM[.:]?\s*$/gim)];
+  const titlePeriod = titles.length === 1 ? yearEndedPeriod(start.slice((titles[0].index ?? 0) + titles[0][0].length,
+    (titles[0].index ?? 0) + titles[0][0].length + 500)) : null;
+  return titles.length === 1 && (expectedPeriod === undefined || (calendarDate(expectedPeriod) === expectedPeriod && titlePeriod === expectedPeriod))
     && annualInformationFormBusinessText(html).length >= 500;
 }
 export function annualInformationFormBusinessText(html: string): string {

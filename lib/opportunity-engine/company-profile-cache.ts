@@ -2,7 +2,7 @@ import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
 import { createHash } from "node:crypto";
 import { createCompleteSourceRecord, readCompleteSourceRecord, type CompleteSourceBinding, type CompleteSourceRecord } from "@/lib/company-profile-complete-source";
 import { inspectAnnualDocumentIdentity } from "@/lib/company-profile-financial-customer-source";
-import { isAnnualInformationFormDocument, resolve40FAnnualInformationForm, secAnnualFilingIndexUrl } from "@/lib/company-profile-annual-source";
+import { isAnnualInformationFormDocument, resolve40FAnnualInformationForm, secAnnualFilingIndexUrl, validAnnualInformationFormPeriod } from "@/lib/company-profile-annual-source";
 import { setTimeout as pause } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { redactSecrets } from "@/lib/redact-secrets";
@@ -17,7 +17,7 @@ const SOURCE_LAYOUT_REVISION = 1;
 type Json = Record<string, unknown>;
 const object = (v: unknown): Json => v && typeof v === "object" && !Array.isArray(v) ? v as Json : {};
 const text = (v: unknown) => typeof v === "string" ? v.trim() : "";
-type Filing = { url: string; form: string; filedAt: string; industry?: string; checkedAt?: string; annualFilingUrl?: string; annualFilingIndexUrl?: string };
+type Filing = { url: string; form: string; filedAt: string; industry?: string; checkedAt?: string; annualFilingUrl?: string; annualFilingIndexUrl?: string; reportPeriod?: string };
 type FailedExtractionInput = { version: 1; parserRevision: number; digest: string; reason?: string };
 type Entry = { ticker: string; company: string; cik: string; updatedAt: string; nextAttemptAt: string; profile: VerifiedCompanyProfile | null; firstVerifiedAt?: string; verificationHistoryKnown?: true; filing?: Filing; error?: string; extractionFailure?: string; parserRevision?: number; cachedParserRevision?: number; failedExtractionInput?: FailedExtractionInput };
 async function load(options: { signal?: AbortSignal; forWrite?: boolean } = {}) {
@@ -359,14 +359,24 @@ function completeSourceBinding(filing: Filing, cik: string): CompleteSourceBindi
 function completeAnnualDocument(html: string, filing: Filing, identity: CompanyIdentity, now: Date) {
   // A 40-F AIF has already been resolved against its authenticated cover and
   // same-accession index above. Regular annuals must carry matching strict DEI.
-  return filing.form === "40-F" ? isAnnualInformationFormDocument(html)
+  return filing.form === "40-F" ? Boolean(validAnnualInformationFormPeriod(filing.reportPeriod, filing.filedAt) && isAnnualInformationFormDocument(html, filing.reportPeriod))
     : Boolean(inspectAnnualDocumentIdentity({ html, identity: { cik: String(identity.cik) }, form: filing.form,
       sourceUrl: filing.url, filedAt: filing.filedAt, now }));
 }
 function completeSource(source: Json, filing: Filing, identity: CompanyIdentity, now: Date) {
+  if (filing.form === "40-F" && (!validAnnualInformationFormPeriod(filing.reportPeriod, filing.filedAt)
+    || (source.reportPeriod !== undefined && source.reportPeriod !== filing.reportPeriod))) return { status: "invalid" as const };
   const decoded = readCompleteSourceRecord(source.completeSource, completeSourceBinding(filing, String(identity.cik)), now);
   if (decoded.status === "valid" && !completeAnnualDocument(decoded.html, filing, identity, now)) return { status: "invalid" as const };
   return decoded;
+}
+/** A 40-F section cannot attest its AIF title-page period. Both direct and
+ * background cache recovery require complete authenticated bytes for it.
+ * Other annual forms retain their existing exact-section recovery path. */
+function reusableBusinessSection(source: Json, filing: Filing, completeStatus: "valid" | "invalid" | "missing") {
+  if (filing.form === "40-F" || completeStatus === "invalid" || source.layoutRevision !== SOURCE_LAYOUT_REVISION
+    || source.url !== filing.url || source.filedAt !== filing.filedAt) return "";
+  return text(source.businessText);
 }
 function annualFiling(body: Json, identity: CompanyIdentity, now: Date): Filing | null {
   if (profileCik(body.cik) !== profileCik(identity.cik) || !Array.isArray(body.tickers)
@@ -462,13 +472,14 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
     }
     if (!filing) throw new Error("company_profile_annual_filing_unavailable");
     if (!new RegExp(`^https://www\\.sec\\.gov/Archives/edgar/data/${Number(exact.cik)}/\\d{18}/[A-Za-z0-9._-]+\\.html?$`).test(filing.url)) throw new Error("company_profile_filing_identity_mismatch");
-    if (filing.form === "40-F" && !filing.annualFilingUrl) {
+    if (filing.form === "40-F" && (!filing.annualFilingUrl || !validAnnualInformationFormPeriod(filing.reportPeriod, filing.filedAt))) {
       phase = "annual_40f_source_resolution";
-      const indexUrl = secAnnualFilingIndexUrl(filing.url, exact.cik);
+      const coverFiling = { ...filing, url: filing.annualFilingUrl ?? filing.url };
+      const indexUrl = secAnnualFilingIndexUrl(coverFiling.url, exact.cik);
       if (!indexUrl) throw new Error("company_profile_40f_identity_invalid");
-      const annualHtml = await request(filing.url);
+      const annualHtml = await request(coverFiling.url);
       const indexHtml = await request(indexUrl);
-      const resolved = resolve40FAnnualInformationForm({ cik: exact.cik, filing, annualHtml, indexHtml });
+      const resolved = resolve40FAnnualInformationForm({ cik: exact.cik, filing: coverFiling, annualHtml, indexHtml });
       if (!resolved) throw new Error("company_profile_40f_aif_unverified");
       filing = { ...filing, ...resolved };
     }
@@ -531,7 +542,7 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
     }
     const source = sourceSaved.found && sourceSaved.text ? object(JSON.parse(sourceSaved.text)) : {};
     const completeSaved = completeSource(source, filing, exact, now);
-    const cachedSection = completeSaved.status !== "invalid" && source.layoutRevision === SOURCE_LAYOUT_REVISION && source.url === filing.url && source.filedAt === filing.filedAt ? text(source.businessText) : "";
+    const cachedSection = reusableBusinessSection(source, filing, completeSaved.status);
     const sectionHeading = filing.form === "40-F" ? "DESCRIPTION OF THE BUSINESS" : filing.form === "20-F" ? "Item 4. Information on the Company" : "Item 1. Business";
     // Complete original bytes can be re-parsed after grammar or note-extraction
     // changes without another SEC request. Their original observation never moves.
@@ -544,13 +555,13 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
       reusableFailedInput = false;
       let receipt: { bytes: Uint8Array; response: Response } | undefined;
       const html = await request(filing.url, body => {
-        if (filing.form === "40-F" && !isAnnualInformationFormDocument(body)) return false;
+        if (filing.form === "40-F" && !isAnnualInformationFormDocument(body, filing.reportPeriod)) return false;
         const candidate = extract(body);
         // Financial-note proof requires EOF, not merely a closing HTML tag in
         // an early chunk. A later body failure must still fail this request.
         return Boolean(candidate && !candidate.customerEvidence);
       }, (bytes, response) => { receipt = { bytes, response }; });
-      if (filing.form === "40-F" && !isAnnualInformationFormDocument(html)) throw new Error("company_profile_aif_document_unverified");
+      if (filing.form === "40-F" && !isAnnualInformationFormDocument(html, filing.reportPeriod)) throw new Error("company_profile_aif_document_unverified");
       const extracted = extract(html);
       const businessText = annualBusinessText(html, filing.form);
       let completeRecord: CompleteSourceRecord | null = null;
@@ -560,6 +571,7 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
       }
       if (businessText || completeRecord) {
         const sourceWrite = await writeVersionedJsonToR2(sourceKey, { version: 1, layoutRevision: SOURCE_LAYOUT_REVISION, parserRevision: COMPANY_PROFILE_PARSER_REVISION, url: filing.url, filedAt: filing.filedAt, businessText, financialCustomerEvidence: extracted?.customerEvidence,
+        ...(filing.form === "40-F" ? { reportPeriod: filing.reportPeriod } : {}),
         ...(completeRecord ? { completeSource: completeRecord } : {}), collectedAt: now.toISOString() }, { ...(sourceSaved.etag ? { expectedEtag: sourceSaved.etag } : { createOnly: true }), signal: options.persistenceSignal ?? options.signal });
         // Only acknowledged complete bytes match the fresh full-document
         // extraction. A legacy excerpt gets its own first parse next time.
@@ -646,9 +658,10 @@ async function recoverCachedProfiles(entries: Entry[], listings: Json[], now: Da
       checked.push({ ...entry, cachedParserRevision: COMPANY_PROFILE_PARSER_REVISION });
       const completeSaved = completeSource(source, filing, entry, now);
       if (completeSaved.status === "invalid") return;
-      if (completeSaved.status !== "valid" && (source.layoutRevision !== SOURCE_LAYOUT_REVISION || source.url !== filing.url || source.filedAt !== filing.filedAt || !text(source.businessText))) return;
+      const cachedSection = reusableBusinessSection(source, filing, completeSaved.status);
+      if (completeSaved.status !== "valid" && !cachedSection) return;
       const heading = filing.form === "40-F" ? "DESCRIPTION OF THE BUSINESS" : filing.form === "20-F" ? "Item 4. Information on the Company" : "Item 1. Business";
-      const profile = extractCompanyProfile({ identity: entry, html: completeSaved.status === "valid" ? completeSaved.html : `${heading}\n${String(source.businessText)}`,
+      const profile = extractCompanyProfile({ identity: entry, html: completeSaved.status === "valid" ? completeSaved.html : `${heading}\n${cachedSection}`,
         form: filing.form, sourceUrl: filing.url, filedAt: filing.filedAt, now, customerEvidence: completeSaved.status === "valid" ? undefined : source.financialCustomerEvidence, annualFilingUrl: filing.annualFilingUrl, annualFilingIndexUrl: filing.annualFilingIndexUrl });
       if (!profile) return;
       if (filing.industry) Object.assign(profile, { industry: filing.industry, industrySourceUrl: `https://data.sec.gov/submissions/CIK${entry.cik}.json` });

@@ -58,6 +58,13 @@ async function scenario({ intervalMs = 2745, storageMs = 500, recoveryMs = 3800,
   let revision = 0, registryReads = 0, registryWrites = 0;
   const sourceStarts = [];
   const overrides = {
+    // Keep the comparison on the pre-repair admission policy as well as its
+    // old 28s work window. Every repaired scenario uses the real new helper.
+    ...(baseline ? { "@/lib/opportunity-engine/pr262-submissions-deadline": {
+      ...loadTsModule("@/lib/opportunity-engine/pr262-submissions-deadline"),
+      PR262_SEC_ADMISSION_MIN_MS: 0,
+      withPr262SubmissionsDeadline: init => init,
+    } } : {}),
     "@/lib/simple-alert-pilot-runtime": { isSimpleAlertPilot: () => true },
     "@/lib/simple-alert-pilot-scope": { pilotCompanies: () => cohort },
     "@/lib/opportunity-engine/pr262-storage": { pr262StorageKey: relative => prefix + relative },
@@ -137,6 +144,8 @@ try {
       assert.equal(repaired.result.secCheckSuccesses, 13);
       assert.equal(repaired.result.secCheckFailures, 0);
       assert.equal(repaired.result.sourcePreparationFailures, 0);
+      assert.deepEqual(repaired.result.secSnapshotPersistence, { saved: 13, deferred: 0, conflict: 0, failed: 0 },
+        "The staged floors retain all thirteen acknowledged cache writes in the existing latency matrix");
       assert.equal(repaired.result.registryPersistence.written, true);
       assert.ok(repaired.elapsedMs < 60_000);
       results.push({ intervalMs, storageMs, baselineCount, repaired: 13, elapsedMs: repaired.elapsedMs });

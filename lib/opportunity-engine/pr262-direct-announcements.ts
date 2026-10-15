@@ -9,6 +9,8 @@ import { lookup } from "node:dns/promises";
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 import { decodePr262SourcePreparationProvenance, pr262SourcePreparationProvenance } from "@/lib/opportunity-engine/pr262-source-failure-provenance";
+import { PR262_SEC_ADMISSION_MIN_MS, PR262_SEC_REQUEST_MAX_MS, withPr262SubmissionsDeadline,
+  pr262SnapshotPersistence, type Pr262SnapshotPersistence } from "@/lib/opportunity-engine/pr262-submissions-deadline";
 import type { Pr262ExposureEntry } from "@/lib/opportunity-engine/pr262-exposure-index";
 import type { Pr262SensorEvent } from "@/lib/opportunity-engine/pr262-change-sensor";
 
@@ -66,6 +68,7 @@ type IssuerSecCoverage = {
   sourceUrl: string;
   snapshotFetchedAt: string | null;
   snapshotOrigin: "network" | "shared_cache" | null;
+  snapshotPersistence?: Pr262SnapshotPersistence | "shared_cache" | null;
 };
 
 type RegistryEntry = {
@@ -777,6 +780,7 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
   let secSubmissionsChecked = 0;
   let secFilingsFound = 0;
   let secCheckAttempts = 0, secCheckSuccesses = 0, secCheckFailures = 0, secCheckDeferred = 0, secCacheHits = 0;
+  const secSnapshotPersistence = { saved: 0, deferred: 0, conflict: 0, failed: 0 };
   let discoverySuccesses = 0;
   let discoveryFailures = 0;
   let discoveryDeferred = 0;
@@ -822,6 +826,16 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
         return !Number.isFinite(next) || next <= selectionAtMs;
       }).sort((left, right) => lastSecCheckMs(left.ticker) - lastSecCheckMs(right.ticker))[0];
       if (!company) break;
+      // Avoid a near-expired request that can fetch a valid body but has no
+      // useful cache-publication opportunity. Keep unstarted rows untouched
+      // and oldest-due-first next cycle; do not consume the registry reserve.
+      if (secDeadline - selectionAtMs < PR262_SEC_ADMISSION_MIN_MS + Math.max(0, nextRequestAtMs - selectionAtMs)) {
+        const dueCiks = new Set(eligibleCompanies.filter(row => !selectedCiks.has(row.cik!)
+          && !(Date.parse(byTicker.get(row.ticker)?.sec?.nextCheckAt ?? "") > selectionAtMs)).map(row => row.cik!));
+        secCheckDeferred += Math.min(dueCiks.size, PILOT_MAX_SEC_CHECKS_PER_CYCLE - selectedCiks.size);
+        deferrals.push(scheduledSourceDeferral("direct_source_collection_deadline", new Date(selectionAtMs))!);
+        break;
+      }
       selectedCiks.add(company.cik!);
       const checkedAt = new Date(selectionAtMs);
       const entry = byTicker.get(company.ticker)!;
@@ -829,8 +843,9 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
       const observed = observedSourceFetch(fetchImpl, checkedAt);
       const prior = entry.sec;
       try {
-        const response = await observed.fetchImpl(sourceUrl, { headers: { Accept: "application/json", "user-agent": SEC_AGENT },
-          cache: "no-store", redirect: "error", signal: AbortSignal.timeout(Math.max(1, Math.min(10_000, secDeadline - Date.now()))) });
+        const requestDeadlineAtMs = Math.min(Date.now() + PR262_SEC_REQUEST_MAX_MS, secDeadline);
+        const response = await observed.fetchImpl(sourceUrl, withPr262SubmissionsDeadline({ headers: { Accept: "application/json", "user-agent": SEC_AGENT },
+          cache: "no-store", redirect: "error", signal: AbortSignal.timeout(Math.max(1, Math.min(PR262_SEC_REQUEST_MAX_MS, requestDeadlineAtMs - Date.now()))) }, requestDeadlineAtMs));
         if (response.status !== 200) throw new Error(`direct_feed_sec_submissions_http_${response.status}`);
         let body: Record<string, unknown>;
         try { body = record(await response.json()); } catch { throw new Error("direct_feed_sec_submissions_invalid_json"); }
@@ -845,9 +860,12 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
         const found = labelInitialCatchup(recentSecFilingEvents(body, company, sourceUrl, now), !prior?.snapshotFetchedAt);
         events.push(...found); secFilingsFound += found.length; secSubmissionsChecked += 1;
         if (cached) secCacheHits += 1; else secCheckSuccesses += 1;
+        const persistence = pr262SnapshotPersistence(response.headers.get("x-swingup-submissions-cache-persistence"));
+        if (!cached && persistence) secSnapshotPersistence[persistence]++;
         if (observed.preparationError()) { sourcePreparationFailures++; preparationErrors.push(observed.preparationError()!); }
         entry.sec = { sourceUrl, lastCheckedAt: checkedAt.toISOString(), lastSuccessAt: fetchedAt,
           snapshotFetchedAt: fetchedAt, snapshotOrigin: cached ? "shared_cache" : "network",
+          snapshotPersistence: cached ? "shared_cache" : persistence,
           nextCheckAt: new Date(fetchedMs + SEC_POLL_CADENCE_MS).toISOString(), error: null };
         entry.investorWebsite ??= text(body.investorWebsite) ?? text(body.website);
       } catch (error) {
@@ -855,6 +873,7 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
         entry.sec = { sourceUrl, lastCheckedAt: observed.attempted() ? checkedAt.toISOString() : prior?.lastCheckedAt ?? null,
           lastSuccessAt: prior?.lastSuccessAt ?? null, snapshotFetchedAt: prior?.snapshotFetchedAt ?? null,
           snapshotOrigin: prior?.snapshotOrigin ?? null, error: message,
+          snapshotPersistence: prior?.snapshotPersistence ?? null,
           nextCheckAt: deferral?.nextRetryAt ?? new Date(checkedAt.getTime() + FEED_POLL_CADENCE_MS).toISOString() };
         if (deferral) { secCheckDeferred += 1; deferrals.push(deferral); }
         else if (observed.preparationError()) { sourcePreparationFailures++; preparationErrors.push(observed.preparationError()!); }
@@ -1091,6 +1110,7 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
     secSubmissionsChecked,
     secFilingsFound,
     secCheckAttempts, secCheckSuccesses, secCheckFailures, secCheckDeferred, secCacheHits,
+    secSnapshotPersistence,
     initialCatchupEvents: initialCatchupEventIds.size,
     initialCatchupEventIds: [...initialCatchupEventIds],
     publicationTimestampsPreserved: true as const,
@@ -1107,7 +1127,8 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
         sec: { sourceUrl: `https://data.sec.gov/submissions/CIK${company.cik}.json`,
           status: !loaded ? "registry_unavailable" : sec?.error ? "deferred_or_failed" : Number.isFinite(snapshotAgeMs) && snapshotAgeMs >= 0 && snapshotAgeMs < SEC_POLL_CADENCE_MS ? "current_snapshot" : sec?.snapshotFetchedAt ? "stale_snapshot" : "not_checked",
           lastCheckedAt: sec?.lastCheckedAt ?? null, snapshotFetchedAt: sec?.snapshotFetchedAt ?? null,
-          snapshotOrigin: sec?.snapshotOrigin ?? null, nextCheckAt: sec?.nextCheckAt ?? null, error: sec?.error ?? null },
+          snapshotOrigin: sec?.snapshotOrigin ?? null, snapshotPersistence: sec?.snapshotPersistence ?? null,
+          nextCheckAt: sec?.nextCheckAt ?? null, error: sec?.error ?? null },
         ir: { investorWebsite: entry?.investorWebsite ?? null, feedUrl: entry?.feedUrl ?? null,
           seedSourcePageUrl: registeredSource?.sourcePageUrl ?? null,
           seedVerifiedAt: registeredSource?.verifiedAt ?? null,

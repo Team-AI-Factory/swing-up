@@ -8,10 +8,77 @@ const text = (v: unknown) => typeof v === "string" ? v : "";
 const number = (v: unknown) => typeof v === "number" && Number.isFinite(v) ? v : null;
 const DAY = 86400000;
 export const FINANCIAL_EVIDENCE_VERSION = 1;
+type FinancialTransportProof = { version: 1; httpStatus: 200; reachedEof: true; documentKey: string };
 export type FinancialDocument = { url: string; form: string; filedAt: string; accession: string;
-  reportingPeriod: string; collectedAt: string; readComplete: boolean; excerpts: Array<{ topic: string; text: string }>; digest: string };
+  reportingPeriod: string; collectedAt: string; readComplete: boolean; excerpts: Array<{ topic: string; text: string }>; digest: string;
+  transportProof?: FinancialTransportProof };
 export type FinancialDocuments = { version: number; cik: string; checkedAt: string; nextCheckAt: string;
   documents: FinancialDocument[]; failures: Array<{ sourceUrl: string; reason: string }>; cached: boolean };
+
+const excerptDigest = (excerpts: unknown) => crypto.createHash("sha256").update(JSON.stringify(excerpts)).digest("hex");
+const transportDocumentKey = (document: Json) => crypto.createHash("sha256")
+  .update(JSON.stringify([document.url, document.accession, document.form, document.filedAt, document.reportingPeriod,
+    document.digest, document.collectedAt])).digest("hex");
+
+/** Transport/body coverage only; extracted windows never attest coverage of all notes.
+ * Legacy readComplete remains a retrieval/identity flag, not HTTP/EOF proof. */
+export function financialDocumentCompleteness(value: unknown): "complete" | "partial" | "unknown" {
+  const document = object(value), proof = object(document.transportProof);
+  if (document.transportCompleteness === "unknown") return "unknown";
+  if (document.transportProof !== undefined) {
+    if (proof.version !== 1 || proof.httpStatus !== 200 || proof.reachedEof !== true
+      || !text(document.url) || !text(document.accession) || !text(document.form) || !text(document.filedAt)
+      || typeof document.reportingPeriod !== "string" || !Number.isFinite(Date.parse(text(document.collectedAt)))
+      || !Array.isArray(document.excerpts) || document.digest !== excerptDigest(document.excerpts)
+      || proof.documentKey !== transportDocumentKey(document)) return "unknown";
+    return document.readComplete === true ? "complete" : "unknown";
+  }
+  return document.readComplete === false ? "partial" : "unknown";
+}
+
+/** Outward view only. Never feed this projection into cache skip or review keys. */
+export function financialDocumentsEvidenceView(value: unknown): Json | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const documents = object(value);
+  return { ...documents, transportCompletenessScope: "HTTP response body only; excerpts are selected windows, not all financial notes.",
+    documents: (Array.isArray(documents.documents) ? documents.documents : []).map(value => {
+    const document = object(value), transportCompleteness = financialDocumentCompleteness(document);
+    return { ...document, readComplete: transportCompleteness === "complete", transportCompleteness };
+  }) };
+}
+
+export function financialDocumentsReady(value: unknown) {
+  const documents = object(value), rows = documents.documents;
+  return Array.isArray(rows) && rows.length > 0 && rows.every(row => financialDocumentCompleteness(row) === "complete")
+    && Array.isArray(documents.failures) && documents.failures.length === 0;
+}
+
+export function financialDocumentsRequired(value: unknown, eventFamily: unknown, explicitlyRequested = false) {
+  return eventFamily === "valuation_gap" || explicitlyRequested || (value !== null && value !== undefined);
+}
+
+/** Current publication only; this never changes historical Committee validity. */
+export function financialCandidatePublicationGap(value: unknown): string | null {
+  const candidate = object(value);
+  if (candidate.financialDocumentsRequirementKnown === false
+    || typeof candidate.financialDocumentsRequired !== "boolean") {
+    return "The original whole-text completeness requirement is unknown; the historical approval remains recorded but current publication is held.";
+  }
+  const required = financialDocumentsRequired(candidate.financialDocuments, candidate.eventFamily, candidate.financialDocumentsRequired);
+  return required ? financialDocumentsPublicationGap(candidate.financialDocuments) : null;
+}
+
+/** A missing attestation says nothing about whether historical text was partial. */
+export function financialDocumentsPublicationGap(value: unknown): string | null {
+  const documents = object(value), rows = Array.isArray(documents.documents) ? documents.documents : [];
+  if (!rows.length || rows.some(row => financialDocumentCompleteness(row) === "unknown")) {
+    return "Whole-text transport completeness is unknown; matching HTTP 200 and EOF provenance is unavailable. Retained excerpts remain usable.";
+  }
+  if (rows.some(row => financialDocumentCompleteness(row) === "partial")) {
+    return "The response body was not read through EOF. Retained excerpts do not establish whole-text transport completeness.";
+  }
+  return financialDocumentsReady(value) ? null : "Current response collection has unresolved failures; retained excerpts do not establish complete current coverage.";
+}
 
 export function financialExcerpt(html: string) {
   // Source text is data, never instructions. Keep table-cell boundaries and units.
@@ -59,7 +126,7 @@ export async function collectFinancialDocuments(cik: string, fetchImpl: typeof f
   const request = async (url: string, maximum: number) => {
     const response = await fetchImpl(url, { headers: { "User-Agent": "SwingUp/1.0 support@swingup.app", Accept: "application/json,text/html" },
       cache: "no-store", redirect: "error", signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000) });
-    if (!response.ok) throw new Error(`http_${response.status}`);
+    if (response.status !== 200) throw new Error(`http_${response.status}`);
     return readBounded(response, maximum);
   };
   try {
@@ -87,8 +154,12 @@ export async function collectFinancialDocuments(cik: string, fetchImpl: typeof f
         const result = await request(filing.url, 5000000);
         const excerpts = financialExcerpt(result.body);
         if (!excerpts.length) throw new Error("financial_sections_not_extracted");
-        const document = { ...filing, collectedAt: now.toISOString(), readComplete: result.complete, excerpts,
-          digest: crypto.createHash("sha256").update(JSON.stringify(excerpts)).digest("hex") };
+        const document: FinancialDocument = { ...filing, collectedAt: now.toISOString(), readComplete: result.complete, excerpts,
+          digest: excerptDigest(excerpts) };
+        // Only this naturally requested, exact-200 read can mint proof. Cache
+        // hits, skipped legacy rows and capped/interrupted reads cannot.
+        if (result.complete) document.transportProof = { version: 1, httpStatus: 200, reachedEof: true,
+          documentKey: transportDocumentKey(document) };
         const old = documents.findIndex(d => d.url === filing.url);
         if (old >= 0) documents[old] = document; else documents.push(document);
       } catch (error) { failures.push({ sourceUrl: filing.url, reason: error instanceof Error && /^http_\d+$|financial_sections_not_extracted$/.test(error.message) ? error.message : "document_unavailable_or_budget_deferred" }); }

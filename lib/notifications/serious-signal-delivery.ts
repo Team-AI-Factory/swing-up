@@ -1,3 +1,4 @@
+import { financialCandidatePublicationGap, financialDocumentsReady } from "@/lib/equity-signal/financial-evidence";
 import { pilotUpsideBlocker } from "@/lib/simple-alert-pilot-scope";
 import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
 import { bindSeriousSignalEvidence } from "@/lib/notifications/serious-signal-evidence-binding";
@@ -345,8 +346,8 @@ function messageFor(input: ReturnType<typeof validatedOutbox>) {
       scenario("Conservative", outlook.conservative), scenario("Base", outlook.base), scenario("Optimistic", outlook.optimistic), outlook.horizon,
     ]),
     "",
-    `What it does and sells: ${explanation.companyFacts.business}`,
-    `${explanation.companyFacts.customerLabel ?? "Main customers"}: ${explanation.companyFacts.customers}${explanation.companyFacts.customerPeriod ? ` (Report period ended ${explanation.companyFacts.customerPeriod}.)` : ""}`,
+    `Business described by the company: ${explanation.companyFacts.business}`,
+    `${explanation.companyFacts.customerLabel ?? "Disclosed customers"}: ${explanation.companyFacts.customers}${explanation.companyFacts.customerPeriod ? ` (Report period ended ${explanation.companyFacts.customerPeriod}.)` : ""}`,
     `Country providing most revenue: ${explanation.companyFacts.revenueCountry}`,
     event.slice(0, 240),
     "",
@@ -483,6 +484,7 @@ async function ensureDeliveryJob(validated: ReturnType<typeof validatedOutbox>, 
   const key = jobKey(validated.outboxKey);
   const existing = await loadJob(key, validated.outboxKey);
   if (existing) return existing;
+  if (!validated.testOnly && financialCandidatePublicationGap(validated.candidate)) throw new Error("serious_signal_delivery_financial_completeness_unproved");
   if (isSimpleAlertPilot() && !validated.testOnly) {
     if (validated.candidate.terminalEvidence == null) throw new Error("serious_signal_legacy_evidence_requires_migration");
     await deliveryEvidenceKey(validated, signal);
@@ -751,6 +753,7 @@ async function processDeliveryJobKey(
   const validated = validatedOutbox(await withCachedCompanyProfile(JSON.parse(storedOutbox.text)), outboxKey);
   const message = messageFor(validated);
   const current = await loadJob(key, outboxKey) ?? await ensureDeliveryJob(validated, now, options.signal);
+  if (!validated.testOnly && financialCandidatePublicationGap(validated.candidate)) throw new Error("serious_signal_delivery_financial_completeness_unproved");
   if (isSimpleAlertPilot() && !validated.testOnly) {
     const evidenceKey = await deliveryEvidenceKey(validated, options.signal);
     const legacy = validated.candidate.terminalEvidence == null;
@@ -943,6 +946,11 @@ async function deliveryEvidenceKey(validated: ReturnType<typeof validatedOutbox>
       || decision.evidence.decisionKey !== descriptor.decisionKey || !isDeepStrictEqual(decision.evidence, descriptor)
       || decision.publicationPacketKey !== terminalPublicationPacketKey(validated.candidate)) {
       throw new Error("serious_signal_terminal_approval_missing_or_mismatched");
+    }
+    const required = typeof decision.financialDocumentsRequired === "boolean" ? decision.financialDocumentsRequired
+      : decision.evidence.comparison.external.documents.length > 0 ? true : null;
+    if (required === null || (required && !financialDocumentsReady(validated.candidate.financialDocuments))) {
+      throw new Error("serious_signal_delivery_financial_completeness_unproved");
     }
     return descriptor.decisionKey;
   }
@@ -1378,7 +1386,9 @@ export async function getSeriousSignalStatus(options: { hours?: number; limit?: 
       const storedJob = await readJson(await readVersionedTextFromR2(deliveryJobKey));
       const job = storedJob ? parseJob(storedJob, outboxKey) : null;
       const quote = object(validated.candidate.quote);
+      const publicationHoldReason = financialCandidatePublicationGap(validated.candidate);
       alerts.push({
+        publicationEligible: publicationHoldReason === null, publicationHoldReason,
         id: digest(outboxKey),
         createdAt: validated.createdAt,
         ticker: validated.ticker,
@@ -1415,6 +1425,7 @@ export async function getSeriousSignalStatus(options: { hours?: number; limit?: 
     window: { hours, from: start.toISOString(), to: now.toISOString() },
     summary: {
       total: alerts.length,
+      currentlyEligible: alerts.filter(alert => alert.publicationEligible === true).length,
       buy: alerts.filter((alert) => alert.alertType === "buy").length,
       sell: alerts.filter((alert) => alert.alertType === "sell").length,
       watchOut: alerts.filter((alert) => alert.alertType === "watch_out").length,

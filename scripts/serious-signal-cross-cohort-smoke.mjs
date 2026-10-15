@@ -47,10 +47,10 @@ await inSimpleAlertPilot(async () => {
       evidence: { source: [{ rawEventType: "8-K", summary: `Verified source content ${tag}` }], facts: [], financialDocuments: [],
         outlookRange: { currency: "USD", base: 55 }, priceReady: true, haltKnown: true, halted: false } });
     decisions.set(`${identity.cik}:${evidence.decisionKey}`, { version: 1, ...identity, direction: "upside", decisionKey: evidence.decisionKey,
-      outcome: "approved", fingerprint, evidence, decidedAt: now.toISOString(), eventId: `event-${tag}` });
+      outcome: "approved", financialDocumentsRequired: false, financialDocumentsRequested: false, fingerprint, evidence, decidedAt: now.toISOString(), eventId: `event-${tag}` });
     const outbox = { version: 1, kind: "pr262_committee_verified_event_signal", createdAt: now.toISOString(), ticker: identity.ticker, cik: identity.cik,
       alertType: "buy", candidateFingerprint: fingerprint,
-      candidate: { ...identity, direction: "upside", currency: "USD", industry: "Application software", companyProfile: companyProfileFixture(identity),
+      candidate: { financialDocumentsRequired: false, financialDocumentsRequirementKnown: true, ...identity, direction: "upside", currency: "USD", industry: "Application software", companyProfile: companyProfileFixture(identity),
         evidenceFingerprint: fingerprint, terminalEvidence: evidence, terminalDecisionKey: evidence.decisionKey,
         valuationRange: { conservativeValue: 38, baseValue: 55, optimisticValue: 65 }, gatePassed: true, eventTruth: 96,
         mappingConfidence: 100, materiality: 88, transmissionConfidence: 90, evidenceIndependence: 92, contradictionPenalty: 0,

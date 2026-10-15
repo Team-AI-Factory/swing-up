@@ -24,8 +24,11 @@ assert.equal(sourceAccounting.sourceDaily.sourceFailures, 2);
 assert.equal(sourceAccounting.sourceDaily.sourceMeasuredFailures, 0);
 assert.equal(sourceAccounting.sourceDaily.sourceAccountingVersion, 2);
 assert.equal(summary.issuerSources.currentSecSnapshots, null);
+assert.equal(summary.issuerSources.currentSecSnapshotsAsOf, null, "Legacy receipts do not acquire an invented coverage evaluation time");
+assert.equal(summary.issuerSources.preparationErrors, null);
 assert.equal(summary.issuerSources.issuers, null, "Legacy missing coverage cannot become a healthy zero");
-const sourceCoverage = simpleAlertCycleSummary(JSON.stringify({ sensor: { newEvents: 0, initialCatchupEvents: 1, directAnnouncementMonitoring: {
+const sourceCoverage = simpleAlertCycleSummary(JSON.stringify({ checkedAt: "2026-10-03T17:28:00Z", durationMs: 300000, sensor: { newEvents: 0, initialCatchupEvents: 1, directAnnouncementMonitoring: {
+  issuerSourceCoverageEvaluatedAt: "2026-10-03T17:28:30Z",
   eligibleCompanies: 25, registeredFeeds: 8, secCheckAttempts: 13, secCheckSuccesses: 12, secCheckFailures: 1, initialCatchupEvents: 4,
   issuerSourceCoverage: Array.from({ length: 25 }, (_, index) => ({ ticker: `C${index}`, sec: {
     status: index < 12 ? "current_snapshot" : "not_checked", snapshotFetchedAt: index < 12 ? "2026-10-03T17:00:00Z" : null,
@@ -33,6 +36,7 @@ const sourceCoverage = simpleAlertCycleSummary(JSON.stringify({ sensor: { newEve
   ir: { status: "registered_not_checked", lastSuccessAt: null, seedVerifiedAt: "2026-10-03T16:00:00Z" } }))
 } } }));
 assert.equal(sourceCoverage.issuerSources.currentSecSnapshots, 12);
+assert.equal(sourceCoverage.issuerSources.currentSecSnapshotsAsOf, "2026-10-03T17:28:30Z", "A later cycle receipt keeps the original coverage assessment time even after snapshots expire");
 assert.equal(sourceCoverage.issuerSources.liveNewEvents, 0);
 assert.equal(sourceCoverage.issuerSources.initialCatchupEvents, 4);
 assert.equal(sourceCoverage.issuerSources.queuedCatchupEvents, 1, "Deduplicated queued catch-up is distinct from all source catch-up observations");
@@ -78,6 +82,7 @@ console.log("simple alert bounded cycle summary smoke: passed");
 
 const failedRegistrySummary = simpleAlertCycleSummary(JSON.stringify({ sensor: { directAnnouncementMonitoring: {
   secCheckAttempts: 1, secCheckSuccesses: 1, secCheckFailures: 0, sourcePreparationFailures: 1,
+  preparationErrors: ["stage=provider_budget_reservation;storage_boundary=unknown;message=timeout\nhttps://private.example/?token=not-for-logs " + "x".repeat(1000)],
   registryPersistence: { written: false, conflict: false, winnerLoaded: false, failureStage: "write",
     error: "direct_registry_write:r2_state_write_http_502\nhttps://private.example/?token=not-for-logs " + "x".repeat(1000),
     telemetryBasis: "unpersisted_observation" },
@@ -88,6 +93,10 @@ assert.equal(failedRegistrySummary.issuerSources.registryPersistence.telemetryBa
 assert.equal(failedRegistrySummary.issuerSources.registryPersistence.failureStage, "write");
 assert.equal(failedRegistrySummary.issuerSources.registryPersistence.written, false);
 assert.equal(failedRegistrySummary.issuerSources.secCheckFailures, 0);
+assert.match(failedRegistrySummary.issuerSources.preparationErrors[0], /^stage=provider_budget_reservation;storage_boundary=unknown/);
+assert.ok(!failedRegistrySummary.issuerSources.preparationErrors[0].includes("not-for-logs"));
+assert.ok(!failedRegistrySummary.issuerSources.preparationErrors[0].includes("\n"));
+assert.ok(failedRegistrySummary.issuerSources.preparationErrors[0].length <= 400);
 assert.ok(!failedRegistrySummary.issuerSources.registryPersistence.error.includes("not-for-logs"));
 assert.ok(!failedRegistrySummary.issuerSources.registryPersistence.error.includes("\n"));
 assert.ok(failedRegistrySummary.issuerSources.registryPersistence.error.length <= 200);

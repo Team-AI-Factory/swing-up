@@ -1,3 +1,4 @@
+import { publicReviewConfidence } from "@/lib/public-review-confidence";
 import { verifiedCompanyProfile } from "@/lib/company-profile";
 import { industryLabel, publicAlertDetailsComplete } from "@/lib/alert-details";
 import type { getValuationWatchlistStatus } from "@/lib/opportunity-engine/valuation-watchlist-feed";
@@ -39,8 +40,11 @@ export function assemblePublicSignals(candidates: Candidate[], recent: Json[], a
       eventObservedAt: row.eventObservedAt, currentPrice: row.currentPrice, priceObservedAt: row.priceObservedAt,
       fairValue: row.fairValue, outlook, committeeApproved: row.committeeApproved === true, committeeStatus: row.committeeStatus,
       publicationStatus: row.publicationStatus, sources: row.sources,
+      reviewProvenance: object(object(row.quality).historicalReview).source === "terminal_decision"
+        ? { source: "historical_terminal_decision", decidedAt: object(object(row.quality).historicalReview).decidedAt ?? null }
+        : object(row.quality).currentPassPaidReview === true ? { source: "current_attempt", decidedAt: null } : null,
       explanation: publicExplanation(row.explanation, { company: String(row.company), ticker: row.ticker, cik: row.cik, companyProfile: row.companyProfile, industry: row.industry ?? context?.industry, sector: row.sector ?? context?.sector, headline: row.eventHeadline, eventFamily: row.eventFamily }),
-      kind: row.kind, eventFamily: row.eventFamily, confidence: object(row.committee).confidence ?? null,
+      kind: row.kind, eventFamily: row.eventFamily, ...publicReviewConfidence(row),
     };
   }).filter(row => publicAlertDetailsComplete(row));
   const reviewedValuations = new Set(events.filter(row => row.kind === "valuation").map(row => row.ticker));
@@ -50,7 +54,7 @@ export function assemblePublicSignals(candidates: Candidate[], recent: Json[], a
     eventObservedAt: null, currentPrice: row.currentPrice, priceObservedAt: row.priceObservedAt,
     fairValue: row.fairValue.base, outlook: row.outlook, committeeApproved: row.committeeApproved, committeeStatus: row.committeeStatus,
     publicationStatus: row.publicationStatus, explanation: row.explanation, sources: row.links,
-    confidence: row.scores.fairValueConfidence, kind: "valuation",
+    confidence: row.scores.fairValueConfidence, confidenceBasis: "valuation_model", kind: "valuation",
   }));
   return [...events, ...valuations].filter(row => publicAlertDetailsComplete(row))
     .filter(row => action === "all" || (action === "approved" ? row.committeeApproved : row.action === action)).sort(compareSignalPotential);

@@ -49,6 +49,7 @@ function storageKey(relative) {
 const loaded = { exports: {} };
 new Function("require", "module", "exports", output)((specifier) => {
   if (specifier === "@/lib/equity-signal/terminal-review-evidence") return terminalApi;
+  if (specifier === "@/lib/equity-signal/financial-evidence") return loadTsModule(specifier);
   if (specifier === "@/lib/opportunity-engine/pr262-terminal-reviews") return { readTerminalDecision: async ({ cik, decisionKey, signal }) => { signal?.throwIfAborted(); return terminalDecisions.get(`${cik}:${decisionKey}`) ?? null; } };
   if (specifier === "@/lib/opportunity-engine/company-profile-cache") return { readCompanyProfiles: async () => new Map() };
   if (specifier === "node:crypto") return crypto;
@@ -90,6 +91,7 @@ function validOutbox(ticker, createdAt, overrides = {}) {
     alertType: "buy",
     candidateFingerprint: fingerprint,
     candidate: {
+      financialDocumentsRequired: false, financialDocumentsRequirementKnown: true,
       company: `${ticker} Company`,
       companyProfile: companyProfileFixture({ ticker, company: `${ticker} Company`, cik: "0001234567" }),
       ticker,
@@ -139,6 +141,7 @@ function approveTerminal(outbox, evidenceTag = outbox.candidateFingerprint) {
   outbox.candidate.terminalDecisionKey = evidence.decisionKey;
   terminalDecisions.set(`${outbox.cik}:${evidence.decisionKey}`, { version: 1, cik: outbox.cik, ticker: outbox.ticker,
     direction: outbox.candidate.direction, decisionKey: evidence.decisionKey, outcome: "approved",
+    financialDocumentsRequired: false, financialDocumentsRequested: false,
     fingerprint: outbox.candidateFingerprint, evidence: structuredClone(evidence), publicationPacketKey: terminalApi.terminalPublicationPacketKey(outbox.candidate), decidedAt: outbox.createdAt, eventId: "fixture-event" });
   return outbox;
 }
@@ -477,6 +480,9 @@ try {
   assert.equal(lossDelivery.ok, true, "A fully approved loss-making event must reach the real delivery handler");
   assert.match(lossDelivery.message, /reported negative earnings/);
   assert.match(lossDelivery.message, /Recorded price: USD 42/);
+  assert.match(lossDelivery.message, /Business described by the company:/);
+  assert.match(lossDelivery.message, /Disclosed customers:/);
+  assert.doesNotMatch(lossDelivery.message, /Main customers:/);
   assert.doesNotMatch(lossDelivery.message, /undefined|null%|Conservative:|Base:/, "Unknown targets and returns must not become malformed prices");
   const lossFeed = await getSeriousSignalStatus({ now: wallNow, hours: 48 });
   assert.equal(lossFeed.alerts.find(alert => alert.ticker === "LOSS")?.outlook.fairValueUnavailable.reason, "negative_earnings", "The notice survives the delivered Serious Signal feed");

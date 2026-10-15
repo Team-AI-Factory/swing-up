@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { loadTsModule } from "./helpers/load-typescript-module.mjs";
 import { companyProfileFixture } from "./helpers/company-profile-fixture.mjs";
@@ -6,7 +7,7 @@ import { inSimpleAlertPilot } from "./helpers/simple-alert-pilot-fixture.mjs";
 
 // Synthetic financial/source/provider responses. The runner, Committee
 // orchestration, evidence classifier, terminal journal and event job stay real.
-export function terminalHarness({ eventMode = "valuation", eventAliases = true } = {}) {
+export function terminalHarness({ eventMode = "valuation", eventAliases = true, useFinancialCollector = false, syntheticCommitteeResult = null } = {}) {
   const identity = { ticker: "AIOT", company: "Powerfleet, Inc.", cik: "0001774170" };
   const state = { now: new Date("2026-10-05T15:00:00Z"), price: 50, quoteReady: true,
     haltKnown: true, halted: false, profileReady: true, sourceComplete: true,
@@ -14,9 +15,10 @@ export function terminalHarness({ eventMode = "valuation", eventAliases = true }
     policyRevision: "fixture-policy-A", model: "gpt-4.1-mini", baseValue: 100,
     confidence: 90, roleCalls: 0, moneyCalls: 0, runnerCalls: 0, sequence: 0,
     failJournalAppend: false, conflictJournalWrites: 0, documentsReady: true, documentsFail: false,
-    documentsComplete: true, essentialFactsReady: true, debtReady: true, eventMode,
+    documentsComplete: true, documentsProof: true, filingStatus: 200, indexStatus: 200, filingMode: "complete",
+    essentialFactsReady: true, debtReady: true, eventMode,
     sourceRevision: 1, sourcePublishedAt: "2026-10-05T15:00:00.000Z", eventAliases, historyFault: null };
-  const objects = new Map(), writes = [], fetches = [], reports = [], reads = [];
+  const objects = new Map(), writes = [], fetches = [], reports = [], reads = [], prompts = [], jobReports = [];
   const prefix = "branch-labs/simple-alerts/terminal-integration";
   const key = relative => `${prefix}/${relative}`;
   const journalKey = key(`terminal-reviews-v1/companies/${identity.cik}.json`);
@@ -74,10 +76,19 @@ export function terminalHarness({ eventMode = "valuation", eventAliases = true }
   const provider = name => ({ provider: name, status: name === "nasdaq_trade_halts" && !state.haltKnown ? "unavailable" : "connected",
     checkedAt: state.now.toISOString(), nextRetryAt: null, sourceUrls: [], receipts: [], recordsRead: 1, error: null,
     entitlementVerified: true, cached: false });
-  const docs = () => ({ version: 1, cik: identity.cik, checkedAt: state.now.toISOString(), nextCheckAt: state.now.toISOString(),
-    cached: false, failures: state.documentsFail ? [{ sourceUrl: annualUrl, reason: "fixture_document_unavailable" }] : [], documents: state.documentsReady ? [{ url: annualUrl, form: "10-K", filedAt: "2026-02-20", digest: `fixture-document-${state.documentRevision}`,
-      readComplete: state.documentsComplete, excerpts: [{ topic: "segments", text: "Synthetic source-backed software segment facts" },
-        { topic: "customers", text: "Synthetic customer concentration facts" }, { topic: "margins", text: "Synthetic margin facts" }] }] : [] });
+  const docs = () => {
+    const excerpts = [{ topic: "segments", text: "Synthetic source-backed software segment facts" },
+      { topic: "customers", text: `Synthetic customer concentration facts ${state.documentRevision}` }, { topic: "margins", text: "Synthetic margin facts" }];
+    const document = { url: annualUrl, form: "10-K", filedAt: "2026-02-20", accession: "0001774170-26-000001",
+      reportingPeriod: "2025-12-31", collectedAt: "2026-10-05T15:00:00.000Z", readComplete: state.documentsComplete, excerpts,
+      digest: crypto.createHash("sha256").update(JSON.stringify(excerpts)).digest("hex") };
+    if (state.documentsProof && state.documentsComplete) document.transportProof = { version: 1, httpStatus: 200, reachedEof: true,
+      documentKey: crypto.createHash("sha256").update(JSON.stringify([document.url, document.accession, document.form, document.filedAt,
+        document.reportingPeriod, document.digest, document.collectedAt])).digest("hex") };
+    return { version: 1, cik: identity.cik, checkedAt: state.now.toISOString(), nextCheckAt: state.now.toISOString(),
+    cached: false, failures: state.documentsFail ? [{ sourceUrl: annualUrl, reason: "fixture_document_unavailable" }] : [],
+    documents: state.documentsReady ? [document] : [] };
+  };
   let event;
   const newEvent = (label = "daily") => { event = { ...identity, id: `valuation:${identity.cik}:${label}:${++state.sequence}`,
     source: "market_price", sourceProvider: "market_watch", sourceHealthStatus: "connected", observedAt: state.now.toISOString(),
@@ -104,8 +115,18 @@ export function terminalHarness({ eventMode = "valuation", eventAliases = true }
     if (/companyfacts\/CIK\d+\.json$/.test(url)) return Response.json(facts());
     if (/submissions\/CIK\d+\.json$/.test(url)) return Response.json({ cik: Number(identity.cik), filings: { recent: {
       form: ["10-K"], filingDate: ["2026-02-20"], accessionNumber: ["0001774170-26-000001"], primaryDocument: ["annual.htm"], reportDate: ["2025-12-31"],
-    } } });
-    if (url === annualUrl) return new Response(`<html>${"Synthetic report introduction. ".repeat(100)}<p>Reportable segments include software services.</p><p>Major customers use inventory systems. Revision ${state.documentRevision}.</p><p>Gross margin reflects subscription sales.</p></html>`);
+    } } }, { status: state.indexStatus });
+    if (url === annualUrl) {
+      const body = `<html>${"Synthetic report introduction. ".repeat(100)}<p>Reportable segments include software services.</p><p>Major customers use inventory systems. Revision ${state.documentRevision}.</p><p>Gross margin reflects subscription sales.</p></html>`;
+      if (state.filingMode === "interrupted") {
+        let sent = false;
+        return new Response(new ReadableStream({ pull(controller) {
+          if (sent) controller.error(new Error("synthetic_interruption"));
+          else { sent = true; controller.enqueue(new TextEncoder().encode(body)); }
+        } }));
+      }
+      return new Response(state.filingMode === "capped" ? `${body}${" ".repeat(5000001)}` : body, { status: state.filingStatus });
+    }
     throw new Error(`Unexpected fixture network request: ${url}`);
   };
   const overrides = {
@@ -123,7 +144,7 @@ export function terminalHarness({ eventMode = "valuation", eventAliases = true }
     "@/lib/opportunity-engine/pr262-pilot-watch-valuation": { readPilotWatchValuation: async () => ({ analysis: analysis(), receivedAt: state.now.toISOString() }),
       pilotValuationUnitsBlocker: () => null, PILOT_WATCH_VALUATION_MAX_AGE_MS: 15 * 60000 },
     "@/lib/opportunity-engine/pr262-trade-halt-snapshot": { fetchPr262TradeHalts: async () => provider("nasdaq_trade_halts") },
-    "@/lib/opportunity-engine/company-profile-cache": { ensureCompanyProfile: async () => profile(), warmFoundationCompanyProfiles: async () => ({}) },
+    "@/lib/opportunity-engine/company-profile-cache": { ensureCompanyProfile: async () => profile(), warmFoundationCompanyProfiles: async () => ({}), readCompanyProfiles: async () => new Map() },
     "@/lib/opportunity-engine/us-value-investing-engine": { refreshUsValueCompany: async () => { throw new Error("Unexpected company refresh"); } },
     "@/lib/opportunity-engine/us-value-investing-safety": { hardenUsValueCompanyAnalysis: value => value },
     "@/lib/opportunity-engine/pr262-serious-watch-out-authority": { promotePr262SeriousWatchOut: async () => ({ promoted: false, outboxKey: null }) },
@@ -132,6 +153,7 @@ export function terminalHarness({ eventMode = "valuation", eventAliases = true }
       runOpenAiCommitteeProvider: async input => {
         state.roleCalls++;
         const data = JSON.parse(input.messages[1].content), agentId = data.agent.id;
+        prompts.push(data);
         if (agentId === state.failRole) return { ok: false, status: state.failRoleStatus, model: state.model,
           ...(state.failRoleStatus === "provider_error" ? { failure: { category: "server_error", httpStatus: 500, code: "fixture_uncertain_usage" } } : {}) };
         return { ok: true, finishReason: "stop", model: state.model,
@@ -168,12 +190,21 @@ export function terminalHarness({ eventMode = "valuation", eventAliases = true }
   const reload = () => {
     const modelPolicy = loadTsModule("@/lib/ai-committee/model-policy");
     overrides["@/lib/ai-committee/model-policy"] = { ...modelPolicy, COMMITTEE_MODEL_POLICY: state.policyRevision };
+    if (syntheticCommitteeResult) overrides["@/lib/ai-committee/orchestrator"] = {
+      ...loadTsModule("@/lib/ai-committee/orchestrator", overrides), runAiCommittee: async () => structuredClone(syntheticCommitteeResult),
+    };
+    delete overrides["@/lib/equity-signal/runner"];
+    const actualRunner = loadTsModule("@/lib/equity-signal/runner", overrides);
+    overrides["@/lib/equity-signal/runner"] = { ...actualRunner, runEquitySignalLab: async (...args) => {
+      const report = await actualRunner.runEquitySignalLab(...args); jobReports.push(report); return report;
+    } };
     modules = {
-      runner: loadTsModule("@/lib/equity-signal/runner", overrides),
+      runner: actualRunner,
       journal: loadTsModule("@/lib/opportunity-engine/pr262-terminal-reviews", overrides),
       eventJob: loadTsModule("@/lib/opportunity-engine/pr262-event-job", overrides),
       money: loadTsModule("@/lib/opportunity-engine/pr262-ai-daily-cost", overrides),
       research: loadTsModule("@/lib/opportunity-engine/pr262-research-evidence", overrides),
+      financial: loadTsModule("@/lib/equity-signal/financial-evidence", overrides),
     };
   };
   reload();
@@ -181,7 +212,9 @@ export function terminalHarness({ eventMode = "valuation", eventAliases = true }
     const attemptId = `runner:${++state.sequence}`;
     let reserved = false;
     const report = await modules.runner.runEquitySignalLab({ now: state.now, fetchImpl, allowOpenAi: true,
-      allowIncompleteCommitteeReview: true, collectFinancialDocuments: async () => docs(), resolveCompanyProfile: async () => profile(),
+      allowIncompleteCommitteeReview: true,
+      collectFinancialDocuments: async () => useFinancialCollector ? modules.financial.collectFinancialDocuments(identity.cik, fetchImpl, state.now) : docs(),
+      resolveCompanyProfile: async () => profile(),
       terminalReview: input => modules.journal.checkTerminalReview(input),
       beforeOpenAiCall: async input => {
         state.moneyCalls++;
@@ -197,14 +230,16 @@ export function terminalHarness({ eventMode = "valuation", eventAliases = true }
     return report;
   };
   const runJob = async () => {
+    const priorReports = jobReports.length;
     const result = await modules.eventJob.runPr262EventJob({ now: state.now, clock: () => state.now, fetchImpl, allowOpenAi: true,
       beforeOpenAiCall: async reservation => { state.moneyCalls++; return (await modules.money.reservePr262AiCommitteeBudget(reservation, state.now)).allowed; } });
     const resultPayload = result.resultKey ? objects.get(result.resultKey)?.value : result.nonterminalAuditKey ? objects.get(result.nonterminalAuditKey)?.value : null;
-    const report = resultPayload?.report;
-    if (report) { reports.push(report); await modules.money.recordPr262AiCommitteeCost(report, state.now); }
+    const report = resultPayload?.report ?? (jobReports.length > priorReports ? jobReports.at(-1) : undefined);
+    if (report) reports.push(report);
+    if (resultPayload?.report) await modules.money.recordPr262AiCommitteeCost(resultPayload.report, state.now);
     return { result, report };
   };
-  return { state, objects, writes, reads, fetches, reports, key, journalKey, identity, newEvent, reload, runRunner, runJob,
+  return { state, objects, writes, reads, fetches, reports, prompts, fetchImpl, storage, key, journalKey, identity, newEvent, reload, runRunner, runJob,
     get journal() { return objects.get(journalKey)?.value; }, get modules() { return modules; },
     advance: ms => { state.now = new Date(state.now.getTime() + ms); newEvent(); } };
 }

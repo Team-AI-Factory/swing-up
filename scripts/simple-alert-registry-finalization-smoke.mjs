@@ -76,6 +76,7 @@ for (const stage of ["write", "write_timeout", "write_unacknowledged", "conflict
   assert.equal(result.registryPersistence.telemetryBasis, "unpersisted_observation");
   assert.match(result.preparationErrors[0], /^direct_registry_/);
   assert.equal(result.issuerSourceCoverage[0].sec.status, "current_snapshot");
+  assert.ok(Date.parse(result.issuerSourceCoverageEvaluatedAt) >= started);
 }
 
 // V3 has already spent 25 seconds of its 45-second window. Thirteen sequential
@@ -125,5 +126,6 @@ try {
   assert.equal(result.registryPersistence.telemetryBasis, "persisted_registry");
   assert.equal(result.sourcePreparationFailures, 0);
   assert.equal(result.secCheckSuccesses, 13);
+  assert.equal(result.issuerSourceCoverageEvaluatedAt, new Date(clock).toISOString(), "Coverage is stamped after finalization using the clock that evaluates freshness");
 } finally { globalThis.Date = RealDate; }
 console.log("Registry finalization preserves completed source evidence, truthful storage failures, and the final five seconds of a late-start source window.");

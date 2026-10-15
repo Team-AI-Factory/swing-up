@@ -8,6 +8,7 @@ import { pilotCompanies } from "@/lib/simple-alert-pilot-scope";
 import { lookup } from "node:dns/promises";
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
+import { decodePr262SourcePreparationProvenance, pr262SourcePreparationProvenance } from "@/lib/opportunity-engine/pr262-source-failure-provenance";
 import type { Pr262ExposureEntry } from "@/lib/opportunity-engine/pr262-exposure-index";
 import type { Pr262SensorEvent } from "@/lib/opportunity-engine/pr262-change-sensor";
 
@@ -144,12 +145,15 @@ function observedSourceFetch(fetchImpl: typeof fetch, now: Date) {
     try {
       const response = await fetchImpl(request, init);
       if (response.headers?.get("x-swingup-submissions-cache") !== "hit") attempted = true;
-      if (response.headers?.get("x-swingup-submissions-cache-write-failed") === "true") preparationError = "sec_snapshot_cache_write_failed";
+      if (response.headers?.get("x-swingup-submissions-cache-write-failed") === "true") {
+        const detail = decodePr262SourcePreparationProvenance(response.headers.get("x-swingup-submissions-cache-failure-detail"));
+        preparationError = `sec_snapshot_cache_write_failed;${detail}`;
+      }
       return response;
     }
     catch (error) {
       if (!scheduledSourceDeferral(error, now)) {
-        if (record(error).sourceNetworkAttempted === false) preparationError = discoveryFailureMessage(error);
+        if (record(error).sourceNetworkAttempted === false) preparationError = pr262SourcePreparationProvenance(error);
         else attempted = true;
       }
       throw error;
@@ -853,7 +857,7 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
           snapshotOrigin: prior?.snapshotOrigin ?? null, error: message,
           nextCheckAt: deferral?.nextRetryAt ?? new Date(checkedAt.getTime() + FEED_POLL_CADENCE_MS).toISOString() };
         if (deferral) { secCheckDeferred += 1; deferrals.push(deferral); }
-        else if (observed.preparationError()) { sourcePreparationFailures++; preparationErrors.push(message); }
+        else if (observed.preparationError()) { sourcePreparationFailures++; preparationErrors.push(observed.preparationError()!); }
         else { secCheckFailures += 1; attemptErrors.push(message); }
       }
       if (observed.attempted()) secCheckAttempts += 1;
@@ -904,7 +908,7 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
           feedDeferred += 1;
           deferrals.push(deferral);
         } else if (observed.preparationError()) {
-          sourcePreparationFailures++; preparationErrors.push(entry.error);
+          sourcePreparationFailures++; preparationErrors.push(observed.preparationError()!);
           entry.nextCheckAt = new Date(now.getTime() + FEED_POLL_CADENCE_MS).toISOString();
         } else {
           const retry = failedFeedRetry(entry, now);
@@ -1010,7 +1014,7 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
               if (observed.attempted()) deferredAfterSourceAttempt += 1;
               deferrals.push(deferral);
             } else if (observed.preparationError()) {
-              sourcePreparationFailures++; preparationErrors.push(message);
+              sourcePreparationFailures++; preparationErrors.push(observed.preparationError()!);
             } else {
               discoveryFailures += 1;
               attemptErrors.push(message);
@@ -1052,6 +1056,7 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
   const currentEntries = persistedRegistry.entries.filter((entry) => eligibleIdentities.get(entry.ticker) === entry.cik);
   const retainedHistoricalEntries = persistedRegistry.entries.filter((entry) => eligibleIdentities.get(entry.ticker) !== entry.cik);
   const persistedByTicker = new Map(persistedRegistry.entries.map((entry) => [entry.ticker, entry]));
+  const issuerSourceCoverageEvaluatedAt = new Date().toISOString();
   return {
     events,
     // Most issuers do not publish an RSS/Atom investor-relations feed. That
@@ -1091,12 +1096,13 @@ export async function runPr262DirectAnnouncementMonitor(input: { exposure: Pr262
     publicationTimestampsPreserved: true as const,
     sourceCollectionDeadlineReached: pilot && Date.now() >= deadlineAtMs,
     directWorkBudgetMs: pilot ? Math.max(0, deadlineAtMs - startedAtMs) : null,
+    issuerSourceCoverageEvaluatedAt,
     issuerSourceCoverage: eligibleCompanies.map(company => {
       const entry = persistedByTicker.get(company.ticker);
       const sec = entry?.sec;
       const registeredSource = pilot ? pilotIssuerSources.companies.find(row => row.ticker === company.ticker
         && row.cik === company.cik && row.investorWebsite === entry?.investorWebsite) : null;
-      const snapshotAgeMs = Date.now() - Date.parse(sec?.snapshotFetchedAt ?? "");
+      const snapshotAgeMs = Date.parse(issuerSourceCoverageEvaluatedAt) - Date.parse(sec?.snapshotFetchedAt ?? "");
       return { ticker: company.ticker, cik: company.cik,
         sec: { sourceUrl: `https://data.sec.gov/submissions/CIK${company.cik}.json`,
           status: !loaded ? "registry_unavailable" : sec?.error ? "deferred_or_failed" : Number.isFinite(snapshotAgeMs) && snapshotAgeMs >= 0 && snapshotAgeMs < SEC_POLL_CADENCE_MS ? "current_snapshot" : sec?.snapshotFetchedAt ? "stale_snapshot" : "not_checked",

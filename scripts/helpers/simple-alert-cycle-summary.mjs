@@ -38,6 +38,12 @@ export function simpleAlertCycleSummary(body) {
       liveNewEvents: pick(result.sensor, ["newEvents"]).newEvents,
       queuedCatchupEvents: pick(result.sensor, ["initialCatchupEvents"]).initialCatchupEvents,
       registryPersistence,
+      // Coverage is evaluated before analysis/delivery. Never imply these
+      // retained statuses were rechecked at this later receipt time.
+      currentSecSnapshotsAsOf: pick(direct, ["issuerSourceCoverageEvaluatedAt"]).issuerSourceCoverageEvaluatedAt,
+      preparationErrors: Array.isArray(direct?.preparationErrors) ? direct.preparationErrors.slice(0, 8)
+        .filter(error => typeof error === "string")
+        .map(error => error.replace(/https?:\/\/[^\s]+/gi, "[url]").replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 400)) : null,
       currentSecSnapshots: issuerRows && registryPersistence.telemetryBasis !== "unavailable"
         ? issuerRows.filter(row => row?.sec?.status === "current_snapshot").length : null,
       issuerRowsTruncated: issuerRows ? direct.issuerSourceCoverage.length > 25 : null,

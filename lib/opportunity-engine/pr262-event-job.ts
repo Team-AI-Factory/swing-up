@@ -1488,6 +1488,8 @@ function compactAnalysisDiagnostics(report: Json) {
   return {
     status: text(report.status),
     reviewOutcome: text(report.reviewOutcome),
+    historicalReview: report.historicalReview ?? null,
+    terminalReviewHold: report.terminalReviewHold ?? null,
     qualityScore: finiteDiagnosticNumber(report.qualityScore),
     committee: report.openAiCalled === true ? {
       status: text(object(report.committee).status),

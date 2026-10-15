@@ -29,7 +29,7 @@ const checks = [
   "company-profile-sales-grammar", "company-profile-write-reduction",
   "company-profile-complete-source-codec", "company-profile-complete-source-identity",
   "company-profile-complete-source-cache", "company-profile-operating-quality",
-  "simple-alert-source-storage-deadline",
+  "simple-alert-source-storage-deadline", "pr262-submissions-cache-deadline",
   "company-profile-r2-integration",
   "company-profile-storage-provenance", "company-profile-initial-read-diagnostics", "company-profile-source-read-recovery",
   "r2-state-write-recovery", "simple-alert-profile-deferral-labels", "ai-committee-prompt-budget", "evidence-model-upgrade",

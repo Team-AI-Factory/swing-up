@@ -151,7 +151,10 @@ for (const stage of ["snapshot_read", "reservation_read", "reservation_write", "
   // an intended snapshot/reservation test expire before that operation starts.
   // The separate delay case explicitly verifies truthful unknown attribution.
   if (stage === "preparation_delay") timer = setTimeout(() => controller.abort(new Error("source_deadline")), 20);
-  const result = await direct.runPr262DirectAnnouncementMonitor({ exposure: [company], now, deadlineAtMs: Date.now() + 5500, fetchImpl: fetcher.fetchImpl });
+  // Admit this operation under the new source-plus-save floor. The original
+  // 20ms stage fault and every provenance/accounting assertion remain intact;
+  // inadequate admission windows are tested separately as local deferrals.
+  const result = await direct.runPr262DirectAnnouncementMonitor({ exposure: [company], now, deadlineAtMs: Date.now() + 15_000, fetchImpl: fetcher.fetchImpl });
   clearTimeout(timer);
   const expectedNetwork = ["network_failure", "snapshot_write"].includes(stage) ? 1 : 0;
   const expectedFailure = stage === "network_failure" ? 1 : 0;
@@ -263,7 +266,7 @@ for (const detail of [null, "%", encodeURIComponent("stage=made_up;storage_bound
     writeVersionedJsonToR2: async () => ({ written: true, conflict: false, etag: "written" }),
   } });
   let network = 0;
-  const result = await direct.runPr262DirectAnnouncementMonitor({ exposure: [company], now, deadlineAtMs: Date.now() + 5500,
+  const result = await direct.runPr262DirectAnnouncementMonitor({ exposure: [company], now, deadlineAtMs: Date.now() + 15_000,
     fetchImpl: async () => {
       network++;
       return Response.json(body, { headers: { "x-swingup-submissions-cache-write-failed": "true",

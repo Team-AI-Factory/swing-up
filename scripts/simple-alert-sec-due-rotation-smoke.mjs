@@ -204,10 +204,19 @@ try {
     assert.equal(replay.saved.find(value => value.ticker === row.ticker).sec.snapshotFetchedAt, row.fetchedAt);
   }
   assert.ok(replay.result.secCheckSuccesses > 4, "Real monitor uses time remaining for newly due issuers");
-  assert.equal(replay.result.secCheckSuccesses, 11);
+  // The earlier policy admitted an eleventh source, then hit a storage
+  // timeout at the tail. Admission now leaves that insufficient slice alone:
+  // ten fully acknowledged snapshots, with unstarted issuer history intact.
+  assert.equal(replay.result.secCheckSuccesses, 10);
   assert.equal(replay.result.secCheckFailures, 0);
-  assert.equal(replay.result.sourcePreparationFailures, 1,
-    "The final storage timeout stays visible rather than becoming an invented network failure");
+  assert.equal(replay.result.sourcePreparationFailures, 0);
+  assert.deepEqual(replay.result.secSnapshotPersistence, { saved: 10, deferred: 0, conflict: 0, failed: 0 });
+  assert.equal(replay.result.secCheckDeferred, 3);
+  assert.equal(replay.cacheReads.length, 10, "No speculative cache read starts in the rejected tail");
+  for (const row of replay.before.filter(row => !replay.calls.some(call => call.ticker === row.ticker))) {
+    assert.deepEqual(replay.saved.find(saved => saved.ticker === row.ticker).sec, row.sec,
+      "A deadline-deferred issuer remains oldest-due work without a fabricated check or backoff");
+  }
   console.log(JSON.stringify({ dynamicEligibility: true, noFutureWait: true, uniqueIssuerCap: 13,
     cacheAndDeferralSlots: { cache: 5, deferred: 5, network: 3 }, unchangedDailyQuota: 3500,
     syntheticReplay: { syntheticClockOrigin: fixture.sensorStartedAt, modeledAdditionalReadMs: (3922 + 3964 + 3614) / 3, attempts: replay.result.secCheckAttempts,

@@ -4,6 +4,8 @@ import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
 import { readVersionedTextFromR2, writeVersionedJsonToR2 } from "@/lib/r2-warehouse";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
 import { encodePr262SourcePreparationProvenance, type Pr262SourcePreparationStage } from "@/lib/opportunity-engine/pr262-source-failure-provenance";
+import { PR262_SEC_CACHE_WRITE_MIN_MS, PR262_SEC_RESERVATION_MIN_MS, PR262_SEC_SOURCE_MIN_MS, pr262SubmissionsRemainingMs,
+  withoutPr262SubmissionsDeadline, type Pr262SnapshotPersistence } from "@/lib/opportunity-engine/pr262-submissions-deadline";
 
 const STATE_KEY = pr262StorageKey("sensor/provider-budgets-v1.json");
 const DAY_MS = 24 * 60 * 60_000;
@@ -18,6 +20,20 @@ type BudgetState = {
   lastCadenceAt: Record<string, string>;
 };
 type Policy = { provider: string; quotaKey: string; cadenceKey: string; maximumPer24Hours: number; minimumIntervalMs: number };
+type PreparationPhase = "before_reservation" | "reservation_read" | "reservation_write" | "before_network" | "submissions_snapshot_read" | "submissions_snapshot_persistence";
+
+function safeSnapshotReadDiagnostics(error: unknown) {
+  const value = error && typeof error === "object" ? (error as { storageReadDiagnostics?: unknown }).storageReadDiagnostics : null;
+  const row = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const milliseconds = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+  return {
+    r2ResponsePhase: typeof row.responsePhase === "string" && ["request_setup", "response_headers", "response_body", "decode"].includes(row.responsePhase) ? row.responsePhase : "unknown",
+    r2ReadDurationMs: milliseconds(row.readDurationMs), r2RequestDurationMs: milliseconds(row.requestDurationMs),
+    r2RequestTimeoutMs: milliseconds(row.requestTimeoutMs),
+    r2RequestAbortSource: typeof row.requestAbortSource === "string" && ["none", "caller", "r2_request_timeout", "unknown"].includes(row.requestAbortSource) ? row.requestAbortSource : "unknown",
+    r2AbortReasonMatched: row.abortReasonMatched === true,
+  };
+}
 
 function emptyState(): BudgetState {
   return { version: 2, updatedAt: new Date(0).toISOString(), hourlyCounts: {}, lastCadenceAt: {} };
@@ -200,12 +216,15 @@ async function readSubmissionSnapshot(target: NonNullable<ReturnType<typeof pilo
 }
 async function cacheSubmissionResponse(response: Response, target: NonNullable<ReturnType<typeof pilotSubmissionTarget>>,
   saved: { etag: string | null } | undefined, signal?: AbortSignal, persistenceSignal?: AbortSignal,
-  onPersistenceStart?: () => void) {
+  onPersistenceStart?: () => void, deadlineInit?: RequestInit,
+  onPersistenceOutcome?: (outcome: Pr262SnapshotPersistence, remainingMs: number | null, elapsedMs: number, error?: unknown) => void): Promise<{
+    response: Response; completeSource: boolean; persistenceOutcome?: Pr262SnapshotPersistence;
+  }> {
   if (response.status !== 200 || !response.clone || (response.url && response.url !== target.sourceUrl)
-    || Number(response.headers.get("content-length")) > SUBMISSIONS_CACHE_MAX_BYTES) return response;
+    || Number(response.headers.get("content-length")) > SUBMISSIONS_CACHE_MAX_BYTES) return { response, completeSource: false };
   const clone = response.clone();
   const reader = clone.body?.getReader();
-  if (!reader) return response;
+  if (!reader) return { response, completeSource: false };
   const chunks: Uint8Array[] = [];
   let bytes = 0;
   let snapshot: SubmissionSnapshot;
@@ -215,35 +234,51 @@ async function cacheSubmissionResponse(response: Response, target: NonNullable<R
       const chunk = await reader.read();
       if (chunk.done) break;
       bytes += chunk.value.byteLength;
-      if (bytes > SUBMISSIONS_CACHE_MAX_BYTES) { void reader.cancel().catch(() => undefined); return response; }
+      if (bytes > SUBMISSIONS_CACHE_MAX_BYTES) { void reader.cancel().catch(() => undefined); return { response, completeSource: false }; }
       chunks.push(chunk.value);
     }
     if (persistenceSignal) signal?.throwIfAborted();
     const body = Buffer.concat(chunks).toString("utf8");
-    if (!validSubmissionBody(body, target)) return response;
+    if (!validSubmissionBody(body, target)) return { response, completeSource: false };
     snapshot = { version: 1, cik: target.cik, sourceUrl: target.sourceUrl,
       fetchedAt: new Date().toISOString(), body };
-  } catch { return response; }
+  } catch { return { response, completeSource: false }; }
   let cacheWriteFailure: string | null = null;
+  let outcome: Pr262SnapshotPersistence;
+  // These are admission floors, not a storage completion SLA. Never reset the
+  // original request deadline or consume the registry finalization reserve.
+  const remainingMs = persistenceSignal ? null : pr262SubmissionsRemainingMs(deadlineInit);
+  const persistenceStartedMonotonicMs = performance.now();
   try {
     // Only a complete source read may enter the profile role's persistence
     // reserve. Its original observation timestamp does not move while saving.
-    onPersistenceStart?.();
-    await writeVersionedJsonToR2(target.key, snapshot, { ...(saved?.etag ? { expectedEtag: saved.etag } : { createOnly: true }), signal: persistenceSignal ?? signal });
+    if (!persistenceSignal && remainingMs !== null && (signal?.aborted || remainingMs < PR262_SEC_CACHE_WRITE_MIN_MS)) {
+      outcome = "deferred"; // No snapshot PUT was attempted.
+    } else {
+      onPersistenceStart?.();
+      const written = await writeVersionedJsonToR2(target.key, snapshot, { ...(saved?.etag ? { expectedEtag: saved.etag } : { createOnly: true }), signal: persistenceSignal ?? signal });
+      if (written.written && !written.conflict && typeof written.etag === "string" && written.etag.trim()) outcome = "saved";
+      else if (!written.written && written.conflict) outcome = "conflict";
+      else throw new Error("submissions_snapshot_persistence_unconfirmed");
+    }
   } catch (error) {
     if (persistenceSignal) {
       void response.body?.cancel().catch(() => undefined);
       throw error; // Profile runs must retain ambiguous storage-write provenance.
     }
+    outcome = "failed";
     cacheWriteFailure = encodePr262SourcePreparationProvenance(error, "submissions_snapshot_persistence");
+    onPersistenceOutcome?.(outcome, remainingMs, performance.now() - persistenceStartedMonotonicMs, error);
   }
+  if (outcome !== "failed") onPersistenceOutcome?.(outcome, remainingMs, performance.now() - persistenceStartedMonotonicMs);
   void response.body?.cancel().catch(() => undefined);
   const complete = snapshotResponse(snapshot, false);
+  complete.headers.set("x-swingup-submissions-cache-persistence", outcome);
   if (cacheWriteFailure) {
     complete.headers.set("x-swingup-submissions-cache-write-failed", "true");
     complete.headers.set("x-swingup-submissions-cache-failure-detail", cacheWriteFailure);
   }
-  return complete;
+  return { response: complete, completeSource: true, persistenceOutcome: outcome };
 }
 
 export async function createPr262SensorBudgetedFetch(input: { now?: Date; fetchImpl?: typeof fetch; signal?: AbortSignal; persistenceSignal?: AbortSignal } = {}) {
@@ -252,10 +287,13 @@ export async function createPr262SensorBudgetedFetch(input: { now?: Date; fetchI
   let loaded = await load(now, input.signal);
   let state = loaded.state;
   const blocked: Array<{ provider: string; reason: string; nextEligibleAt: string | null }> = [];
+  const snapshotPersistence = { saved: 0, deferred: 0, conflict: 0, failed: 0 };
+  const preparationDiagnostics: Array<Record<string, string | number | boolean | null>> = [];
   let reservationTail: Promise<void> = Promise.resolve();
 
-  const reserveBeforeNetwork = async (policy: Policy, currentMs: number, signal?: AbortSignal) => {
+  const reserveBeforeNetwork = async (policy: Policy, currentMs: number, signal?: AbortSignal, assertAdmission?: (phase: PreparationPhase) => void) => {
     for (let attempt = 0; attempt < 5; attempt += 1) {
+      assertAdmission?.("reservation_read");
       signal?.throwIfAborted();
       loaded = await load(new Date(currentMs), signal);
       signal?.throwIfAborted();
@@ -281,6 +319,7 @@ export async function createPr262SensorBudgetedFetch(input: { now?: Date; fetchI
       // short R2 reservation. Do not spend a provider slot when the network
       // request will never be allowed to start.
       signal?.throwIfAborted();
+      assertAdmission?.("reservation_write");
       // Once a conditional reservation PUT starts, allow it to settle inside
       // the profile persistence deadline. Keep its quota charged even if work
       // expires meanwhile; the caller rechecks work before source network.
@@ -305,35 +344,98 @@ export async function createPr262SensorBudgetedFetch(input: { now?: Date; fetchI
     try {
     const policy = policyFor(request);
     const target = pilotSubmissionTarget(request, init);
+    const transportInit = withoutPr262SubmissionsDeadline(init);
     const requestSignal = init?.signal ?? undefined;
     const signal = input.signal
       ? requestSignal ? AbortSignal.any([input.signal, requestSignal]) : input.signal
       : requestSignal;
-    if (!policy) { signal?.throwIfAborted(); sourceNetworkAttempted = true; return await rawFetch(request, { ...init, signal }); }
+    const optionalDeadline = Boolean(target && !input.persistenceSignal && pr262SubmissionsRemainingMs(init) !== null);
+    const startedMonotonicMs = performance.now();
+    const observe = (phase: PreparationPhase, outcome: string, remainingMs: number | null, error?: unknown, persistenceElapsedMs?: number,
+      readTiming?: { remainingAtPhaseStartMs: number | null; phaseElapsedMs: number }) => {
+      let cause = error;
+      const seen = new Set<unknown>();
+      let reasonMatched = false;
+      while (cause && !seen.has(cause)) {
+        seen.add(cause);
+        if (signal?.aborted && cause === signal.reason) { reasonMatched = true; break; }
+        cause = typeof cause === "object" ? (cause as { cause?: unknown }).cause : undefined;
+      }
+      const row = { ticker: target?.ticker ?? "unknown", phase, outcome,
+        remainingAtAdmissionMs: remainingMs === null ? null : Math.max(0, Math.floor(remainingMs)),
+        remainingAtOutcomeMs: optionalDeadline ? Math.floor(pr262SubmissionsRemainingMs(init)!) : null,
+        totalElapsedMs: Math.max(0, Math.round(performance.now() - startedMonotonicMs)),
+        persistenceElapsedMs: persistenceElapsedMs === undefined ? null : Math.max(0, Math.round(persistenceElapsedMs)),
+        ...(readTiming ? { remainingAtPhaseStartMs: readTiming.remainingAtPhaseStartMs === null ? null : Math.floor(readTiming.remainingAtPhaseStartMs),
+          phaseElapsedMs: Math.max(0, Math.round(readTiming.phaseElapsedMs)), ...safeSnapshotReadDiagnostics(error) } : {}),
+        requestSignalAborted: Boolean(requestSignal?.aborted), cycleSignalAborted: Boolean(input.signal?.aborted),
+        persistenceSignalAborted: Boolean(input.persistenceSignal?.aborted),
+        abortSource: signal?.aborted ? input.signal?.aborted && signal.reason === input.signal.reason ? "cycle_signal"
+          : requestSignal?.aborted && signal.reason === requestSignal.reason ? "request_signal" : "unknown" : "none",
+        abortReasonMatched: reasonMatched };
+      preparationDiagnostics.push(row);
+      if (preparationDiagnostics.length > 25) preparationDiagnostics.shift();
+      console.warn(`[sec-submissions-preparation] ${JSON.stringify(row)}`);
+    };
+    const assertAdmission = (phase: PreparationPhase) => {
+      if (!optionalDeadline) return;
+      const remainingMs = pr262SubmissionsRemainingMs(init)!;
+      const minimumMs = phase === "before_reservation" || phase === "reservation_read"
+        ? PR262_SEC_RESERVATION_MIN_MS : PR262_SEC_SOURCE_MIN_MS;
+      if (remainingMs < minimumMs) {
+        observe(phase, "deferred_before_network", remainingMs);
+        throw new Error("direct_source_collection_deadline");
+      }
+    };
+    if (!policy) { signal?.throwIfAborted(); sourceNetworkAttempted = true; return await rawFetch(request, { ...transportInit, signal }); }
     signal?.throwIfAborted();
     if (target) { storageContext = "submissions_snapshot"; sourcePreparationStage = "submissions_snapshot_read"; }
-    const cache = target ? await readSubmissionSnapshot(target, signal) : null;
+    let cache: Awaited<ReturnType<typeof readSubmissionSnapshot>> = null;
+    if (target) {
+      const readStartedMonotonicMs = performance.now();
+      const remainingAtPhaseStartMs = optionalDeadline ? pr262SubmissionsRemainingMs(init) : null;
+      try { cache = await readSubmissionSnapshot(target, signal); }
+      catch (error) {
+        // No retry or relabeling: preserve the exact read error while recording
+        // whether this boundary had a caller window or an independent R2 cap.
+        if (!input.persistenceSignal) observe("submissions_snapshot_read", "failed_before_network", null, error, undefined,
+          { remainingAtPhaseStartMs, phaseElapsedMs: performance.now() - readStartedMonotonicMs });
+        throw error;
+      }
+    }
     signal?.throwIfAborted();
     if (cache?.snapshot) return snapshotResponse(cache.snapshot, true);
+    assertAdmission("before_reservation");
     // Source reads run concurrently, but their compact R2 budget ledger is one
     // shared document. Serialize only this short reservation step so parallel
     // providers do not exhaust CAS retries by colliding with one another.
     storageContext = "provider_budget_reservation";
     sourcePreparationStage = "provider_budget_reservation";
-    const reservation = reservationTail.then(() => reserveBeforeNetwork(policy, Date.now(), signal));
+    const reservation = reservationTail.then(() => reserveBeforeNetwork(policy, Date.now(), signal, assertAdmission));
     reservationTail = reservation.then(() => undefined, () => undefined);
     await reservation;
     signal?.throwIfAborted();
+    assertAdmission("before_network");
     sourceNetworkAttempted = true;
     sourcePreparationStage = undefined;
-    const response = await rawFetch(request, { ...init, signal });
+    const response = await rawFetch(request, { ...transportInit, signal });
     storageContext = "submissions_snapshot";
     const result = target ? await cacheSubmissionResponse(response, target, cache?.saved, signal, input.persistenceSignal,
-      () => { sourcePreparationStage = "submissions_snapshot_persistence"; }) : response;
+      () => { sourcePreparationStage = "submissions_snapshot_persistence"; }, optionalDeadline ? init : undefined,
+      input.persistenceSignal ? undefined : (outcome, remainingMs, elapsedMs, error) => {
+        snapshotPersistence[outcome]++;
+        if (outcome !== "saved") observe("submissions_snapshot_persistence", outcome, remainingMs, error, elapsedMs);
+      }) : { response, completeSource: false, persistenceOutcome: undefined };
     // A complete valid source response survives optional cache publication
     // failure, including its deadline. Report that storage fault separately.
-    if (result.headers.get("x-swingup-submissions-cache-write-failed") !== "true") signal?.throwIfAborted();
-    return result;
+    if (!result.completeSource || input.persistenceSignal || (!optionalDeadline && result.persistenceOutcome !== "failed")) signal?.throwIfAborted();
+    // An uncacheable provider response cannot certify our private cache PUT.
+    if (!result.completeSource && result.response.headers.has("x-swingup-submissions-cache-persistence")) {
+      const headers = new Headers(result.response.headers);
+      headers.delete("x-swingup-submissions-cache-persistence");
+      return new Response(result.response.body, { status: result.response.status, statusText: result.response.statusText, headers });
+    }
+    return result.response;
     } catch (cause) {
       // The monitor must not report a source request that failed in private
       // storage before network admission. Preserve the original error chain.
@@ -367,6 +469,8 @@ export async function createPr262SensorBudgetedFetch(input: { now?: Date; fetchI
       freeTierHeadroomReserved: true,
       compactR2Ledger: true,
       reservationsPersistedBeforeNetwork: true,
+      snapshotPersistence: { ...snapshotPersistence },
+      preparationDiagnostics: preparationDiagnostics.slice(),
     }),
   };
 }

@@ -9,27 +9,45 @@ const text = (v: unknown) => typeof v === "string" ? v : "";
 const number = (v: unknown) => typeof v === "number" && Number.isFinite(v) ? v : null;
 const DAY = 86400000;
 export const FINANCIAL_EVIDENCE_VERSION = 1;
-type FinancialTransportProof = { version: 1; httpStatus: 200; reachedEof: true; documentKey: string };
+type FinancialTransportProof = { version: 1; httpStatus: 200; reachedEof: true; documentKey: string;
+  response?: { cik: string; rawBytes: number; sha256: string } };
 export type FinancialDocument = { url: string; form: string; filedAt: string; accession: string;
   reportingPeriod: string; collectedAt: string; readComplete: boolean; excerpts: Array<{ topic: string; text: string }>; digest: string;
   transportProof?: FinancialTransportProof; factExtraction?: FilingFactExtraction };
 export type FinancialDocuments = { version: number; cik: string; checkedAt: string; nextCheckAt: string;
   documents: FinancialDocument[]; failures: Array<{ sourceUrl: string; reason: string }>; cached: boolean };
 
+const normalizedCik = (value: unknown) => typeof value === "string" && /^\d{1,10}$/.test(value)
+  ? value.replace(/^0+/, "") || null : null;
 const excerptDigest = (excerpts: unknown) => crypto.createHash("sha256").update(JSON.stringify(excerpts)).digest("hex");
 const transportDocumentKey = (document: Json) => crypto.createHash("sha256")
   .update(JSON.stringify([document.url, document.accession, document.form, document.filedAt, document.reportingPeriod,
     document.digest, document.collectedAt,
     // Existing attestations retain their exact key. New fact payloads must be
     // bound to the same naturally collected response, not pasted onto old proof.
-    ...(document.factExtraction === undefined ? [] : [excerptDigest(document.factExtraction)])])).digest("hex");
+    ...(document.factExtraction === undefined ? [] : [excerptDigest(document.factExtraction)]),
+    ...(object(document.transportProof).response === undefined ? [] : [object(document.transportProof).response])])).digest("hex");
 
 /** Transport/body coverage only; extracted windows never attest coverage of all notes.
  * Legacy readComplete remains a retrieval/identity flag, not HTTP/EOF proof. */
-export function financialDocumentCompleteness(value: unknown): "complete" | "partial" | "unknown" {
-  const document = object(value), proof = object(document.transportProof);
+export function financialDocumentCompleteness(value: unknown, expectedCik?: string): "complete" | "partial" | "unknown" {
+  const document = object(value), proof = object(document.transportProof), response = object(proof.response);
   if (document.transportCompleteness === "unknown") return "unknown";
   if (document.transportProof !== undefined) {
+    // Every proof, including historical receipts without response metadata,
+    // must name the exact collection issuer and accession on an official SEC URL.
+    // Collection CIK padding is equivalent; the source path stays canonical.
+    const source = /^https:\/\/(?:www\.)?sec\.gov\/Archives\/edgar\/data\/(\d{1,10})\/(\d{18})\/[A-Za-z0-9._-]+\.html?$/.exec(text(document.url));
+    const sourceCik = normalizedCik(source?.[1]);
+    if (!source || !sourceCik || source[1] !== sourceCik || !/^\d{10}-\d{2}-\d{6}$/.test(text(document.accession))
+      || source[2] !== text(document.accession).replace(/-/g, "")
+      || (expectedCik !== undefined && sourceCik !== normalizedCik(expectedCik))) return "unknown";
+    // New annual receipts additionally bind raw response bytes. Legitimate
+    // same-issuer historical receipts retain their original key and skip behavior.
+    if (proof.response !== undefined && (!/^\d{10}$/.test(text(response.cik))
+      || normalizedCik(response.cik) !== sourceCik
+      || !Number.isSafeInteger(response.rawBytes) || Number(response.rawBytes) <= 0 || Number(response.rawBytes) >= 5000000
+      || !/^[a-f0-9]{64}$/.test(text(response.sha256)))) return "unknown";
     if (proof.version !== 1 || proof.httpStatus !== 200 || proof.reachedEof !== true
       || !text(document.url) || !text(document.accession) || !text(document.form) || !text(document.filedAt)
       || typeof document.reportingPeriod !== "string" || !Number.isFinite(Date.parse(text(document.collectedAt)))
@@ -46,7 +64,7 @@ export function financialDocumentsEvidenceView(value: unknown): Json | null {
   const documents = object(value);
   return { ...documents, transportCompletenessScope: "HTTP response body only; excerpts are selected windows, not all financial notes.",
     documents: (Array.isArray(documents.documents) ? documents.documents : []).map(value => {
-    const document = object(value), transportCompleteness = financialDocumentCompleteness(document);
+    const document = object(value), transportCompleteness = financialDocumentCompleteness(document, text(documents.cik));
     const extraction = object(document.factExtraction);
     return { ...document, readComplete: transportCompleteness === "complete", transportCompleteness,
       ...(document.factExtraction === undefined ? {} : {
@@ -59,7 +77,7 @@ export function financialDocumentsEvidenceView(value: unknown): Json | null {
 
 export function financialDocumentsReady(value: unknown) {
   const documents = object(value), rows = documents.documents;
-  return Array.isArray(rows) && rows.length > 0 && rows.every(row => financialDocumentCompleteness(row) === "complete")
+  return Array.isArray(rows) && rows.length > 0 && rows.every(row => financialDocumentCompleteness(row, text(documents.cik)) === "complete")
     && Array.isArray(documents.failures) && documents.failures.length === 0;
 }
 
@@ -81,10 +99,10 @@ export function financialCandidatePublicationGap(value: unknown): string | null 
 /** A missing attestation says nothing about whether historical text was partial. */
 export function financialDocumentsPublicationGap(value: unknown): string | null {
   const documents = object(value), rows = Array.isArray(documents.documents) ? documents.documents : [];
-  if (!rows.length || rows.some(row => financialDocumentCompleteness(row) === "unknown")) {
+  if (!rows.length || rows.some(row => financialDocumentCompleteness(row, text(documents.cik)) === "unknown")) {
     return "Whole-text transport completeness is unknown; matching HTTP 200 and EOF provenance is unavailable. Retained excerpts remain usable.";
   }
-  if (rows.some(row => financialDocumentCompleteness(row) === "partial")) {
+  if (rows.some(row => financialDocumentCompleteness(row, text(documents.cik)) === "partial")) {
     return "The response body was not read through EOF. Retained excerpts do not establish whole-text transport completeness.";
   }
   return financialDocumentsReady(value) ? null : "Current response collection has unresolved failures; retained excerpts do not establish complete current coverage.";
@@ -108,17 +126,19 @@ export function financialExcerpt(html: string) {
 async function readBounded(response: Response, maximum: number) {
   if (!response.body) throw new Error("empty_body");
   const reader = response.body.getReader(), decoder = new TextDecoder();
+  const hash = crypto.createHash("sha256");
   let size = 0, body = "", complete = false;
   try {
     while (size < maximum) {
       const part = await reader.read();
       if (part.done) { complete = true; break; }
       const remaining = maximum - size; size += part.value.byteLength;
+      hash.update(part.value.subarray(0, remaining));
       body += decoder.decode(part.value.subarray(0, remaining), { stream: true });
     }
     body += decoder.decode();
   } finally { await reader.cancel().catch(() => undefined); }
-  return { body, complete };
+  return { body, complete, rawBytes: size, sha256: hash.digest("hex") };
 }
 
 /** At most one SEC issuer index and two dated financial filings; existing fetch budgets apply. */
@@ -137,6 +157,7 @@ export async function collectFinancialDocuments(cik: string, fetchImpl: typeof f
     const response = await fetchImpl(url, { headers: { "User-Agent": "SwingUp/1.0 support@swingup.app", Accept: "application/json,text/html" },
       cache: "no-store", redirect: "error", signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000) });
     if (response.status !== 200) throw new Error(`http_${response.status}`);
+    if (response.url && response.url !== url) throw new Error("source_response_url_mismatch");
     return readBounded(response, maximum);
   };
   try {
@@ -159,15 +180,27 @@ export async function collectFinancialDocuments(cik: string, fetchImpl: typeof f
     const selected = [candidates.find(d => d.form !== "10-Q"), candidates.find(d => d.form === "10-Q")].filter(d => d !== undefined);
     if (!selected.length) throw new Error("financial_filing_not_found");
     for (const filing of selected) {
-      const previous = documents.find(d => d.url === filing.url);
+      // An expired cache is never a skip shortcut. For the selected annual only,
+      // retain its exact old row if the ordinary attempted refresh fails.
+      const previous = documents.find(d => d.url === filing.url) ?? (filing.form !== "10-Q"
+        && prior?.version === FINANCIAL_EVIDENCE_VERSION && prior.cik === cik
+        && Date.parse(prior.checkedAt) <= now.getTime()
+        ? prior.documents.find(d => d.url === filing.url) : undefined);
       const typedExtractionEligible = ["0001647639", "0000903651"].includes(cik) && filing.form === "10-Q";
       // A parser-version repair is eligible only at this normal due collection.
       // No cache sweep, forced refresh, extra slot, or paid-review reset.
       const typedExtractionCurrent = previous?.factExtraction?.version === FILING_FACTS_VERSION
         && previous.factExtraction.status === "extracted" && financialDocumentCompleteness(previous) === "complete";
-      if (previous?.readComplete && (!typedExtractionEligible || typedExtractionCurrent)) continue;
+      const annualProofRepairEligible = previous !== undefined && filing.form !== "10-Q"
+        && (!usable || financialDocumentCompleteness(previous, cik) !== "complete"
+          || previous.form !== filing.form || previous.accession !== filing.accession
+          || previous.filedAt !== filing.filedAt || previous.reportingPeriod !== filing.reportingPeriod);
+      if (previous?.readComplete && !annualProofRepairEligible && (!typedExtractionEligible || typedExtractionCurrent)) continue;
       try {
         const result = await request(filing.url, 5000000);
+        // A failed annual refresh must retain usable legacy evidence byte-for-byte.
+        // It cannot downgrade that row to a capped prefix or bless malformed HTML.
+        if (annualProofRepairEligible && (!result.complete || !/<\/html>\s*$/i.test(result.body))) throw new Error("annual_filing_refresh_unproved");
         const excerpts = financialExcerpt(result.body);
         if (!excerpts.length) throw new Error("financial_sections_not_extracted");
         const document: FinancialDocument = { ...filing, collectedAt: now.toISOString(), readComplete: result.complete, excerpts,
@@ -181,11 +214,17 @@ export async function collectFinancialDocuments(cik: string, fetchImpl: typeof f
         }
         // Only this naturally requested, exact-200 read can mint proof. Cache
         // hits, skipped legacy rows and capped/interrupted reads cannot.
-        if (result.complete) document.transportProof = { version: 1, httpStatus: 200, reachedEof: true,
-          documentKey: transportDocumentKey(document) };
+        if (result.complete) {
+          document.transportProof = { version: 1, httpStatus: 200, reachedEof: true, documentKey: "",
+            ...(filing.form !== "10-Q" ? { response: { cik, rawBytes: result.rawBytes, sha256: result.sha256 } } : {}) };
+          document.transportProof.documentKey = transportDocumentKey(document);
+        }
         const old = documents.findIndex(d => d.url === filing.url);
         if (old >= 0) documents[old] = document; else documents.push(document);
-      } catch (error) { failures.push({ sourceUrl: filing.url, reason: error instanceof Error && /^http_\d+$|financial_sections_not_extracted$/.test(error.message) ? error.message : "document_unavailable_or_budget_deferred" }); }
+      } catch (error) {
+        if (annualProofRepairEligible && previous && !documents.some(d => d.url === filing.url)) documents.push(previous);
+        failures.push({ sourceUrl: filing.url, reason: error instanceof Error && /^http_\d+$|financial_sections_not_extracted$/.test(error.message) ? error.message : "document_unavailable_or_budget_deferred" });
+      }
     }
     // A newer filing's retrieval failure cannot silently substitute an old filing.
     const urls = new Set(selected.map(d => d.url));

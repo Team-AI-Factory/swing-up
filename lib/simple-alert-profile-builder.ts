@@ -75,7 +75,7 @@ export function firstVerifiedCompaniesThisRun(before: Row[], after: Row[], now: 
 }
 
 /** One source-verified company (CIK), never a second share class or refresh. */
-export function profileBatchPlan(listings: Row[], entries: Row[], now: Date, limit: number) {
+export function profileBatchPlan(listings: Row[], entries: Row[], now: Date, limit: number, cursor: { attempts?: number; retrySlots?: number } = {}) {
   const day = dayOf(now);
   const valid = entries.filter(row => verifiedCompanyProfile(row.profile, row, now));
   const validIssuers = new Set(valid.map(row => profileCik(row.cik)));
@@ -138,26 +138,34 @@ export function profileBatchPlan(listings: Row[], entries: Row[], now: Date, lim
       return !rowParserRepair && !invalidCachedProfile && Date.parse(String(row.nextAttemptAt ?? "")) > now.getTime();
     });
     if (deferred) return [];
-    return [{ ...identity, parserRepair, lastAttempt: Math.max(0, ...previous.map(row => Date.parse(String(row.updatedAt ?? "")) || 0)) }];
+    const neverVerified = !previous.some(row => row.verificationHistoryKnown === true || Boolean(row.profile) || Boolean(row.firstVerifiedAt));
+    return [{ ...identity, parserRepair, neverVerified, lastAttempt: Math.max(0, ...previous.map(row => Date.parse(String(row.updatedAt ?? "")) || 0)) }];
   }).sort((a, b) => a.lastAttempt - b.lastAttempt || a.ticker.localeCompare(b.ticker));
-  const pilot = due.filter(row => cohort.has(row.ticker));
-  // A parser revision is justified by current failed source evidence. Give its
-  // newest exact-source rows one bounded pass before the ordinary oldest-first
-  // backlog, so the repair is actually verified instead of sitting behind
-  // thousands of due retries. Same-revision failures retain normal backoff.
-  const parserRepairs = due.filter(row => !cohort.has(row.ticker) && row.parserRepair)
-    .sort((a, b) => b.lastAttempt - a.lastAttempt || a.ticker.localeCompare(b.ticker));
-  const fresh = due.filter(row => !cohort.has(row.ticker) && !row.parserRepair && !row.lastAttempt);
-  const retries = due.filter(row => !cohort.has(row.ticker) && !row.parserRepair && row.lastAttempt);
-  const ordered = [...pilot, ...parserRepairs];
-  // An endless supply of untouched issuers cannot starve due retries. Reserve
-  // each fourth background slot for the oldest retry, without ignoring backoff.
-  let freshCursor = 0, retryCursor = 0, slot = 0;
-  while (freshCursor < fresh.length || retryCursor < retries.length) {
-    const retryTurn = slot++ % 4 === 3 || freshCursor >= fresh.length;
-    ordered.push(retryTurn && retryCursor < retries.length ? retries[retryCursor++]
-      : freshCursor < fresh.length ? fresh[freshCursor++] : retries[retryCursor++]);
-  }
+  // Priority applies inside bounded lanes, never as an unbounded prefix.
+  // Missing pilot profiles and old-parser repairs must not consume every slot
+  // before a never-attempted issuer has a chance to establish its first proof.
+  const priority = (a: typeof due[number], b: typeof due[number]) =>
+    a.lastAttempt - b.lastAttempt
+    || Number(cohort.has(b.ticker)) - Number(cohort.has(a.ticker))
+    || Number(b.parserRepair) - Number(a.parserRepair)
+    || a.ticker.localeCompare(b.ticker);
+  const fresh = due.filter(row => row.neverVerified && !row.lastAttempt).sort(priority);
+  const neverVerifiedRetries = due.filter(row => row.neverVerified && row.lastAttempt).sort(priority);
+  const historicalRepairs = due.filter(row => !row.neverVerified).sort(priority);
+  // Every fourth available slot belongs to the second lane. If either lane
+  // empties, the other uses the remaining slots. History is issuer-wide, so an
+  // alias or a rejected old profile can never masquerade as a fresh company.
+  const interleave = (first: typeof due, second: typeof due, offset = 0) => {
+    const rows: typeof due = [];
+    let firstCursor = 0, secondCursor = 0, slot = Number.isSafeInteger(offset) && offset >= 0 ? offset : 0;
+    while (firstCursor < first.length || secondCursor < second.length) {
+      const secondTurn = slot++ % 4 === 3 || firstCursor >= first.length;
+      rows.push(secondTurn && secondCursor < second.length ? second[secondCursor++]
+        : firstCursor < first.length ? first[firstCursor++] : second[secondCursor++]);
+    }
+    return rows;
+  };
+  const ordered = interleave(fresh, interleave(neverVerifiedRetries, historicalRepairs, cursor.retrySlots), cursor.attempts);
   return { newlyVerifiedToday, due: ordered.slice(0, Math.max(0, Math.min(limit, PROFILE_DAILY_TARGET - newlyVerifiedToday))),
     eligible: due.length, ineligibleListings, duplicateIssuerListings, dueRetries: due.filter(row => row.lastAttempt > 0).length };
 }
@@ -216,7 +224,7 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
     try { return await read(profilesKey(), readSignal); }
     catch (error) { storageFailureObserved = true; throw error; }
   };
-  let eligibility: Row = {}, retryAttempts = 0;
+  let eligibility: Row = {}, retryAttempts = 0, retryLaneAttempts = 0;
   let cohortProfiles: ReturnType<typeof pilotProfileCoverage> | null = null;
   const pendingReasons: Record<string, number> = {};
   const attemptedIssuers = new Set<string>(), acknowledgedVerifiedIssuers = new Set<string>();
@@ -228,7 +236,9 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
     operationFamily = "profile_plan";
     const cache = await readProfileCache();
     const entries = Array.isArray(cache.value.entries) ? cache.value.entries.map(object) : [];
-    const plan = profileBatchPlan(universe.snapshot.entries, entries, now, count);
+    const plan = profileBatchPlan(universe.snapshot.entries, entries, now, count, {
+      attempts: Number(state.totalAttempts) || 0, retrySlots: Number(state.totalRetryLaneAttempts) || 0,
+    });
     before = plan.newlyVerifiedToday;
     // Counts describe durable cache rows, never merely completed attempts.
     // Keep this read reusable after workers settle with a storage error.
@@ -267,6 +277,7 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
         const identity = plan.due[cursor++];
         attempted++; attemptedIssuers.add(identity.cik);
         if (identity.lastAttempt) retryAttempts++;
+        if (!identity.neverVerified || identity.lastAttempt) retryLaneAttempts++;
         try {
           if (await ensureCompanyProfile(identity, provider.fetchImpl, new Date(), { signal, persistenceSignal,
             // Headers/connect errors are counted by paced fetch; body failures
@@ -315,13 +326,16 @@ export async function runSimpleAlertProfileBuilder(now = new Date(), fetchImpl: 
     lastReconciledNewlyVerifiedToday: after ?? before, countReconciliationFailure,
     failureCategory, failureOperationFamily, storageFailureObserved, failureRateBasis: "source_requests_only",
     requests, requestFailures, responseBodyFailures, failureRatePercent: requests ? requestFailures / requests * 100 : null,
-    ...eligibility, cohortProfiles, retryAttempts, pendingReasons, durationMs: Date.now() - startedAt, concurrency: 2,
+    ...eligibility, cohortProfiles, retryAttempts, retryLaneAttempts, pendingReasons, durationMs: Date.now() - startedAt, concurrency: 2,
     modelCalls: 0, failure, guarantees500: false };
   const current = await read(key, summarySignal);
   if (current.value.owner !== owner) throw new Error("simple_profile_lease_lost");
   const saved = await writeVersionedJsonToR2(key, { ...state, ...summary, leaseUntil: null,
     // Unused reserved slots can be safely returned once this process settles.
     attemptsReserved: alreadyReserved + attempted, totalAttempts: (Number(state.totalAttempts) || 0) + attempted,
+    // Persist the lane cursor in this existing summary write. Small runs must
+    // continue the 3:1 turns rather than restart at fresh slot zero forever.
+    totalRetryLaneAttempts: (Number(state.totalRetryLaneAttempts) || 0) + retryLaneAttempts,
     // Preserve the last known count when this run could not reconcile it.
     // Admission still uses a fresh issuer-level cache plan on the next run.
     totalVerified: after ?? before ?? state.totalVerified ?? null }, { expectedEtag: current.saved.etag!, signal: summarySignal });

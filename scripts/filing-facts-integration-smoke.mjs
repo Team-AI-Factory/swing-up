@@ -76,7 +76,7 @@ await inSimpleAlertPilot(async()=>{
    for(const pack of prompts) assert.deepEqual(pack.financialDiligence.documents.documents.find(d=>d.url===source.url).factExtraction,doc.factExtraction,'Every model sees all typed values and provenance unchanged');
    const cachedBytes=Buffer.byteLength(JSON.stringify(first.result));
    // Pure metadata repair eligibility must not change substantive legacy keys.
-   const legacy=structuredClone(first.result);for(const d of legacy.documents){delete d.factExtraction;delete d.transportProof;}
+   const legacy=structuredClone(first.result);for(const d of legacy.documents.filter(d=>d.form==='10-Q')){delete d.factExtraction;delete d.transportProof;}
    const key=h.key(`research-evidence/financial-documents/${source.cik}.json`);
    h.objects.set(key,{value:legacy,etag:'legacy-fixture'});
    const before=reads.length;h.state.now=new Date(h.state.now.getTime()+1000);

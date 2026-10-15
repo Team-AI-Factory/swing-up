@@ -41,8 +41,8 @@ const repairOrder = plan([listing(olderRepair), listing(recentRepair)], [
   parserRepairEntry(olderRepair, new Date(now.getTime() - 86400000).toISOString()),
   parserRepairEntry(recentRepair, new Date(now.getTime() - 60000).toISOString()),
 ], now, 100).due;
-assert.deepEqual(repairOrder.map(row => row.ticker), ["RECENTREPAIR", "OLDREPAIR"],
-  "A new parser revision verifies the newest motivating exact-source failures before the ordinary retry backlog");
+assert.deepEqual(repairOrder.map(row => row.ticker), ["OLDREPAIR", "RECENTREPAIR"],
+  "Parser repair respects oldest-attempt fairness inside its bounded lane");
 assert.equal(plan([listing(recentRepair)], [{ ...parserRepairEntry(recentRepair, now.toISOString()), parserRevision: profile.COMPANY_PROFILE_PARSER_REVISION }], now, 100).due.length, 0,
   "Same-revision extraction failures retain their persisted backoff");
 const invalidLegacy = { ...entry(base, yesterday), parserRevision: 6, nextAttemptAt: new Date(now.getTime() + 30 * 86400000).toISOString(),
@@ -72,6 +72,23 @@ assert.equal(plan([listing(base)], [{ ...entry(base), verificationHistoryKnown: 
   "The history flag with a genuinely known first date today preserves daily production");
 assert.equal(plan([listing(base)], [{ ...entry(base, yesterday), verificationHistoryKnown: true }, entry(unit)], now, 100).newlyVerifiedToday, 0,
   "Known older history still governs a newly verified alias");
+// All former priority prefixes now share bounded slots with new companies.
+const bulkFresh = Array.from({ length: 100 }, (_, i) => listing(identity(`NEW${i}`, 1000 + i)));
+const bulkRepairs = Array.from({ length: 100 }, (_, i) => identity(`OLD${i}`, 2000 + i));
+const repairRows = bulkRepairs.map(row => ({ ...parserRepairEntry(row, yesterday.toISOString()), verificationHistoryKnown: true }));
+const bulkPlan = plan([...bulkFresh, ...bulkRepairs.map(listing)], repairRows, now, 100);
+assert.equal(bulkPlan.due.filter(row => row.neverVerified).length, 75, "An arbitrarily long historical/parser repair queue cannot prefix away all first-time slots");
+assert.equal(bulkPlan.due.filter(row => !row.neverVerified).length, 25, "Historical repairs retain reserved capacity");
+const neverRetryRows = bulkRepairs.map(row => ({ ...parserRepairEntry(row, yesterday.toISOString()) }));
+const history = identity("HISTORY", 3001);
+const lanePlan = plan([...bulkRepairs.map(listing), listing(history)], [...neverRetryRows, { ...history, profile: null, verificationHistoryKnown: true, updatedAt: yesterday.toISOString() }], now, 4);
+assert.equal(lanePlan.due[3].ticker, "HISTORY", "Never-verified retries cannot starve old verified issuers");
+for (const offset of [3, 7, 103]) {
+  assert.equal(plan([...fresh, listing(retry)], [retryEntry], now, 1, { attempts: offset }).due[0].ticker, "RETRY", "Small runs carry the fourth-slot fairness turn across summaries");
+}
+const aliasHistory = { ...identity("HISTORY-OLD", 3001), profile: {}, updatedAt: yesterday.toISOString() };
+assert.equal(plan([listing(history)], [aliasHistory], now, 1).due[0].neverVerified, false, "Even invalid profile history on an alias disqualifies fresh-company priority");
+
 const atLimit = Array.from({ length: 500 }, (_, i) => entry(identity(`T${i}`, i + 500)));
 assert.equal(plan([listing(base)], atLimit, now, 100).due.length, 0);
 assert.equal(plan([listing(base)], atLimit.slice(0, 499), now, 100).due.length, 1);

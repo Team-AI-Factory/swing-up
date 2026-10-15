@@ -55,23 +55,51 @@ for (const stage of ["snapshot_read", "reservation_read", "reservation_write", "
   assert.equal(network, stage === "snapshot_write" ? 1 : 0, "No source request may start after cache/reservation cancellation");
   assert.ok(writes <= (stage === "snapshot_write" ? 2 : stage === "reservation_write" ? 1 : 0));
 }
-for (const stage of ["registry_read", "registry_write"]) {
-  let network = 0;
+for (const stage of ["registry_read", "registry_write"]) for (const expiry of ["in_flight", "before_start"]) {
+  let network = 0, reads = 0, writes = 0, observedSignal;
+  const originalNow = Date.now;
+  const startedAtMs = originalNow();
+  let clockMs = startedAtMs;
   const direct = loadTsModule("@/lib/opportunity-engine/pr262-direct-announcements", { ...common,
     "@/lib/r2-warehouse": {
-      readVersionedTextFromR2: async (_key, options) => stage === "registry_read" ? hang(options.signal) : absent,
-      writeVersionedJsonToR2: async (_key, _value, options) => hang(options.signal),
+      readVersionedTextFromR2: async (_key, options) => {
+        reads++;
+        if (stage === "registry_read") { observedSignal = options.signal; return hang(options.signal); }
+        // Expire only after a successful read to exercise pre-start write
+        // cancellation separately from the pre-start read case.
+        if (expiry === "before_start") clockMs = startedAtMs + 25;
+        return absent;
+      },
+      writeVersionedJsonToR2: async (_key, _value, options) => {
+        writes++; observedSignal = options.signal; return hang(options.signal);
+      },
     },
   });
-  const began = Date.now();
-  const result = await direct.runPr262DirectAnnouncementMonitor({ exposure: [company], deadlineAtMs: Date.now() + 25,
-    fetchImpl: async () => { network++; throw new Error("No source expected"); } });
+  // Keep wall-clock scheduling from selecting the other valid cancellation
+  // path. Native AbortSignal.timeout still enforces the original 25ms window;
+  // the real monotonic elapsed-time assertion remains independent of this clock.
+  Date.now = () => clockMs;
+  const began = performance.now();
+  let result;
+  try {
+    result = await direct.runPr262DirectAnnouncementMonitor({ exposure: [company], now: new Date(startedAtMs),
+      deadlineAtMs: startedAtMs + (expiry === "before_start" && stage === "registry_read" ? -1 : 25),
+      fetchImpl: async () => { network++; throw new Error("No source expected"); } });
+  } finally { Date.now = originalNow; }
+  assert.equal(Date.now, originalNow);
   assert.equal(result.attemptCount, 0);
   assert.equal(result.failureCount, 0);
   assert.equal(result.sourcePreparationFailures, 1);
   assert.equal(result.registryPersistence.written, false);
   assert.equal(result.registryPersistence.failureStage, stage === "registry_read" ? "load" : "write");
-  assert.match(result.registryPersistence.error, /timeout/i);
+  if (expiry === "in_flight") {
+    assert.equal(observedSignal.aborted, true);
+    assert.equal(observedSignal.reason.name, "TimeoutError");
+    assert.match(result.registryPersistence.error, /timeout/i);
+  } else {
+    assert.equal(observedSignal, undefined, "Pre-start cancellation must not enter the private storage operation");
+    assert.equal(result.registryPersistence.error, `direct_registry_${stage === "registry_read" ? "load" : "write"}:direct_registry_deadline`);
+  }
   if (stage === "registry_read") {
     assert.equal(result.registeredFeeds, null);
     assert.equal(result.currentEligibleCompaniesKnown, null);
@@ -79,7 +107,9 @@ for (const stage of ["registry_read", "registry_write"]) {
     assert.equal(result.registryPersistence.telemetryBasis, "unavailable");
     assert.equal(result.issuerSourceCoverage[0].sec.status, "registry_unavailable");
   }
-  assert.ok(Date.now() - began < 500, "Registry read/save cannot add the global 45s retry deadline");
+  assert.ok(performance.now() - began < 500, "Registry read/save cannot add the global 45s retry deadline");
+  assert.equal(reads, expiry === "before_start" && stage === "registry_read" ? 0 : 1);
+  assert.equal(writes, expiry === "in_flight" && stage === "registry_write" ? 1 : 0);
   assert.equal(network, 0);
 }
 console.log("Source storage deadlines: snapshot read/write, durable reservation read/write and registry load/save abort within the caller window; no source network begins after cancellation.");

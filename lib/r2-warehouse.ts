@@ -136,6 +136,41 @@ function fingerprintAccessKeyId(accessKeyId: string) {
 const R2_MUTATION_METHODS = new Set(["DELETE", "PATCH", "POST", "PUT"]);
 const R2_REQUEST_TIMEOUT_MS = 20_000;
 
+type R2ReadPhase = "request_setup" | "response_headers" | "response_body" | "decode";
+type R2ReadContext = {
+  startedAt: number;
+  phase: R2ReadPhase;
+  callerSignal?: AbortSignal;
+  requestStartedAt?: number;
+  requestSignal?: AbortSignal;
+  requestTimeout?: AbortSignal;
+};
+function r2ReadFailureDiagnostics(context: R2ReadContext, error: unknown) {
+  const { requestSignal, requestTimeout, callerSignal } = context;
+  const aborted = requestSignal?.aborted === true;
+  // Report the winning signal separately from error identity. A coincident
+  // abort does not establish the cause of an HTTP, decode or native body error.
+  const requestAbortSource = !aborted ? "none"
+    : requestTimeout?.aborted && requestSignal.reason === requestTimeout.reason ? "r2_request_timeout"
+      : callerSignal?.aborted && requestSignal.reason === callerSignal.reason ? "caller" : "unknown";
+  let abortReasonMatched = false;
+  const seen = new Set<unknown>();
+  let cause = error;
+  for (let depth = 0; aborted && depth < 16 && cause !== undefined && !seen.has(cause); depth++) {
+    if (cause === requestSignal.reason) { abortReasonMatched = true; break; }
+    seen.add(cause);
+    cause = cause && typeof cause === "object" && "cause" in cause ? cause.cause : undefined;
+  }
+  const endedAt = performance.now();
+  return {
+    responsePhase: context.phase,
+    readDurationMs: Math.max(0, Math.round(endedAt - context.startedAt)),
+    requestDurationMs: context.requestStartedAt === undefined ? null : Math.max(0, Math.round(endedAt - context.requestStartedAt)),
+    requestTimeoutMs: R2_REQUEST_TIMEOUT_MS,
+    requestAbortSource, abortReasonMatched,
+  };
+}
+
 export function normalizeR2WritePrefix(value: string | null | undefined) {
   const prefix = value?.trim() ?? "";
   if (!prefix) return null;
@@ -194,6 +229,7 @@ async function signedFetch(
   conditionalHeaders: Record<string, string> = {},
   query: Record<string, string> = {},
   signal?: AbortSignal,
+  readContext?: R2ReadContext,
 ) {
   signal?.throwIfAborted();
   assertR2MutationKeyAllowed(method, key);
@@ -259,12 +295,20 @@ async function signedFetch(
     .update(stringToSign)
     .digest("hex");
   headers.authorization = `AWS4-HMAC-SHA256 Credential=${c.accessKeyId}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+  const requestTimeout = AbortSignal.timeout(R2_REQUEST_TIMEOUT_MS);
+  const requestSignal = signal ? AbortSignal.any([signal, requestTimeout]) : requestTimeout;
+  if (readContext) {
+    readContext.phase = "response_headers";
+    readContext.requestStartedAt = performance.now();
+    readContext.requestSignal = requestSignal;
+    readContext.requestTimeout = requestTimeout;
+  }
   return fetch(url, {
     method,
     headers,
     body: body as BodyInit | undefined,
     cache: "no-store",
-    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(R2_REQUEST_TIMEOUT_MS)]) : AbortSignal.timeout(R2_REQUEST_TIMEOUT_MS),
+    signal: requestSignal,
   });
 }
 export function computeContentHash(payload: unknown) {
@@ -428,23 +472,28 @@ export function normalizeR2Etag(value: string | null | undefined) {
 
 // Preserve operation provenance when native fetch/body failures have no R2
 // message prefix. This changes no retries, guards, payloads or write conditions.
-async function withR2StateProvenance<T>(operation: "read" | "write", run: () => Promise<T>): Promise<T> {
+async function withR2StateProvenance<T>(operation: "read" | "write", run: () => Promise<T>, readContext?: R2ReadContext): Promise<T> {
   try { return await run(); }
   catch (cause) {
     throw Object.assign(new Error(cause instanceof Error ? cause.message : "r2_state_storage_failed", { cause }), {
       name: cause instanceof Error ? cause.name : "Error", storageDomain: "r2_state", storageOperation: operation,
+      ...(readContext ? { storageReadDiagnostics: r2ReadFailureDiagnostics(readContext, cause) } : {}),
     });
   }
 }
 
 export async function readVersionedTextFromR2(r2Key: string, options: { signal?: AbortSignal } = {}): Promise<VersionedR2Object> {
+  const context: R2ReadContext = { startedAt: performance.now(), phase: "request_setup", callerSignal: options.signal };
   return withR2StateProvenance("read", async () => {
-    const res = await signedFetch("GET", r2Key, undefined, undefined, undefined, {}, {}, options.signal);
+    const res = await signedFetch("GET", r2Key, undefined, undefined, undefined, {}, {}, options.signal, context);
     if (res.status === 404) return { found: false, text: null, etag: null };
     if (!res.ok) throw new Error(`r2_state_read_http_${res.status}`);
-    const text = decodeVersionedR2Text(Buffer.from(await res.arrayBuffer()));
+    context.phase = "response_body";
+    const body = Buffer.from(await res.arrayBuffer());
+    context.phase = "decode";
+    const text = decodeVersionedR2Text(body);
     return { found: true, text, etag: normalizeR2Etag(res.headers.get("etag")) };
-  });
+  }, context);
 }
 
 export type R2ObjectKeyPage = {

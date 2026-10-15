@@ -67,22 +67,25 @@ await inSimpleAlertPilot(async () => {
   const initial = await collect(old);
   assert.equal(initial.cached, true); assert.equal(old.fetches.length, 0); assert.equal(old.writes.length, 0);
   for (let i = 0; i < 5; i++) { old.advance(7 * hour); await collect(old); }
-  assert.deepEqual(raw(old).documents, before.documents);
-  assert.equal(old.fetches.length, 5); assert.ok(old.fetches.every(url => url.includes("/submissions/")));
+  assert.equal(raw(old).documents[0].digest, before.documents[0].digest);
+  assert.deepEqual(raw(old).documents[0].excerpts, before.documents[0].excerpts);
+  assert.equal(financial.financialDocumentsReady(raw(old)), true);
+  assert.equal(old.fetches.length, 6);
+  assert.equal(old.fetches.filter(url => url.includes("/submissions/")).length, 5);
   assert.equal(old.writes.length, 5);
   const oldReport = await old.runRunner({ allowOpenAi: false });
-  assert.equal(oldReport.selectedCandidate.financialDocuments.documents[0].transportCompleteness, "unknown");
+  assert.equal(oldReport.selectedCandidate.financialDocuments.documents[0].transportCompleteness, "complete");
   if (baselineHarness) {
     const base = baselineHarness({ useFinancialCollector: true }); setRaw(base, legacy);
     await collect(base);
     for (let i = 0; i < 5; i++) { base.advance(7 * hour); await collect(base); }
     const baseReport = await base.runRunner({ allowOpenAi: false });
-    assert.deepEqual(old.fetches, base.fetches);
-    assert.deepEqual(old.writes, base.writes);
-    assert.deepEqual(keyProjection(oldReport), keyProjection(baseReport), "Exact ab20 identity projections must survive outward proof downgrade");
+    assert.equal(old.fetches.length, base.fetches.length + 1, "Only the first ordinary due annual repair adds one source read");
+    assert.equal(old.writes.length, base.writes.length);
+    assert.deepEqual(keyProjection(oldReport), keyProjection(baseReport), "Exact historical identity projections survive metadata-only annual repair");
   }
-  observations.push({ test: "35-hour legacy cache", indexReads: 5, filingReads: 0, writes: 5,
-    rawDocumentsUnchanged: true, exactBaselineKeysCompared: Boolean(baselineHarness), fingerprint: oldReport.candidateFingerprint });
+  observations.push({ test: "35-hour legacy cache", indexReads: 5, filingReads: 1, writes: 5,
+    substantiveDocumentsUnchanged: true, exactBaselineKeysCompared: Boolean(baselineHarness), fingerprint: oldReport.candidateFingerprint });
 
   // First successful Committee can be positive while publication is held. Its
   // actual completion is preserved in journal and research persistence.
@@ -287,8 +290,8 @@ await inSimpleAlertPilot(async () => {
   assert.equal(jobReplay.result.openAiCalled, false);
   assert.equal(job.state.roleCalls, jobRoles); assert.equal(job.state.moneyCalls, jobMoney);
   assert.equal(jobReplay.result.seriousSignalFound, false);
-  assert.ok(job.fetches.filter(url => url.includes("/Archives/")).length === 0,
-    "Follow-up plans cannot rearm complete-flagged legacy filing reads");
+  assert.equal(job.fetches.filter(url => url.includes("/Archives/")).length, 1,
+    "Only the already-due annual slot repairs legacy proof; follow-up adds no extra slot");
   const followups = [...job.objects].filter(([key]) => key.includes("/followups/")).map(([, row]) => row.value);
   assert.ok(followups.length > 0);
   assert.ok(followups.every(row => row.tasks.every(task => task.type === "financial_documents")),
@@ -296,8 +299,9 @@ await inSimpleAlertPilot(async () => {
   if (baselineHarness) {
     const baselineJob = baselineHarness({ useFinancialCollector: true }); setRaw(baselineJob, legacy);
     await baselineJob.runJob(); baselineJob.advance(13 * hour); baselineJob.reload(); await baselineJob.runJob();
-    assert.deepEqual(job.fetches, baselineJob.fetches,
-      "Unknown-proof follow-up and actual next event-job pass have the exact baseline source I/O trace");
+    assert.deepEqual(job.fetches.filter(url => !url.includes("/Archives/")), baselineJob.fetches.filter(url => !url.includes("/Archives/")),
+      "Index and other source I/O retain the baseline trace");
+    assert.equal(job.fetches.length, baselineJob.fetches.length + 1, "Only the normal due annual repair adds one source read");
   }
   observations.push({ test: "Collector to event-job persistence", actualNeedsMoreDataCompletionStored: true, outboxes: 0, replayAddedCalls: 0 });
 });

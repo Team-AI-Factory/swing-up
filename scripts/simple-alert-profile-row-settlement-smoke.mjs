@@ -174,7 +174,9 @@ async function run(stage, mode) {
     assert.equal(diagnostic.ticker, identity.ticker);
     assert.equal(diagnostic.settlement, recovered || mode === "source_fault_pending_settlement" ? "exact_intent"
       : !settlementEligible ? "not_attempted" : ["put_timeout_unapplied", "same_row_winner", "role_unapplied"].includes(mode) ? "different_intent" : "unavailable");
-    assert.ok(Object.keys(diagnostic).every(key => ["stage", "phase", "ticker", "writes", "queueMs", "durationMs", "cause", "transactionDeadline", "workDeadline", "persistenceDeadline", "settlement"].includes(key)), "Diagnostics expose controlled fields only");
+    const initialReadFields = mode === "initial_read_timeout"
+      ? ["responsePhase", "readDurationMs", "requestDurationMs", "requestTimeoutMs", "requestAbortSource", "abortReasonMatched"] : [];
+    assert.ok(Object.keys(diagnostic).every(key => ["stage", "phase", "ticker", "writes", "queueMs", "durationMs", "cause", "transactionDeadline", "workDeadline", "persistenceDeadline", "settlement", ...initialReadFields].includes(key)), "Diagnostics expose controlled fields only");
   }
   if (mode === "source_fault_pending_settlement") {
     assert.equal(result.failure, baseline ? "Deadline 15000" : "r2_state_read_http_502", "Settling the pending row cannot clear its independent source-cache fault");

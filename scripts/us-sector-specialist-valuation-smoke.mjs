@@ -147,9 +147,9 @@ const reit = company({
 });
 const reitValue = evaluateSectorSpecialistValuation(reit);
 assert.equal(reitValue.sectorKind, "real_estate_reit");
-assert.equal(reitValue.methods.length, 2);
-assert.equal(reitValue.decision.action, "buy");
-assert.equal(reitValue.decision.foundationPromotionEligible, true);
+assert.equal(reitValue.methods.length, 1);
+assert.equal(reitValue.decision.action, "research_only");
+assert.equal(reitValue.decision.foundationPromotionEligible, false);
 assert.ok(reitValue.limitations.some((value) => /FFO\/AFFO/i.test(value)));
 
 const utility = company({

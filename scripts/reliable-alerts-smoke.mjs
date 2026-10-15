@@ -5,7 +5,7 @@ const checks = [
   "single-scenario-publication",
   "restricted-beta-policy", "restricted-beta-feed", "restricted-research-watch",
   "single-valuation-scenario", "event-company-profile", "event-company-profile-cache", "risk-only-watch-out",
-  "us-value-investing-engine",
+  "us-value-investing-engine", "ev-equity-bridge-hold", "ev-equity-bridge-publication",
   "financial-document-http-completeness", "financial-document-proof-boundary",
   "financial-document-review-label", "financial-document-dependency-lifecycle", "financial-document-delivery-proof",
   "terminal-review-telemetry", "company-disclosure-presentation", "public-review-confidence",

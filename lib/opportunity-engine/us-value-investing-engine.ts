@@ -4,7 +4,7 @@ import {
   writeVersionedJsonToR2,
 } from "@/lib/r2-warehouse";
 import { pr262StorageKey } from "@/lib/opportunity-engine/pr262-storage";
-import type { SpecialistValuationMethod } from "@/lib/opportunity-engine/us-sector-specialist-valuation";
+import type { SpecialistValuationMethod, UnavailableSpecialistMethod } from "@/lib/opportunity-engine/us-sector-specialist-valuation";
 import type { ValuationCoverageAssessment } from "@/lib/opportunity-engine/valuation-coverage";
 
 export type ValueAlertAction = "buy" | "sell" | "watch_out" | "watch" | "no_action";
@@ -82,6 +82,7 @@ export type UsValueCompanyAnalysis = {
   };
   fairValue: {
     methods: ValueMethod[];
+    unavailableMethods?: UnavailableSpecialistMethod[];
     conservativeValue: number | null;
     baseValue: number | null;
     optimisticValue: number | null;

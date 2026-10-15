@@ -19,6 +19,36 @@ export type SpecialistValuationMethod = {
   assumption: string;
 };
 
+export type UnavailableSpecialistMethod = {
+  method: "financial_ev_ebitda" | "reit_ev_ebitda_proxy" | "utility_ev_ebitda";
+  reason: "verified_ev_to_equity_bridge_unavailable";
+  requiredEvidence: string[];
+  explanation: string;
+};
+
+export function isUnsupportedEvEquityMethod(method: string): method is UnavailableSpecialistMethod["method"] {
+  return method === "financial_ev_ebitda" || method === "reit_ev_ebitda_proxy" || method === "utility_ev_ebitda";
+}
+
+/** Hold current publication without changing the historical review or receipt. */
+export function unsupportedEvEquityPublicationGap(value: unknown): string | null {
+  const object = (input: unknown): Record<string, unknown> => input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : {};
+  const candidate = object(value);
+  const ranges = [object(candidate.valuationRange), object(object(object(candidate.singleScenarioEvidence).analysis).fairValue)];
+  return ranges.some((range) => Array.isArray(range.methods) && range.methods.some((method) =>
+    isUnsupportedEvEquityMethod(String(object(method).method ?? ""))))
+    ? "verified_ev_to_equity_bridge_unavailable" : null;
+}
+
+function unavailableEvMethod(method: UnavailableSpecialistMethod["method"]): UnavailableSpecialistMethod {
+  return {
+    method,
+    reason: "verified_ev_to_equity_bridge_unavailable",
+    requiredEvidence: ["same_period_ebitda", "cash_debt_and_other_equity_claims", "currency_and_reporting_period", "diluted_share_and_ads_basis", "issuer_bound_source_lineage"],
+    explanation: "EV/EBITDA equity valuation is unavailable: the ratio alone does not verify same-period EBITDA, cash, debt and other claims, or the diluted-share/ADS basis and source lineage needed to bridge enterprise value to common equity. Zero net debt is not assumed.",
+  };
+}
+
 export type SectorSpecialistInput = {
   ticker: string;
   company: string;
@@ -68,6 +98,7 @@ export type SectorSpecialistValuation = {
   requiredInputs: string[];
   missingInputs: string[];
   methods: SpecialistValuationMethod[];
+  unavailableMethods?: UnavailableSpecialistMethod[];
   fairValue: {
     conservativeValue: number | null;
     baseValue: number | null;
@@ -107,6 +138,7 @@ type ModelBuild = {
   sectorKind: SpecialistSectorKind;
   requiredInputs: string[];
   methods: SpecialistValuationMethod[];
+  unavailableMethods?: UnavailableSpecialistMethod[];
   evidenceScore: number;
   qualityScore: number;
   riskScore: number;
@@ -168,12 +200,6 @@ function earningsMethod(input: SectorSpecialistInput, method: SpecialistValuatio
   const eps = input.fundamentals.dilutedEpsTtm;
   if (eps === null || eps <= 0 || !Number.isFinite(targetMultiple) || targetMultiple <= 0) return null;
   return { method, value: eps * targetMultiple, assumption } satisfies SpecialistValuationMethod;
-}
-
-function evEbitdaMethod(input: SectorSpecialistInput, method: SpecialistValuationMethod["method"], targetMultiple: number, assumption: string) {
-  const currentMultiple = input.valuation.enterpriseValueToEbitda;
-  if (currentMultiple === null || currentMultiple <= 0 || !Number.isFinite(targetMultiple) || targetMultiple <= 0) return null;
-  return { method, value: input.currentPrice * (targetMultiple / currentMultiple), assumption } satisfies SpecialistValuationMethod;
 }
 
 function present(value: number | null) {
@@ -250,11 +276,9 @@ function financialModel(input: SectorSpecialistInput): ModelBuild {
   ]);
   const targetPb = clamp(0.8 + Math.max(0, roe) * 0.045 + Math.max(0, growth) * 0.008, 0.8, 2.2);
   const targetPe = clamp(8 + Math.max(0, roe) * 0.22 + Math.max(0, growth) * 0.08, 8, 18);
-  const targetEv = clamp(8 + Math.max(0, growth) * 0.08 + Math.max(0, margin) * 0.03, 8, 15);
   const methods = [
     bookMultipleMethod(input, "financial_book_roe", targetPb, `Financial-company book value valued at ${targetPb.toFixed(2)}x based on ROE and growth.`),
     earningsMethod(input, "financial_earnings_power", targetPe, `Financial-company earnings valued at ${targetPe.toFixed(1)}x based on ROE and growth.`),
-    evEbitdaMethod(input, "financial_ev_ebitda", targetEv, `Enterprise-value cross-check normalized toward ${targetEv.toFixed(1)}x EBITDA while holding the observed capital structure constant.`),
   ].filter((value): value is SpecialistValuationMethod => Boolean(value));
   const quality = Math.round(scorePositive(roe, 6, 22) * 0.35 + scorePositive(margin, 5, 30) * 0.2 + scorePositive(growth, -5, 20) * 0.25 + required.score * 0.2);
   let risk = commonRisk(input);
@@ -263,6 +287,7 @@ function financialModel(input: SectorSpecialistInput): ModelBuild {
   if (required.score < 70) risk += 15;
   return {
     sectorKind: "financial",
+    unavailableMethods: [unavailableEvMethod("financial_ev_ebitda")],
     requiredInputs: required.names,
     methods,
     evidenceScore: required.score,
@@ -325,10 +350,8 @@ function reitModel(input: SectorSpecialistInput): ModelBuild {
     ["debt_to_equity", debt],
   ]);
   const targetPb = clamp(1 + Math.max(0, roa) * 0.05 + Math.max(0, growth) * 0.015, 0.9, 1.8);
-  const targetEv = clamp(11 + Math.max(0, growth) * 0.12 + Math.max(0, margin) * 0.025, 10, 18);
   const methods = [
     bookMultipleMethod(input, "reit_book_nav_proxy", targetPb, `REIT/real-estate book value used only as a conservative NAV proxy at ${targetPb.toFixed(2)}x; historical-cost accounting is explicitly recognized as imperfect.`),
-    evEbitdaMethod(input, "reit_ev_ebitda_proxy", targetEv, `REIT/real-estate enterprise value normalized toward ${targetEv.toFixed(1)}x EBITDA as a second capital-structure-aware cross-check.`),
   ].filter((value): value is SpecialistValuationMethod => Boolean(value));
   const quality = Math.round(scorePositive(margin, 10, 45) * 0.3 + scorePositive(growth, -5, 12) * 0.25 + scorePositive(roa, 1, 7) * 0.2 + scoreInverse(debt, 80, 350) * 0.1 + required.score * 0.15);
   let risk = commonRisk(input);
@@ -338,6 +361,7 @@ function reitModel(input: SectorSpecialistInput): ModelBuild {
   if (required.score < 80) risk += 15;
   return {
     sectorKind: "real_estate_reit",
+    unavailableMethods: [unavailableEvMethod("reit_ev_ebitda_proxy")],
     requiredInputs: required.names,
     methods,
     evidenceScore: required.score,
@@ -345,7 +369,7 @@ function reitModel(input: SectorSpecialistInput): ModelBuild {
     riskScore: Math.round(clamp(risk)),
     thresholds: { minimumEvidenceScore: 80, minimumMethodCount: 2, maximumMethodSpreadPercent: 45, minimumBuyBaseUpsidePercent: 45, minimumBuyConservativeUpsidePercent: 25, maximumBuyRiskScore: 50, minimumBuyQualityScore: 65, minimumSellPremiumToBasePercent: 40, minimumSellPremiumToOptimisticPercent: 15 },
     deterioration: growth < -5 || (debt ?? 0) > 300,
-    limitations: ["REIT EPS and generic free cash flow are not treated as the primary valuation anchor because depreciation and property capex can distort them.", "This first-pass model uses book/NAV and EV/EBITDA proxies. FFO/AFFO, same-store NOI, occupancy, lease rollover and cap-rate evidence should supersede these proxies whenever current issuer disclosures provide them."],
+    limitations: ["REIT EPS and generic free cash flow are not treated as the primary valuation anchor because depreciation and property capex can distort them.", "This first-pass model currently has only a book/NAV proxy; the EV/EBITDA equity-price method is unavailable without a verified enterprise-to-equity bridge. FFO/AFFO, same-store NOI, occupancy, lease rollover and cap-rate evidence should supersede these proxies whenever current issuer disclosures provide them."],
   };
 }
 
@@ -364,11 +388,9 @@ function utilityModel(input: SectorSpecialistInput): ModelBuild {
   ]);
   const targetPb = clamp(1.1 + Math.max(0, roe) * 0.045 + Math.max(0, growth) * 0.01, 1.1, 2.3);
   const targetPe = clamp(12 + Math.max(0, roe) * 0.25 + Math.max(0, growth) * 0.08, 12, 20);
-  const targetEv = clamp(8 + Math.max(0, growth) * 0.08 + Math.max(0, margin) * 0.03, 8, 13);
   const methods = [
     bookMultipleMethod(input, "utility_book_roe", targetPb, `Utility book value valued at ${targetPb.toFixed(2)}x based on allowed-return/ROE economics and growth.`),
     earningsMethod(input, "utility_earnings_power", targetPe, `Utility normalized earnings valued at ${targetPe.toFixed(1)}x; heavy regulated capex is not automatically treated as poor business quality.`),
-    evEbitdaMethod(input, "utility_ev_ebitda", targetEv, `Utility enterprise value normalized toward ${targetEv.toFixed(1)}x EBITDA as a leverage-aware cross-check.`),
   ].filter((value): value is SpecialistValuationMethod => Boolean(value));
   const quality = Math.round(scorePositive(roe, 6, 14) * 0.3 + scorePositive(margin, 8, 28) * 0.25 + scorePositive(growth, -3, 8) * 0.2 + scoreInverse(debt, 80, 300) * 0.1 + required.score * 0.15);
   let risk = commonRisk(input);
@@ -379,6 +401,7 @@ function utilityModel(input: SectorSpecialistInput): ModelBuild {
   if (required.score < 70) risk += 15;
   return {
     sectorKind: "utility",
+    unavailableMethods: [unavailableEvMethod("utility_ev_ebitda")],
     requiredInputs: required.names,
     methods,
     evidenceScore: required.score,
@@ -386,7 +409,7 @@ function utilityModel(input: SectorSpecialistInput): ModelBuild {
     riskScore: Math.round(clamp(risk)),
     thresholds: { minimumEvidenceScore: 70, minimumMethodCount: 2, maximumMethodSpreadPercent: 50, minimumBuyBaseUpsidePercent: 30, minimumBuyConservativeUpsidePercent: 20, maximumBuyRiskScore: 55, minimumBuyQualityScore: 65, minimumSellPremiumToBasePercent: 40, minimumSellPremiumToOptimisticPercent: 15 },
     deterioration: growth < -5 || (debt ?? 0) > 300 || roe < 6,
-    limitations: ["Utility valuation emphasizes regulated earnings, book value and enterprise value rather than requiring positive generic free cash flow in a capital-intensive build cycle.", "Rate-base growth, allowed ROE, regulatory decisions, fuel recovery and major capital plans remain event-specific evidence and must be checked when material."],
+    limitations: ["Utility valuation emphasizes regulated earnings and book value rather than requiring positive generic free cash flow in a capital-intensive build cycle.", "Rate-base growth, allowed ROE, regulatory decisions, fuel recovery and major capital plans remain event-specific evidence and must be checked when material."],
   };
 }
 
@@ -470,6 +493,7 @@ export function evaluateSectorSpecialistValuation(input: SectorSpecialistInput, 
     ...missingInputs.map((name) => `Missing sector input: ${name}.`),
   ];
   const reasons = [
+    ...(built.unavailableMethods ?? []).map((method) => `${method.method}: ${method.explanation}`),
     `Applied ${sectorKind.replace(/_/g, " ")} specialist model instead of the generic corporate earnings/FCF framework.`,
     ...(baseValue !== null ? [`Specialist base fair value is $${baseValue.toFixed(2)} versus current price $${input.currentPrice.toFixed(2)}.`] : []),
     `Sector quality ${built.qualityScore}/100; sector risk ${built.riskScore}/100; evidence ${built.evidenceScore}/100.`,
@@ -490,6 +514,7 @@ export function evaluateSectorSpecialistValuation(input: SectorSpecialistInput, 
     requiredInputs: built.requiredInputs,
     missingInputs,
     methods,
+    unavailableMethods: built.unavailableMethods ?? [],
     fairValue: {
       conservativeValue: round(conservativeValue),
       baseValue: round(baseValue),
@@ -510,6 +535,6 @@ export function evaluateSectorSpecialistValuation(input: SectorSpecialistInput, 
       reasons,
       blockers,
     },
-    limitations: built.limitations,
+    limitations: [...built.limitations, ...(built.unavailableMethods ?? []).map((method) => method.explanation)],
   };
 }

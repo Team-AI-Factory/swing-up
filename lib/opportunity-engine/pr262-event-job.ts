@@ -1,3 +1,4 @@
+import { unsupportedEvEquityPublicationGap } from "@/lib/opportunity-engine/us-sector-specialist-valuation";
 import { qualifiedSingleScenario, singleScenarioPublicationGap, completeSingleScenarioReview } from "@/lib/equity-signal/single-valuation-scenario";
 import { alertDetails } from "@/lib/alert-details";
 import { restrictedBetaScopeBlocker } from "@/lib/restricted-beta-policy";
@@ -1581,6 +1582,7 @@ function committeeApproved(report: Json, pointer: Json, now = new Date()) {
   const candidateCik = normalizedCik(candidate.cik);
   const pointerCik = normalizedCik(pointer.cik);
   return report.seriousSignalFound === true
+    && !unsupportedEvEquityPublicationGap(candidate)
     && !restrictedBetaScopeBlocker(candidate)
     && (!isSimpleAlertPilot() || alertDetails(candidate, undefined, now).complete)
     && Boolean(publicationCompanyProfile(candidate.companyProfile, candidate, now))

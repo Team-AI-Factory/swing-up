@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { isUnsupportedEvEquityMethod } from "@/lib/opportunity-engine/us-sector-specialist-valuation";
 import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
 import { singleValuationScenarioSupported, singleScenarioEvidenceQuality, singleScenarioEvidence } from "@/lib/equity-signal/single-valuation-scenario";
 import { analyzeHistoricalAnalogs } from "@/lib/equity-signal/historical-analogs";
@@ -6,6 +7,9 @@ import type { EventReceipt, ImpactCandidate } from "@/lib/equity-signal/types";
 import type { UsValueCompanyAnalysis } from "@/lib/opportunity-engine/us-value-investing-engine";
 
 export function buildValuationCandidate(analysis: UsValueCompanyAnalysis, cik: string, receipt: EventReceipt, now: Date): ImpactCandidate | null {
+  // Legacy stored ranges must be re-hardened before reuse; never count a held
+  // EV method or its contaminated aggregate as valuation evidence.
+  if (analysis.fairValue?.methods.some((method) => isUnsupportedEvEquityMethod(method.method))) return null;
   const base = analysis.fairValue?.baseValue;
   const age = now.getTime() - Date.parse(analysis.observedAt);
   if (!base || base <= 0 || !Number.isFinite(base) || !Number.isFinite(analysis.currentPrice) || analysis.currentPrice <= 0
@@ -46,6 +50,15 @@ export function buildValuationCandidate(analysis: UsValueCompanyAnalysis, cik: s
 
 export function reassessValuationCandidate(candidate: ImpactCandidate, now: Date, analysis?: UsValueCompanyAnalysis) {
   if (candidate.eventFamily !== "valuation_gap") return candidate;
+  if (analysis?.fairValue.methods.some((method) => isUnsupportedEvEquityMethod(method.method))) {
+    candidate.gateChecks.verifiedEvToEquityBridge = false;
+    candidate.failedGateChecks = Object.entries(candidate.gateChecks).filter(([, value]) => !value).map(([name]) => name);
+    candidate.gatePassed = false;
+    candidate.trackingDisposition = "shadow_near_miss";
+    delete candidate.singleScenarioEvidence;
+    delete candidate.valuationRange;
+    return candidate;
+  }
   candidate.singleScenarioEvidence = singleScenarioEvidence(analysis, candidate);
   if (candidate.singleScenarioEvidence && analysis) {
     candidate.sector = analysis.sector; candidate.industry = analysis.industry; candidate.currency = analysis.currency;

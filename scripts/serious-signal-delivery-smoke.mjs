@@ -72,6 +72,7 @@ new Function("require", "module", "exports", output)((specifier) => {
   if (specifier === "@/lib/alert-details" || specifier === "@/lib/valuation-availability") return loadTsModule(specifier);
   if (specifier === "@/lib/company-profile" || specifier === "@/lib/signal-explanation" || specifier === "@/lib/signal-outlook") return loadTsModule(specifier);
   if (["@/lib/ai-committee/review-policy", "@/lib/equity-signal/us-market-calendar"].includes(specifier)) return loadTsModule(specifier);
+  if (specifier === "@/lib/opportunity-engine/us-sector-specialist-valuation") return loadTsModule(specifier);
   throw new Error(`Unexpected delivery import: ${specifier}`);
 }, loaded, loaded.exports);
 

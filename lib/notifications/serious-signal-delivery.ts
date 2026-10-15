@@ -1,3 +1,4 @@
+import { unsupportedEvEquityPublicationGap } from "@/lib/opportunity-engine/us-sector-specialist-valuation";
 import { qualifiedSingleScenario, singleScenarioPublicationGap, completeSingleScenarioReview, singleScenarioNotice } from "@/lib/equity-signal/single-valuation-scenario";
 import { restrictedBetaScopeBlocker } from "@/lib/restricted-beta-policy";
 import { completeRiskWarningReview, riskOnlyWarning, RISK_WARNING_NOTICE } from "@/lib/equity-signal/risk-warning-policy";
@@ -500,6 +501,7 @@ async function ensureDeliveryJob(validated: ReturnType<typeof validatedOutbox>, 
   const key = jobKey(validated.outboxKey);
   const existing = await loadJob(key, validated.outboxKey);
   if (existing) return existing;
+  if (!validated.testOnly && unsupportedEvEquityPublicationGap(validated.candidate)) throw new Error("serious_signal_delivery_ev_to_equity_bridge_unverified");
   if (!validated.testOnly && object(validated.candidate.companyProfile).status === "event_scoped" && !publicationCompanyProfile(validated.candidate.companyProfile, validated.candidate, now)) throw new Error("serious_signal_delivery_company_profile_stale");
   if (!validated.testOnly && restrictedBetaScopeBlocker(validated.candidate)) throw new Error("serious_signal_delivery_restricted_beta_scope");
   if (validated.candidate.riskWarningPolicy && !riskOnlyWarning(validated.candidate, now)) throw new Error("serious_signal_delivery_risk_evidence_stale");
@@ -773,6 +775,7 @@ async function processDeliveryJobKey(
   const validated = validatedOutbox(await withCachedCompanyProfile(JSON.parse(storedOutbox.text)), outboxKey);
   const message = messageFor(validated);
   const current = await loadJob(key, outboxKey) ?? await ensureDeliveryJob(validated, now, options.signal);
+  if (!validated.testOnly && !terminalStatus(current.job.status) && unsupportedEvEquityPublicationGap(validated.candidate)) throw new Error("serious_signal_delivery_ev_to_equity_bridge_unverified");
   if (!validated.testOnly && financialCandidatePublicationGap(validated.candidate)) throw new Error("serious_signal_delivery_financial_completeness_unproved");
   if (isSimpleAlertPilot() && !validated.testOnly) {
     const evidenceKey = await deliveryEvidenceKey(validated, options.signal);
@@ -1428,6 +1431,7 @@ export async function getSeriousSignalStatus(options: { hours?: number; limit?: 
       if (created === null || created < start.getTime() || created > now.getTime() + 5 * 60_000) continue;
       const quote = object(validated.candidate.quote);
       const publicationHoldReason = restrictedBetaScopeBlocker(validated.candidate)
+        ?? unsupportedEvEquityPublicationGap(validated.candidate)
         ?? (validated.legacyTargetFree ? "pilot_valuation_targets_required" : null)
         ?? (object(validated.candidate.companyProfile).status === "event_scoped" && !publicationCompanyProfile(validated.candidate.companyProfile, validated.candidate, now) ? "company_profile_context_no_longer_current" : null)
         ?? (validated.candidate.riskWarningPolicy && !riskOnlyWarning(validated.candidate, now) ? "risk_warning_evidence_no_longer_current" : null)

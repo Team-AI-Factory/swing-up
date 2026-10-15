@@ -119,6 +119,7 @@ export function hardenUsValueCompanyAnalysis(item: UsValueCompanyAnalysis): UsVa
     },
     fairValue: {
       methods: specialist.methods,
+      unavailableMethods: specialist.unavailableMethods,
       conservativeValue: specialist.fairValue.conservativeValue,
       baseValue: specialist.fairValue.baseValue,
       optimisticValue: specialist.fairValue.optimisticValue,

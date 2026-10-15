@@ -596,6 +596,7 @@ new Function("require", "module", "exports", output)((name) => {
   if (["@/lib/alert-details", "@/lib/restricted-beta-policy", "@/lib/equity-signal/risk-warning-policy", "@/lib/equity-signal/single-valuation-scenario", "@/lib/event-company-profile"].includes(name)) return loadTsModule(name, stubs);
   if (name === "@/lib/equity-signal/valuation-review-materiality") return loadTsModule(name);
   if (["@/lib/simple-alert-pilot-runtime", "@/lib/simple-alert-pilot-scope"].includes(name)) return loadTsModule(name);
+  if (name === "@/lib/opportunity-engine/us-sector-specialist-valuation") return loadTsModule(name);
   if (name in stubs) return stubs[name];
   if (["@/lib/company-profile", "@/lib/opportunity-engine/company-profile-cache"].includes(name)) return loadTsModule(name, stubs);
   if (name === "@/lib/opportunity-engine/pr262-research-evidence") return loadTsModule(name, stubs);

@@ -98,7 +98,7 @@ function profileStorageCause(error: unknown): string {
 }
 // Project only controlled fields, never arbitrary transport errors, URLs,
 // object keys, headers, response contents, credentials or signal reasons.
-function initialReadDiagnostics(error: unknown) {
+function profileReadDiagnostics(error: unknown) {
   const details = object(object(error).storageReadDiagnostics);
   const milliseconds = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
   return {
@@ -389,7 +389,7 @@ function annualFiling(body: Json, identity: CompanyIdentity, now: Date): Filing 
 
 /** Exact issuer metadata, at most two historical indexes, and an annual filing.
  * A 40-F additionally requires its same-accession index and declared AIF exhibit. */
-export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl: typeof fetch, now = new Date(), options: { signal?: AbortSignal; persistenceSignal?: AbortSignal; onResponseBodyFailure?: () => void } = {}) {
+export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl: typeof fetch, now = new Date(), options: { signal?: AbortSignal; persistenceSignal?: AbortSignal; onResponseBodyFailure?: () => void; reserveSourceReadRetry?: (requestTimeoutMs: number) => boolean; onSourceReadRetryRecovered?: () => void } = {}) {
   const exact = { ticker: text(identity.ticker).toUpperCase(), company: text(identity.company), cik: profileCik(identity.cik) };
   if (!exact.cik || !exact.company || !/^[A-Z0-9.-]{1,12}$/.test(exact.ticker)) return null;
   if (options.signal?.aborted) return null;
@@ -398,7 +398,7 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
     if (causedByRoleAbort(error, options.signal)) return null;
     console.warn(`[company-profile-storage] ${JSON.stringify({ stage: "initial", phase: "read", ticker: exact.ticker,
       writes: 0, durationMs: Math.max(0, Math.round(performance.now() - initialReadStartedAt)),
-      cause: profileStorageCause(error), ...initialReadDiagnostics(error), workDeadline: options.signal?.aborted === true,
+      cause: profileStorageCause(error), ...profileReadDiagnostics(error), workDeadline: options.signal?.aborted === true,
       persistenceDeadline: options.persistenceSignal?.aborted === true, settlement: "not_attempted" })}`);
     throw error;
   });
@@ -502,7 +502,33 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
     // Reuse the exact annual business section across parser retries. It is
     // issuer/accession-specific and never substitutes another company's text.
     const sourceKey = pr262StorageKey(`research-evidence/company-profile-sources/${exact.cik}/${filing.url.split("/").slice(-2).join("-")}.json`);
-    const sourceSaved = await readVersionedTextFromR2(sourceKey, { signal: options.signal });
+    let sourceSaved: Awaited<ReturnType<typeof readVersionedTextFromR2>>;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        sourceSaved = await readVersionedTextFromR2(sourceKey, { signal: options.signal });
+        if (attempt) options.onSourceReadRetryRecovered?.();
+        break;
+      } catch (error) {
+        const diagnostics = profileReadDiagnostics(error);
+        // This exact GET has no mutation to replay. Only a positively identified
+        // independent request timeout can consume the builder's one spare read.
+        // Never retry an initial/profile/CAS read, caller abort, HTTP/schema
+        // failure, source request or uncertain PUT through this path.
+        const retryAdmitted = attempt === 0 && Boolean(options.signal) && Boolean(options.persistenceSignal)
+          && !options.signal?.aborted && !options.persistenceSignal?.aborted
+          && object(error).storageDomain === "r2_state" && object(error).storageOperation === "read"
+          && ["response_headers", "response_body"].includes(diagnostics.responsePhase)
+          && diagnostics.requestAbortSource === "r2_request_timeout" && diagnostics.abortReasonMatched
+          && diagnostics.requestTimeoutMs === 20_000
+          && options.reserveSourceReadRetry?.(diagnostics.requestTimeoutMs) === true;
+        if (!causedByRoleAbort(error, options.signal)) console.warn(`[company-profile-storage] ${JSON.stringify({
+          stage: "annual_source", phase: "read", ticker: exact.ticker, readAttempt: attempt + 1,
+          cause: profileStorageCause(error), ...diagnostics, retryAdmitted,
+          workDeadline: options.signal?.aborted === true, persistenceDeadline: options.persistenceSignal?.aborted === true,
+        })}`);
+        if (!retryAdmitted) throw error;
+      }
+    }
     const source = sourceSaved.found && sourceSaved.text ? object(JSON.parse(sourceSaved.text)) : {};
     const completeSaved = completeSource(source, filing, exact, now);
     const cachedSection = completeSaved.status !== "invalid" && source.layoutRevision === SOURCE_LAYOUT_REVISION && source.url === filing.url && source.filedAt === filing.filedAt ? text(source.businessText) : "";

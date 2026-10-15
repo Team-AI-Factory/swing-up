@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "source": {
+    "cik": "0000903651",
+    "accession": "0001104659-26-020655",
+    "filedAt": "2026-02-26",
+    "form": "10-K",
+    "reportingPeriod": "2025-12-31",
+    "url": "https://www.sec.gov/Archives/edgar/data/903651/000110465926020655/inod-20251231x10k.htm"
+  },
+  "fixture": "inod-20251231.html.gz",
+  "rawBytes": 2722684,
+  "sha256": "1a6535c8988655c33d2b1e74f64cab0f9783afdd5d9f73bf1874afc2b9d776e2",
+  "retrievedAt": "2026-10-15",
+  "httpStatus": 200,
+  "reachedEof": true,
+  "provenance": "Unmodified official SEC HTTP 200 response body read through EOF, gzip compressed only. Historical test data; not runtime values.",
+  "index": {
+    "fixture": "inod-submissions.json.gz",
+    "url": "https://data.sec.gov/submissions/CIK0000903651.json",
+    "rawBytes": 162410,
+    "sha256": "f848efc03d7579f6062ccbea22691adc6cbae2fdede0e379ac6396f5d3512f5e",
+    "httpStatus": 200,
+    "reachedEof": true
+  }
+}

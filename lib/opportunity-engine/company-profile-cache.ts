@@ -1,4 +1,5 @@
 import { isSimpleAlertPilot } from "@/lib/simple-alert-pilot-runtime";
+import { createHash } from "node:crypto";
 import { createCompleteSourceRecord, readCompleteSourceRecord, type CompleteSourceBinding, type CompleteSourceRecord } from "@/lib/company-profile-complete-source";
 import { inspectAnnualDocumentIdentity } from "@/lib/company-profile-financial-customer-source";
 import { isAnnualInformationFormDocument, resolve40FAnnualInformationForm, secAnnualFilingIndexUrl } from "@/lib/company-profile-annual-source";
@@ -17,7 +18,8 @@ type Json = Record<string, unknown>;
 const object = (v: unknown): Json => v && typeof v === "object" && !Array.isArray(v) ? v as Json : {};
 const text = (v: unknown) => typeof v === "string" ? v.trim() : "";
 type Filing = { url: string; form: string; filedAt: string; industry?: string; checkedAt?: string; annualFilingUrl?: string; annualFilingIndexUrl?: string };
-type Entry = { ticker: string; company: string; cik: string; updatedAt: string; nextAttemptAt: string; profile: VerifiedCompanyProfile | null; firstVerifiedAt?: string; verificationHistoryKnown?: true; filing?: Filing; error?: string; extractionFailure?: string; parserRevision?: number; cachedParserRevision?: number };
+type FailedExtractionInput = { version: 1; parserRevision: number; digest: string; reason?: string };
+type Entry = { ticker: string; company: string; cik: string; updatedAt: string; nextAttemptAt: string; profile: VerifiedCompanyProfile | null; firstVerifiedAt?: string; verificationHistoryKnown?: true; filing?: Filing; error?: string; extractionFailure?: string; parserRevision?: number; cachedParserRevision?: number; failedExtractionInput?: FailedExtractionInput };
 async function load(options: { signal?: AbortSignal; forWrite?: boolean } = {}) {
   const saved = await readVersionedTextFromR2(KEY, { signal: options.signal });
   const body = saved.found && saved.text ? object(JSON.parse(saved.text)) : {};
@@ -31,6 +33,12 @@ async function load(options: { signal?: AbortSignal; forWrite?: boolean } = {}) 
 }
 function same(entry: CompanyIdentity, identity: CompanyIdentity) {
   return entry.ticker === identity.ticker && sameCompanyName(entry.company, identity.company) && profileCik(entry.cik) === profileCik(identity.cik);
+}
+// Storage ownership follows the issuer key, independently of display-name
+// changes. Use the same key for the acknowledged baseline and every CAS read.
+function sameStoredRow(entry: CompanyIdentity, identity: CompanyIdentity) {
+  const cik = profileCik(identity.cik);
+  return Boolean(cik) && entry.ticker === identity.ticker && profileCik(entry.cik) === cik;
 }
 function retryDeferred(entry: Entry | undefined, now: Date) {
   // Revisit parsing failures once after a parser repair, using the saved exact
@@ -87,6 +95,19 @@ function profileStorageCause(error: unknown): string {
   if (["r2_state_write_reconciliation_failed", "r2_state_write_transport_failed", "r2_state_write_missing_etag",
     "company_profile_cache_superseded", "company_profile_cache_conflict", "company_profile_cache_state_invalid"].includes(error.message)) return error.message;
   return error instanceof SyntaxError ? "invalid_json" : "other";
+}
+// Project only controlled fields, never arbitrary transport errors, URLs,
+// object keys, headers, response contents, credentials or signal reasons.
+function initialReadDiagnostics(error: unknown) {
+  const details = object(object(error).storageReadDiagnostics);
+  const milliseconds = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+  return {
+    responsePhase: typeof details.responsePhase === "string" && ["request_setup", "response_headers", "response_body", "decode"].includes(details.responsePhase) ? details.responsePhase : "unknown",
+    readDurationMs: milliseconds(details.readDurationMs), requestDurationMs: milliseconds(details.requestDurationMs),
+    requestTimeoutMs: milliseconds(details.requestTimeoutMs),
+    requestAbortSource: typeof details.requestAbortSource === "string" && ["none", "caller", "r2_request_timeout", "unknown"].includes(details.requestAbortSource) ? details.requestAbortSource : "unknown",
+    abortReasonMatched: details.abortReasonMatched === true,
+  };
 }
 // Match the JSON representation actually persisted by the R2 encoder.
 const snapshotEntry = (entry: Entry): Entry => JSON.parse(JSON.stringify(redactSecrets(entry)));
@@ -164,7 +185,7 @@ async function store(entry: Entry, previous: Entry | undefined, roleSignal?: Abo
       const readSignal = admission && writes === 0 && roleSignal ? AbortSignal.any([signal, roleSignal]) : signal;
       phase = "read";
       const { saved, entries } = await load({ signal: readSignal, forWrite: true });
-      const targets = entries.filter(row => row.cik === intended.cik && row.ticker === intended.ticker);
+      const targets = entries.filter(row => sameStoredRow(row, intended));
       if (targets.length > 1) throw new Error("company_profile_cache_state_invalid");
       if (isDeepStrictEqual(targets[0], intended)) return intended;
       // Timestamps alone are not sufficient: a same-time concurrent change,
@@ -180,7 +201,7 @@ async function store(entry: Entry, previous: Entry | undefined, roleSignal?: Abo
         writes++;
         unresolvedPut = true;
         const result = await writeVersionedJsonToR2(KEY, { version: 1, updatedAt: intended.updatedAt,
-          entries: [intended, ...entries.filter(row => row.cik !== intended.cik || row.ticker !== intended.ticker)] },
+          entries: [intended, ...entries.filter(row => !sameStoredRow(row, intended))] },
         { ...(saved.etag ? { expectedEtag: saved.etag } : { createOnly: true }), signal, maxAttempts: 1 });
         if (result.conflict) { unresolvedPut = false; failure = new Error("company_profile_cache_conflict"); continue; }
         if (!result.written) throw new Error("company_profile_cache_write_failed");
@@ -203,7 +224,7 @@ async function store(entry: Entry, previous: Entry | undefined, roleSignal?: Abo
       try {
         const { entries } = await load({ signal: settleSignal, forWrite: true });
         settleSignal.throwIfAborted();
-        const targets = entries.filter(row => row.cik === intended.cik && row.ticker === intended.ticker);
+        const targets = entries.filter(row => sameStoredRow(row, intended));
         if (targets.length <= 1) {
           settlement = "different_intent";
           if (isDeepStrictEqual(targets[0], intended)) {
@@ -372,17 +393,24 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
   const exact = { ticker: text(identity.ticker).toUpperCase(), company: text(identity.company), cik: profileCik(identity.cik) };
   if (!exact.cik || !exact.company || !/^[A-Z0-9.-]{1,12}$/.test(exact.ticker)) return null;
   if (options.signal?.aborted) return null;
+  const initialReadStartedAt = performance.now();
   const loaded = await load({ signal: options.signal }).catch(error => {
     if (causedByRoleAbort(error, options.signal)) return null;
     console.warn(`[company-profile-storage] ${JSON.stringify({ stage: "initial", phase: "read", ticker: exact.ticker,
-      writes: 0, cause: profileStorageCause(error), workDeadline: options.signal?.aborted === true,
+      writes: 0, durationMs: Math.max(0, Math.round(performance.now() - initialReadStartedAt)),
+      cause: profileStorageCause(error), ...initialReadDiagnostics(error), workDeadline: options.signal?.aborted === true,
       persistenceDeadline: options.persistenceSignal?.aborted === true, settlement: "not_attempted" })}`);
     throw error;
   });
   if (!loaded || options.signal?.aborted) return null;
   const { entries } = loaded;
-  const prior = entries.find(entry => same(entry, exact));
-  const cached = verifiedCompanyProfile(prior?.profile, exact, now);
+  const storedRows = entries.filter(entry => sameStoredRow(entry, exact));
+  if (storedRows.length > 1) throw new ProfileCacheWriteError(new Error("company_profile_cache_state_invalid"), false);
+  const prior = storedRows[0];
+  // A stored row can establish CAS ownership/history without establishing
+  // current company-name/source identity. Renames must rediscover the filing.
+  const sourcePrior = prior && same(prior, exact) ? prior : undefined;
+  const cached = verifiedCompanyProfile(sourcePrior?.profile, exact, now);
   if (cached && (cached.industry || (prior?.parserRevision === COMPANY_PROFILE_PARSER_REVISION && Date.parse(prior.nextAttemptAt) > now.getTime()))) return cached;
   if (retryDeferred(prior, now)) return null;
   const entry: Entry = { ...exact, cik: exact.cik, updatedAt: now.toISOString(), nextAttemptAt: new Date(now.getTime() + 60 * 60000).toISOString(), profile: cached,
@@ -390,8 +418,10 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
     // Retain historical success even when a legacy row has no first date and
     // this refresh must clear its now-invalid profile before source I/O.
     verificationHistoryKnown: prior?.verificationHistoryKnown === true || Boolean(prior?.profile) || Boolean(prior?.firstVerifiedAt) ? true : undefined,
-    filing: prior?.filing, cachedParserRevision: prior?.cachedParserRevision, parserRevision: COMPANY_PROFILE_PARSER_REVISION };
-  let acknowledged = prior ? snapshotEntry(prior) : undefined;
+    filing: sourcePrior?.filing, failedExtractionInput: sourcePrior?.failedExtractionInput, cachedParserRevision: sourcePrior?.cachedParserRevision, parserRevision: COMPANY_PROFILE_PARSER_REVISION };
+  // Compare against what was actually read. Redacting a legacy row here would
+  // invent a different baseline even when no writer changed storage.
+  let acknowledged = prior ? structuredClone(prior) : undefined;
   const persistEntry = async (deadlineCleanup = false, admission = false) => { acknowledged = await store(entry, acknowledged, options.signal, deadlineCleanup, options.persistenceSignal, admission); };
   // Persist backoff before network; budget wrappers still make their own durable reservations.
   try { await persistEntry(false, true); }
@@ -404,12 +434,14 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
     return boundedText(response, complete, options.onResponseBodyFailure, onEof ? bytes => onEof(bytes, response) : undefined);
   };
   let phase = "issuer_submissions";
+  let reusableFailedInput = false;
   try {
-    const priorFilingAge = now.getTime() - Date.parse(prior?.filing?.filedAt ?? "");
-    let filing = !prior?.profile && prior?.filing && priorFilingAge >= 0 && priorFilingAge <= 550 * 86400000
-      && ((prior.filing.industry && now.getTime() - Date.parse(prior.filing.checkedAt ?? prior.updatedAt) <= 7 * 86400000)
-        || (prior.parserRevision === COMPANY_PROFILE_PARSER_REVISION && now.getTime() - Date.parse(prior.updatedAt) <= 86400000))
-      ? prior.filing : null;
+    const priorFilingAge = now.getTime() - Date.parse(sourcePrior?.filing?.filedAt ?? "");
+    const discoveryAge = now.getTime() - Date.parse(sourcePrior?.filing?.checkedAt ?? "");
+    let filing = !sourcePrior?.profile && sourcePrior?.filing && priorFilingAge >= 0 && priorFilingAge <= 550 * 86400000
+      && discoveryAge >= 0 && ((sourcePrior.filing.industry && discoveryAge < 7 * 86400000)
+        || (sourcePrior.parserRevision === COMPANY_PROFILE_PARSER_REVISION && discoveryAge < 86400000))
+      ? sourcePrior.filing : null;
     if (!filing) {
       const submissions = object(JSON.parse(await request(`https://data.sec.gov/submissions/CIK${exact.cik}.json`)));
       filing = annualFiling(submissions, exact, now); // validates root issuer before following archive references
@@ -452,8 +484,19 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
     // the final outcome, avoiding a redundant full-cache read/PUT here. A crash
     // may rediscover metadata on the next guarded retry; it cannot verify a row.
     const extract = (html: string, customerEvidence?: unknown) => {
+      const digest = createHash("sha256").update(JSON.stringify([exact, completeSourceBinding(filing, String(exact.cik)), SOURCE_LAYOUT_REVISION, html, customerEvidence ?? null])).digest("hex");
+      const failed = sourcePrior?.failedExtractionInput;
+      // This memo is a failed parse, never verification evidence. It is bound
+      // to the exact issuer/source/input and revision. A new filing, changed
+      // bytes/customer evidence, rename or parser revision re-enters extraction.
+      if (failed?.version === 1 && failed.parserRevision === COMPANY_PROFILE_PARSER_REVISION && failed.digest === digest) {
+        entry.failedExtractionInput = failed;
+        entry.extractionFailure = failed.reason;
+        return null;
+      }
       const result = inspectCompanyProfileExtraction({ identity: exact, html, form: filing.form, sourceUrl: filing.url, filedAt: filing.filedAt, now, customerEvidence, annualFilingUrl: filing.annualFilingUrl, annualFilingIndexUrl: filing.annualFilingIndexUrl });
       entry.extractionFailure = result.reason ?? undefined;
+      entry.failedExtractionInput = result.profile ? undefined : { version: 1, parserRevision: COMPANY_PROFILE_PARSER_REVISION, digest, reason: result.reason ?? undefined };
       return result.profile;
     };
     // Reuse the exact annual business section across parser retries. It is
@@ -466,11 +509,13 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
     const sectionHeading = filing.form === "40-F" ? "DESCRIPTION OF THE BUSINESS" : filing.form === "20-F" ? "Item 4. Information on the Company" : "Item 1. Business";
     // Complete original bytes can be re-parsed after grammar or note-extraction
     // changes without another SEC request. Their original observation never moves.
+    reusableFailedInput = completeSaved.status === "valid" || Boolean(cachedSection);
     let profile = cached?.sourceUrl === filing.url ? cached : completeSaved.status === "valid" ? extract(completeSaved.html)
       : cachedSection ? extract(`${sectionHeading}\n${String(source.businessText)}`, source.financialCustomerEvidence) : null;
     // Legacy excerpts still allow positive recovery, but never claim EOF. A
     // failed old excerpt gets at most the existing one read after a parser repair.
     if (!profile && completeSaved.status !== "valid" && (!cachedSection || source.parserRevision !== COMPANY_PROFILE_PARSER_REVISION)) {
+      reusableFailedInput = false;
       let receipt: { bytes: Uint8Array; response: Response } | undefined;
       const html = await request(filing.url, body => {
         if (filing.form === "40-F" && !isAnnualInformationFormDocument(body)) return false;
@@ -487,13 +532,19 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
         completeRecord = createCompleteSourceRecord({ binding: completeSourceBinding(filing, exact.cik), bytes: receipt.bytes,
           requestUrl: filing.url, finalUrl: receipt.response.url, status: receipt.response.status, eof: true, observedAt: now.toISOString() }, now);
       }
-      if (businessText || completeRecord) await writeVersionedJsonToR2(sourceKey, { version: 1, layoutRevision: SOURCE_LAYOUT_REVISION, parserRevision: COMPANY_PROFILE_PARSER_REVISION, url: filing.url, filedAt: filing.filedAt, businessText, financialCustomerEvidence: extracted?.customerEvidence,
+      if (businessText || completeRecord) {
+        const sourceWrite = await writeVersionedJsonToR2(sourceKey, { version: 1, layoutRevision: SOURCE_LAYOUT_REVISION, parserRevision: COMPANY_PROFILE_PARSER_REVISION, url: filing.url, filedAt: filing.filedAt, businessText, financialCustomerEvidence: extracted?.customerEvidence,
         ...(completeRecord ? { completeSource: completeRecord } : {}), collectedAt: now.toISOString() }, { ...(sourceSaved.etag ? { expectedEtag: sourceSaved.etag } : { createOnly: true }), signal: options.persistenceSignal ?? options.signal });
+        // Only acknowledged complete bytes match the fresh full-document
+        // extraction. A legacy excerpt gets its own first parse next time.
+        reusableFailedInput = Boolean(completeRecord && sourceWrite.written && !sourceWrite.conflict);
+      }
       profile = extracted;
     }
     if (!profile) throw new Error("company_profile_products_and_customers_not_extracted");
     if (filing.industry) profile = { ...profile, industry: filing.industry, industrySourceUrl: `https://data.sec.gov/submissions/CIK${exact.cik}.json` };
     entry.profile = profile;
+    delete entry.failedExtractionInput;
     if (!entry.verificationHistoryKnown && !entry.firstVerifiedAt) entry.firstVerifiedAt = now.toISOString();
     entry.verificationHistoryKnown = true;
     entry.nextAttemptAt = new Date(now.getTime() + 30 * 86400000).toISOString();
@@ -511,8 +562,20 @@ export async function ensureCompanyProfile(identity: CompanyIdentity, fetchImpl:
     // The role's shared deadline is not a provider outage. Retry in the next
     // scheduled pass; the durable source guard still enforces its own cadence.
     if (entry.error === "company_profile_time_budget_deferred") entry.nextAttemptAt = new Date(now.getTime() + 5 * 60000).toISOString();
-    if (entry.error !== "company_profile_products_and_customers_not_extracted") delete entry.extractionFailure;
+    if (entry.error !== "company_profile_products_and_customers_not_extracted") {
+      delete entry.extractionFailure;
+      entry.failedExtractionInput = sourcePrior?.failedExtractionInput;
+    }
     if (/products_and_customers_not_extracted|annual_filing_unavailable/.test(entry.error)) entry.nextAttemptAt = new Date(now.getTime() + 86400000).toISOString();
+    if (entry.error === "company_profile_products_and_customers_not_extracted" && reusableFailedInput && entry.failedExtractionInput
+      && entry.filing?.industry) {
+      // The existing metadata reuse window is seven days. Do not repeatedly
+      // re-parse the same saved failure while that same filing is selected.
+      // At this boundary ordinary guarded discovery still checks for a new
+      // annual filing; this is neither an indefinite hold nor a new poller.
+      const sourceCheck = Date.parse(entry.filing.checkedAt ?? "") + 7 * 86400000;
+      if (Number.isFinite(sourceCheck) && sourceCheck > Date.parse(entry.nextAttemptAt)) entry.nextAttemptAt = new Date(sourceCheck).toISOString();
+    }
     const providerRetry = entry.error.match(/next_retry_at=([^;\s]+)/)?.[1];
     if (providerRetry && Date.parse(providerRetry) > Date.parse(entry.nextAttemptAt)) entry.nextAttemptAt = providerRetry;
     // A source-cache (or source-budget) R2 fault is not a failed SEC request.
